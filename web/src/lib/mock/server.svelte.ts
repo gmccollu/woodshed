@@ -75,7 +75,7 @@ import { matchTerms, parseTerms, TERMS_AND_REGEX } from '../terms';
 import { FLEET, fieldsOf, line, SPECIAL, specialLine, testLine, weighted, type GenLine, type MockDeviceDef, type Special } from './gen';
 import { STEP, deviceAt, lineAt, shareOf } from './history';
 import {
-  TRAP_FIELD_KEYS, TRAP_ONLY, TRAP_ONLY_PARAMS, TRAP_SCHEMA, oidName, trapAt, trapFieldValue, trapFilter, trapRange, trapResult,
+  TRAP_FIELD_KEYS, TRAP_ONLY, TRAP_ONLY_PARAMS, TRAP_SCHEMA, TRAP_STEP, oidName, trapAt, trapFieldValue, trapFilter, trapRange, trapResult,
   trapStats, senderAt, type StoredTrap,
 } from './traps';
 import { createUser, deleteUser, failures as snmpFailures, listUsers, mibsJSON, snmpMock, snmpState, unreadableUsers, updateUser } from './snmp';
@@ -411,7 +411,18 @@ function devicesRoute(u: URLSearchParams, now: number): Response {
   const q = (u.get('q') ?? '').toLowerCase();
   const group = u.get('group');
   const ungrouped = u.get('ungrouped') === 'true';
+  // 1.2: active_from and active_to (both or neither): only devices with a stored record of any type in the window.
+  let active: Map<string, ActiveCounts> | null = null;
+  if (u.has('active_from') || u.has('active_to')) {
+    const af = Date.parse(u.get('active_from') ?? '');
+    const at = Date.parse(u.get('active_to') ?? '');
+    if (!u.get('active_from') || !u.get('active_to')) return err(400, 'active_from and active_to go together; send both or neither.');
+    if (Number.isNaN(af) || Number.isNaN(at)) return err(400, 'active_from and active_to must be RFC 3339 times.');
+    if (!(af < at)) return err(400, 'active_from must be before active_to.');
+    active = activeIn(af, at, now);
+  }
   let list = [...devs.values()].filter((d) => {
+    if (active && !active.has(d.def.ip)) return false;
     if (hidden === 'exclude' && d.hidden) return false;
     if (hidden === 'only' && !d.hidden) return false;
     if (blocked === 'exclude' && blockedBy(d.def.ip)) return false;
@@ -1542,10 +1553,57 @@ interface MockExport extends ExportInfo {
   estimate: number;
 }
 
-const noFilters = (): ExportInfo['filters'] => ({ group: '', ungrouped: false, severities: [], q: '', regex: false, case: false, app: [], host: [], exclude: '' });
+const noFilters = (): ExportInfo['filters'] => ({
+  group: '', ungrouped: false, severities: [], q: '', regex: false, case: false, app: [], host: [], exclude: '',
+  type: 'syslog', syntax: 'text', facilities: [], exclude_devices: [], exclude_app: [], exclude_host: [], kind: 'export', types: ['syslog'],
+});
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+const isoS = (t: number) => new Date(t).toISOString().replace(/\.000Z$/, 'Z');
+
+/** Stored records per type of one device in a window (syslog lines, traps). */
+interface ActiveCounts {
+  syslog: number;
+  trap: number;
+}
+
+/**
+ * Every device with a stored record in [from, to), with its counts per type: the syslog history
+ * (line i at i × STEP) and the traps (trap i at i × TRAP_STEP). Long windows are sampled; every
+ * device of the fleet sends often enough that a sample finds it.
+ */
+let activeCache: { key: string; at: number; m: Map<string, ActiveCounts> } | null = null;
+function activeIn(from: number, to: number, now: number): Map<string, ActiveCounts> {
+  const key = `${from}-${Math.min(to, now)}`;
+  if (activeCache && activeCache.key === key && now - activeCache.at < 5000) return activeCache.m;
+  const m = new Map<string, ActiveCounts>();
+  const get = (ip: string) => m.get(ip) ?? (m.set(ip, { syslog: 0, trap: 0 }), m.get(ip)!);
+  if (!mock.firstRun) {
+    const lo = Math.ceil(from / STEP);
+    const hi = Math.ceil(Math.min(to, now) / STEP) - 1;
+    const stride = Math.max(1, Math.ceil((hi - lo + 1) / 200_000));
+    for (let i = lo; i <= hi; i += stride) get(deviceAt(i).ip).syslog += stride;
+    const tr = trapRange(from, to, now);
+    for (let i = tr.lo; i <= tr.hi; i++) {
+      const ms = i * TRAP_STEP;
+      if (ms >= from && ms < to) get(senderAt(i).ip).trap++;
+    }
+  }
+  activeCache = { key, at: now, m };
+  return m;
+}
 
 const exportsList: MockExport[] = [
+  {
+    // A bundle (1.2): the moment, its sides, and every device that sent anything in the window.
+    id: 'exp_b5Rt', created: ago(2 * H), ready_at: ago(2 * H - 40_000), expires_at: ago(2 * H - 40_000 - EXPIRE_MS),
+    devices: ['10.1.0.1', '10.1.0.10', '10.1.0.40'],
+    from: isoS(Math.floor((Date.now() - 3 * H) / MIN) * MIN - 30 * MIN), to: isoS(Math.floor((Date.now() - 3 * H) / MIN) * MIN + 10 * MIN),
+    state: 'ready', progress: 1, lines: 2_431, size_bytes: 412 * 1024, error: '', estimate: 0,
+    filters: {
+      ...noFilters(), kind: 'bundle', types: ['syslog', 'trap'], active_devices: true,
+      at: isoS(Math.floor((Date.now() - 3 * H) / MIN) * MIN), before: '30m', after: '10m',
+    },
+  },
   {
     id: 'exp_7Hq2', created: ago(23 * H + 10 * MIN), ready_at: ago(23 * H), expires_at: ago(23 * H - EXPIRE_MS),
     devices: ['10.1.0.1', '10.1.0.2'], from: ago(48 * H), to: ago(24 * H),
@@ -1566,13 +1624,38 @@ const exportsList: MockExport[] = [
   },
 ];
 
-function estimate(b: { devices: string[]; from: string; to: string; severities?: unknown[] }) {
-  const span = Math.max(0, Date.parse(b.to) - Date.parse(b.from));
-  let lines = Math.round((span / STEP) * shareOf(b.devices));
-  // An upper bound from the index: severity and text filters can only shrink it.
-  if (b.severities?.length) lines = Math.round(lines * Math.min(1, b.severities.length / 3));
+/** An upper bound from the index: lines (and traps) per type for these devices, and one file per device, day and type. */
+function estimate(b: { devices: string[]; from: string; to: string; severities?: unknown[]; types?: string[] }, now = Date.now()) {
+  const from = Date.parse(b.from);
+  const to = Date.parse(b.to);
+  const span = Math.max(0, to - from);
+  const types = b.types ?? ['syslog'];
   const days = Math.max(1, Math.ceil(span / (24 * H)));
-  return { lines, bytes: lines * 142, files: b.devices.length * days };
+  let lines = 0;
+  let bytes = 0;
+  let files = 0;
+  if (types.includes('syslog')) {
+    let n = Math.round((span / STEP) * shareOf(b.devices));
+    // Severity and text filters can only shrink it.
+    if (b.severities?.length) n = Math.round(n * Math.min(1, b.severities.length / 3));
+    lines += n;
+    bytes += n * 142;
+    files += b.devices.length * days;
+  }
+  if (types.includes('trap')) {
+    const act = activeIn(from, to, now);
+    let n = 0;
+    let senders = 0;
+    for (const id of b.devices) {
+      const c = act.get(id)?.trap ?? 0;
+      n += c;
+      if (c) senders++;
+    }
+    lines += n;
+    bytes += n * 410;
+    files += senders * days;
+  }
+  return { lines, bytes, files };
 }
 
 /** One build at a time; the rest wait in the queue. */
@@ -1607,6 +1690,103 @@ const exportJSON = (e: MockExport): ExportInfo => {
   void _e;
   return rest;
 };
+
+/** docs/api.md's durations: units ms, s, m, h, d ("1h30m"); NaN for anything else. */
+function apiDuration(v: unknown): number {
+  if (typeof v !== 'string' || !/^(\d+(ms|s|m|h|d))+$/.test(v)) return NaN;
+  const unit: Record<string, number> = { ms: 1, s: 1000, m: MIN, h: H, d: 24 * H };
+  let t = 0;
+  for (const m of v.matchAll(/(\d+)(ms|s|m|h|d)/g)) t += Number(m[1]) * unit[m[2]];
+  return t;
+}
+function canonDuration(ms: number): string {
+  if (!ms) return '0s';
+  let out = '';
+  for (const [u, size] of [['d', 24 * H], ['h', H], ['m', MIN], ['s', 1000], ['ms', 1]] as const) {
+    const k = Math.floor(ms / size);
+    if (k) out += `${k}${u}`;
+    ms -= k * size;
+  }
+  return out;
+}
+
+const DATA_TYPES = ['syslog', 'trap'];
+/** Syslog's filters in an export body (they're a 400 with types ["trap"]). */
+const SYSLOG_BODY_FILTERS = ['severities', 'app', 'host', 'facilities', 'exclude_app', 'exclude_host'] as const;
+const present = (v: unknown) => (Array.isArray(v) ? v.length > 0 : typeof v === 'string' ? v !== '' : v === true);
+
+type ExportBody = Record<string, unknown> & {
+  all_devices?: boolean; devices?: string[]; group?: string; ungrouped?: boolean; from?: string; to?: string;
+  severities?: unknown[]; q?: string; regex?: boolean; case?: boolean; app?: string[]; host?: string[]; exclude?: string;
+  type?: string; syntax?: 'text' | 'terms'; facilities?: (number | string)[]; exclude_devices?: string[]; exclude_app?: string[]; exclude_host?: string[];
+  types?: string[]; kind?: string; at?: string; before?: string; after?: string; active_devices?: boolean;
+};
+
+/** POST /api/exports(/estimate) with kind "bundle" (docs/api.md → the incident bundle): the window around at, the devices, the types. */
+function bundleRoute(p: string, b: ExportBody, now: number): Response {
+  const refused: [string, string][] = [
+    ['from', 'a bundle\'s window is at, before and after, not from and to.'],
+    ['to', 'a bundle\'s window is at, before and after, not from and to.'],
+    ['all_devices', 'a bundle takes active_devices, devices, group or ungrouped.'],
+    ['exclude_devices', 'a bundle has no device exclusions; list the devices instead.'],
+    ...['q', 'regex', 'case', 'syntax', 'exclude', 'type', ...SYSLOG_BODY_FILTERS, ...TRAP_ONLY_PARAMS].map(
+      (k): [string, string] => [k, 'a bundle has no filters: it holds everything in its window. Use a plain export to filter.'],
+    ),
+  ];
+  for (const [k, why] of refused) if (present(b[k]) || (k === 'syntax' && b.syntax && b.syntax !== 'text')) return err(400, `${k}: ${why}`);
+  if (!b.at) return err(400, 'at: required for a bundle (RFC 3339).');
+  const at = Date.parse(b.at);
+  if (Number.isNaN(at) || !/^\d{4}-\d{2}-\d{2}T/.test(b.at)) return err(400, `at: "${b.at}" is not an RFC 3339 time.`);
+  if (at > now) return err(400, 'at: in the future; a bundle is around a moment up to now.');
+  const side = (k: 'before' | 'after', d: string) => {
+    const v = b[k] === undefined ? d : b[k];
+    const ms = apiDuration(v);
+    if (Number.isNaN(ms)) return `${k}: "${String(v)}" is not a duration like 30m or 1h30m.`;
+    if (ms > 7 * 24 * H) return `${k}: at most 7d.`;
+    return ms;
+  };
+  const before = side('before', '30m');
+  const after = side('after', '10m');
+  if (typeof before === 'string') return err(400, before);
+  if (typeof after === 'string') return err(400, after);
+  if (!before && !after) return err(400, 'before and after are both 0s; one of them has to be more.');
+  const choices = [b.active_devices === true, !!b.devices?.length, !!b.group, b.ungrouped === true].filter(Boolean).length;
+  if (!choices) return err(400, 'Pick the devices: active_devices, devices, group or ungrouped.');
+  if (choices > 1) return err(400, 'Pick the devices one way: active_devices, devices, group or ungrouped.');
+  for (const t of b.types ?? []) if (!DATA_TYPES.includes(t)) return err(400, `types: unknown data type "${t}".`);
+  const from = at - before;
+  const to = Math.min(at + after, now);
+  if (!(from < to)) return err(400, 'The window is empty: with nothing before the moment, it has to be in the past.');
+  const act = activeIn(from, to, now);
+  let ids: string[];
+  if (b.devices?.length) ids = [...b.devices]; // named devices: even silent or hidden ones
+  else {
+    const f: MockFilters = { group: b.group || undefined, ungrouped: !!b.ungrouped, sev: null };
+    const known = [...new Set([...devs.keys(), ...FLEET.map((d) => d.ip)])];
+    ids = known.filter((ip) => deviceMatches(ip, f, true) && (!b.active_devices || act.has(ip)));
+  }
+  if (!ids.length) {
+    if (b.active_devices) return err(400, `No device stored anything between ${isoS(from)} and ${isoS(to)}.`);
+    return err(400, 'Pick at least one device (by list, group or ungrouped).');
+  }
+  // types [] = every type with data in the window, for these devices.
+  const types = b.types?.length
+    ? DATA_TYPES.filter((t) => b.types!.includes(t))
+    : DATA_TYPES.filter((t) => ids.some((ip) => (act.get(ip)?.[t as keyof ActiveCounts] ?? 0) > 0));
+  const est = estimate({ devices: ids, from: new Date(from).toISOString(), to: new Date(to).toISOString(), types }, now);
+  if (p === '/api/exports/estimate') return json(est);
+  const e: MockExport = {
+    id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date(now).toISOString(),
+    devices: ids, from: isoS(from), to: isoS(to),
+    state: 'queued', progress: 0, lines: 0, size_bytes: 0, error: '', estimate: est.lines, ready_at: null, expires_at: null,
+    filters: {
+      ...noFilters(), group: b.group ?? '', ungrouped: !!b.ungrouped, kind: 'bundle', types,
+      at: isoS(at), before: canonDuration(before), after: canonDuration(after), active_devices: !!b.active_devices,
+    },
+  };
+  exportsList.unshift(e);
+  return json({ id: e.id }, 202);
+}
 
 function history(): StorageHistoryEntry[] {
   const out: StorageHistoryEntry[] = [];
@@ -2614,17 +2794,28 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     });
   }
   if (method === 'POST' && (p === '/api/exports' || p === '/api/exports/estimate')) {
-    const b = (body ?? {}) as {
-      all_devices?: boolean; devices?: string[]; group?: string; ungrouped?: boolean; from?: string; to?: string;
-      severities?: unknown[]; q?: string; regex?: boolean; case?: boolean; app?: string[]; host?: string[]; exclude?: string;
-      type?: string; syntax?: 'text' | 'terms'; facilities?: (number | string)[]; exclude_devices?: string[]; exclude_app?: string[]; exclude_host?: string[];
-    };
-    // devices, group or ungrouped: resolved as the build would (hidden devices only when named).
+    const b = (body ?? {}) as ExportBody;
     probe.lastExportBody = JSON.stringify(b);
+    if (b.kind === 'bundle') return bundleRoute(p, b, now);
+    if (b.kind !== undefined && b.kind !== 'export') return err(400, `kind: must be "export" or "bundle", not "${String(b.kind)}".`);
+    for (const k of ['at', 'before', 'after', 'active_devices'] as const) if (present(b[k])) return err(400, `${k}: only for kind "bundle".`);
+    // devices, group or ungrouped: resolved as the build would (hidden devices only when named).
     const f: MockFilters = { devices: b.devices, group: b.group || undefined, ungrouped: !!b.ungrouped, sev: null };
     const anySelector = b.all_devices || !!b.devices?.length || !!b.group || !!b.ungrouped;
-    const ids = anySelector ? FLEET.map((d) => d.ip).filter((ip) => deviceMatches(ip, f, true) && !b.exclude_devices?.includes(ip)) : [];
-    if (b.type !== undefined && b.type !== 'syslog') return err(400, `type: unknown data type "${b.type}".`);
+    const known = [...new Set([...FLEET.map((d) => d.ip), ...devs.keys()])];
+    const ids = anySelector ? known.filter((ip) => deviceMatches(ip, f, true) && !b.exclude_devices?.includes(ip)) : [];
+    // 1.2: types (["syslog"] by default); type (1.1) is a one-entry types, and both must agree.
+    if (b.type !== undefined && !DATA_TYPES.includes(b.type)) return err(400, `type: unknown data type "${b.type}".`);
+    for (const t of b.types ?? []) if (!DATA_TYPES.includes(t)) return err(400, `types: unknown data type "${t}".`);
+    const types = b.types?.length ? DATA_TYPES.filter((t) => b.types!.includes(t)) : [b.type ?? 'syslog'];
+    if (b.type !== undefined && b.types?.length && !(types.length === 1 && types[0] === b.type)) return err(400, `type: "${b.type}" doesn't match types.`);
+    const trapKeys = TRAP_ONLY_PARAMS.filter((k) => present(b[k]));
+    const syslogKeys = SYSLOG_BODY_FILTERS.filter((k) => present(b[k]));
+    if (types.length > 1 && (b.q || b.exclude || trapKeys.length || syslogKeys.length))
+      return err(400, 'types: Filters apply to one data type; pick one, or leave the filters out.');
+    if (types[0] === 'trap' && types.length === 1) {
+      if (syslogKeys.length) return err(400, `${syslogKeys[0]}: not a filter for SNMP traps.`);
+    } else if (trapKeys.length) return err(400, `${trapKeys[0]}: not a filter for syslog.`);
     if (b.regex && b.syntax === 'terms') return err(400, TERMS_AND_REGEX);
     if (b.syntax === 'terms') {
       for (const [what, v] of [['', b.q], ['exclude: ', b.exclude]] as const) {
@@ -2652,7 +2843,20 @@ async function route(method: string, url: URL, body: unknown, header: string | n
       }
     }
     for (const k of ['app', 'host'] as const) if (b[k] !== undefined && !Array.isArray(b[k])) return err(400, `${k} must be a list of strings`);
-    const est = estimate({ devices: ids, from: b.from, to: b.to, severities: b.severities });
+    // The trap filters are JSON lists here; they mean what search's do (MIB names checked the same way).
+    const trap: Record<string, string[]> = {};
+    for (const k of trapKeys) {
+      const v = b[k];
+      if (!Array.isArray(v)) return err(400, `${k} must be a list`);
+      trap[k] = v.map(String).map((x) => x.trim()).filter(Boolean);
+    }
+    if (trapKeys.length) {
+      const u = new URLSearchParams();
+      for (const [k, v] of Object.entries(trap)) u.set(k, v.join(','));
+      const tf = trapFilter(u, now, () => true);
+      if (typeof tf === 'string') return err(400, tf);
+    }
+    const est = estimate({ devices: ids, from: b.from, to: b.to, severities: b.severities, types }, now);
     if (p === '/api/exports/estimate') return json(est);
     const e: MockExport = {
       id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date(now).toISOString(),
@@ -2662,8 +2866,9 @@ async function route(method: string, url: URL, body: unknown, header: string | n
         group: b.group ?? '', ungrouped: !!b.ungrouped, severities: (b.severities ?? []) as ExportInfo['filters']['severities'],
         q: b.q ?? '', regex: !!b.regex, case: !!b.case,
         app: b.app ?? [], host: b.host ?? [], exclude: b.exclude ?? '',
-        type: 'syslog', syntax: b.syntax ?? 'text', facilities: (b.facilities ?? []) as ExportInfo['filters']['facilities'],
+        type: types.length === 1 ? types[0] : 'syslog', syntax: b.syntax ?? 'text', facilities: (b.facilities ?? []) as ExportInfo['filters']['facilities'],
         exclude_devices: b.exclude_devices ?? [], exclude_app: b.exclude_app ?? [], exclude_host: b.exclude_host ?? [],
+        kind: 'export', types, ...(trapKeys.length ? { trap } : {}),
       },
     };
     exportsList.unshift(e);
@@ -2697,7 +2902,10 @@ async function route(method: string, url: URL, body: unknown, header: string | n
       probe.downloads.push({ id: e.id, ticket: t !== null, status: 200 });
       if (e.state === 'expired') return err(404, 'That export has expired.');
       if (e.state !== 'ready') return err(409, 'That export is not ready yet.');
-      const name = `woodshed-${e.from.slice(0, 16).replace(/:/g, '')}-${e.to.slice(0, 16).replace(/:/g, '')}.zip`;
+      const name =
+        e.filters.kind === 'bundle'
+          ? `woodshed-bundle-logs-01-${(e.filters.at ?? e.from).slice(0, 19).replace(/[-:]/g, '')}Z.zip`
+          : `woodshed-${e.from.slice(0, 16).replace(/:/g, '')}-${e.to.slice(0, 16).replace(/:/g, '')}.zip`;
       return new Response('mock export', {
         status: 200,
         headers: { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${name}"` },
