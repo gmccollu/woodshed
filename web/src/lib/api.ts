@@ -3,6 +3,17 @@
 // transport for the in-browser fake in ./mock, and nothing else changes.
 
 import { SseParser, type SseEvent } from './sse';
+import type {
+  PollDevicePanel,
+  PollSeriesResponse,
+  PollSettings,
+  PollState,
+  PollStatus,
+  PollTarget,
+  PollTargetInput,
+  PollTestResult,
+  PollTimeline,
+} from './poll';
 
 // ---------- Types (docs/api.md) ----------
 
@@ -45,7 +56,9 @@ export type BannerKind =
   | 'udp_queue_full'
   | 'snmp_firewall'
   | 'snmp_credentials'
-  | 'snmp_mibs';
+  | 'snmp_mibs'
+  | 'poll_unreachable'
+  | 'poll_overrun';
 /** update_choice: Turn on / No thanks (PUT /api/updates); update_dismiss: hide this version (POST /api/updates/dismiss).
  *  tls_renew opens Settings → Syslog over TLS; it never renews by itself. */
 export type BannerAction = '' | 'retry_listeners' | 'update_choice' | 'update_dismiss' | 'tls_renew';
@@ -169,6 +182,10 @@ export interface Device {
   types?: string[];
   /** 1.2: stored lines (records) per data type. total_msgs counts every type. */
   lines_by_type?: Record<string, number>;
+  /** 1.3: the device has a poll target (SPEC §12.5). Older servers omit it. */
+  polled?: boolean;
+  /** 1.3, when polled: the target's state.status. */
+  poll_status?: PollStatus | (string & {});
 }
 
 /** Why a TLS handshake failed (SPEC §10.3.4). Unknown future reasons are shown as given. */
@@ -496,6 +513,8 @@ export interface Settings {
   quiet: { quiet_after_seconds: number; offline_after_seconds: number };
   /** The update check (1.1). Older servers omit it; a PUT without it keeps it. */
   updates?: { check: UpdateCheck };
+  /** 1.3: the poller's defaults (docs/api.md → 1.3). Older servers omit it; a PUT without it keeps it. */
+  poll?: PollSettings;
 }
 
 export type UpdateCheck = 'ask' | 'on' | 'off';
@@ -1218,6 +1237,50 @@ export const updateSnmpUser = (name: string, u: SnmpUserInput) =>
   request<SnmpUser>('PUT', `/api/snmp/users/${encodeURIComponent(name)}`, u);
 export const deleteSnmpUser = (name: string) => request<void>('DELETE', `/api/snmp/users/${encodeURIComponent(name)}`);
 /** new_ca: also replace the CA, so every device must import the new one. 409 with source "file". */
+// ---------- 1.3: the SNMP poller (docs/api.md → 1.3) ----------
+
+export const getPollTargets = () => request<PollTarget[]>('GET', '/api/poll/targets');
+/** One target with its ETag (for If-Match on a change). */
+export async function getPollTarget(id: string): Promise<{ target: PollTarget; etag: string }> {
+  const { data, headers } = await requestFull<PollTarget>('GET', `/api/poll/targets/${encodeURIComponent(id)}`);
+  return { target: data, etag: headers.get('ETag') ?? '' };
+}
+export const createPollTarget = (t: PollTargetInput) => request<PollTarget>('POST', '/api/poll/targets', t);
+/** Saves with If-Match when etag is set; a stale one is a 409 (isConflict). A missing community keeps the stored one. */
+export async function updatePollTarget(id: string, t: PollTargetInput, etag = ''): Promise<{ target: PollTarget; etag: string }> {
+  const { data, headers } = await requestFull<PollTarget>(
+    'PUT',
+    `/api/poll/targets/${encodeURIComponent(id)}`,
+    t,
+    etag ? { 'If-Match': etag } : undefined,
+  );
+  return { target: data, etag: headers.get('ETag') ?? '' };
+}
+export const deletePollTarget = (id: string) => request<void>('DELETE', `/api/poll/targets/${encodeURIComponent(id)}`);
+/** Runs the configured poll once without saving: a target body, or {id} for a stored one. 429 beyond 10 a minute. */
+export const testPoll = (t: PollTargetInput | { id: string }, signal?: AbortSignal) =>
+  request<PollTestResult>('POST', '/api/poll/test', t, signal);
+export const getPollState = () => request<PollState>('GET', '/api/poll');
+export const getPollSeries = (p: { device: string; from: string; to: string; bucket?: number; series: string[]; cursor?: string }, signal?: AbortSignal) =>
+  request<PollSeriesResponse>(
+    'GET',
+    `/api/poll/series${query({ device: p.device, from: p.from, to: p.to, bucket: p.bucket, series: p.series, cursor: p.cursor })}`,
+    undefined,
+    signal,
+  );
+export const getPollTimeline = (
+  p: { devices?: string[]; group?: string; ungrouped?: boolean; from: string; to: string; bucket?: number },
+  signal?: AbortSignal,
+) =>
+  request<PollTimeline>(
+    'GET',
+    `/api/poll/timeline${query({ devices: p.devices, group: p.group, ungrouped: p.ungrouped ? true : undefined, from: p.from, to: p.to, bucket: p.bucket })}`,
+    undefined,
+    signal,
+  );
+export const getPollDevice = (id: string, from: string, to: string, signal?: AbortSignal) =>
+  request<PollDevicePanel>('GET', `/api/poll/device/${encodeURIComponent(id)}${query({ from, to })}`, undefined, signal);
+
 export const renewTls = (newCa: boolean) => request<TlsState>('POST', '/api/tls/renew', { new_ca: newCa });
 export const getTlsFailures = () => request<TlsFailure[]>('GET', '/api/tls/failures');
 
