@@ -379,14 +379,17 @@ README. It needs no filters: it's everything around the moment, so nothing that 
 
 Start one from:
 
-- **Events:** **Bundle around this** on a line (the moment is that line's received time), or a point on the
-  histogram.
-- **Export → Around a time:** type the moment in your local time or in UTC (a switch), and pick the window: 15 min
-  before and 5 after, 1 h / 15 min, 4 h / 1 h, 24 h / 1 h, or your own.
+- **Events:** click a line, then **Bundle around this** (or right-click the line); the moment is that line's received
+  time. Or click **Bundle around a moment** above the histogram, then click the time you want on it.
+- **Export → Around a time:** type the moment in your local time or in UTC (the same Local/UTC switch as the time
+  range), and pick the window: 15 min before and 5 after, 30 min / 10 min (the default), 1 h / 15 min, 4 h / 1 h,
+  24 h / 1 h, or **Custom**. Then **Build the bundle**, or **Preview in Events** first.
 
-Before it's built, a preview shows the window in Events (the histogram and the fields panel, so you can see what's
-there), the devices that sent anything in it, and the size estimate. Narrow the window or untick devices there, then
-click **Build the bundle**. It builds in Export's list like any export, and is deleted 24 hours after it's ready.
+The preview is Events itself, showing the bundle's window: the histogram and the fields panel (so you can see what's
+there), the devices that sent anything in it with their counts, and the size estimate. Drag across the histogram to
+narrow the window, untick devices to leave them out, then click **Build the bundle**. Text or field filters typed
+there change only what's shown: the bundle always holds everything in the window. It builds in Export's list like
+any export (marked **Bundle**), and is deleted 24 hours after it's ready.
 
 The README starts like this (the times are UTC; the header gives your local offset):
 

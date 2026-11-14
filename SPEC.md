@@ -2027,6 +2027,20 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
     service started writing during an immutable read.
 68. The events log says "Incident bundle exp_… queued" for a bundle, "Export …" for an export.
 
+69. **The UI** (web/, step e): **Bundle around this** is a button in a line's context view and an item in its
+    right-click menu, for syslog and trap lines; the moment is the line's received time to the millisecond, the
+    search's devices carry over ("all devices" becomes `active_devices`), and the text and field filters are dropped
+    (a bundle has none). "A point on the histogram" is a **Bundle around a moment** mode on the histogram: the next
+    click picks the time under the pointer (rounded down to the minute, to the second for buckets under a minute),
+    Enter picks a bar's start, Esc cancels; dragging to zoom is unchanged outside the mode. The presets add the API's
+    default, 30 min / 10 min, as a fifth, and a new bundle starts on it. The preview is Events in a bundle mode: a
+    card with the window, types, estimate and **Build the bundle**, the active devices with per-type counts (from the
+    summary's device field), the histogram (a drag narrows the window, a line marks the moment) and the fields panel;
+    unticking a device turns `active_devices` into an explicit `devices` list, and filters typed there change only
+    what's shown. Export's **Around a time** starts at now (so its window shows "cut at now") and offers **Preview in
+    Events**. Local or UTC input reuses the app-wide preference; requests are always UTC. Export's types are Syslog,
+    SNMP traps or Both; Both hides the filters, as the API refuses them with two types.
+
 ### 11.9 Questions settled (1.2), decided (coordinator, 2026-11-14, owner-delegated)
 1. No IANA Private Enterprise Number for now; the engine ID keeps the placeholder (§11.2). Revisit if the project
    ever publishes a MIB.

@@ -60,7 +60,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   environment variable, never from the command line.
 - Incident bundles: pick a moment and get every record Woodshed stored around it, syslog and SNMP traps, from every
   device that sent anything then (or chosen devices, a group), in one zip. Start one with **Bundle around this** on
-  an Events line, a point on the histogram, or **Export → Around a time** (windows of 15 min before / 5 after,
+  an Events line, a point on the histogram, or **Export → Around a time** (windows of 15 min before / 5 after, 30 min / 10 min,
   1 h / 15 min, 4 h / 1 h, 24 h / 1 h, or your own; the time in local time or UTC). A preview shows the window in
   Events, the devices and the size first. The README opens with a summary per device: counts by severity and by trap,
   first and last, reboots (coldStart and warmStart traps), gaps when Woodshed or a listener was down, and Woodshed's
