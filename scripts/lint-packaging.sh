@@ -51,4 +51,22 @@ if command -v xmllint >/dev/null 2>&1; then
 		packaging/macos/com.woodshed.daemon.plist || status=1
 fi
 
+# The MSI's firewall-rule custom actions (TLS, SNMP): each one is sequenced, and each remove
+# runs only on a real uninstall, never when a major upgrade removes the old product (which
+# would bring an enabled rule back disabled).
+echo "==> woodshed.wxs firewall custom actions"
+wxs=packaging/windows/woodshed.wxs
+for rule in Tls Snmp; do
+	for act in Ensure Remove; do
+		id="Woodshed${rule}Firewall${act}"
+		grep -q "<CustomAction Id=\"$id\"" "$wxs" || { echo "$wxs: no CustomAction $id"; status=1; continue; }
+		seq=$(grep -A1 "<Custom Action=\"$id\"" "$wxs" | tr -d '\n')
+		[ -n "$seq" ] || { echo "$wxs: $id isn't in InstallExecuteSequence"; status=1; continue; }
+		if [ "$act" = Remove ] && ! echo "$seq" | grep -q 'NOT UPGRADINGPRODUCTCODE'; then
+			echo "$wxs: $id must not run when an upgrade removes the old product (NOT UPGRADINGPRODUCTCODE)"
+			status=1
+		fi
+	done
+done
+
 exit "$status"

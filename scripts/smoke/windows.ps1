@@ -32,6 +32,15 @@
   /api/tls firewall.state, and the tls_firewall banner while the rule is off); `woodshed tls on`
   enables it and a TLS message from another process arrives (`woodshed send --proto tls --ca`
   with the downloaded CA); `woodshed tls off` disables it; uninstall removes it.
+
+  SNMP traps (SPEC §11.2.7 and §11.6): the listener is off after every install and after the
+  upgrade from Woodpile; the MSI and `woodshed install` add the rule "Woodshed SNMP traps (UDP
+  162)" present but disabled; `woodshed snmp on` enables it, the service holds UDP 162, and
+  1,000 v2c traps plus 20 informs (each answered) from another process are stored exactly once
+  (counted with `woodshed search --type trap`); the service reads the rule's state (GET
+  /api/snmp firewall.state, and the snmp_firewall banner while the rule is off); an MSI upgrade
+  keeps the rule enabled, `woodshed snmp off` disables it, a repair keeps it disabled, and
+  uninstall removes it.
 #>
 [CmdletBinding()]
 param(
@@ -234,6 +243,127 @@ function Tls-Off([string]$exe) {
     Ok "woodshed tls off: the listener is off, the rule disabled, the certificate kept"
 }
 
+$SnmpRule = "Woodshed SNMP traps (UDP 162)"
+
+function Check-SnmpRule([bool]$enabled, [string]$port = "162") {
+    $r = Get-NetFirewallRule -DisplayName $SnmpRule -ErrorAction SilentlyContinue
+    if (-not $r) { Die "no firewall rule '$SnmpRule'" }
+    if (@($r).Count -ne 1) { Die "$(@($r).Count) rules named '$SnmpRule'" }
+    if ($r.Direction -ne "Inbound" -or $r.Action -ne "Allow") { Die "'$SnmpRule' is $($r.Direction)/$($r.Action)" }
+    $pf = $r | Get-NetFirewallPortFilter
+    if ($pf.Protocol -ne "UDP" -or $pf.LocalPort -ne $port) { Die "'$SnmpRule' is $($pf.Protocol) $($pf.LocalPort), not UDP $port" }
+    $app = $r | Get-NetFirewallApplicationFilter
+    if ($app.Program -notlike "*woodshed.exe") { Die "'$SnmpRule' is for program $($app.Program)" }
+    $want = if ($enabled) { "True" } else { "False" }
+    if ("$($r.Enabled)" -ne $want) { Die "'$SnmpRule' Enabled=$($r.Enabled), want $want" }
+    Ok "firewall rule '$SnmpRule': inbound UDP $port for woodshed.exe, enabled=$want"
+}
+
+function Wait-Snmp([bool]$on) {
+    for ($i = 0; $i -lt 60; $i++) {
+        try {
+            $st = Invoke-RestMethod -TimeoutSec 2 "$Ui/api/status"
+            $t = @($st.listeners | Where-Object { $_.proto -eq "snmp" })
+            if ($on -and $t.Count -eq 1 -and $t[0].ok) { return $st }
+            if (-not $on -and $t.Count -eq 0) { return $st }
+        } catch { }
+        Start-Sleep 1
+    }
+    Die "the SNMP listener didn't turn $(if ($on) { 'on' } else { 'off' }) within 60 s"
+}
+
+# Check-SnmpOff: the listener is off (SPEC §11.7: nothing turns on by itself), in the config too.
+function Check-SnmpOff([string]$why) {
+    $st = Invoke-RestMethod "$Ui/api/status"
+    if (@($st.listeners | Where-Object { $_.proto -eq "snmp" }).Count -ne 0) { Die "an SNMP listener is on after $why" }
+    $set = Invoke-RestMethod "$Ui/api/settings"
+    if ($set.listeners.snmp.enabled) { Die "listeners.snmp.enabled is true after $why" }
+    if (Get-NetUDPEndpoint -LocalPort 162 -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq (Get-CimInstance Win32_Service -Filter "Name='Woodshed'").ProcessId) {
+        Die "the service holds UDP 162 after $why"
+    }
+    Ok "the SNMP listener is off after $why (no listener, listeners.snmp.enabled = false, UDP 162 not held)"
+}
+
+# Verify-Traps: every sequence number 0..n-1 of a trap run is stored exactly once, counted with
+# `woodshed search --type trap` (as an administrator: it never writes to the data folder).
+function Verify-Traps([string]$exe, [string]$run, [int]$n) {
+    for ($i = 0; $i -lt 30; $i++) {
+        $lines = @(& $exe search --type trap --data $Data --last 1h --raw "seq=$($run):" 2>$null)
+        $seen = @{}
+        $dups = 0
+        foreach ($l in $lines) {
+            foreach ($m in [regex]::Matches($l, "seq=$([regex]::Escape($run)):(\d+)")) {
+                $k = [int]$m.Groups[1].Value
+                if ($seen.ContainsKey($k)) { $dups++ } else { $seen[$k] = 1 }
+            }
+        }
+        $missing = 0
+        for ($k = 0; $k -lt $n; $k++) { if (-not $seen.ContainsKey($k)) { $missing++ } }
+        if ($dups -gt 0) { Die "trap run $($run): $dups duplicates" }
+        if ($missing -eq 0) { Ok "trap run $($run): $n of $n stored, no duplicates (woodshed search --type trap)"; return }
+        Start-Sleep 1
+    }
+    Die "trap run $($run): $missing of $n missing after 30 s"
+}
+
+# Check-Snmp: snmp on (the rule is enabled), a trap sender in another process, informs answered,
+# the service reads the rule's state, the banner while the rule is off. Leaves SNMP on.
+function Check-Snmp([string]$exe) {
+    Say "SNMP traps: woodshed snmp on, the rule, 1,000 traps and 20 informs from another process"
+    # Windows' own SNMP Trap service (an optional feature) would hold UDP 162.
+    $osTrap = Get-Service SNMPTRAP -ErrorAction SilentlyContinue
+    if ($osTrap -and $osTrap.Status -eq "Running") { Stop-Service SNMPTRAP -Force; Ok "stopped Windows' SNMP Trap service, which holds UDP 162" }
+    $out = & $exe snmp on 2>&1 | Out-String
+    Write-Host $out
+    if ($LASTEXITCODE -ne 0) { Die "woodshed snmp on exited $LASTEXITCODE" }
+    if ($out -notmatch "Enabled the Windows firewall rule") { Die "snmp on didn't enable the rule" }
+    Wait-Snmp $true | Out-Null
+    Check-SnmpRule $true
+    $svc = Get-CimInstance Win32_Service -Filter "Name='Woodshed'"
+    if (-not (Get-NetUDPEndpoint -LocalPort 162 -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $svc.ProcessId)) { Die "the service doesn't hold UDP 162" }
+    Ok "pid $($svc.ProcessId) holds UDP 162"
+    if (-not (Test-Path (Join-Path $Data "snmp-engine.json"))) { Die "no snmp-engine.json after snmp on" }
+    $s = Invoke-RestMethod "$Ui/api/snmp"
+    if ($s.firewall.state -ne "ok") { Die "GET /api/snmp firewall.state = $($s.firewall.state) with the rule on (the service can't read it?)" }
+    if ($s.engine.id -notmatch "^80000000[0-9a-f]{18}$") { Die "engine id '$($s.engine.id)'" }
+    Ok "the service (NT SERVICE\Woodshed) reads the rule as ok; engine $($s.engine.id), boots $($s.engine.boots)"
+
+    $run = New-RunId
+    Native $exe @("send", "--host", "127.0.0.1", "--proto", "trap", "--port", "162", "--count", "1000", "--rate", "2000", "--run", $run)
+    Verify-Traps $exe $run 1000
+    $irun = New-RunId
+    Native $exe @("send", "--host", "127.0.0.1", "--proto", "trap", "--port", "162", "--inform", "--count", "20", "--rate", "100", "--run", $irun)
+    Ok "20 informs answered (woodshed send --inform exits 0 only when every Response arrives)"
+    Verify-Traps $exe $irun 20
+
+    Say "the SNMP rule turned off by hand: the service sees it and shows snmp_firewall"
+    Set-NetFirewallRule -DisplayName $SnmpRule -Enabled False
+    Restart-Service Woodshed # the state is cached for a minute
+    Wait-Snmp $true | Out-Null
+    $s = Invoke-RestMethod "$Ui/api/snmp"
+    if ($s.firewall.state -ne "disabled" -or $s.firewall.command -ne "woodshed snmp on") { Die "firewall with the rule off: $($s.firewall | ConvertTo-Json -Compress)" }
+    $st = Invoke-RestMethod "$Ui/api/status"
+    $b = @($st.banners | Where-Object { $_.kind -eq "snmp_firewall" })
+    if ($b.Count -ne 1 -or $b[0].text -notmatch "woodshed snmp on") { Die "no snmp_firewall banner: $($st.banners | ConvertTo-Json -Compress)" }
+    Ok "the service read the disabled rule (state disabled) and shows snmp_firewall: $($b[0].text)"
+    Native $exe @("snmp", "on")
+    Check-SnmpRule $true
+
+    $out = & $exe status 2>&1 | Out-String
+    if ($out -notmatch "SNMP traps: +on, UDP 162" -or $out -notmatch "SNMP engine: +80000000") { Write-Host $out; Die "woodshed status doesn't show SNMP" }
+    Ok "woodshed status shows the SNMP listener and its engine ID"
+    $out = & $exe snmp status 2>&1 | Out-String
+    if ($out -notmatch [regex]::Escape($SnmpRule) -or $out -notmatch "SNMP 24 h: +\d+ received") { Write-Host $out; Die "woodshed snmp status output" }
+    Ok "woodshed snmp status shows the rule and the last 24 h"
+}
+
+function Snmp-Off([string]$exe) {
+    Native $exe @("snmp", "off")
+    Wait-Snmp $false | Out-Null
+    Check-SnmpRule $false
+    Ok "woodshed snmp off: the listener is off, the rule disabled"
+}
+
 function New-RunId { -join ((1..8) | ForEach-Object { "{0:x}" -f (Get-Random -Maximum 16) }) }
 
 function Send-Traffic([string]$exe, [string]$run) {
@@ -281,7 +411,8 @@ function Check-Gone {
         if (Get-NetFirewallRule -DisplayName "Woodshed syslog ($p 514)" -ErrorAction SilentlyContinue) { Die "firewall rule $p left behind" }
     }
     if (Get-NetFirewallRule -DisplayName $TlsRule -ErrorAction SilentlyContinue) { Die "firewall rule '$TlsRule' left behind" }
-    Ok "service and firewall rules (UDP, TCP and TLS) removed"
+    if (Get-NetFirewallRule -DisplayName $SnmpRule -ErrorAction SilentlyContinue) { Die "firewall rule '$SnmpRule' left behind" }
+    Ok "service and firewall rules (UDP, TCP, TLS and SNMP) removed"
 }
 function Check-DataKept { if (-not (Test-Path (Join-Path $Data "logs"))) { Die "$Data\logs was deleted" }; Ok "$Data kept" }
 function Check-DataGone { if (Test-Path $Data) { Die "$Data still exists" }; Ok "$Data deleted" }
@@ -318,6 +449,8 @@ switch ($Mode) {
         Install-Msi $Msi (Join-Path $Logs "install-v1.log")
         $st = Check-Running
         Check-TlsRule $false
+        Check-SnmpRule $false
+        Check-SnmpOff "a fresh install"
         $v1 = $st.version
         Want-UpdateCheck "ask" "a fresh install without WOODSHED_UPDATE_CHECK"
         if (Test-CanCheck) {
@@ -332,6 +465,7 @@ switch ($Mode) {
         Check-EventLog
         Check-Status $Exe
         Check-Tls $Exe
+        Check-Snmp $Exe
         Refuses "package already installed" $Exe @("install")
         Refuses "installed by the package" $Exe @("uninstall")
         Restart-Woodshed
@@ -343,6 +477,9 @@ switch ($Mode) {
         Wait-Tls $true | Out-Null
         Check-TlsRule $true
         Ok "the upgrade kept the TLS rule enabled (and the listener on)"
+        Wait-Snmp $true | Out-Null
+        Check-SnmpRule $true
+        Ok "the upgrade kept the SNMP rule enabled (and the listener on)"
         Want-UpdateCheck "off" "WOODSHED_UPDATE_CHECK=off on the upgrade"
         if (@(Get-UpdateBanners).Count -ne 0) { Die "update banners with check = off: $(Get-UpdateBanners)" }
         Ok "ACCEPTANCE: the MSI property WOODSHED_UPDATE_CHECK=off reached woodshed update-check on an upgrade; no banner"
@@ -352,10 +489,13 @@ switch ($Mode) {
         Ok "upgraded $v1 -> $($st.version), one product registered"
         Still-There $r1 "the upgrade"
         Tls-Off $Exe
-        Say "a repair (reinstall) keeps the disabled rule disabled"
+        Snmp-Off $Exe
+        Say "a repair (reinstall) keeps the disabled rules disabled"
         Install-Msi $UpgradeMsi (Join-Path $Logs "repair-v2.log") @("REINSTALL=ALL", "REINSTALLMODE=vomus")
         Wait-Up | Out-Null
         Check-TlsRule $false
+        Check-SnmpRule $false
+        Check-SnmpOff "a repair"
 
         Say "uninstall keeps the data"
         Uninstall-Msi $UpgradeMsi (Join-Path $Logs "uninstall.log")
@@ -379,6 +519,7 @@ switch ($Mode) {
         Say "a fresh install with WOODSHED_UPDATE_CHECK=off: the config is there before the first start"
         Install-Msi $Msi (Join-Path $Logs "install-fresh-off.log") @("WOODSHED_UPDATE_CHECK=off")
         Check-Running | Out-Null
+        Check-SnmpOff "a fresh install with WOODSHED_UPDATE_CHECK=off"
         Want-UpdateCheck "off" "WOODSHED_UPDATE_CHECK=off on a fresh install"
         if (@(Get-UpdateBanners).Count -ne 0) { Die "update banners after a fresh install with check = off: $(Get-UpdateBanners)" }
         $settings = (Invoke-WebRequest -UseBasicParsing "$Ui/api/settings").Content
@@ -408,6 +549,8 @@ switch ($Mode) {
         Install-Msi $Msi (Join-Path $Logs "install-over-woodpile.log")
         Check-Running | Out-Null
         Check-TlsRule $false
+        Check-SnmpRule $false
+        Check-SnmpOff "the upgrade from an older version (Woodpile's MSI)"
         if (Get-Service Woodpile -ErrorAction SilentlyContinue) { Die "the old Woodpile service is still there" }
         if (Get-NetFirewallRule -DisplayName "Woodpile syslog (*)" -ErrorAction SilentlyContinue) { Die "the old firewall rules are still there" }
         if (Test-Path "HKLM:\Software\Woodpile") { Die "the old MSI's registry key is still there" }
@@ -448,6 +591,8 @@ switch ($Mode) {
         Ok "install removed a planted junction (and said so), leaving its target alone"
         Check-Running | Out-Null
         Check-TlsRule $false
+        Check-SnmpRule $false
+        Check-SnmpOff "woodshed install"
         $child = (Get-Acl (Join-Path $Data "logs")).Sddl
         Write-Host "logs ACL: $child"
         if ($child -match ";;;WD\)") { Die "the planted Everyone entry on logs survived the install" }
@@ -462,6 +607,8 @@ switch ($Mode) {
         Check-Status $Exe
         Check-Tls $Exe
         Tls-Off $Exe
+        Check-Snmp $Exe
+        Snmp-Off $Exe
         Refuses "already installed" $bin @("install")
         Restart-Woodshed
         Still-There $r1 "a restart"
