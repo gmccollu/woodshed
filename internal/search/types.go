@@ -1,9 +1,6 @@
 package search
 
-import (
-	"github.com/gmccollu/woodshed/internal/datatype"
-	"github.com/gmccollu/woodshed/internal/hub"
-)
+import "github.com/gmccollu/woodshed/internal/datatype"
 
 // The syslog type's filter types live in internal/datatype (SPEC §11.1); these
 // keep their 1.1 names here.
@@ -65,5 +62,3 @@ func typeFilter(f Filter) (datatype.Type, datatype.Filter, bool, error) {
 	}
 	return dt, tf, none, nil
 }
-
-var _ = hub.SeverityNone
