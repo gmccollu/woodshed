@@ -36,9 +36,10 @@ var bundleHostname = os.Hostname
 const bundleDesc = `
 Build an incident bundle: every record Woodshed stored around a moment, from
 every device that sent anything then (or the devices you name), in one zip
-with a summary per device (counts by severity and by trap, first and last,
-reboots, gaps when Woodshed wasn't running, drops), the manifest with SHA-256s
-and Woodshed's own events. It's the zip the UI's "Bundle around this" builds,
+with a summary per device (counts by severity and by trap, the polls' traffic,
+errors and cycles, first and last, reboots from traps and polls, gaps when
+Woodshed wasn't running, drops), the manifest with SHA-256s and Woodshed's own
+events. SNMP polls go in as CSV files (poll/<device>/*.csv). It's the zip the UI's "Bundle around this" builds,
 made from the data folder directly: the service can be stopped, the UI off or
 in LAN mode. It reads the data folder and never writes to it.
 
@@ -77,7 +78,7 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 	fset.StringVar(&group, "group", "", "the devices of this `group`")
 	fset.BoolVar(&ungrouped, "ungrouped", false, "the devices in no group")
 	fset.BoolVar(&active, "active", false, "every device that sent anything in the window (the default)")
-	fset.StringVar(&types, "types", "", "the data `types` (comma-separated: syslog, trap; default: every type with data in the window)")
+	fset.StringVar(&types, "types", "", "the data `types` (comma-separated: syslog, trap, poll; default: every type with data in the window)")
 	fset.StringVar(&out, "out", "", "the zip `file` to write (default woodshed-bundle-<host>-<at, UTC>.zip here); never overwritten")
 	fset.BoolVar(&utc, "utc", false, "read --at in the local form as UTC")
 	fset.StringVar(&sf.config, "config", config.DefaultConfigPath(), "config `file` that names the data folder")
