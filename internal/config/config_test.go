@@ -43,7 +43,8 @@ func TestJSONShapeMatchesSettings(t *testing.T) {
 		`"snmp":{"enabled":false,"addr":"0.0.0.0","port":162,"answer_informs":true,"communities":[],"mib_dir":"","engine_id":""},"allowlist":[],"blocklist":[],` +
 		`"max_devices":10000,"new_device_burst":5000,"new_devices_per_minute":200},` +
 		`"storage":{"data_dir":"/data","retention_days":30,"retention_bytes":21474836480,"part_bytes":104857600},` +
-		`"ui":{"lan_mode":false,"port":8514,"cert_file":"","key_file":"","require_login_local":false,"extra_hostnames":[],"trusted_hosts":[]},"quiet":{"quiet_after_seconds":300,"offline_after_seconds":3600},"updates":{"check":"ask"}}`
+		`"ui":{"lan_mode":false,"port":8514,"cert_file":"","key_file":"","require_login_local":false,"extra_hostnames":[],"trusted_hosts":[]},"quiet":{"quiet_after_seconds":300,"offline_after_seconds":3600},"updates":{"check":"ask"},` +
+		`"poll":{"interval_s":60,"timeout_ms":2000,"retries":1,"concurrency":32,"max_interfaces":64,"max_targets":500,"presets":["system","system-info","interfaces"]}}`
 	if string(b) != want {
 		t.Errorf("JSON:\n got %s\nwant %s", b, want)
 	}

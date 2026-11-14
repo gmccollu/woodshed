@@ -56,6 +56,8 @@ type Config struct {
 	UI        UI        `toml:"ui" json:"ui"`
 	Quiet     Quiet     `toml:"quiet" json:"quiet"`
 	Updates   Updates   `toml:"updates" json:"updates"`
+	// Poll is the SNMP poller's defaults (poll.go, SPEC §12).
+	Poll Poll `toml:"poll" json:"poll" comment:"SNMP polling of the devices you add under Devices → Polling (defaults; each device can override them)."`
 }
 
 // Listeners configures the syslog listeners and the sender allowlist.
@@ -179,6 +181,7 @@ func Default() Config {
 		UI:      UI{Port: DefaultUIPort, ExtraHostnames: []string{}, TrustedHosts: []string{}},
 		Quiet:   Quiet{QuietAfterSeconds: DefaultQuietAfterSeconds, OfflineAfterSeconds: DefaultOfflineAfterSeconds},
 		Updates: Updates{Check: UpdateCheckAsk},
+		Poll:    DefaultPoll(),
 	}
 }
 
@@ -189,6 +192,7 @@ func (c Config) Clone() Config {
 	c.Listeners.SNMP.Communities = append([]string{}, c.Listeners.SNMP.Communities...)
 	c.UI.ExtraHostnames = append([]string{}, c.UI.ExtraHostnames...)
 	c.UI.TrustedHosts = append([]string{}, c.UI.TrustedHosts...)
+	c.Poll.Presets = append([]string{}, c.Poll.Presets...)
 	return c
 }
 
@@ -217,6 +221,7 @@ func (c *Config) Normalize() {
 	normalizeTCPLimits(&c.Listeners)
 	normalizeDeviceLimits(&c.Listeners)
 	normalizeUDPQueue(&c.Listeners)
+	normalizePoll(&c.Poll)
 }
 
 // Prefixes parses the allowlist: an IP becomes a single-address prefix and IPv4-mapped

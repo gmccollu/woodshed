@@ -108,6 +108,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	if !ValidUpdateCheck(c.Updates.Check) {
 		e["updates.check"] = `must be "ask", "on" or "off"`
 	}
+	checkPoll(e, c.Poll)
 	if len(e) == 0 {
 		return nil
 	}
