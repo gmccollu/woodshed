@@ -133,9 +133,11 @@ func (d *DB) QueryDevices(ctx context.Context, q DeviceQuery) (DevicePage, error
 	inArgs := args
 	if q.Sort == "" || q.Sort == SortRate {
 		inner = `SELECT d.id FROM devices d
-			LEFT JOIN (SELECT device_id, sum(msgs) AS rate FROM stats WHERE minute >= ? AND minute < ? GROUP BY device_id) r
+			LEFT JOIN (SELECT device_id, sum(msgs) AS rate FROM (
+				SELECT device_id, msgs FROM stats WHERE minute >= ? AND minute < ?
+				UNION ALL SELECT device_id, msgs FROM type_stats WHERE minute >= ? AND minute < ?) GROUP BY device_id) r
 			ON r.device_id = d.id WHERE ` + w + ` ORDER BY COALESCE(r.rate, 0) DESC, d.id LIMIT ? OFFSET ?`
-		inArgs = append([]any{rateFrom, rateTo}, args...)
+		inArgs = append([]any{rateFrom, rateTo, rateFrom, rateTo}, args...)
 	} else {
 		inner = `SELECT d.id FROM devices d WHERE ` + w + ` ORDER BY ` + order + ` LIMIT ? OFFSET ?`
 	}

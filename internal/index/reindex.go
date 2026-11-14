@@ -77,17 +77,17 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexRes
 		if e.Name.Compressed {
 			plain := e.Name
 			plain.Compressed = false
-			if onDisk[logfile.RelPath(e.DeviceID, plain)] {
+			if onDisk[logfile.RelPathType(e.Type, e.DeviceID, plain)] {
 				// A compression that didn't finish deleting its original: the .log is
 				// authoritative until the store verifies the .gz.
 				res.Skipped = append(res.Skipped, e.Rel)
 				continue
 			}
 		}
-		base := File{DeviceID: e.DeviceID, Path: e.Rel, Day: e.Name.Day, Part: e.Name.Part,
+		base := File{DeviceID: e.DeviceID, Type: e.Type, Path: e.Rel, Day: e.Name.Day, Part: e.Name.Part,
 			Size: e.Size, Compressed: e.Name.Compressed}
 		row, ok := existing[e.Rel]
-		if !full && ok && row.Size == e.Size && row.Compressed == e.Name.Compressed {
+		if !full && ok && row.Size == e.Size && row.Compressed == e.Name.Compressed && fileType(row.Type) == fileType(e.Type) {
 			out = append(out, rebuilt{f: row})
 			continue
 		}
