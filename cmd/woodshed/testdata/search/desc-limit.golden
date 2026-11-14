@@ -1,0 +1,5 @@
+2026-11-10T17:32:00.000Z 198.51.100.7 no pri: multi\nline message seq=0142
+2026-11-10T17:31:00.000Z 192.0.2.2 <165>Nov 10 00:00:00 edge-fw-02 %FW-5-DENY: Deny tcp src 203.0.113.6 seq=0141
+2026-11-10T17:30:00.000Z 192.0.2.1 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0140
+2026-11-10T16:02:00.000Z 198.51.100.7 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/2 seq=0138
+2026-11-10T16:01:00.000Z 192.0.2.2 <11>Nov 10 00:00:00 db-01 app: error: disk C:\\data full seq=0137

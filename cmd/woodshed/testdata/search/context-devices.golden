@@ -1,0 +1,37 @@
+> 2026-11-09T01:00:00.000Z 192.0.2.1 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/0 seq=0048
+  2026-11-09T02:30:00.000Z 192.0.2.1 no pri: multi\nline message seq=0052
+--
+> 2026-11-09T01:01:00.000Z 192.0.2.2 <134>Nov 10 00:00:00 web-01 sshd[42]: Accepted publickey for admin seq=0049
+  2026-11-09T02:31:00.000Z 192.0.2.2 <11>Nov 10 00:00:00 db-01 app: error: disk C:\\data full seq=0053
+--
+> 2026-11-09T01:02:00.000Z 198.51.100.7 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0050
+> 2026-11-09T02:32:00.000Z 198.51.100.7 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/2 seq=0054
+  2026-11-09T04:02:00.000Z 198.51.100.7 no pri: multi\nline message seq=0058
+--
+  2026-11-09T02:30:00.000Z 192.0.2.1 no pri: multi\nline message seq=0052
+> 2026-11-09T04:00:00.000Z 192.0.2.1 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0056
+> 2026-11-09T05:30:00.000Z 192.0.2.1 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/0 seq=0060
+  2026-11-09T07:00:00.000Z 192.0.2.1 no pri: multi\nline message seq=0064
+--
+  2026-11-09T04:01:00.000Z 192.0.2.2 <165>Nov 10 00:00:00 edge-fw-02 %FW-5-DENY: Deny tcp src 203.0.113.3 seq=0057
+> 2026-11-09T05:31:00.000Z 192.0.2.2 <134>Nov 10 00:00:00 web-01 sshd[42]: Accepted publickey for admin seq=0061
+  2026-11-09T07:01:00.000Z 192.0.2.2 <11>Nov 10 00:00:00 db-01 app: error: disk C:\\data full seq=0065
+--
+  2026-11-09T04:02:00.000Z 198.51.100.7 no pri: multi\nline message seq=0058
+> 2026-11-09T05:32:00.000Z 198.51.100.7 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0062
+> 2026-11-09T07:02:00.000Z 198.51.100.7 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/2 seq=0066
+  2026-11-09T08:32:00.000Z 198.51.100.7 no pri: multi\nline message seq=0070
+--
+  2026-11-09T07:00:00.000Z 192.0.2.1 no pri: multi\nline message seq=0064
+> 2026-11-09T08:30:00.000Z 192.0.2.1 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0068
+> 2026-11-09T10:00:00.000Z 192.0.2.1 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/0 seq=0072
+  2026-11-09T11:30:00.000Z 192.0.2.1 no pri: multi\nline message seq=0076
+--
+  2026-11-09T08:31:00.000Z 192.0.2.2 <165>Nov 10 00:00:00 edge-fw-02 %FW-5-DENY: Deny tcp src 203.0.113.6 seq=0069
+> 2026-11-09T10:01:00.000Z 192.0.2.2 <134>Nov 10 00:00:00 web-01 sshd[42]: Accepted publickey for admin seq=0073
+  2026-11-09T11:31:00.000Z 192.0.2.2 <11>Nov 10 00:00:00 db-01 app: error: disk C:\\data full seq=0077
+--
+  2026-11-09T08:32:00.000Z 198.51.100.7 no pri: multi\nline message seq=0070
+> 2026-11-09T10:02:00.000Z 198.51.100.7 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0074
+> 2026-11-09T11:32:00.000Z 198.51.100.7 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/2 seq=0078
+  2026-11-09T13:02:00.000Z 198.51.100.7 no pri: multi\nline message seq=0082

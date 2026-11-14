@@ -29,6 +29,7 @@ commands:
   uninstall       stop and remove the system service (keeps logs)
   status          show service and listener status
   reindex         rebuild the index from the log files
+  search          search the stored logs from the command line
   set-password    set the UI password (for servers without a browser)
   lan-mode        turn LAN mode on or off (HTTPS on the network, with a login)
   tls             syslog over TLS: on, off, renew the certificate, status
@@ -57,6 +58,7 @@ func init() {
 		{"uninstall", cmdUninstall},
 		{"status", cmdStatus},
 		{"reindex", cmdReindex},
+		{"search", cmdSearch},
 		{"set-password", cmdSetPassword},
 		{"lan-mode", cmdLANMode},
 		{"tls", cmdTLS},
