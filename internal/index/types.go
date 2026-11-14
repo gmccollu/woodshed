@@ -159,10 +159,11 @@ type Source string
 // Event sources. The service records its start and stop with SourceService;
 // each listener records its start, stop and bind errors with its own source.
 const (
-	SourceService     Source = "service"
-	SourceListenerUDP Source = "listener/udp"
-	SourceListenerTCP Source = "listener/tcp"
-	SourceListenerTLS Source = "listener/tls"
+	SourceService      Source = "service"
+	SourceListenerUDP  Source = "listener/udp"
+	SourceListenerTCP  Source = "listener/tcp"
+	SourceListenerTLS  Source = "listener/tls"
+	SourceListenerSNMP Source = "listener/snmp"
 )
 
 // ListenerSource is the source of a listener's events, for proto "udp", "tcp" or
@@ -175,6 +176,8 @@ func ListenerSource(proto string) Source {
 		return SourceListenerTCP
 	case "tls":
 		return SourceListenerTLS
+	case "snmp":
+		return SourceListenerSNMP
 	}
 	return ""
 }

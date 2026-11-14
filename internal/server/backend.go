@@ -18,6 +18,7 @@ import (
 
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/export"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/index"
@@ -59,6 +60,8 @@ type backend struct {
 
 	// tlsc is the TLS listener's certificate and firewall state (tls.go).
 	tlsc *tlsSide
+	// snmp is the SNMP trap receiver (snmp.go).
+	snmp *snmpSide
 
 	cfgMu sync.RWMutex
 	cfg   config.Config
@@ -270,6 +273,9 @@ func (b *backend) listenerState(ctx context.Context, cfg config.Config) (listen.
 	u := b.store.Usage()
 	banners := append(buildBanners(ls.Listeners, u, cfg.Storage.DataDir), b.startupBanners...)
 	banners = append(banners, b.tlsBanners(cfg, b.now())...)
+	if b.snmp != nil {
+		banners = append(banners, b.snmpBanners(cfg, b.now())...)
+	}
 	if ban := udpBufferBanner(runtime.GOOS, ls.UDPRcvbufBytes, ls.UDPRcvbufRequestedBytes); ban != nil {
 		banners = append(banners, *ban)
 	}
@@ -317,6 +323,7 @@ func (b *backend) fillRunState(rs *RunState) {
 	rs.Banners = append([]api.Banner{}, banners...)
 	api.SortBanners(rs.Banners)
 	rs.TLS = b.runStateTLS(cfg)
+	rs.SNMP = b.runStateSNMP(cfg)
 }
 
 // udpBufferMin is the UDP receive buffer below which a burst is likely to
@@ -627,7 +634,33 @@ func (b *backend) Devices(ctx context.Context) ([]api.Device, error) {
 	}
 	b.blocker().mark(out)
 	b.markTLS(out)
+	b.markTypes(ctx, out)
 	return out, nil
+}
+
+// markTypes fills each device's data types on disk and their lines (SPEC
+// §11.1: the device page counts every type).
+func (b *backend) markTypes(ctx context.Context, ds []api.Device) {
+	ids := make([]string, len(ds))
+	for i, d := range ds {
+		ids[i] = d.ID
+	}
+	types, err := b.idx.DeviceTypes(ctx, ids)
+	if err != nil {
+		b.log.Warn("reading the devices' data types failed", "err", err)
+		return
+	}
+	for i := range ds {
+		t := types[ds[i].ID]
+		ds[i].LinesByType = map[string]int64{}
+		ds[i].Types = []string{}
+		for _, name := range datatype.Names() {
+			if n, ok := t[name]; ok {
+				ds[i].Types = append(ds[i].Types, name)
+				ds[i].LinesByType[name] = n
+			}
+		}
+	}
 }
 
 // withLive makes the API device from the index's row, with the live last-heard
@@ -715,12 +748,13 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 	out := []api.Device{withLive(d, b.live.subset([]string{d.ID}, now), rs, now, b.config().Quiet)}
 	b.blocker().mark(out)
 	b.markTLS(out)
+	b.markTypes(ctx, out)
 	out[0].BlockedBy = blockedBy
 	return out[0], nil
 }
 
 func (b *backend) Settings(ctx context.Context) (api.Settings, error) {
-	return toAPISettings(b.config())
+	return b.apiSettings(b.config())
 }
 
 // toAPISettings converts through JSON: config.Config's JSON form is exactly the
@@ -745,7 +779,7 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 	defer b.saveMu.Unlock()
 	cur := b.config()
 	if ifMatch != "" {
-		st, err := toAPISettings(cur)
+		st, err := b.apiSettings(cur)
 		if err != nil {
 			return api.Settings{}, err
 		}
@@ -766,6 +800,14 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 	if errs := next.Validate(&cur); len(errs) > 0 {
 		return api.Settings{}, &api.ValidationError{Fields: errs}
 	}
+	// The communities go to the credentials file, never the config (a PUT
+	// without listeners.snmp, a 1.1 client, leaves them as they are).
+	if in.Listeners.SNMP != nil && b.snmp != nil {
+		if err := b.saveCommunities(next.Listeners.SNMP.Communities); err != nil {
+			return api.Settings{}, err
+		}
+	}
+	next.Listeners.SNMP.Communities = []string{}
 	// The TLS certificate: made the first time TLS is turned on (before the
 	// response), a user's files re-read on every save.
 	if err := b.prepareTLS(next.Listeners.TLS); err != nil {
@@ -799,12 +841,17 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 			NewDevicesPerMinute: float64(next.Listeners.NewDevicesPerMinute),
 		})
 	}
+	if b.snmp != nil && trapSettings(cur.Listeners.SNMP) != trapSettings(next.Listeners.SNMP) {
+		if err := b.snmp.rcv.Apply(trapSettings(next.Listeners.SNMP)); err != nil {
+			return api.Settings{}, fmt.Errorf("apply the SNMP settings: %w", err)
+		}
+	}
 	b.log.Info("settings saved", "path", b.cfgPath)
-	return toAPISettings(next)
+	return b.apiSettings(next)
 }
 
 func listenersEqual(a, b config.Listeners) bool {
-	if a.UDP != b.UDP || a.TCP != b.TCP || a.TLS != b.TLS || a.UDPRcvbufBytes != b.UDPRcvbufBytes || a.MaxMessageBytes != b.MaxMessageBytes ||
+	if a.UDP != b.UDP || a.TCP != b.TCP || a.TLS != b.TLS || snmpChanged(a.SNMP, b.SNMP) || a.UDPRcvbufBytes != b.UDPRcvbufBytes || a.MaxMessageBytes != b.MaxMessageBytes ||
 		a.UDPQueueMessages != b.UDPQueueMessages || a.UDPQueueBytes != b.UDPQueueBytes {
 		return false
 	}
