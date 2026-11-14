@@ -366,8 +366,92 @@ The zip holds the log lines (plain text, one file per device per day), a manifes
 Woodshed's own events for that time (so the reader can tell "the device sent nothing" from "Woodshed wasn't
 running"), and a short README. Exports are deleted after 24 hours.
 
-Exports from the UI hold syslog. The API can export SNMP traps too (`"types": ["trap"]` on `POST /api/exports`,
-see [the API](api.md#exports)); they go in a `traps` folder in the zip, and the README explains the trap lines.
+**Types** picks what the zip holds: syslog (the default), SNMP traps, or both. Traps go in a `traps` folder in the
+zip, and the README explains the trap lines. Filters apply to one type at a time, so with both types the zip holds
+everything in the range. ("Export these results" from Events with SNMP traps showing exports the traps.)
+
+### Incident bundles
+
+When something happened at a known time (a link went down, a firewall rebooted, users lost the VPN at 09:42), an
+**incident bundle** collects the evidence around it in one zip: every record Woodshed stored in a window around the
+moment, syslog and SNMP traps, from every device that sent anything then, with a summary per device at the top of the
+README. It needs no filters: it's everything around the moment, so nothing that turns out to matter is left out.
+
+Start one from:
+
+- **Events:** **Bundle around this** on a line (the moment is that line's received time), or a point on the
+  histogram.
+- **Export → Around a time:** type the moment in your local time or in UTC (a switch), and pick the window: 15 min
+  before and 5 after, 1 h / 15 min, 4 h / 1 h, 24 h / 1 h, or your own.
+
+Before it's built, a preview shows the window in Events (the histogram and the fields panel, so you can see what's
+there), the devices that sent anything in it, and the size estimate. Narrow the window or untick devices there, then
+click **Build the bundle**. It builds in Export's list like any export, and is deleted 24 hours after it's ready.
+
+The README starts like this (the times are UTC; the header gives your local offset):
+
+```
+Incident bundle around 2026-11-14 09:42:00 UTC (30 min before, 10 min after)
+Window: 2026-11-14 09:12:00 to 09:52:00 UTC (local time UTC-05:00)
+Devices: 2, every device that sent anything in the window. Types: syslog, SNMP traps.
+Communities in traps are shown as a hash prefix and masked in raw=, by design.
+
+edge-fw-01 (192.0.2.1), group HQ
+  Syslog       2,408 messages, first 09:12:00.014, last 09:51:59.880
+               crit 2, err 41, warning 310, notice 1,022, info 1,033 (none of emerg, alert, debug, unknown)
+  SNMP traps   7: linkDown 3, linkUp 3, coldStart 1; first 09:30:11.000, last 09:31:02.000
+  Reboots      1: 09:30:58.250 (coldStart trap)
+  Gaps         none (Woodshed and its listeners were up the whole window)
+  Losses       dropped 0, truncated 0 (Woodshed's own counts; kernel UDP drops aren't visible on this OS)
+
+core-sw-02 (192.0.2.2)
+  Syslog       318 messages, first 09:12:04.120, last 09:51:40.007
+               ...
+```
+
+- **Reboots** come from coldStart and warmStart traps, so they show only for devices that send traps.
+- **Gaps** are the times Woodshed wasn't running or a listener was down, from Woodshed's own events, so "the device
+  sent nothing" can be told apart from "Woodshed wasn't listening".
+- **Losses** are what Woodshed itself dropped or cut short (a full queue, a paused disk, an over-long message).
+
+The zip also has the records (`logs/<device>/<day>.log` for syslog, `traps/<device>/<day>.log` for traps),
+`manifest.json` with every file's SHA-256 and the summary as JSON, and `woodshed-events.log`.
+
+**From the command line,** `woodshed bundle` builds the same zip from the data folder, with the service running or
+stopped, the UI off or in LAN mode. Like `woodshed search` it only reads the data folder and needs the rights to read
+it (`sudo`, or an administrator prompt on Windows). It's the one command to ask a remote colleague for:
+
+```
+sudo woodshed bundle --at "2026-11-14 09:42"                        # 30 min before, 10 after, every active device
+sudo woodshed bundle --at -15m --before 1h --after 15m --group HQ  # around 15 minutes ago, the HQ group's devices
+sudo woodshed bundle --at 2026-11-14T14:42:00Z --devices 192.0.2.1,192.0.2.2 --types syslog
+sudo woodshed bundle --at now --before 4h --after 0s --out edge-reboot.zip
+```
+
+- `--at` takes RFC 3339 (`2026-11-14T14:42:00Z`), your local time (`"2026-11-14 09:42"`, or UTC with `--utc`), `now`,
+  or `-15m`. `--before` and `--after` take `15m`, `1h`, `1h30m`, `7d` or `0s` (up to 7 days each). The window ends at
+  now at the latest.
+- The devices: every device that sent anything in the window (the default, `--active`), `--devices` (by address,
+  silent or hidden ones too), `--group` or `--ungrouped`. `--types syslog,trap` limits the types (default: every type
+  with data in the window).
+- The zip is written to the current folder as `woodshed-bundle-<host>-<time>.zip` unless `--out` names it, and an
+  existing file is never overwritten.
+- It prints the zip's path, its size and SHA-256, the window, and one line per device:
+
+  ```
+  /home/admin/woodshed-bundle-logs-01-20261114T144200Z.zip
+    1.2 MiB (1,262,431 bytes), SHA-256 4f1c…
+    2026-11-14 14:12:00 to 2026-11-14 14:52:00 UTC: 2,733 records from 2 devices (syslog, SNMP traps)
+    edge-fw-01 (192.0.2.1), group HQ: syslog 2,408, SNMP traps 7, reboots 1, dropped 0, truncated 0
+    core-sw-02 (192.0.2.2): syslog 318, SNMP traps 0, reboots 0, dropped 0, truncated 0
+    gaps: none (Woodshed and its listeners were up the whole window)
+  ```
+- **Exit status:** 0 when the zip was written, 1 when the window held nothing (and no zip is written), 2 for a mistake
+  in the command or when the `--out` file already exists, 3 when the data folder can't be read, 4 when there's no
+  data folder or index, 130 after Ctrl-C (the partial zip is removed).
+
+Run `woodshed bundle --help` for every flag.
+
 
 ## 7. Updates
 

@@ -11,6 +11,7 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 - [Windows or macOS warns me about the download](#windows-or-macos-warns-me-about-the-download)
 - [Where are the logs?](#where-are-the-logs)
 - [Can I search the logs without the UI?](#can-i-search-the-logs-without-the-ui)
+- [How do I send someone everything around an incident?](#how-do-i-send-someone-everything-around-an-incident)
 - [How much disk does it use, and how long does it keep logs?](#how-much-disk-does-it-use-and-how-long-does-it-keep-logs)
 - [Can I open the UI from another computer?](#can-i-open-the-ui-from-another-computer)
 - [I forgot the UI password](#i-forgot-the-ui-password)
@@ -151,6 +152,22 @@ woodshed search --devices 192.0.2.10 --context 5 --regex "deny (tcp|udp)" > arou
 
 Run it as an administrator (or with `sudo` on macOS and Linux), like opening the log folder. See
 [Searching from the command line](docs/user-guide.md#searching-from-the-command-line).
+
+## How do I send someone everything around an incident?
+
+Build an **incident bundle**: pick the moment, and Woodshed zips every record it stored around it (syslog and SNMP
+traps) from every device that sent anything then, with a README that summarises each device: how many messages of
+each severity, which traps, the first and last, reboots (coldStart and warmStart traps), the times Woodshed or a
+listener was down, and anything it dropped. In the UI, click **Bundle around this** on a line in Events (or a point
+on the histogram, or **Export → Around a time**), check the preview, then **Build the bundle**. Without the UI, one
+command does it:
+
+```
+sudo woodshed bundle --at "2026-11-14 09:42" --before 30m --after 10m
+```
+
+It prints the zip's name, size and SHA-256, so whoever asked can check they got the same file. See
+[Incident bundles](docs/user-guide.md#incident-bundles).
 
 ## How much disk does it use, and how long does it keep logs?
 
