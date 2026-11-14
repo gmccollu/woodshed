@@ -172,6 +172,17 @@
           then press Reload MIBs.
         </div>
       {/if}
+      {#if b.kind === 'poll_unreachable'}
+        <div class="detail-text">
+          Each failed cycle is recorded, so the gap is evidence too. The devices and their last errors are on the
+          <a class="text-link underline" href="#/devices?view=polled">Devices page → Polled</a>.
+        </div>
+      {/if}
+      {#if b.kind === 'poll_overrun'}
+        <div class="detail-text">
+          The defaults and the last hour's totals are in <a class="text-link underline" href="#/settings?section=polling">Settings → Polling</a>.
+        </div>
+      {/if}
       {#if b.kind === 'listener_bind'}
         {#each lines as ln (ln.key)}
           <div class="detail-text" data-holder>

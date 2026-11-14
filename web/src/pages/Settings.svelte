@@ -22,6 +22,8 @@
   import SnmpPanel from '../components/SnmpPanel.svelte';
   import { isCommunityHash } from '../lib/traps';
   import UpdatesSettings from '../components/UpdatesSettings.svelte';
+  import PollStatePanel from '../components/PollStatePanel.svelte';
+  import { PRESETS as POLL_PRESETS, type PollPreset } from '../lib/poll';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
   interface Form {
@@ -65,6 +67,13 @@
     trustedHosts: string;
     quietMin: number;
     offlineMin: number;
+    pollInterval: number;
+    pollTimeoutMs: number;
+    pollRetries: number;
+    pollConcurrency: number;
+    pollMaxIf: number;
+    pollMaxTargets: number;
+    pollPresets: PollPreset[];
   }
 
   let saved = $state<Settings | null>(null);
@@ -142,6 +151,13 @@
       trustedHosts: (s.ui.trusted_hosts ?? []).join('\n'),
       quietMin: round(s.quiet.quiet_after_seconds / 60),
       offlineMin: round(s.quiet.offline_after_seconds / 60),
+      pollInterval: s.poll?.interval_s ?? 60,
+      pollTimeoutMs: s.poll?.timeout_ms ?? 2000,
+      pollRetries: s.poll?.retries ?? 1,
+      pollConcurrency: s.poll?.concurrency ?? 32,
+      pollMaxIf: s.poll?.max_interfaces ?? 64,
+      pollMaxTargets: s.poll?.max_targets ?? 500,
+      pollPresets: [...(s.poll?.presets ?? ['system', 'system-info', 'interfaces'])],
     };
   }
 
@@ -205,6 +221,20 @@
         quiet_after_seconds: Math.round(n(f.quietMin) * 60),
         offline_after_seconds: Math.round(n(f.offlineMin) * 60),
       },
+      // Sent only to a server that has the poller (1.3 and later).
+      ...(saved?.poll
+        ? {
+            poll: {
+              interval_s: n(f.pollInterval),
+              timeout_ms: n(f.pollTimeoutMs),
+              retries: n(f.pollRetries),
+              concurrency: n(f.pollConcurrency),
+              max_interfaces: n(f.pollMaxIf),
+              max_targets: n(f.pollMaxTargets),
+              presets: POLL_PRESETS.map((p) => p.key).filter((k) => f.pollPresets.includes(k)),
+            },
+          }
+        : {}),
     };
   }
 
@@ -303,7 +333,7 @@
   // tls or tls-failures. Each new link scrolls once, also when this page is already open.
   let scrolledFor = '';
   $effect(() => {
-    const m = /section=(limits|blocklist|storage|updates|tls-failures|tls|snmp-users|snmp-mibs|snmp-failures|snmp)\b/.exec(router.query);
+    const m = /section=(limits|blocklist|storage|updates|tls-failures|tls|snmp-users|snmp-mibs|snmp-failures|snmp|polling)\b/.exec(router.query);
     if (!form || !m || scrolledFor === router.query) return;
     scrolledFor = router.query;
     const id = m[1] === 'limits' ? 'sender-limits' : m[1];
@@ -363,6 +393,13 @@
     trustedHosts: 'Trusted host names',
     quietMin: 'Quiet after (minutes)',
     offlineMin: 'Offline after (minutes)',
+    pollInterval: 'Poll every (seconds)',
+    pollTimeoutMs: 'Poll timeout (ms)',
+    pollRetries: 'Poll retries',
+    pollConcurrency: 'Devices polled at once',
+    pollMaxIf: 'Interfaces per device',
+    pollMaxTargets: 'Most polled devices',
+    pollPresets: 'Default presets',
   };
   const shown = (v: unknown): string => {
     if (typeof v === 'boolean') return v ? 'on' : 'off';
@@ -439,6 +476,13 @@
     'ui.trusted_hosts',
     'quiet.quiet_after_seconds',
     'quiet.offline_after_seconds',
+    'poll.interval_s',
+    'poll.timeout_ms',
+    'poll.retries',
+    'poll.concurrency',
+    'poll.max_interfaces',
+    'poll.max_targets',
+    'poll.presets',
   ];
 
   /**
@@ -986,6 +1030,65 @@
         <div class="mt-4">
           <SnmpPanel enabled={saved.listeners.snmp.enabled} port={saved.listeners.snmp.port} reload={saves} />
         </div>
+      </section>
+    {/if}
+
+    {#if saved?.poll}
+      <section class="card" id="polling">
+        <h2 class="sec">Polling</h2>
+        <p class="hint mt-0">
+          SNMP polling of the devices you add on the <a class="text-link underline" href="#/devices?view=polled">Devices page</a>: uptime, interface
+          traffic and errors, CPU and memory, graphed beside their logs. These are the defaults; each device can override its interval, presets and
+          interfaces. With no polled devices, Woodshed sends no SNMP requests.
+        </p>
+        <div class="grid gap-4 sm:grid-cols-3">
+          <label class="lbl">
+            <span>Poll every (seconds)</span>
+            <input class="field" type="number" min="30" max="600" bind:value={form.pollInterval} aria-invalid={!!err('poll.interval_s')} aria-describedby="err-poll.interval_s hint-piv" />
+            <span class="hint" id="hint-piv">30 s to 10 min. Default 60.</span>
+            {@render fieldError('poll.interval_s')}
+          </label>
+          <label class="lbl">
+            <span>Timeout (ms)</span>
+            <input class="field" type="number" min="200" max="10000" step="100" bind:value={form.pollTimeoutMs} aria-invalid={!!err('poll.timeout_ms')} aria-describedby="err-poll.timeout_ms hint-pto" />
+            <span class="hint" id="hint-pto">Per request. Default 2,000.</span>
+            {@render fieldError('poll.timeout_ms')}
+          </label>
+          <label class="lbl">
+            <span>Retries</span>
+            <input class="field" type="number" min="0" max="5" bind:value={form.pollRetries} aria-invalid={!!err('poll.retries')} aria-describedby="err-poll.retries hint-prt" />
+            <span class="hint" id="hint-prt">0 to 5. Default 1.</span>
+            {@render fieldError('poll.retries')}
+          </label>
+          <label class="lbl">
+            <span>Interfaces per device</span>
+            <input class="field" type="number" min="1" max="1024" bind:value={form.pollMaxIf} aria-invalid={!!err('poll.max_interfaces')} aria-describedby="err-poll.max_interfaces hint-pmi" />
+            <span class="hint" id="hint-pmi">Pinned first, then up, fastest first. Default 64.</span>
+            {@render fieldError('poll.max_interfaces')}
+          </label>
+          <label class="lbl">
+            <span>Devices polled at once</span>
+            <input class="field" type="number" min="1" max="256" bind:value={form.pollConcurrency} aria-invalid={!!err('poll.concurrency')} aria-describedby="err-poll.concurrency hint-pcc" />
+            <span class="hint" id="hint-pcc">Raise it if cycles are skipped. Default 32.</span>
+            {@render fieldError('poll.concurrency')}
+          </label>
+          <label class="lbl">
+            <span>Most polled devices</span>
+            <input class="field" type="number" min="1" max="5000" bind:value={form.pollMaxTargets} aria-invalid={!!err('poll.max_targets')} aria-describedby="err-poll.max_targets hint-pmt" />
+            <span class="hint" id="hint-pmt">Default 500.</span>
+            {@render fieldError('poll.max_targets')}
+          </label>
+        </div>
+        <fieldset class="mt-2 border-0 p-0">
+          <legend class="text-[13.5px] font-medium">Default presets for new devices</legend>
+          <div class="mt-1 flex flex-wrap gap-x-5 gap-y-1">
+            {#each POLL_PRESETS as p (p.key)}
+              <label class="flex items-center gap-2 text-[14px]" title={p.hint}><input type="checkbox" value={p.key} bind:group={form.pollPresets} />{p.label}</label>
+            {/each}
+          </div>
+          {@render fieldError('poll.presets')}
+        </fieldset>
+        <div class="mt-4"><PollStatePanel /></div>
       </section>
     {/if}
 
