@@ -1701,6 +1701,152 @@ const SHOTS = [
     after: 1500,
     check: `!document.body.innerText.includes('changed since you loaded them') && !document.body.innerText.includes('changed elsewhere')`,
   },
+  // ----- SNMP traps (1.2, SPEC §11.2.5) -----
+  ...both({
+    name: 'snmp-events-traps',
+    url: '/?mock_panel=0#/events?type=trap&r=24h',
+    wait: 2500,
+    check: `document.querySelector('[role=radiogroup][aria-label="Data type"] [aria-checked=true]')?.textContent.trim() === 'SNMP traps'
+      && document.querySelectorAll('.logline.trap.clickable').length > 20 && document.body.innerText.includes('linkDown')
+      && document.body.innerText.includes('Community or user') && document.body.innerText.includes('Generic trap (v1)')
+      && !document.querySelector('input[placeholder="sshd, %FW-6-*"]') && !document.querySelector('.sevbar')`,
+  }),
+  {
+    name: 'snmp-events-decoded-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=trap&r=24h&trap_oid=linkDown&dev=10.1.0.10',
+    wait: 2500,
+    act: `document.querySelector('.logline.trap.clickable').click();`,
+    after: 1200,
+    check: `document.querySelector('[role=dialog] .decoded')?.innerText.includes('Trap OID')
+      && document.querySelector('[role=dialog] .decoded').innerText.includes('ifOperStatus.')
+      && document.querySelector('[role=dialog] .decoded').innerText.includes('(down)')
+      && document.querySelectorAll('[role=dialog] .logline.trap').length > 3`,
+  },
+  {
+    name: 'snmp-events-filters-and-names',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=trap&r=24h&trap_oid=linkDown&snmp_versions=2c',
+    wait: 2500,
+    report: `JSON.stringify([[...document.querySelectorAll('.logline.trap.clickable .c.tr')].slice(0,5).map((e) => e.textContent), [...document.querySelectorAll('.fp .chip')].map((c) => c.textContent), document.querySelector('[role=alert]')?.textContent, location.hash])`,
+    check: `[...document.querySelectorAll('.logline.trap.clickable .c.tr')].every((e) => e.textContent === 'linkDown')
+      && document.querySelectorAll('.logline.trap.clickable').length > 0
+      && [...document.querySelectorAll('.fp .chip')].some((c) => c.textContent.includes('linkDown'))
+      && [...document.querySelectorAll('.fp .chip')].some((c) => c.textContent.includes('v2c'))`,
+  },
+  {
+    name: 'snmp-events-oid-prefix-and-status',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=trap&r=7d&trap_oid=1.3.6.1.4.1.32473.*&status=ok',
+    wait: 3000,
+    report: `JSON.stringify([document.querySelectorAll('.logline.trap.clickable').length, document.querySelector('.res-body')?.innerText.slice(0,300), location.hash])`,
+    check: `document.querySelectorAll('.logline.trap.clickable').length > 0
+      && [...document.querySelectorAll('.logline.trap.clickable .c.tr')].every((e) => e.textContent.startsWith('example'))`,
+  },
+  {
+    name: 'snmp-events-switch-and-back',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h&sev=3,4',
+    wait: 2500,
+    act: `const sw = document.querySelector('[role=radiogroup][aria-label="Data type"]');
+      if (!sw) throw new Error('no type switch');
+      [...sw.querySelectorAll('button')].find((b) => b.textContent.trim() === 'SNMP traps').click();
+      await new Promise((r) => setTimeout(r, 1500));
+      if (!location.hash.includes('type=trap') || location.hash.includes('sev=')) throw new Error('trap URL: ' + location.hash);
+      if (!document.querySelector('.logline.trap')) throw new Error('no trap rows');
+      [...sw.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Syslog').click();
+      await new Promise((r) => setTimeout(r, 1500));`,
+    check: `!location.hash.includes('type=') && !!document.querySelector('.sevbar') && !document.querySelector('.logline.trap')`,
+  },
+  {
+    name: 'snmp-events-field-click',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=trap&r=24h',
+    wait: 3000,
+    act: `const sec = [...document.querySelectorAll('.fsec')].find((x) => x.querySelector('h3').textContent.startsWith('Status'));
+      [...sec.querySelectorAll('button.val')].find((b) => b.textContent === 'wrong auth').click();`,
+    after: 2000,
+    check: `location.hash.includes('status=auth_failed')
+      && [...document.querySelectorAll('.logline.trap.clickable .c.tr')].every((e) => e.textContent.includes('wrong auth'))`,
+  },
+  ...both({
+    name: 'snmp-settings',
+    url: '/?mock_panel=0#/settings?section=snmp',
+    wait: 2500,
+    act: `__only('snmp');`,
+    check: `document.getElementById('snmp')?.innerText.includes('Answer informs') && document.body.innerText.includes('v3 users')
+      && document.body.innerText.includes('8000000005a1b2c3d4e5f60718') && document.body.innerText.includes('#3f9a1c07')
+      && document.querySelectorAll('#snmp .weak').length >= 2 && document.body.innerText.includes('needs its passphrases again') === false
+      && document.body.innerText.includes('EXAMPLE-POWER-MIB.my') === false && document.body.innerText.includes('Senders with failures')
+      && document.body.innerText.includes('wrong digest')`,
+  }),
+  {
+    name: 'snmp-settings-user-form-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=snmp-users',
+    wait: 2500,
+    act: `__only('snmp'); __btn('Add a v3 user…').click(); await __tick();
+      const f = document.querySelector('form.uform');
+      __set(f.querySelector('input.font-mono'), 'branch-fw');
+      const pw = f.querySelectorAll('input[type=password]');
+      __set(pw[0], 'auth-passphrase-1'); __set(pw[1], 'priv-passphrase-1');
+      const sel = f.querySelectorAll('select'); sel[1].value = 'aes-256'; sel[1].dispatchEvent(new Event('change', { bubbles: true }));
+      await __tick(); f.scrollIntoView({ block: 'center' });`,
+    check: `!!document.querySelector('form.uform') && document.querySelector('form.uform').innerText.includes('AES key extension')`,
+  },
+  {
+    name: 'snmp-settings-add-user-secret-never-shown',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=snmp-users',
+    wait: 2500,
+    act: `__btn('Add a v3 user…').click(); await __tick();
+      const f = document.querySelector('form.uform');
+      __set(f.querySelector('input.font-mono'), 'branch-fw');
+      const pw = f.querySelectorAll('input[type=password]');
+      __set(pw[0], 'auth-passphrase-1'); __set(pw[1], 'priv-passphrase-1');
+      await __tick(); __btn('Add user').click();`,
+    after: 1500,
+    check: `[...document.querySelectorAll('#snmp table[aria-label="SNMP v3 users"] td')].some((td) => td.textContent === 'branch-fw')
+      && !document.documentElement.outerHTML.includes('passphrase-1') && !document.querySelector('form.uform')
+      && document.body.innerText.includes('Added branch-fw.')`,
+  },
+  {
+    name: 'snmp-settings-community-hidden',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=snmp',
+    wait: 2500,
+    act: `__set(document.getElementById('new-community'), 'secret-community-9'); await __tick(); __btn('Add').click(); await __tick();
+      if (document.documentElement.outerHTML.includes('secret-community-9')) throw new Error('a new community shows before save');
+      __btn('Save').click();`,
+    after: 1500,
+    check: `!document.documentElement.outerHTML.includes('secret-community-9') && document.querySelectorAll('#snmp .comms li').length === 3
+      && [...document.querySelectorAll('#snmp .comms code')].every((c) => /^#[0-9a-f]{8}$/.test(c.textContent))`,
+  },
+  {
+    name: 'snmp-settings-windows-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_os=windows&mock_snmp_creds=1&mock_snmp_mibs=1#/settings?section=snmp',
+    wait: 2500,
+    act: `scrollTo(0, 0);`,
+    check: `document.body.innerText.includes('woodshed snmp on') && !!document.querySelector('[data-snmp-firewall]')
+      && document.body.innerText.includes('needs its passphrases again') && document.body.innerText.includes('EXAMPLE-SENSOR-MIB.my:212')
+      && document.body.innerText.includes("SNMP v3 user's credentials can't be decrypted") && document.body.innerText.includes('failed to load')
+      && document.body.innerText.includes('Woodshed SNMP traps (UDP 162)')`,
+    maxh: 1400,
+  },
+  ...both({
+    name: 'snmp-devices',
+    url: '/?mock_panel=0#/devices',
+    wait: 2500,
+    check: `document.body.innerText.includes('ups-01') && [...document.querySelectorAll('a.tcount')].length >= 4
+      && [...document.querySelectorAll('a.tcount')].some((a) => a.getAttribute('href').includes('type=trap&dev=10.1.0.40'))`,
+  }),
 ].filter((s) => s.name.includes(only));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
