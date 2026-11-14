@@ -481,7 +481,8 @@ func CheckBucket(size time.Duration, fromMs, toMs int64) error {
 // the histogram can come from the index.
 func histogramUnfiltered(f Filter) bool {
 	return f.Q == "" && f.Exclude == "" && len(f.Apps) == 0 && len(f.Hosts) == 0 && len(f.ExcludeApps) == 0 &&
-		len(f.ExcludeHosts) == 0 && f.Severities == 0 && f.Facilities == 0 && (f.Trap == nil || f.Trap.Empty())
+		len(f.ExcludeHosts) == 0 && f.Severities == 0 && f.Facilities == 0 && (f.Trap == nil || f.Trap.Empty()) &&
+		(f.Poll == nil || f.Poll.Empty())
 }
 
 // Summary runs one request of a summary.

@@ -10,10 +10,12 @@ import (
 // SPEC §10.1.1 and §10.1.6). The client builds its field panel from this list
 // alone, so a new data type adds an entry here with its own fields.
 
-// TypeSyslog is the default data type; TypeTrap the SNMP traps (SPEC §11.1).
+// TypeSyslog is the default data type; TypeTrap the SNMP traps (SPEC §11.1);
+// TypePoll the SNMP poll records (SPEC §12.3).
 const (
 	TypeSyslog = datatype.Syslog
 	TypeTrap   = datatype.Trap
+	TypePoll   = datatype.Poll
 )
 
 // DomainValue is one value of a closed field.
