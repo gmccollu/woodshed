@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/atomicfile"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
@@ -36,6 +37,11 @@ type Manifest struct {
 	GapsNote        string         `json:"gaps_note"`
 	EventsFile      string         `json:"events_file"`
 	Events          int            `json:"events"`
+	// 1.2: the kind ("export"), the data types and which zip folder holds
+	// each (docs/api.md).
+	Kind    string            `json:"kind"`
+	Types   []string          `json:"types"`
+	Folders map[string]string `json:"folders"`
 }
 
 // ManifestReq echoes the request.
@@ -120,17 +126,22 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 	info := e.info
 	m.mu.Unlock()
 	req := Request{Devices: info.Named, From: info.From, To: info.To, Filters: info.Filters}
-	flt := req.filter()
+	types := req.TypesOrSyslog()
 
-	est, err := m.eng.Estimate(ctx, info.Devices, flt)
-	if err != nil {
-		return buildResult{}, err
+	type hk struct{ typ, dev, day string }
+	hint := map[hk]int64{}
+	var total int64
+	for _, t := range types {
+		est, err := m.eng.Estimate(ctx, info.Devices, req.typeFilter(t))
+		if err != nil {
+			return buildResult{}, err
+		}
+		for _, p := range est.Parts {
+			hint[hk{t, p.Device, p.Day}] = p.Bytes
+		}
+		total += est.Bytes
 	}
-	hint := map[[2]string]int64{}
-	for _, p := range est.Parts {
-		hint[[2]string{p.Device, p.Day}] = p.Bytes
-	}
-	total := max(est.Bytes, 1)
+	total = max(total, 1)
 
 	tmp := m.tmpPath(info.ID)
 	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o640)
@@ -159,61 +170,65 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 	}
 	var done int64
 	var line []byte
-	for _, dev := range info.Devices {
-		sc, err := m.eng.NewScanner(ctx, dev, flt)
-		if err != nil {
-			return res, err
-		}
-		n := 0
-		for {
-			h, more := sc.Next()
-			if !more {
-				break
+	for _, typ := range types {
+		flt := req.typeFilter(typ)
+		folder := FolderOf(typ)
+		for _, dev := range info.Devices {
+			sc, err := m.eng.NewScanner(ctx, dev, flt)
+			if err != nil {
+				return res, err
 			}
-			if cur == nil || cur.mf.Day != h.Day {
-				finish()
-				name := "logs/" + dev + "/" + h.Day + ".log"
-				size := int64(-1)
-				if b, ok := hint[[2]string{dev, h.Day}]; ok {
-					size = b + 64<<10 // lines the index hadn't seen yet
+			n := 0
+			for {
+				h, more := sc.Next()
+				if !more {
+					break
 				}
-				if err := zw.create(name, size); err != nil {
+				if cur == nil || cur.mf.Day != h.Day {
+					finish()
+					name := folder + "/" + dev + "/" + h.Day + ".log"
+					size := int64(-1)
+					if b, ok := hint[hk{typ, dev, h.Day}]; ok {
+						size = b + 64<<10 // lines the index hadn't seen yet
+					}
+					if err := zw.create(name, size); err != nil {
+						sc.Close()
+						return res, err
+					}
+					cur = &fileOut{mf: ManifestFile{Path: name, DeviceID: dev, Day: h.Day, First: h.Received}, sum: sha256.New()}
+				}
+				if m.opts.testHookLine != nil {
+					m.opts.testHookLine()
+				}
+				// The line as stored: "<received> <sender> <message>", with CR, LF and
+				// backslash in the message escaped, so every message is one line.
+				line = append(append(line[:0], h.Line...), '\n')
+				if _, err := zw.Write(line); err != nil {
 					sc.Close()
 					return res, err
 				}
-				cur = &fileOut{mf: ManifestFile{Path: name, DeviceID: dev, Day: h.Day, First: h.Received}, sum: sha256.New()}
-			}
-			if m.opts.testHookLine != nil {
-				m.opts.testHookLine()
-			}
-			// The line as stored: "<received> <sender> <message>", with CR, LF and
-			// backslash in the message escaped, so every message is one line.
-			line = append(append(line[:0], h.Line...), '\n')
-			if _, err := zw.Write(line); err != nil {
-				sc.Close()
-				return res, err
-			}
-			cur.sum.Write(line)
-			cur.mf.Lines++
-			cur.mf.Bytes += int64(len(line))
-			cur.mf.Last = h.Received
-			res.lines++
-			if n++; n%4096 == 0 {
-				m.setProgress(e, 0.97*float64(done+sc.Scanned())/float64(total))
-				if ctx.Err() != nil {
-					break
+				cur.sum.Write(line)
+				cur.mf.Lines++
+				cur.mf.Bytes += int64(len(line))
+				cur.mf.Last = h.Received
+				res.lines++
+				if n++; n%4096 == 0 {
+					m.setProgress(e, 0.97*float64(done+sc.Scanned())/float64(total))
+					if ctx.Err() != nil {
+						break
+					}
 				}
 			}
+			done += sc.Scanned()
+			sc.Close()
+			if err := sc.Err(); err != nil {
+				return res, err
+			}
+			if err := ctx.Err(); err != nil {
+				return res, err
+			}
+			finish()
 		}
-		done += sc.Scanned()
-		sc.Close()
-		if err := sc.Err(); err != nil {
-			return res, err
-		}
-		if err := ctx.Err(); err != nil {
-			return res, err
-		}
-		finish()
 	}
 	finish()
 
@@ -289,6 +304,13 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 			ExcludeHost: nonNil(info.Filters.ExcludeHosts)}},
 		Files: nonNil(files), Lines: res.lines, Gaps: nonNil(gaps), GapsNote: GapsNote,
 		EventsFile: "woodshed-events.log", Events: len(inRange),
+		Kind: "export", Types: types, Folders: map[string]string{},
+	}
+	for _, t := range types {
+		man.Folders[FolderOf(t)] = t
+	}
+	if len(types) == 1 && types[0] != datatype.Syslog {
+		man.Request.Filters.Type = types[0]
 	}
 	mb, err := json.MarshalIndent(man, "", "  ")
 	if err != nil {
@@ -363,7 +385,7 @@ logs/<device>/<YYYY-MM-DD>.log
         perl -pe 's/\\(\\|r|n)/$1 eq "r" ? "\r" : $1 eq "n" ? "\n" : "\\"/ge' <file>
     <device> is the sender's IP address (":" written as "_" for IPv6).
 
-manifest.json
+`+trapReadme(info)+`manifest.json
     What was exported: the request (devices with their names and groups, the
     range and any filters), each log file's line count and SHA-256, and "gaps":
     periods in the range when Woodshed wasn't running or a listener was down,
@@ -435,4 +457,28 @@ func filterLines(f Filters) []string {
 		out = append(out, fmt.Sprintf("Exclude: %q%s", f.Exclude, how()))
 	}
 	return out
+}
+
+// trapReadme is README.txt's part about the traps folder, for a zip with
+// traps (docs/api.md: communities are a hash prefix, and masked in raw=).
+func trapReadme(info Info) string {
+	has := false
+	for _, t := range info.Filters.TypesOrSyslog() {
+		has = has || t == datatype.Trap
+	}
+	if !has {
+		return ""
+	}
+	return `traps/<device>/<YYYY-MM-DD>.log
+    The SNMP traps and informs Woodshed received from each device on that day
+    (UTC), in the same envelope as the logs: <received time> <sender IP>
+    <record>. A record is the decoded trap: v=, pdu=, cred=, status=, the
+    trap OID, one vb= per varbind (OIDs numeric, with names known when it was
+    received), and raw= last, the whole datagram in base64. A v1/v2c community
+    is never stored: cred= is "#" and the first 8 hex digits of its SHA-256,
+    and in raw= the community's bytes are replaced by as many "*" bytes (the
+    lengths are unchanged, so the datagram still decodes). A v3 message is
+    kept exactly; its secrets are never in the packet.
+
+`
 }
