@@ -2381,14 +2381,16 @@ Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
     (§12.7).
 15. Windows is tested as a poller, not as a polled agent (§12.8).
 
-### 12.11 Open questions (1.3)
-1. Should polling also store `ifInUcastPkts`-style packet counters (packets per second help diagnose small-packet
-   floods), or is that "hundreds of OIDs" creep? Today they'd be a custom OID walk.
-2. Should an `oper` change (an interface going down) also be a timeline marker on the Events histogram, or only on the
-   device page?
-3. A sensible default for `max_interfaces` on large switches: 64 polls the first 64 by index, which may not be the
-   uplinks. Prefer interfaces that are up, or ask the user to pick when there are more than the cap?
-4. The 0.7 MB/day estimate per 24-interface device is a guess; confirm with the first bench before publishing it.
+### 12.11 Questions settled (1.3), decided (coordinator, 2026-11-15, owner-delegated)
+1. The `interfaces` preset also polls the HC packet counters in and out: unicast, multicast and broadcast
+   (`ifHCIn/OutUcastPkts`, `…MulticastPkts`, `…BroadcastPkts`, 32-bit fallbacks as for octets). Packet and broadcast
+   rates are what show a broadcast storm or a small-packet flood, a common outage cause; six OIDs per interface is still
+   a small fixed set.
+2. An `oper` change (an interface going down or up) is a timeline marker on the Events histogram as well as on the
+   device page, like restarts; markers are capped per strip as restarts are.
+3. `max_interfaces` (default 64) picks, in order: interfaces the user pinned, then interfaces that are up, by
+   `ifHighSpeed` descending, then by index. The device page says when interfaces were left out and offers pinning.
+4. The storage estimate is measured by the first bench and recorded here before it's published in the docs.
 
 ## 13. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
