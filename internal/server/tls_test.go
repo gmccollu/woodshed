@@ -221,7 +221,12 @@ func TestTLSEndToEnd(t *testing.T) {
 			t.Errorf("%s changed without an explicit action", f)
 		}
 	}
-	rs, err := ReadState(dataDir)
+	// The run-state file is written shortly after a (re)start, not before the API answers: wait for it.
+	var rs RunState
+	waitFor(t, "the run-state file with TLS", func() bool {
+		rs, err = ReadState(dataDir)
+		return err == nil && rs.TLS != nil && rs.TLS.CertSHA256 == renew.Cert.SHA256
+	})
 	if err != nil || rs.TLS == nil || rs.TLS.CASHA256 != ts.CA.SHA256 || rs.TLS.CertSHA256 != renew.Cert.SHA256 || !rs.TLS.Enabled {
 		t.Errorf("run state tls %+v (%v)", rs.TLS, err)
 	}
