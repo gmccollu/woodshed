@@ -50,6 +50,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	checkListener(e, goos, "listeners.udp", l.UDP)
 	checkListener(e, goos, "listeners.tcp", l.TCP)
 	checkTLSListener(e, goos, l)
+	checkSNMPListener(e, goos, l)
 	checkBlocklist(e, l)
 	for i, s := range l.Allowlist {
 		if _, err := parseAllow(s); err != nil {
