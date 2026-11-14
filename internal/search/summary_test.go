@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
-	"github.com/gmccollu/woodshed/internal/syslog"
 )
 
 // bruteSummary counts recs (already filtered) the way a summary must.
@@ -25,46 +25,71 @@ type bruteSummary struct {
 	hist       map[int64]int64  // by bucket start
 }
 
-func brute(recs []rec, fromMs, bucketMs int64) bruteSummary {
-	b := bruteSummary{dev: map[string]int64{}, sev: map[string]int64{}, fac: map[string]int64{}, host: map[string]int64{},
+func newBrute() bruteSummary {
+	return bruteSummary{dev: map[string]int64{}, sev: map[string]int64{}, fac: map[string]int64{}, host: map[string]int64{},
 		app: map[string]int64{}, hist: map[int64]int64{}}
-	for _, r := range recs {
-		if r.ms < fromMs {
-			continue
-		}
-		b.n++
-		b.dev[r.dev]++
-		var m model.Message
-		syslog.Parse([]byte(r.raw), &m)
-		key := func(v int) string {
-			if v == model.Unknown {
-				return "unknown"
-			}
-			return fmt.Sprint(v)
-		}
-		b.sev[key(m.Severity)]++
-		b.fac[key(m.Facility)]++
-		if m.Hostname == "" {
-			b.hostN++
-		} else {
-			b.host[strings.ToLower(m.Hostname)]++
-		}
-		if app := strings.TrimPrefix(m.App, "%"); app == "" {
-			b.apN++
-		} else {
-			b.app[strings.ToLower(app)]++
-		}
-		b.hist[bucketStart(r.ms, bucketMs)]++
+}
+
+// bruteFrom is the brute-force count of recs at or after fromMs. A summary's
+// counted_from only moves back from page to page, so it adds the newly
+// covered records to the last count instead of recounting: checking every page
+// of a many-page summary costs about one pass over recs in all. It recounts
+// from scratch when fromMs moves forward or the bucket size changes.
+type bruteFrom struct {
+	sorted           []rec // newest first
+	fromMs, bucketMs int64
+	i                int // sorted[:i] are counted
+	b                bruteSummary
+}
+
+func newBruteFrom(recs []rec) *bruteFrom {
+	s := slices.Clone(recs)
+	slices.SortStableFunc(s, func(a, b rec) int { return cmpInt(b.ms, a.ms) })
+	return &bruteFrom{sorted: s}
+}
+
+func (c *bruteFrom) at(fromMs, bucketMs int64) bruteSummary {
+	if c.b.dev == nil || fromMs > c.fromMs || bucketMs != c.bucketMs {
+		c.b, c.i, c.bucketMs = newBrute(), 0, bucketMs
 	}
-	return b
+	c.fromMs = fromMs
+	for ; c.i < len(c.sorted) && c.sorted[c.i].ms >= fromMs; c.i++ {
+		c.b.add(c.sorted[c.i], bucketMs)
+	}
+	return c.b
+}
+
+// add counts r, as a summary must.
+func (b *bruteSummary) add(r rec, bucketMs int64) {
+	b.n++
+	b.dev[r.dev]++
+	key := func(v int) string {
+		if v == model.Unknown {
+			return "unknown"
+		}
+		return fmt.Sprint(v)
+	}
+	b.sev[key(r.sev)]++
+	b.fac[key(r.fac)]++
+	if r.host == "" {
+		b.hostN++
+	} else {
+		b.host[strings.ToLower(r.host)]++
+	}
+	if app := strings.TrimPrefix(r.app, "%"); app == "" {
+		b.apN++
+	} else {
+		b.app[strings.ToLower(app)]++
+	}
+	b.hist[bucketStart(r.ms, bucketMs)]++
 }
 
 // checkSummary compares a summary response with the brute-force counts of
 // the matching lines in [counted_from, to).
-func checkSummary(t *testing.T, what string, s Summary, recs []rec) {
+func checkSummary(t *testing.T, what string, s Summary, recs *bruteFrom) {
 	t.Helper()
 	from := s.CountedFrom.UnixMilli()
-	b := brute(recs, from, s.Histogram.BucketSeconds*1000)
+	b := recs.at(from, s.Histogram.BucketSeconds*1000)
 	if s.Matched != b.n {
 		t.Fatalf("%s: matched %d, brute force %d over [%s, %s)", what, s.Matched, b.n, s.CountedFrom.Format(time.RFC3339Nano), s.To.Format(time.RFC3339))
 	}
@@ -121,13 +146,14 @@ func (f *fixture) runSummary(t *testing.T, what string, q SummaryQuery, want []r
 	t.Helper()
 	pages := 0
 	last := q.To
+	counts := newBruteFrom(want)
 	for {
 		s, err := f.eng.Summary(bg, q)
 		if err != nil {
 			t.Fatalf("%s: page %d: %v", what, pages, err)
 		}
 		pages++
-		checkSummary(t, fmt.Sprintf("%s page %d", what, pages), s, want)
+		checkSummary(t, fmt.Sprintf("%s page %d", what, pages), s, counts)
 		if !last.IsZero() && s.CountedFrom.After(last) {
 			t.Fatalf("%s: counted_from went up", what)
 		}

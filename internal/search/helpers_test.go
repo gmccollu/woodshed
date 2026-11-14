@@ -41,12 +41,26 @@ func (c *fakeClock) Set(t time.Time) {
 	c.mu.Unlock()
 }
 
-// rec is one message the fixture wrote.
+// rec is one message the fixture wrote, with what syslog.Parse makes of it
+// (parsed once here, so the brute-force checks don't parse every line again
+// for every query and every page).
 type rec struct {
-	ms  int64
-	dev string
-	raw string
-	seq int
+	ms    int64
+	dev   string
+	raw   string
+	seq   int
+	lower string // strings.ToLower(raw)
+	sev   int
+	fac   int
+	host  string
+	app   string
+}
+
+func newRec(ms int64, dev, raw string, seq int) rec {
+	var m model.Message
+	syslog.Parse([]byte(raw), &m)
+	return rec{ms: ms, dev: dev, raw: raw, seq: seq, lower: strings.ToLower(raw), sev: m.Severity, fac: m.Facility,
+		host: m.Hostname, app: m.App}
 }
 
 type fixture struct {
@@ -181,7 +195,7 @@ func (f *fixture) write(a netip.Addr, at time.Time, seq int) {
 	if err := f.st.Write(model.Message{Received: at, Sender: a, Raw: []byte(raw)}); err != nil {
 		f.t.Fatal(err)
 	}
-	f.recs = append(f.recs, rec{ms: at.UnixMilli(), dev: model.DeviceID(a), raw: raw, seq: seq})
+	f.recs = append(f.recs, newRec(at.UnixMilli(), model.DeviceID(a), raw, seq))
 }
 
 func (f *fixture) flush() {
@@ -222,17 +236,9 @@ func (f *fixture) expect(q Query) []rec {
 		}
 		devs[id] = true
 	}
-	var re *regexp.Regexp
-	if q.Regex {
-		expr := q.Q
-		if !q.Case {
-			expr = "(?i)" + expr
-		}
-		re = regexp.MustCompile(expr)
-	}
-	// textMatch is q's rule for any needle, for Q and for Exclude.
-	var textMatch func(needle, raw string) bool
-	textMatch = func(needle, raw string) bool {
+	// textMatch is q's rule for any needle, for Q and for Exclude. It's built
+	// once per needle (the terms tree, the regex), then run on each record.
+	textMatch := func(needle string) func(r rec) bool {
 		switch {
 		case q.Terms:
 			// The tree from the parser (its grammar is tested on its own), with
@@ -241,55 +247,65 @@ func (f *fixture) expect(q Query) []rec {
 			if err != nil {
 				f.t.Fatal(err)
 			}
-			var eval func(n *termNode) bool
-			eval = func(n *termNode) bool {
+			if e == nil {
+				return func(rec) bool { return true }
+			}
+			var eval func(n *termNode, r *rec) bool
+			eval = func(n *termNode, r *rec) bool {
 				switch n.op {
 				case opTerm:
 					if q.Case {
-						return strings.Contains(raw, n.text)
+						return strings.Contains(r.raw, n.text)
 					}
-					return strings.Contains(strings.ToLower(raw), strings.ToLower(n.text))
+					return strings.Contains(r.lower, strings.ToLower(n.text))
 				case opNot:
-					return !eval(n.kids[0])
+					return !eval(n.kids[0], r)
 				case opAnd:
 					for _, k := range n.kids {
-						if !eval(k) {
+						if !eval(k, r) {
 							return false
 						}
 					}
 					return true
 				}
 				for _, k := range n.kids {
-					if eval(k) {
+					if eval(k, r) {
 						return true
 					}
 				}
 				return false
 			}
-			return e == nil || eval(e)
+			return func(r rec) bool { return eval(e, &r) }
 		case q.Regex:
 			expr := needle
 			if !q.Case {
 				expr = "(?i)" + expr
 			}
-			return regexp.MustCompile(expr).MatchString(raw)
+			re := regexp.MustCompile(expr)
+			return func(r rec) bool { return re.MatchString(r.raw) }
 		case q.Case:
-			return strings.Contains(raw, needle)
+			return func(r rec) bool { return strings.Contains(r.raw, needle) }
 		default:
-			return strings.Contains(strings.ToLower(raw), strings.ToLower(needle))
+			low := strings.ToLower(needle)
+			return func(r rec) bool { return strings.Contains(r.lower, low) }
 		}
 	}
+	var qMatch, exMatch func(rec) bool
+	if q.Q != "" {
+		qMatch = textMatch(q.Q)
+	}
+	if q.Exclude != "" {
+		exMatch = textMatch(q.Exclude)
+	}
 	// fieldsMatch is the app and host filters' rule, written out plainly.
-	fieldsMatch := func(raw string) bool {
-		var m model.Message
-		syslog.Parse([]byte(raw), &m)
-		if len(q.Hosts) > 0 && !slices.ContainsFunc(q.Hosts, func(h string) bool { return strings.EqualFold(h, m.Hostname) }) {
+	fieldsMatch := func(r rec) bool {
+		if len(q.Hosts) > 0 && !slices.ContainsFunc(q.Hosts, func(h string) bool { return strings.EqualFold(h, r.host) }) {
 			return false
 		}
-		if m.Hostname != "" && slices.ContainsFunc(q.ExcludeHosts, func(h string) bool { return strings.EqualFold(strings.TrimSpace(h), m.Hostname) }) {
+		if r.host != "" && slices.ContainsFunc(q.ExcludeHosts, func(h string) bool { return strings.EqualFold(strings.TrimSpace(h), r.host) }) {
 			return false
 		}
-		app := strings.ToLower(strings.TrimPrefix(m.App, "%"))
+		app := strings.ToLower(strings.TrimPrefix(r.app, "%"))
 		appMatch := func(a string) bool {
 			if a = strings.TrimSpace(a); a == "" {
 				return false
@@ -313,43 +329,25 @@ func (f *fixture) expect(q Query) []rec {
 		if !devs[r.dev] || r.ms < fromMs || r.ms >= toMs {
 			continue
 		}
-		if q.Severities != 0 || q.Facilities != 0 {
-			var m model.Message
-			syslog.Parse([]byte(r.raw), &m)
-			if q.Severities != 0 && !q.Severities.Has(m.Severity) {
-				continue
-			}
-			fac := m.Facility
-			if m.Severity == model.Unknown {
-				fac = model.Unknown
-			}
-			if q.Facilities != 0 && !q.Facilities.Has(fac) {
-				continue
-			}
-		}
-		switch {
-		case q.Q == "":
-		case q.Terms:
-			if !textMatch(q.Q, r.raw) {
-				continue
-			}
-		case re != nil:
-			if !re.MatchString(r.raw) {
-				continue
-			}
-		case q.Case:
-			if !strings.Contains(r.raw, q.Q) {
-				continue
-			}
-		default:
-			if !strings.Contains(strings.ToLower(r.raw), strings.ToLower(q.Q)) {
-				continue
-			}
-		}
-		if q.Exclude != "" && textMatch(q.Exclude, r.raw) {
+		if q.Severities != 0 && !q.Severities.Has(r.sev) {
 			continue
 		}
-		if !fieldsMatch(r.raw) {
+		if q.Facilities != 0 {
+			fac := r.fac
+			if r.sev == model.Unknown {
+				fac = model.Unknown
+			}
+			if !q.Facilities.Has(fac) {
+				continue
+			}
+		}
+		if qMatch != nil && !qMatch(r) {
+			continue
+		}
+		if exMatch != nil && exMatch(r) {
+			continue
+		}
+		if !fieldsMatch(r) {
 			continue
 		}
 		out = append(out, r)
@@ -420,14 +418,13 @@ func same(t *testing.T, what string, got []Line, want []rec) {
 				time.UnixMilli(w.ms).UTC().Format(time.RFC3339Nano), w.dev, w.raw)
 			return
 		}
-		var m model.Message
-		syslog.Parse(g.Raw, &m)
-		if g.Severity != m.Severity {
-			t.Errorf("%s: result %d severity %d, want %d", what, i, g.Severity, m.Severity)
+		// w holds syslog.Parse of the same raw bytes.
+		if g.Severity != w.sev {
+			t.Errorf("%s: result %d severity %d, want %d", what, i, g.Severity, w.sev)
 			return
 		}
-		if g.App != m.App || g.Host != m.Hostname {
-			t.Errorf("%s: result %d app/host %q/%q, want %q/%q", what, i, g.App, g.Host, m.App, m.Hostname)
+		if g.App != w.app || g.Host != w.host {
+			t.Errorf("%s: result %d app/host %q/%q, want %q/%q", what, i, g.App, g.Host, w.app, w.host)
 			return
 		}
 	}

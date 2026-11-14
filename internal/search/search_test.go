@@ -243,10 +243,10 @@ func testSearchFilters(t *testing.T, f *fixture) {
 			same(t, label, got, want)
 		}
 	}
-	if _, hidden := f.all(Query{Filter: all, Limit: MaxLimit}); hidden == 0 {
+	got, pages := f.all(Query{Filter: all, Limit: MaxLimit})
+	if pages == 0 {
 		t.Fatal("no pages")
 	}
-	got, _ := f.all(Query{Filter: all, Limit: MaxLimit})
 	for _, l := range got {
 		if l.DeviceID == "2001_db8__5" {
 			t.Fatal("hidden device searched without being named")
@@ -304,6 +304,8 @@ func TestPaginationContinuity(t *testing.T) {
 			full := q
 			full.Limit = MaxLimit
 			one, _ := f.all(full)
+			// The full search equals the brute force; the pages below equal it.
+			same(t, "full", one, f.expect(q))
 			for _, limit := range []int{1, 7, 64} {
 				if limit == 1 && q.Q == "" {
 					continue // thousands of pages; 7 covers the same paths
@@ -314,8 +316,6 @@ func TestPaginationContinuity(t *testing.T) {
 					t.Fatalf("limit %d: only %d page", limit, pages)
 				}
 				same(t, "paged", paged, toRecs(one))
-				// And both equal the brute force.
-				same(t, "full", one, f.expect(q))
 			}
 		}
 	}
@@ -342,7 +342,7 @@ func TestPaginationContinuity(t *testing.T) {
 func toRecs(ls []Line) []rec {
 	out := make([]rec, len(ls))
 	for i, l := range ls {
-		out[i] = rec{ms: l.Received.UnixMilli(), dev: l.DeviceID, raw: string(l.Raw)}
+		out[i] = newRec(l.Received.UnixMilli(), l.DeviceID, string(l.Raw), 0)
 	}
 	return out
 }
