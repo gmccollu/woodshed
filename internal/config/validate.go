@@ -64,6 +64,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	}
 	checkTCPLimits(e, l)
 	checkDeviceLimits(e, l)
+	checkUDPQueue(e, l)
 
 	s := c.Storage
 	switch {

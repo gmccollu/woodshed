@@ -82,6 +82,9 @@ type Listeners struct {
 	TCPMaxConnsPerPrefix int      `toml:"tcp_max_conns_per_prefix" json:"-" comment:"Open TCP connections allowed per IPv6 /64 (all its addresses together)."`
 	TCPFrameTimeout      Duration `toml:"tcp_frame_timeout" json:"-" comment:"Once a TCP message starts, all of it must arrive within this (e.g. 60s); then the connection is closed and the part kept, marked truncated."`
 	TCPIdleTimeout       Duration `toml:"tcp_idle_timeout" json:"-" comment:"Close a TCP connection that sends no complete message for this long (1m to 168h). Keep it long: some senders notice a closed connection only when a later write fails, and lose messages until they reconnect."`
+	// UDP receive queue limits (udpqueue.go), per UDP socket.
+	UDPQueueMessages int   `toml:"udp_queue_messages" json:"-" comment:"Each UDP listener queues at most this many messages (1,000 to 2,000,000) while writing to disk catches up; more are dropped and counted."`
+	UDPQueueBytes    int64 `toml:"udp_queue_bytes" json:"-" comment:"and at most this many bytes of them (1 MiB to 1 GiB), whichever fills first."`
 }
 
 // Listener is one syslog listener.
@@ -160,6 +163,9 @@ func Default() Config {
 			MaxDevices:          DefaultMaxDevices,
 			NewDeviceBurst:      DefaultNewDeviceBurst,
 			NewDevicesPerMinute: DefaultNewDevicesPerMinute,
+
+			UDPQueueMessages: DefaultUDPQueueMessages,
+			UDPQueueBytes:    DefaultUDPQueueBytes,
 		},
 		Storage: Storage{
 			DataDir:        DefaultDataDir(),
@@ -203,6 +209,7 @@ func (c *Config) Normalize() {
 	}
 	normalizeTCPLimits(&c.Listeners)
 	normalizeDeviceLimits(&c.Listeners)
+	normalizeUDPQueue(&c.Listeners)
 }
 
 // Prefixes parses the allowlist: an IP becomes a single-address prefix and IPv4-mapped
