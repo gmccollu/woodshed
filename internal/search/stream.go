@@ -9,8 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gmccollu/woodshed/internal/hub"
-	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
@@ -25,9 +24,8 @@ type run struct {
 	desc         bool
 	m            *matcher
 	ex           *matcher        // nil: no exclude
-	fields       *fieldMatcher   // nil: no app or host filter
-	sevs         hub.SeveritySet // 0: all
-	facs         FacilitySet     // 0: all
+	dt           datatype.Type   // the data type (nil: syslog)
+	tf           datatype.Filter // the type's own filter; nil: it passes everything
 
 	need int // results still wanted (bounds the compressed-file ring)
 	// cacheKey is the search's parameters and range, for the caches ("": don't cache).
@@ -54,7 +52,7 @@ type run struct {
 	err      error // a context error
 
 	unesc []byte
-	msg   model.Message // fields' scratch parse
+	sc    datatype.Scratch // the type filter's scratch
 
 	// sum is set for a summary scan (sumscan.go): every match goes to it as
 	// it's found, and a compressed-file pass that runs out of budget keeps its
@@ -90,40 +88,37 @@ type hit struct {
 	file     *fileInfo
 }
 
-// check applies the time range, severity, q, exclude and then the app and
-// host filters to one stored line: the cheap checks first, so the header is
-// parsed only for lines that passed them.
+// check applies the time range, the type filter's cheap part (syslog: the
+// severity and facility), q and exclude on the type's text (syslog: the whole
+// message; traps: the record without raw=), and then the filter's costly part
+// (syslog: the app and host, which parse the header) to one stored line: the
+// cheap checks first, so the header is parsed only for lines that passed them.
 func (r *run) check(line []byte) (int64, []byte, bool) {
 	ms, esc, ok := splitLine(line)
 	if !ok || ms < r.fromMs || ms >= r.toMs {
 		return 0, nil, false
 	}
-	if r.sevs != 0 || r.facs != 0 || r.m.kind != matchAll || r.ex != nil || r.fields != nil {
+	text := r.dt != nil && r.dt.Name() != TypeSyslog
+	if r.tf != nil || r.m.kind != matchAll || r.ex != nil {
 		raw := esc
 		if bytes.IndexByte(esc, '\\') >= 0 {
 			r.unesc = logfile.Unescape(r.unesc[:0], esc)
 			raw = r.unesc
 		}
-		if r.sevs != 0 || r.facs != 0 {
-			p := PRI(raw)
-			sev, fac := model.Unknown, model.Unknown
-			if p >= 0 {
-				sev, fac = p&7, p>>3
-			}
-			if r.sevs != 0 && !r.sevs.Has(sev) {
-				return 0, nil, false
-			}
-			if r.facs != 0 && !r.facs.Has(fac) {
-				return 0, nil, false
-			}
-		}
-		if !r.m.match(raw) {
+		if r.tf != nil && !r.tf.Pre(raw) {
 			return 0, nil, false
 		}
-		if r.ex != nil && r.ex.match(raw) {
+		q := raw
+		if text {
+			q = r.dt.Text(raw)
+		}
+		if !r.m.match(q) {
 			return 0, nil, false
 		}
-		if r.fields != nil && !r.fields.match(raw, &r.msg) {
+		if r.ex != nil && r.ex.match(q) {
+			return 0, nil, false
+		}
+		if r.tf != nil && !r.tf.Post(raw, &r.sc) {
 			return 0, nil, false
 		}
 	}
@@ -653,7 +648,7 @@ func (r *run) prefetch() bool {
 			defer wg.Done()
 			for j := range work {
 				c := &run{e: r.e, ctx: r.ctx, deadline: r.deadline, now: r.now, fromMs: r.fromMs, toMs: r.toMs, desc: true,
-					m: r.m, ex: r.ex, fields: r.fields, sevs: r.sevs, facs: r.facs, need: r.need, cacheKey: r.cacheKey, ringBytes: r.ringBytes}
+					m: r.m, ex: r.ex, dt: r.dt, tf: r.tf, need: r.need, cacheKey: r.cacheKey, ringBytes: r.ringBytes}
 				fi := &j.fi
 				o, err := r.e.open(r.ctx, fi)
 				if err != nil {

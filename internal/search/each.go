@@ -6,7 +6,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/index"
 )
 
@@ -60,8 +59,8 @@ func (e *Engine) Each(ctx context.Context, q Query, fn func(*Result) error) (Eac
 	if err != nil {
 		return st, err
 	}
-	r := &run{e: e, ctx: ctx, now: e.now(), desc: !q.Asc, m: c.m, ex: c.ex, fields: c.fields, sevs: q.Severities,
-		facs: q.Facilities, need: 1 << 30, files: map[int64]struct{}{}, gone: map[int64]struct{}{}}
+	r := &run{e: e, ctx: ctx, now: e.now(), desc: !q.Asc, m: c.m, ex: c.ex, dt: c.dt, tf: c.tf,
+		need: 1 << 30, files: map[int64]struct{}{}, gone: map[int64]struct{}{}}
 	if r.fromMs, r.toMs, err = e.resolveRange(q.Filter); err != nil {
 		return st, err
 	}
@@ -69,14 +68,14 @@ func (e *Engine) Each(ctx context.Context, q Query, fn func(*Result) error) (Eac
 		st.ScannedBytes, st.ScannedFiles, st.GoneFiles, st.Elapsed = r.scanned, len(r.files), len(r.gone), time.Since(start)
 		return st, err
 	}
-	if q.Severities == hub.SeverityNone || q.Facilities == FacilityNone {
+	if c.none {
 		return finish(nil)
 	}
 	devs, err := e.devices(ctx, q.Devices, q.Group, q.Ungrouped, q.ExcludeDevices)
 	if err != nil {
 		return finish(err)
 	}
-	files, err := e.filesByDevice(ctx, devs, r.fromMs, r.toMs)
+	files, err := e.filesByDevice(ctx, q.Type, devs, r.fromMs, r.toMs)
 	if err != nil {
 		return finish(err)
 	}

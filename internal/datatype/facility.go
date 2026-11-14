@@ -1,4 +1,4 @@
-package search
+package datatype
 
 import (
 	"fmt"

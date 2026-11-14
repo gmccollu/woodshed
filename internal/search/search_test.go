@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/store"
@@ -786,7 +787,7 @@ func TestFields(t *testing.T) {
 			t.Errorf("%q: %q/%q, want %q/%q", c.raw, app, host, c.app, c.host)
 		}
 	}
-	fm := newFieldMatcher([]string{"FW-6-*", "SSHD", "%kernel"}, nil, nil, nil)
+	fm := datatype.NewFieldMatcher([]string{"FW-6-*", "SSHD", "%kernel"}, nil, nil, nil)
 	var m model.Message
 	for raw, want := range map[string]bool{
 		"<166>Nov 10 20:41:07 h %FW-6-302013: x": true,
@@ -796,11 +797,11 @@ func TestFields(t *testing.T) {
 		"<6>Nov 10 20:41:07 h kernel: x":         true,
 		"<6>Nov 10 20:41:07 x":                   false,
 	} {
-		if got := fm.match([]byte(raw), &m); got != want {
+		if got := fm.Match([]byte(raw), &m); got != want {
 			t.Errorf("%q: %v", raw, got)
 		}
 	}
-	if newFieldMatcher([]string{" ", ""}, []string{""}, nil, nil) != nil {
+	if datatype.NewFieldMatcher([]string{" ", ""}, []string{""}, nil, nil) != nil {
 		t.Error("blank values make a filter")
 	}
 }

@@ -48,8 +48,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
@@ -172,6 +174,11 @@ type Filter struct {
 	// From and To bound the received time: From <= received < To. Zero values
 	// default (Search: To = now, From = To - 24 h).
 	From, To time.Time
+	// Type is the data type ("" is syslog, SPEC §11.1). Severities through
+	// ExcludeHosts are syslog's filter; Trap is the trap type's (nil: none).
+	// Each type refuses the other's.
+	Type string
+	Trap *datatype.TrapFilter
 }
 
 // Query is one /api/search request.
@@ -198,6 +205,9 @@ type Line struct {
 	Ref      string
 	App      string // the parsed program/tag ("" when there's none)
 	Host     string // the parsed header hostname ("" when there's none)
+	// Type is the line's data type ("syslog", "trap"). For a trap, Raw is the
+	// record and Severity, App and Host are unset.
+	Type string
 }
 
 // Page is one /api/search response.
@@ -222,9 +232,11 @@ func ceilMs(t time.Time) int64 {
 
 // compiled is a Filter's matchers.
 type compiled struct {
-	m      *matcher
-	ex     *matcher      // nil: no exclude
-	fields *fieldMatcher // nil: no app or host filter
+	m    *matcher
+	ex   *matcher        // nil: no exclude
+	dt   datatype.Type   // the data type
+	tf   datatype.Filter // the type's own filter; nil when it passes everything
+	none bool            // the type's filter matches nothing
 }
 
 func (e *Engine) compile(f Filter) (compiled, error) {
@@ -241,7 +253,10 @@ func (e *Engine) compile(f Filter) (compiled, error) {
 	if err != nil {
 		return compiled{}, err
 	}
-	c := compiled{m: m, fields: newFieldMatcher(f.Apps, f.Hosts, f.ExcludeApps, f.ExcludeHosts)}
+	c := compiled{m: m}
+	if c.dt, c.tf, c.none, err = typeFilter(f); err != nil {
+		return compiled{}, err
+	}
 	if f.Exclude != "" {
 		if c.ex, err = compile(f.Exclude); err != nil {
 			return compiled{}, &QueryError{Msg: "exclude: " + err.Error()}
@@ -317,16 +332,16 @@ func (e *Engine) ResolveDevices(ctx context.Context, named []string, group strin
 	return e.devices(ctx, named, group, ungrouped, excluded)
 }
 
-// filesByDevice returns each device's files that may hold lines in
-// [fromMs, toMs), oldest first.
-func (e *Engine) filesByDevice(ctx context.Context, devs []string, fromMs, toMs int64) (map[string][]*fileInfo, error) {
+// filesByDevice returns each device's files of a data type that may hold
+// lines in [fromMs, toMs), oldest first.
+func (e *Engine) filesByDevice(ctx context.Context, typ string, devs []string, fromMs, toMs int64) (map[string][]*fileInfo, error) {
 	out := map[string][]*fileInfo{}
 	if len(devs) == 0 {
 		return out, nil
 	}
 	// The active file's row trails the file by up to a few seconds, so widen
 	// the lower edge; the checkpoints narrow it again per file.
-	spans, err := e.idx.FilesInRange(ctx, devs, time.UnixMilli(fromMs).Add(-maxSkew), time.UnixMilli(toMs))
+	spans, err := e.idx.FilesInRangeOf(ctx, typ, devs, time.UnixMilli(fromMs).Add(-maxSkew), time.UnixMilli(toMs))
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +369,7 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 	bind := q.binding()
 
 	r := &run{e: e, ctx: ctx, deadline: start.Add(e.budget), maxSteps: e.testMaxSteps, now: e.now(), desc: !q.Asc, m: c.m,
-		ex: c.ex, fields: c.fields, sevs: q.Severities, facs: q.Facilities, need: limit, files: map[int64]struct{}{}}
+		ex: c.ex, dt: c.dt, tf: c.tf, need: limit, files: map[int64]struct{}{}}
 	var streams []*stream
 	if q.Cursor != "" {
 		cur, err := e.decodeCursor(q.Cursor, bind)
@@ -366,7 +381,7 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 		for i, cs := range cur.streams {
 			devs[i] = cs.dev
 		}
-		files, err := e.filesByDevice(ctx, devs, r.fromMs, r.toMs)
+		files, err := e.filesByDevice(ctx, q.Type, devs, r.fromMs, r.toMs)
 		if err != nil {
 			return Page{}, err
 		}
@@ -377,14 +392,14 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 		if r.fromMs, r.toMs, err = e.resolveRange(q.Filter); err != nil {
 			return Page{}, err
 		}
-		if q.Severities == hub.SeverityNone || q.Facilities == FacilityNone {
+		if c.none {
 			return Page{Results: []Line{}, Elapsed: time.Since(start)}, nil
 		}
 		devs, err := e.devices(ctx, q.Devices, q.Group, q.Ungrouped, q.ExcludeDevices)
 		if err != nil {
 			return Page{}, err
 		}
-		files, err := e.filesByDevice(ctx, devs, r.fromMs, r.toMs)
+		files, err := e.filesByDevice(ctx, q.Type, devs, r.fromMs, r.toMs)
 		if err != nil {
 			return Page{}, err
 		}
@@ -500,6 +515,10 @@ func better(desc bool, k int64, has bool, dev string, bk int64, bhas bool, bdev 
 
 func (e *Engine) line(dev string, h hit) Line {
 	raw := logfile.Unescape(nil, h.esc)
+	if t := logfile.NormType(h.file.Type); t != TypeSyslog {
+		return Line{Received: time.UnixMilli(h.ms).UTC(), DeviceID: dev, Severity: model.Unknown, Raw: raw,
+			Ref: encodeRef(h.file.ID, h.off, h.ms), Type: t}
+	}
 	app, host := Fields(raw)
 	return Line{
 		Received: time.UnixMilli(h.ms).UTC(),
@@ -509,6 +528,7 @@ func (e *Engine) line(dev string, h hit) Line {
 		Ref:      encodeRef(h.file.ID, h.off, h.ms),
 		App:      app,
 		Host:     host,
+		Type:     TypeSyslog,
 	}
 }
 

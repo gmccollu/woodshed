@@ -70,6 +70,12 @@ func (q *Query) binding() []byte {
 			str(v)
 		}
 	}
+	if t := q.Type; t != "" && t != TypeSyslog { // a syslog query binds as in 1.1
+		str(t)
+		if q.Trap != nil {
+			str(q.Trap.Bind())
+		}
+	}
 	return h.Sum(nil)[:bindLen]
 }
 

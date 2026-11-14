@@ -407,7 +407,13 @@ type RecordVarbind struct {
 
 // ParseRecord reads a record (without the envelope) back into its fields.
 // Unknown keys are skipped, so later versions can add some.
-func ParseRecord(rec []byte) (Record, error) {
+func ParseRecord(rec []byte) (Record, error) { return parseRecord(rec, false) }
+
+// ParseRecordHeader is ParseRecord without the varbinds and raw=: it stops at
+// the first vb= or raw=, so a filter reads a record's header cheaply.
+func ParseRecordHeader(rec []byte) (Record, error) { return parseRecord(rec, true) }
+
+func parseRecord(rec []byte, header bool) (Record, error) {
 	var r Record
 	p := recParser{b: rec}
 	for {
@@ -418,6 +424,9 @@ func ParseRecord(rec []byte) (Record, error) {
 		k, err := p.key()
 		if err != nil {
 			return r, err
+		}
+		if header && (k == "vb" || k == "raw") {
+			break
 		}
 		if k == "vb" {
 			vb, err := p.varbind()
