@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +53,14 @@ type BenchOptions struct {
 	Settle      time.Duration
 	RcvbufBytes int          // UDP receive buffer to request (default 32 MiB)
 	Logger      *slog.Logger // for the store and listener; default discards
+
+	// QueueMessages is the UDP receive queue's capacity (default
+	// listeners.udp_queue_messages' default).
+	QueueMessages int
+	// A fake slow disk (SPEC §11.6): every StallEvery from the start, writes
+	// block for StallFor, as a store whose write hangs on an fsync would.
+	// Both zero: no stalls.
+	StallEvery, StallFor time.Duration
 }
 
 // BenchResult is what Bench measured. Missing and Duplicates come from reading
@@ -67,9 +76,11 @@ type BenchResult struct {
 	Duplicates int64 // extra copies on disk
 	Foreign    int64 // lines on disk that aren't from this run (a reused DataDir)
 
-	Listened     int64 // messages the listener passed to the pipeline
-	Stored       int64 // messages the store wrote
-	StoreDropped int64 // messages the store refused (low disk, write errors)
+	Listened       int64 // messages the listener passed to the pipeline
+	Stored         int64 // messages the store wrote
+	StoreDropped   int64 // messages the store refused (low disk, write errors), not counting QueueDropped
+	StoreQueueFull int64 // UDP queue drops as the store counted them (dropped_by_reason.queue_full)
+	Stalls         int   // fake slow-disk stalls that happened (StallEvery, StallFor)
 
 	TargetRate   float64
 	AchievedRate float64       // Sent / SendTime
@@ -81,6 +92,9 @@ type BenchResult struct {
 	KernelDropsVisible      bool
 	KernelDrops             int64 // Linux only
 	Backpressure            int   // UDP sends retried because the OS send queue was full
+	QueueCapacity           int   // UDP: the receive queue's capacity in messages (SPEC §11.5)
+	QueueHighWater          int   // UDP: the most messages waiting in it at once
+	QueueDropped            int64 // UDP: dropped because it was full (counted, unlike kernel drops)
 
 	DataDir  string // where the files are (removed unless Keep or a given DataDir)
 	LogBytes int64  // bytes of log files written
@@ -88,6 +102,13 @@ type BenchResult struct {
 
 // OK reports whether every message sent arrived exactly once.
 func (r BenchResult) OK() bool { return r.Sent > 0 && r.Missing == 0 && r.Duplicates == 0 }
+
+// Accounted reports whether every message sent was stored once or counted as a
+// UDP queue drop (by the listener and by the store alike): nothing was lost
+// uncounted, in the kernel or anywhere else.
+func (r BenchResult) Accounted() bool {
+	return r.Sent > 0 && r.Duplicates == 0 && r.Missing == r.QueueDropped && r.StoreQueueFull == r.QueueDropped
+}
 
 // String is a human-readable summary.
 func (r BenchResult) String() string {
@@ -113,6 +134,19 @@ func (r BenchResult) String() string {
 			fmt.Fprintf(&b, "  kernel UDP drops: %d\n", r.KernelDrops)
 		} else {
 			b.WriteString("  kernel UDP drops: not visible on this OS\n")
+		}
+		fmt.Fprintf(&b, "  UDP queue: high-water %d of %d messages, %d dropped because it was full\n",
+			r.QueueHighWater, r.QueueCapacity, r.QueueDropped)
+		if r.Stalls > 0 {
+			fmt.Fprintf(&b, "  fake slow disk: %d stalls\n", r.Stalls)
+		}
+		switch {
+		case r.Missing == 0:
+		case r.Accounted():
+			b.WriteString("  every missing message was counted as a queue drop: none lost uncounted\n")
+		default:
+			fmt.Fprintf(&b, "  %d missing messages weren't counted by Woodshed (lost before it read them: the kernel or the network)\n",
+				r.Missing-r.QueueDropped)
 		}
 		if r.Backpressure > 0 {
 			fmt.Fprintf(&b, "  sender backpressure retries: %d\n", r.Backpressure)
@@ -182,7 +216,9 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	defer live.Close()
 
 	var writeErrs atomic.Int64
-	cfg := config.Listeners{UDPRcvbufBytes: o.RcvbufBytes, MaxMessageBytes: config.DefaultMaxMessageBytes}
+	var stalls atomic.Int64
+	cfg := config.Listeners{UDPRcvbufBytes: o.RcvbufBytes, MaxMessageBytes: config.DefaultMaxMessageBytes,
+		UDPQueueMessages: o.QueueMessages}
 	ln := config.Listener{Enabled: true, Addr: "127.0.0.1", Port: 0}
 	var certs *tlscert.Manager
 	var clientTLS *tls.Config
@@ -210,14 +246,19 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	default:
 		cfg.TCP = ln
 	}
+	stall := newStaller(o.StallEvery, o.StallFor)
 	lopts := listen.Options{
 		Logger: o.Logger,
 		Sink: func(m model.Message) {
+			if stall.wait() {
+				stalls.Add(1)
+			}
 			if st.Write(m) != nil {
 				writeErrs.Add(1)
 			}
 			live.Publish(m)
 		},
+		OnQueueDrop: st.DropQueued,
 	}
 	if certs != nil {
 		lopts.TLSCertificate = certs.Certificate
@@ -258,11 +299,12 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 		return res, sendErr
 	}
 
-	// Let the listener catch up: wait until it has passed on everything sent, or
-	// nothing new has arrived for Settle.
+	// Let the listener catch up: wait until it has passed on (or counted as
+	// dropped from its queue) everything sent, or nothing new has arrived for
+	// Settle.
 	last, lastChange := int64(-1), time.Now()
 	for {
-		n := srv.Status().Received
+		n := srv.Status().Received + queueDropped(srv.Status())
 		if n >= res.Sent {
 			break
 		}
@@ -273,21 +315,26 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	stat = srv.Status()
-	srv.Close()
+	srv.Close() // drains the UDP queue
 	listenerOpen = false
+	stat = srv.Status()
 	res.Listened = stat.Received
+	for _, q := range stat.UDPQueues {
+		res.QueueCapacity, res.QueueHighWater, res.QueueDropped = q.CapacityMessages, q.HighWater24h, q.Dropped
+	}
 	res.KernelDropsVisible, res.KernelDrops = stat.KernelDropsVisible, stat.KernelDrops
 
 	if err := st.Flush(); err != nil {
 		return res, fmt.Errorf("loadgen: flushing the store: %w", err)
 	}
 	u := st.Usage() // Written counts messages once they're in the files
+	res.StoreQueueFull = st.DropsByReason24h().QueueFull
 	if err := st.Close(); err != nil {
 		return res, fmt.Errorf("loadgen: closing the store: %w", err)
 	}
 	storeOpen = false
-	res.Stored, res.StoreDropped = u.Written, u.Dropped+writeErrs.Load()
+	res.Stored, res.StoreDropped = u.Written, u.Dropped-res.StoreQueueFull+writeErrs.Load()
+	res.Stalls = int(stalls.Load())
 
 	v, err := Verify(dir, res.RunID, int(res.Sent))
 	if err != nil {
@@ -296,6 +343,46 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	res.Received, res.Missing, res.Duplicates, res.Foreign, res.LogBytes = v.Received, v.Missing, v.Duplicates, v.Foreign, v.LogBytes
 	res.Elapsed = time.Since(t0)
 	return res, sendErr
+}
+
+// staller is the fake slow disk: from start, every `every`, writes block for
+// `for_`. Only the UDP drainer (one goroutine) or TCP connections call it.
+type staller struct {
+	start       time.Time
+	every, for_ time.Duration
+	mu          sync.Mutex
+	last        int // the stall last waited for
+}
+
+func newStaller(every, for_ time.Duration) *staller {
+	return &staller{start: time.Now(), every: every, for_: for_}
+}
+
+// wait blocks until the end of the stall in progress, if any, and reports
+// whether it was the first wait in that stall.
+func (s *staller) wait() bool {
+	if s == nil || s.every <= 0 || s.for_ <= 0 {
+		return false
+	}
+	el := time.Since(s.start)
+	k := int(el / s.every)
+	if k == 0 || el-time.Duration(k)*s.every >= s.for_ {
+		return false
+	}
+	time.Sleep(time.Duration(k)*s.every + s.for_ - el)
+	s.mu.Lock()
+	first := s.last != k
+	s.last = k
+	s.mu.Unlock()
+	return first
+}
+
+func queueDropped(st listen.Status) int64 {
+	var n int64
+	for _, q := range st.UDPQueues {
+		n += q.Dropped
+	}
+	return n
 }
 
 // VerifyResult is what Verify found on disk.
