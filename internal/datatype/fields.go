@@ -1,4 +1,4 @@
-package search
+package datatype
 
 import (
 	"strings"
@@ -7,10 +7,10 @@ import (
 	"github.com/gmccollu/woodshed/internal/syslog"
 )
 
-// fieldMatcher matches the program/tag and hostname that syslog.Parse reads
+// FieldMatcher matches the program/tag and hostname that syslog.Parse reads
 // from a message's header (model.Message.App and Hostname). It holds no state,
 // so the runs of one request can share it; each run brings its own Message.
-type fieldMatcher struct {
+type FieldMatcher struct {
 	apps, exApps   []appPattern
 	hosts, exHosts []string // lower-cased
 }
@@ -34,7 +34,7 @@ func appPatterns(apps []string) []appPattern {
 			p.prefix = true
 			a = strings.TrimRight(a, "*")
 		}
-		p.s = strings.ToLower(trimPct(a))
+		p.s = strings.ToLower(TrimPct(a))
 		out = append(out, p)
 	}
 	return out
@@ -50,9 +50,9 @@ func hostPatterns(hosts []string) []string {
 	return out
 }
 
-// newFieldMatcher returns nil when every list is empty.
-func newFieldMatcher(apps, hosts, exApps, exHosts []string) *fieldMatcher {
-	fm := fieldMatcher{apps: appPatterns(apps), hosts: hostPatterns(hosts), exApps: appPatterns(exApps), exHosts: hostPatterns(exHosts)}
+// NewFieldMatcher returns nil when every list is empty.
+func NewFieldMatcher(apps, hosts, exApps, exHosts []string) *FieldMatcher {
+	fm := FieldMatcher{apps: appPatterns(apps), hosts: hostPatterns(hosts), exApps: appPatterns(exApps), exHosts: hostPatterns(exHosts)}
 	if len(fm.apps) == 0 && len(fm.hosts) == 0 && len(fm.exApps) == 0 && len(fm.exHosts) == 0 {
 		return nil
 	}
@@ -61,7 +61,7 @@ func newFieldMatcher(apps, hosts, exApps, exHosts []string) *fieldMatcher {
 
 // trimPct drops one leading '%': syslog.Parse keeps it in App for a
 // "%FAC-N-MNEMONIC" tag, and people type the tag either way.
-func trimPct(s string) string { return strings.TrimPrefix(s, "%") }
+func TrimPct(s string) string { return strings.TrimPrefix(s, "%") }
 
 func hostIn(host string, hosts []string) bool {
 	for _, h := range hosts {
@@ -86,9 +86,9 @@ func appIn(app string, ps []appPattern) bool {
 	return false
 }
 
-// match parses raw into msg (the caller's scratch Message) and reports whether
+// Match parses raw into msg (the caller's scratch Message) and reports whether
 // its app and host pass.
-func (fm *fieldMatcher) match(raw []byte, msg *model.Message) bool {
+func (fm *FieldMatcher) Match(raw []byte, msg *model.Message) bool {
 	syslog.Parse(raw, msg)
 	if len(fm.hosts) > 0 && !hostIn(msg.Hostname, fm.hosts) {
 		return false
@@ -96,7 +96,7 @@ func (fm *fieldMatcher) match(raw []byte, msg *model.Message) bool {
 	if len(fm.exHosts) > 0 && msg.Hostname != "" && hostIn(msg.Hostname, fm.exHosts) {
 		return false
 	}
-	app := trimPct(msg.App)
+	app := TrimPct(msg.App)
 	if len(fm.apps) > 0 && (app == "" || !appIn(app, fm.apps)) {
 		return false
 	}

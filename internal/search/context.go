@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 // ContextPage is the /api/context response: lines around a hit, in file order.
@@ -40,6 +41,9 @@ func (e *Engine) Context(ctx context.Context, ref string, before, after int) (Co
 	files := make([]*fileInfo, 0, len(rows))
 	at := -1
 	for _, r := range rows {
+		if logfile.NormType(r.Type) != logfile.NormType(row.Type) {
+			continue // context stays within the ref's data type (SPEC §11.1)
+		}
 		fi := &fileInfo{File: r}
 		if r.ID == id {
 			at = len(files)

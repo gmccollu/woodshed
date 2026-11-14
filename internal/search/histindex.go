@@ -65,7 +65,7 @@ func (e *Engine) indexHistogram(ctx context.Context, st *sumState) ([]Bucket, er
 	}
 	idxOf := func(t int64) int { return int((bucketStart(t, st.bucketMs) - st.origin) / st.bucketMs) }
 
-	oldest, err := e.idx.OldestFiles(ctx, st.devs)
+	oldest, err := e.idx.OldestFilesOf(ctx, st.dt.Name(), st.devs)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func (e *Engine) indexHistogram(ctx context.Context, st *sumState) ([]Bucket, er
 		if q.a >= q.z {
 			continue
 		}
-		sums, err := e.idx.StatsBuckets(ctx, cutoffs, q.minute, q.a, q.z, st.origin, st.bucketMs)
+		sums, err := e.idx.StatsBucketsOf(ctx, st.dt.Name(), cutoffs, q.minute, q.a, q.z, st.origin, st.bucketMs)
 		if err != nil {
 			return nil, err
 		}
@@ -141,7 +141,7 @@ func (e *Engine) indexHistogram(ctx context.Context, st *sumState) ([]Bucket, er
 		for d := range need {
 			devs = append(devs, d)
 		}
-		spans, err := e.idx.FilesInRange(ctx, devs, time.UnixMilli(cpA), time.UnixMilli(cpZ))
+		spans, err := e.idx.FilesInRangeOf(ctx, st.dt.Name(), devs, time.UnixMilli(cpA), time.UnixMilli(cpZ))
 		if err != nil {
 			return nil, err
 		}

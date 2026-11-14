@@ -164,8 +164,11 @@ jobs:
   # SNMP interop (SPEC §11.6): the distribution's net-snmp command-line tools,
   # installed in CI only and never a dependency, send v1/v2c traps, v2c informs
   # and v3 traps and informs at every level and protocol combination the tools
-  # offer to a test listener built on internal/snmp (TestInterop). Secrets go in
-  # a temporary snmp.conf, not on the command line. Protocols the build lacks are
+  # offer: first to a test listener built on internal/snmp (TestInterop), then
+  # to a real running server, its SNMP listener, receiver and store, with the v3
+  # users added through /api/snmp/users, every trap found once by the trap
+  # search and every inform answered (TestServerInterop). Secrets go in a
+  # temporary snmp.conf, not on the command line. Protocols the build lacks are
   # skipped and listed in the job summary; the ones below must be there.
   snmp-interop:
     name: snmp interop (net-snmp)
@@ -187,6 +190,11 @@ jobs:
           WOODSHED_SNMP_INTEROP: "1"
           WOODSHED_SNMP_INTEROP_REQUIRE: md5,sha,sha-224,sha-256,sha-384,sha-512,aes-128
         run: go test -count=1 -run '^TestInterop$' -v ./internal/snmp/
+      - name: Interop against the server (TestServerInterop)
+        env:
+          WOODSHED_SNMP_INTEROP: "1"
+          WOODSHED_SNMP_INTEROP_REQUIRE: md5,sha,sha-224,sha-256,sha-384,sha-512,aes-128
+        run: go test -count=1 -run '^TestServerInterop$' -v ./internal/server/
 
   packaging:
     name: packaging (goreleaser, deb, rpm)

@@ -5,63 +5,25 @@ import (
 	"regexp"
 	"unicode/utf8"
 
-	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
+// Severity, Facility and PRI are the syslog type's (internal/datatype): the
+// storage line has no severity, so search and export read it from the raw
+// message.
+
 // Severity returns the syslog severity (0-7) of a raw message from its PRI, or
-// model.Unknown when it has no valid one. It applies exactly the rules of
-// syslog.Parse (leading BOMs, blanks, line breaks and NULs are skipped; the PRI
-// is "<" 1-3 digits ">" with a value up to 191), without the rest of the
-// parse: the storage line has no severity, so search and export read it from
-// the raw message.
-func Severity(raw []byte) int {
-	p := PRI(raw)
-	if p < 0 {
-		return model.Unknown
-	}
-	return p & 7
-}
+// model.Unknown when it has no valid one (datatype.Severity).
+func Severity(raw []byte) int { return datatype.Severity(raw) }
 
 // Facility returns the syslog facility (0-23) of a raw message from its PRI,
-// or model.Unknown when it has no valid one (the rules of Severity).
-func Facility(raw []byte) int {
-	p := PRI(raw)
-	if p < 0 {
-		return model.Unknown
-	}
-	return p >> 3
-}
+// or model.Unknown when it has no valid one (datatype.Facility).
+func Facility(raw []byte) int { return datatype.Facility(raw) }
 
 // PRI returns the PRI value (0-191) of a raw message, or -1 when it has no
-// valid one; see Severity for the rules.
-func PRI(raw []byte) int {
-	i := 0
-	for i < len(raw) {
-		c := raw[i]
-		if c == 0xEF && i+2 < len(raw) && raw[i+1] == 0xBB && raw[i+2] == 0xBF {
-			i += 3
-			continue
-		}
-		if c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == 0 {
-			i++
-			continue
-		}
-		break
-	}
-	if i >= len(raw) || raw[i] != '<' {
-		return -1
-	}
-	v, j := 0, i+1
-	for j < len(raw) && j-(i+1) < 3 && raw[j] >= '0' && raw[j] <= '9' {
-		v = v*10 + int(raw[j]-'0')
-		j++
-	}
-	if j == i+1 || j >= len(raw) || raw[j] != '>' || v > 191 {
-		return -1
-	}
-	return v
-}
+// valid one (datatype.PRI).
+func PRI(raw []byte) int { return datatype.PRI(raw) }
 
 // matcher matches q against a raw message (unescaped, without the stored
 // prefix).

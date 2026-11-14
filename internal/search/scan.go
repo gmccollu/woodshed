@@ -4,8 +4,6 @@ import (
 	"context"
 	"sort"
 	"time"
-
-	"github.com/gmccollu/woodshed/internal/hub"
 )
 
 // Hit is one matching line from a Scanner.
@@ -32,16 +30,16 @@ func (e *Engine) NewScanner(ctx context.Context, device string, f Filter) (*Scan
 	if err != nil {
 		return nil, err
 	}
-	r := &run{e: e, ctx: ctx, now: e.now(), m: c.m, ex: c.ex, fields: c.fields, sevs: f.Severities, facs: f.Facilities, need: 1, files: map[int64]struct{}{}, ringBytes: e.ringBytes}
+	r := &run{e: e, ctx: ctx, now: e.now(), m: c.m, ex: c.ex, dt: c.dt, tf: c.tf, need: 1, files: map[int64]struct{}{}, ringBytes: e.ringBytes}
 	if r.fromMs, r.toMs, err = e.resolveRange(f); err != nil {
 		return nil, err
 	}
-	files, err := e.filesByDevice(ctx, []string{device}, r.fromMs, r.toMs)
+	files, err := e.filesByDevice(ctx, f.Type, []string{device}, r.fromMs, r.toMs)
 	if err != nil {
 		return nil, err
 	}
 	s := newStream(device, files[device])
-	if f.Severities == hub.SeverityNone || f.Facilities == FacilityNone {
+	if c.none {
 		s.done = true
 	}
 	return &Scanner{r: r, s: s}, nil
@@ -99,10 +97,10 @@ func (e *Engine) Estimate(ctx context.Context, devices []string, f Filter) (Esti
 	if err != nil {
 		return est, err
 	}
-	if f.Severities == hub.SeverityNone || f.Facilities == FacilityNone {
-		return est, nil
+	if _, _, none, err := typeFilter(f); err != nil || none {
+		return est, err
 	}
-	files, err := e.filesByDevice(ctx, devices, fromMs, toMs)
+	files, err := e.filesByDevice(ctx, f.Type, devices, fromMs, toMs)
 	if err != nil {
 		return est, err
 	}

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
 	"github.com/gmccollu/woodshed/internal/syslog"
 )
@@ -104,12 +105,14 @@ func (k *keptReaders) len() int {
 	return len(k.m)
 }
 
-// pendLine is a found line, with its host and app as local intern IDs.
+// pendLine is a found line, with its host and app as local intern IDs (for
+// another data type, ext is its row of field value IDs in sumCollect.extIDs).
 type pendLine struct {
 	ms        int64
 	dev       int32
 	pri       int16
 	host, app int32 // -1: none
+	ext       int32 // -1: none
 }
 
 // localIntern gives the strings one collector sees small IDs, so lines found
@@ -146,6 +149,13 @@ type sumCollect struct {
 	apps       localIntern
 	onBlock    func() // called after each block of a pass (the main run drains there)
 	passBlocks int    // blocks read by passes, for tests
+
+	// Another data type than syslog: the field keys counted (genKeys, in
+	// order), a local intern per key, and each line's IDs, len(genKeys) a line.
+	dt      datatype.Type
+	genKeys []string
+	gens    []localIntern
+	extIDs  []int32
 }
 
 // add records one matching line. It runs after r.lines has finished with the
@@ -156,10 +166,33 @@ func (c *sumCollect) add(r *run, h hit) {
 		r.unesc = logfile.Unescape(r.unesc[:0], raw)
 		raw = r.unesc
 	}
-	p := pendLine{ms: h.ms, dev: c.dev, pri: int16(PRI(raw)), host: -1, app: -1}
+	if c.dt != nil && c.dt.Name() != TypeSyslog {
+		p := pendLine{ms: h.ms, dev: c.dev, pri: -1, host: -1, app: -1, ext: -1}
+		if len(c.genKeys) > 0 {
+			if len(c.gens) < len(c.genKeys) {
+				c.gens = make([]localIntern, len(c.genKeys))
+			}
+			p.ext = int32(len(c.extIDs) / len(c.genKeys))
+			row := len(c.extIDs)
+			c.extIDs = append(c.extIDs, make([]int32, len(c.genKeys))...)
+			for i := range c.genKeys {
+				c.extIDs[row+i] = -1
+			}
+			c.dt.FieldValues(raw, &r.sc, func(k, v string) {
+				for i, gk := range c.genKeys {
+					if gk == k {
+						c.extIDs[row+i] = c.gens[i].id(v)
+					}
+				}
+			})
+		}
+		c.pend = append(c.pend, p)
+		return
+	}
+	p := pendLine{ms: h.ms, dev: c.dev, pri: int16(PRI(raw)), host: -1, app: -1, ext: -1}
 	if c.fields {
-		syslog.Parse(raw, &r.msg)
-		p.host, p.app = c.hosts.id(r.msg.Hostname), c.apps.id(r.msg.App)
+		syslog.Parse(raw, &r.sc.Msg)
+		p.host, p.app = c.hosts.id(r.sc.Msg.Hostname), c.apps.id(r.sc.Msg.App)
 	}
 	c.pend = append(c.pend, p)
 }
@@ -235,22 +268,31 @@ func (st *sumState) drain(c *sumCollect) {
 		return li.tally[id]
 	}
 	for _, p := range c.pend {
-		h := held{ms: p.ms, dev: p.dev, pri: p.pri, host: idNone, app: idNone}
+		h := held{ms: p.ms, dev: p.dev, pri: p.pri, host: idNone, app: idNone, ext: -1}
 		if c.fields {
 			h.host = look(&c.hosts, st.host, false, p.host)
 			h.app = look(&c.apps, st.app, true, p.app)
 		}
+		if p.ext >= 0 {
+			n := len(c.genKeys)
+			row := st.extRow()
+			for i := 0; i < n; i++ {
+				st.extRows[row][i] = look(&c.gens[i], st.gen[i], false, c.extIDs[int(p.ext)*n+i])
+			}
+			h.ext = row
+		}
 		st.hold = append(st.hold, h)
 	}
 	c.pend = c.pend[:0]
+	c.extIDs = c.extIDs[:0]
 }
 
 // child is a run for one stream's step on another goroutine.
 func (r *run) child(dev int32) *run {
 	return &run{e: r.e, ctx: r.ctx, deadline: r.deadline, now: r.now, fromMs: r.fromMs, toMs: r.toMs, desc: true,
-		m: r.m, ex: r.ex, fields: r.fields, sevs: r.sevs, facs: r.facs, need: r.need, ringBytes: r.ringBytes,
+		m: r.m, ex: r.ex, dt: r.dt, tf: r.tf, need: r.need, ringBytes: r.ringBytes,
 		files: map[int64]struct{}{}, steps: r.steps, maxSteps: r.maxSteps,
-		sum: &sumCollect{kept: r.sum.kept, fields: r.sum.fields, dev: dev}}
+		sum: &sumCollect{kept: r.sum.kept, fields: r.sum.fields, dev: dev, dt: r.sum.dt, genKeys: r.sum.genKeys}}
 }
 
 // compressedNext reports whether the stream's next read is a compressed pass.
@@ -267,9 +309,12 @@ func (s *stream) compressedNext() bool {
 // summaryScan advances st's scan until the deadline or the end.
 func (e *Engine) summaryScan(ctx context.Context, st *sumState, c compiled, deadline time.Time) (int64, int, error) {
 	r := &run{e: e, ctx: ctx, deadline: deadline, maxSteps: e.testMaxSteps, now: e.now(), desc: true, m: c.m, ex: c.ex,
-		fields: c.fields, sevs: st.sevs, facs: st.facs, need: 1 << 30, files: map[int64]struct{}{}, ringBytes: math.MaxInt}
+		dt: c.dt, tf: c.tf, need: 1 << 30, files: map[int64]struct{}{}, ringBytes: math.MaxInt}
 	r.fromMs, r.toMs = st.fromMs, st.toMs
-	r.sum = &sumCollect{kept: st.kept, fields: slices.Contains(st.wantFields, FieldHost) || slices.Contains(st.wantFields, FieldApp)}
+	r.sum = &sumCollect{kept: st.kept, dt: st.dt, genKeys: st.genKeys}
+	if st.syslog() {
+		r.sum.fields = slices.Contains(st.wantFields, FieldHost) || slices.Contains(st.wantFields, FieldApp)
+	}
 	r.sum.onBlock = func() {
 		if len(r.sum.pend) >= 4096 {
 			st.drain(r.sum)
@@ -289,7 +334,7 @@ func (e *Engine) summaryScan(ctx context.Context, st *sumState, c compiled, dead
 		for i, cs := range cur.streams {
 			devs[i] = cs.dev
 		}
-		files, err := e.filesByDevice(ctx, devs, r.fromMs, r.toMs)
+		files, err := e.filesByDevice(ctx, st.dt.Name(), devs, r.fromMs, r.toMs)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -297,7 +342,7 @@ func (e *Engine) summaryScan(ctx context.Context, st *sumState, c compiled, dead
 			streams = append(streams, cs.resume(files[cs.dev], true))
 		}
 	} else {
-		files, err := e.filesByDevice(ctx, st.devs, r.fromMs, r.toMs)
+		files, err := e.filesByDevice(ctx, st.dt.Name(), st.devs, r.fromMs, r.toMs)
 		if err != nil {
 			return 0, 0, err
 		}

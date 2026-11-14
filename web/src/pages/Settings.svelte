@@ -19,6 +19,8 @@
   import PasswordForm from '../components/PasswordForm.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import TlsPanel from '../components/TlsPanel.svelte';
+  import SnmpPanel from '../components/SnmpPanel.svelte';
+  import { isCommunityHash } from '../lib/traps';
   import UpdatesSettings from '../components/UpdatesSettings.svelte';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
@@ -37,6 +39,14 @@
     tlsSource: 'woodshed' | 'file';
     tlsCertFile: string;
     tlsKeyFile: string;
+    snmpEnabled: boolean;
+    snmpAddr: string;
+    snmpPort: number;
+    snmpInforms: boolean;
+    /** "#<hash8>" for a stored community (sent back to keep it), the text of one added since the last save. */
+    snmpCommunities: string[];
+    snmpMibDir: string;
+    snmpEngineId: string;
     allowlist: string;
     blocklist: string;
     maxDevices: number;
@@ -83,6 +93,15 @@
 
   const round = (n: number, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
 
+  /** A community being typed; it's added to the draft list and sent on Save, then shown only as its hash. */
+  let newCommunity = $state('');
+  function addCommunity() {
+    const c = newCommunity;
+    if (!form || !c) return;
+    if (!form.snmpCommunities.includes(c)) form.snmpCommunities = [...form.snmpCommunities, c];
+    newCommunity = '';
+  }
+
   function toForm(s: Settings): Form {
     return {
       udpEnabled: s.listeners.udp.enabled,
@@ -98,6 +117,13 @@
       tlsSource: s.listeners.tls?.cert_file || s.listeners.tls?.key_file ? 'file' : 'woodshed',
       tlsCertFile: s.listeners.tls?.cert_file ?? '',
       tlsKeyFile: s.listeners.tls?.key_file ?? '',
+      snmpEnabled: !!s.listeners.snmp?.enabled,
+      snmpAddr: s.listeners.snmp?.addr ?? '0.0.0.0',
+      snmpPort: s.listeners.snmp?.port ?? 162,
+      snmpInforms: s.listeners.snmp?.answer_informs ?? true,
+      snmpCommunities: [...(s.listeners.snmp?.communities ?? [])],
+      snmpMibDir: s.listeners.snmp?.mib_dir ?? '',
+      snmpEngineId: s.listeners.snmp?.engine_id ?? '',
       allowlist: s.listeners.allowlist.join('\n'),
       blocklist: (s.listeners.blocklist ?? []).join('\n'),
       maxDevices: s.listeners.max_devices,
@@ -137,6 +163,20 @@
                 allow_legacy_tls: f.tlsLegacy,
                 cert_file: f.tlsSource === 'file' ? f.tlsCertFile.trim() : '',
                 key_file: f.tlsSource === 'file' ? f.tlsKeyFile.trim() : '',
+              },
+            }
+          : {}),
+        // Sent only to a server that has the SNMP trap listener (1.2 and later).
+        ...(saved?.listeners.snmp
+          ? {
+              snmp: {
+                enabled: f.snmpEnabled,
+                addr: f.snmpAddr.trim(),
+                port: n(f.snmpPort),
+                answer_informs: f.snmpInforms,
+                communities: [...f.snmpCommunities],
+                mib_dir: f.snmpMibDir.trim(),
+                engine_id: f.snmpEngineId.trim(),
               },
             }
           : {}),
@@ -263,7 +303,7 @@
   // tls or tls-failures. Each new link scrolls once, also when this page is already open.
   let scrolledFor = '';
   $effect(() => {
-    const m = /section=(limits|blocklist|storage|updates|tls-failures|tls)\b/.exec(router.query);
+    const m = /section=(limits|blocklist|storage|updates|tls-failures|tls|snmp-users|snmp-mibs|snmp-failures|snmp)\b/.exec(router.query);
     if (!form || !m || scrolledFor === router.query) return;
     scrolledFor = router.query;
     const id = m[1] === 'limits' ? 'sender-limits' : m[1];
@@ -298,6 +338,13 @@
     tlsSource: 'TLS certificate',
     tlsCertFile: 'TLS certificate file',
     tlsKeyFile: 'TLS private key file',
+    snmpEnabled: 'SNMP traps',
+    snmpAddr: 'SNMP bind address',
+    snmpPort: 'SNMP port',
+    snmpInforms: 'Answer informs',
+    snmpCommunities: 'Communities',
+    snmpMibDir: 'MIB folder',
+    snmpEngineId: 'Engine ID',
     allowlist: 'Sender allowlist',
     blocklist: 'Blocklist',
     maxDevices: 'Active devices',
@@ -322,10 +369,13 @@
     const t = parseAllowlist(String(v ?? '')).join(', ');
     return t || '(empty)';
   };
+  /** Communities are secrets: a new one is never shown again, here or in the conflict notice. */
+  const shownField = (k: keyof Form, v: unknown) =>
+    k === 'snmpCommunities' ? shown((v as string[]).map((c) => (isCommunityHash(c) ? c : '(new, hidden)')).join(' ')) : shown(v);
   function edits(from: Form, to: Form) {
     return (Object.keys(LABELS) as (keyof Form)[])
-      .filter((k) => shown(from[k]) !== shown(to[k]))
-      .map((k) => ({ key: k, label: LABELS[k], mine: shown(to[k]) }));
+      .filter((k) => shownField(k, from[k]) !== shownField(k, to[k]))
+      .map((k) => ({ key: k, label: LABELS[k], mine: shownField(k, to[k]) }));
   }
 
   async function reloadAfterConflict() {
@@ -364,6 +414,13 @@
     'listeners.tls.allow_legacy_tls',
     'listeners.tls.cert_file',
     'listeners.tls.key_file',
+    'listeners.snmp.enabled',
+    'listeners.snmp.addr',
+    'listeners.snmp.port',
+    'listeners.snmp.answer_informs',
+    'listeners.snmp.communities',
+    'listeners.snmp.mib_dir',
+    'listeners.snmp.engine_id',
     'listeners.allowlist',
     'listeners.blocklist',
     'listeners.max_devices',
@@ -417,6 +474,8 @@
     sentLists = {
       'listeners.allowlist': body.listeners.allowlist,
       'listeners.blocklist': body.listeners.blocklist,
+      // Communities by their hash, or "new community": a plain one is a secret.
+      'listeners.snmp.communities': (body.listeners.snmp?.communities ?? []).map((c) => (isCommunityHash(c) ? c : 'new community')),
       'ui.extra_hostnames': body.ui.extra_hostnames,
       'ui.trusted_hosts': body.ui.trusted_hosts,
     };
@@ -478,7 +537,7 @@
     `netsh advfirewall firewall add rule name="Woodshed UI" dir=in action=allow protocol=TCP localport=${port}`;
   const passwordSet = $derived(!!auth.session?.password_set);
   const isMac = $derived(live.status?.os.startsWith('darwin') ?? false);
-  const REASON: Record<string, string> = { allowlist: 'not on the allowlist', blocked: 'blocked', per_source: 'too many TCP connections' };
+  const REASON: Record<string, string> = { allowlist: 'not on the allowlist', blocked: 'blocked', per_source: 'too many TCP connections', community: 'SNMP community not on the list' };
 
   // A refused sender with reason "blocked": Unblock takes its own entry out of the draft
   // blocklist; a broader range that covers it is named instead (only the user can judge it).
@@ -831,6 +890,101 @@
 
         <div class="mt-4">
           <TlsPanel enabled={saved.listeners.tls.enabled} port={saved.listeners.tls.port} reload={saves} />
+        </div>
+      </section>
+    {/if}
+
+    {#if saved?.listeners.snmp}
+      <section class="card" id="snmp">
+        <h2 class="sec">SNMP traps</h2>
+        <p class="hint mt-0">
+          A trap receiver on UDP, for devices that send SNMP traps and informs (v1, v2c and v3). It's off until you turn it on. Traps are stored beside
+          each device's syslog, decoded as text with the packet kept, and searched in Events under SNMP traps.
+        </p>
+        <fieldset class="tlsrow">
+          <legend class="sr-only">SNMP trap listener</legend>
+          <label class="flex items-center gap-2 font-semibold sw">
+            <input type="checkbox" bind:checked={form.snmpEnabled} aria-invalid={!!err('listeners.snmp.enabled')} aria-describedby="err-listeners.snmp.enabled" />
+            SNMP traps
+          </label>
+          <label class="lbl grow-1">
+            <span>Bind address</span>
+            <input class="field font-mono" bind:value={form.snmpAddr} aria-invalid={!!err('listeners.snmp.addr')} aria-describedby="err-listeners.snmp.addr" spellcheck="false" />
+            {@render fieldError('listeners.snmp.addr')}
+          </label>
+          <label class="lbl w-40">
+            <span>UDP port</span>
+            <input class="field" type="number" bind:value={form.snmpPort} aria-invalid={!!err('listeners.snmp.port')} aria-describedby="err-listeners.snmp.port hint-snmpport" />
+            {@render fieldError('listeners.snmp.port')}
+          </label>
+          <div class="basis-full">
+            <span class="hint" id="hint-snmpport">Default 162, often held by the OS's own trap service; any free port works. Ports below 1024 need the same rights as 514.</span>
+            {@render fieldError('listeners.snmp.enabled')}
+          </div>
+        </fieldset>
+        {#if form.snmpEnabled && !saved.listeners.snmp.enabled && isWindows}
+          <div class="lanwarn" role="note">
+            On Windows, also run <code>woodshed snmp on</code> once in an administrator prompt, so the firewall lets devices in on UDP {form.snmpPort}.
+          </div>
+        {/if}
+
+        <label class="mt-4 flex items-start gap-3">
+          <input type="checkbox" bind:checked={form.snmpInforms} aria-describedby="hint-informs err-listeners.snmp.answer_informs" class="mt-1" />
+          <span>
+            <span class="font-semibold">Answer informs</span>
+            <span class="hint block" id="hint-informs">
+              Reply to InformRequests once they're stored. An unanswered inform is sent again (and stored again), and the device may report the
+              receiver as failing. Replies go only to allowed senders and are rate-limited.
+            </span>
+          </span>
+        </label>
+        {@render fieldError('listeners.snmp.answer_informs')}
+
+        <div class="mt-4" id="snmp-communities">
+          <span class="text-[14px] font-semibold">Communities (v1 and v2c)</span>
+          <p class="hint mt-0 mb-2">
+            Empty accepts any community. With a list, a trap with another community is refused and counted under refused senders. A community is often
+            also the device's read password, so it's shown only as a hash prefix, never as text.
+          </p>
+          {#if form.snmpCommunities.length}
+            <ul class="comms" aria-label="Accepted communities">
+              {#each form.snmpCommunities as c, i (c + i)}
+                <li>
+                  <code>{isCommunityHash(c) ? c : 'new community'}</code>{#if !isCommunityHash(c)}<span class="hint m-0"> (saved when you press Save)</span>{/if}
+                  <button
+                    type="button"
+                    class="x"
+                    aria-label="Remove {isCommunityHash(c) ? c : 'the new community'}"
+                    onclick={() => form && (form.snmpCommunities = form.snmpCommunities.filter((_, k) => k !== i))}>×</button
+                  >
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <label class="sr-only" for="new-community">New community</label>
+            <input id="new-community" class="field w-64" type="password" bind:value={newCommunity} autocomplete="off" placeholder="Add a community" onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), addCommunity())} />
+            <button type="button" class="ghost-btn" onclick={addCommunity} disabled={!newCommunity}>Add</button>
+          </div>
+          {@render fieldError('listeners.snmp.communities')}
+        </div>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="lbl">
+            <span>MIB folder</span>
+            <input class="field font-mono" bind:value={form.snmpMibDir} placeholder="Empty: the mibs folder in the data folder" spellcheck="false" aria-invalid={!!err('listeners.snmp.mib_dir')} aria-describedby="err-listeners.snmp.mib_dir" />
+            {@render fieldError('listeners.snmp.mib_dir')}
+          </label>
+          <label class="lbl">
+            <span>Engine ID override</span>
+            <input class="field font-mono" bind:value={form.snmpEngineId} placeholder="Empty: Woodshed's generated one" spellcheck="false" aria-invalid={!!err('listeners.snmp.engine_id')} aria-describedby="err-listeners.snmp.engine_id hint-engine" />
+            <span class="hint m-0" id="hint-engine">Only for senders configured with a fixed receiver engine ID (hex, 5 to 32 bytes).</span>
+            {@render fieldError('listeners.snmp.engine_id')}
+          </label>
+        </div>
+
+        <div class="mt-4">
+          <SnmpPanel enabled={saved.listeners.snmp.enabled} port={saved.listeners.snmp.port} reload={saves} />
         </div>
       </section>
     {/if}
@@ -1307,5 +1461,39 @@
   td {
     padding: 6px 10px;
     border-bottom: 1px solid var(--divider);
+  }
+  #snmp,
+  #snmp-communities {
+    scroll-margin-top: 90px;
+  }
+  .comms {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .comms li {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px 2px 10px;
+    border-radius: 999px;
+    background: var(--chip);
+    border: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .comms code {
+    font-family: var(--font-mono);
+  }
+  .comms .x {
+    border: 0;
+    background: none;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1;
+    padding: 0 4px;
   }
 </style>

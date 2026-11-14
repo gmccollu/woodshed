@@ -40,7 +40,9 @@ type device struct {
 	addr netip.Addr
 	id   string
 	ip   string
-	dir  string
+	ti   uint8  // the data type's index in logfile.DataTypes
+	typ  string // the data type ("syslog", "trap")
+	dir  string // the type's folder: the device folder, or its traps/ (SPEC §11.1)
 
 	mu     sync.Mutex
 	closed bool
@@ -76,9 +78,14 @@ type device struct {
 	dirtyPath string // what to fsync when f was closed while dirty (fileMu)
 }
 
-func newDevice(s *Store, addr netip.Addr) *device {
+func newDevice(s *Store, addr netip.Addr, ti uint8) *device {
 	id := model.DeviceID(addr)
-	return &device{s: s, addr: addr, id: id, ip: addr.String(), dir: filepath.Join(s.logsDir, id)}
+	t := logfile.DataTypes[ti]
+	dir := filepath.Join(s.logsDir, id)
+	if t.Dir != "" {
+		dir = filepath.Join(dir, t.Dir)
+	}
+	return &device{s: s, addr: addr, id: id, ip: addr.String(), ti: ti, typ: t.Name, dir: dir}
 }
 
 // Buffers: a device starts with a small buffer that grows by append, so many quiet
@@ -122,11 +129,11 @@ func (d *device) appendLocked(rec time.Time, m *model.Message) error {
 	if d.day == "" {
 		// A device recreated after eviction doesn't remember which days it closed;
 		// the catalog does. Never reopen a closed day.
-		for d.s.dayClosed(d.id, day) {
+		for d.s.dayClosed(d.typ, d.id, day) {
 			day = nextDay(day)
 		}
 		d.startDayLocked(day)
-		if e := d.s.takeParked(d.id, day); e != nil {
+		if e := d.s.takeParked(d.typ, d.id, day); e != nil {
 			d.adoptLocked(e)
 		}
 	}
@@ -210,7 +217,7 @@ func (d *device) startDayLocked(day string) {
 
 // fileRow is the index row for the active file as written.
 func (d *device) fileRow() index.File {
-	return index.File{DeviceID: d.id, Path: d.rel, Day: d.day, FirstReceived: d.w.first, LastReceived: d.w.last,
+	return index.File{DeviceID: d.id, Type: d.typ, Path: d.rel, Day: d.day, FirstReceived: d.w.first, LastReceived: d.w.last,
 		Size: d.w.size, RawSize: d.w.size, Lines: d.w.lines}
 }
 
@@ -305,7 +312,7 @@ func (d *device) collectLocked() {
 	}
 	acts := make([]index.Activity, len(d.act))
 	for i, a := range d.act {
-		acts[i] = index.Activity{DeviceID: d.id, IP: d.ip, Minute: time.UnixMilli(a.minute * 60000).UTC(),
+		acts[i] = index.Activity{DeviceID: d.id, IP: d.ip, Type: d.typ, Minute: time.UnixMilli(a.minute * 60000).UTC(),
 			FirstHeard: a.first, LastHeard: a.last, Counts: a.c}
 	}
 	d.act = d.act[:0]
@@ -465,7 +472,7 @@ func (d *device) rotateLocked(reason rotateReason) *catEntry {
 		d.s.pushOps(index.FileOp{Kind: index.OpRename, OldPath: rel, File: row})
 		name, abs, rel = nn, nabs, nrel
 	}
-	ce := &catEntry{deviceID: d.id, name: name, abs: abs, rel: rel, first: d.w.first, last: d.w.last,
+	ce := &catEntry{deviceID: d.id, typ: d.typ, name: name, abs: abs, rel: rel, first: d.w.first, last: d.w.last,
 		size: d.w.size, rawSize: d.w.size, lines: d.w.lines, syncing: true}
 	d.s.addClosed(ce)
 	d.s.queueClose(closeJob{e: ce, path: abs, dir: d.dir, renamed: reason != rotMidnight})
@@ -617,7 +624,7 @@ func (d *device) parkLocked() bool {
 			os.Remove(d.abs)
 		}
 	} else {
-		ce := &catEntry{deviceID: d.id, name: logfile.Name{Day: d.day}, abs: d.abs, rel: d.rel, first: d.w.first,
+		ce := &catEntry{deviceID: d.id, typ: d.typ, name: logfile.Name{Day: d.day}, abs: d.abs, rel: d.rel, first: d.w.first,
 			last: d.w.last, size: d.w.size, rawSize: d.w.size, lines: d.w.lines, parked: true, syncing: true, cp: d.wcp}
 		d.s.addClosed(ce)
 		d.s.activeBytes.Add(-d.w.size)

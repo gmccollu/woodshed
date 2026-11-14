@@ -9,10 +9,10 @@ import (
 )
 
 const upsertFileSQL = `
-INSERT INTO files (device_id, path, day, part, first_received, last_received, size, raw_size, lines, compressed)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO files (device_id, path, day, part, first_received, last_received, size, raw_size, lines, compressed, type)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (path) DO UPDATE SET
-	device_id = excluded.device_id, day = excluded.day, part = excluded.part,
+	device_id = excluded.device_id, type = excluded.type, day = excluded.day, part = excluded.part,
 	first_received = excluded.first_received, last_received = excluded.last_received,
 	size = excluded.size, raw_size = excluded.raw_size, lines = excluded.lines,
 	compressed = excluded.compressed
@@ -34,9 +34,15 @@ ON CONFLICT (id) DO UPDATE SET
 	total_msgs = total_msgs + excluded.total_msgs,
 	total_bytes = total_bytes + excluded.total_bytes`
 
+const upsertTypeStatsSQL = `
+INSERT INTO type_stats (device_id, type, minute, msgs, bytes, truncated, dropped) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (device_id, type, minute) DO UPDATE SET
+	msgs = msgs + excluded.msgs, bytes = bytes + excluded.bytes,
+	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped`
+
 const insertEventSQL = `INSERT INTO events (time, level, kind, device_id, text, source) VALUES (?, ?, ?, ?, ?, ?)`
 
-const insertDeletionSQL = `INSERT INTO deletions (time, file, device_id, bytes, reason) VALUES (?, ?, ?, ?, ?)`
+const insertDeletionSQL = `INSERT INTO deletions (time, file, device_id, bytes, reason, type) VALUES (?, ?, ?, ?, ?, ?)`
 
 // Apply applies a batch in one transaction.
 func (d *DB) Apply(ctx context.Context, b Batch) error {
@@ -111,7 +117,7 @@ func (s *stmts) upsertFile(f File) (int64, error) {
 	}
 	var id int64
 	err = st.QueryRowContext(s.ctx, f.DeviceID, f.Path, f.Day, f.Part, ms(f.FirstReceived), ms(f.LastReceived),
-		f.Size, f.RawSize, f.Lines, b2i(f.Compressed)).Scan(&id)
+		f.Size, f.RawSize, f.Lines, b2i(f.Compressed), fileType(f.Type)).Scan(&id)
 	return id, err
 }
 
@@ -145,9 +151,9 @@ func (s *stmts) fileOp(op *FileOp) error {
 			}
 		}
 		res, err := s.exec(`UPDATE files SET path = ?, device_id = ?, day = ?, part = ?, first_received = ?,
-			last_received = ?, size = ?, raw_size = ?, lines = ?, compressed = ? WHERE path = ?`,
+			last_received = ?, size = ?, raw_size = ?, lines = ?, compressed = ?, type = ? WHERE path = ?`,
 			f.Path, f.DeviceID, f.Day, f.Part, ms(f.FirstReceived), ms(f.LastReceived), f.Size, f.RawSize,
-			f.Lines, b2i(f.Compressed), op.OldPath)
+			f.Lines, b2i(f.Compressed), fileType(f.Type), op.OldPath)
 		if err != nil {
 			return fmt.Errorf("index: rename %s: %w", op.OldPath, err)
 		}
@@ -176,7 +182,7 @@ func (s *stmts) fileOp(op *FileOp) error {
 			return err
 		}
 		if del := op.Deletion; del != nil {
-			if _, err := s.exec(insertDeletionSQL, ms(del.Time), del.File, del.DeviceID, del.Bytes, string(del.Reason)); err != nil {
+			if _, err := s.exec(insertDeletionSQL, ms(del.Time), del.File, del.DeviceID, del.Bytes, string(del.Reason), fileType(del.Type)); err != nil {
 				return fmt.Errorf("index: record deletion: %w", err)
 			}
 			text := fmt.Sprintf("deleted %s (%s, %d bytes)", del.File, reasonText(del.Reason), del.Bytes)
@@ -200,9 +206,21 @@ func reasonText(r Reason) string {
 	return string(r)
 }
 
+// fileType is the stored form of a type: "" is syslog.
+func fileType(t string) string {
+	if t == "" {
+		return TypeSyslog
+	}
+	return t
+}
+
 func (s *stmts) activity(a Activity) error {
 	minute := a.Minute.Truncate(time.Minute)
-	if _, err := s.exec(upsertStatsSQL, a.DeviceID, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
+	if t := fileType(a.Type); t == TypeSyslog {
+		if _, err := s.exec(upsertStatsSQL, a.DeviceID, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
+			return err
+		}
+	} else if _, err := s.exec(upsertTypeStatsSQL, a.DeviceID, t, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
 		return err
 	}
 	if strings.HasPrefix(a.DeviceID, "_") {
@@ -295,7 +313,21 @@ ON CONFLICT (device_id, hour) DO UPDATE SET
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	return n, tx.Commit()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO type_stats_hourly (device_id, type, hour, msgs, bytes, truncated, dropped)
+SELECT device_id, type, (minute / 3600000) * 3600000, sum(msgs), sum(bytes), sum(truncated), sum(dropped)
+FROM type_stats WHERE minute < ? GROUP BY device_id, type, minute / 3600000
+ON CONFLICT (device_id, type, hour) DO UPDATE SET
+	msgs = msgs + excluded.msgs, bytes = bytes + excluded.bytes,
+	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped`, b); err != nil {
+		return 0, fmt.Errorf("index: type stats rollup: %w", err)
+	}
+	res, err = tx.ExecContext(ctx, `DELETE FROM type_stats WHERE minute < ?`, b)
+	if err != nil {
+		return 0, err
+	}
+	m, _ := res.RowsAffected()
+	return n + m, tx.Commit()
 }
 
 // Prune deletes stats buckets (minute and hourly) starting before statsBefore, and
@@ -306,6 +338,12 @@ func (d *DB) Prune(ctx context.Context, statsBefore, historyBefore time.Time) er
 			return err
 		}
 		if _, err := d.db.ExecContext(ctx, `DELETE FROM stats_hourly WHERE hour < ?`, ms(statsBefore.UTC().Truncate(time.Hour))); err != nil {
+			return err
+		}
+		if _, err := d.db.ExecContext(ctx, `DELETE FROM type_stats WHERE minute < ?`, ms(statsBefore)); err != nil {
+			return err
+		}
+		if _, err := d.db.ExecContext(ctx, `DELETE FROM type_stats_hourly WHERE hour < ?`, ms(statsBefore.UTC().Truncate(time.Hour))); err != nil {
 			return err
 		}
 	}

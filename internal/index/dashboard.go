@@ -14,8 +14,12 @@ func (d *DB) DropCounts(ctx context.Context, from time.Time) (truncated, dropped
 	err = d.db.QueryRowContext(ctx, `SELECT COALESCE(sum(t), 0), COALESCE(sum(dr), 0) FROM (
 		SELECT sum(truncated) AS t, sum(dropped) AS dr FROM stats WHERE minute >= ? AND (dropped > 0 OR truncated > 0)
 		UNION ALL
-		SELECT sum(truncated), sum(dropped) FROM stats_hourly WHERE hour >= ? AND (dropped > 0 OR truncated > 0))`,
-		fromMin, fromHour).Scan(&truncated, &dropped)
+		SELECT sum(truncated), sum(dropped) FROM stats_hourly WHERE hour >= ? AND (dropped > 0 OR truncated > 0)
+		UNION ALL
+		SELECT sum(truncated), sum(dropped) FROM type_stats WHERE minute >= ? AND (dropped > 0 OR truncated > 0)
+		UNION ALL
+		SELECT sum(truncated), sum(dropped) FROM type_stats_hourly WHERE hour >= ? AND (dropped > 0 OR truncated > 0))`,
+		fromMin, fromHour, fromMin, fromHour).Scan(&truncated, &dropped)
 	return truncated, dropped, err
 }
 
@@ -61,8 +65,9 @@ func (d *DB) DevicesByID(ctx context.Context, ids []string, rateFrom, rateTo tim
 	}
 	in, idArgs := inList(ids)
 	rows, err := d.db.QueryContext(ctx, `SELECT `+deviceCols+`,
-		(SELECT COALESCE(sum(s.msgs), 0) FROM stats s WHERE s.device_id = d.id AND s.minute >= ? AND s.minute < ?)
-		FROM devices d WHERE d.id IN `+in, append([]any{ms(rateFrom.Truncate(time.Minute)), to}, idArgs...)...)
+		(SELECT COALESCE(sum(s.msgs), 0) FROM stats s WHERE s.device_id = d.id AND s.minute >= ? AND s.minute < ?) +
+		(SELECT COALESCE(sum(s.msgs), 0) FROM type_stats s WHERE s.device_id = d.id AND s.minute >= ? AND s.minute < ?)
+		FROM devices d WHERE d.id IN `+in, append([]any{ms(rateFrom.Truncate(time.Minute)), to, ms(rateFrom.Truncate(time.Minute)), to}, idArgs...)...)
 	if err != nil {
 		return nil, err
 	}

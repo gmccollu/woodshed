@@ -7,6 +7,34 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 ## [1.2.0] - unreleased
 
 ### Added
+- An SNMP trap receiver, off until you turn it on in **Settings → SNMP traps** or with `woodshed snmp on` (UDP 162):
+  SNMPv1, v2c and v3 traps and informs. Each trap is stored as one decoded line in the device's `traps` folder, with
+  its values, the names known from the built-in set and a folder of MIB files, and the raw packet in base64.
+  Malformed packets and failed v3 traps are kept too, with their status. Informs are answered once stored, at most
+  100 replies a second per sender. See [docs/user-guide.md](docs/user-guide.md#receiving-snmp-traps).
+- v3 users are managed in Settings: MD5, SHA-1 and SHA-2 authentication, DES and AES-128/192/256 privacy (with both
+  AES-192/256 key formats), weak protocols labelled. Passphrases are write-only, encrypted for the service's account
+  on Windows and readable only by it elsewhere, and never on a command line, in a log or an export. An optional
+  community list refuses v1/v2c traps with other communities; communities are stored only as a hash prefix and
+  masked in the stored packet.
+- **Events** has a **Syslog | SNMP traps** switch: traps get their own fields (version, PDU, trap, enterprise,
+  generic and specific trap, community or user, status), filters that take OIDs, OID prefixes or MIB names, a decoded
+  view, the histogram and saved searches. `woodshed search --type trap` does the same from a terminal.
+- **Settings → SNMP traps** shows Woodshed's v3 engine ID, the MIB folder and its errors (**Reload MIBs**), the last
+  24 hours by status, and the senders whose traps fail, with the reason. A v3 device that restarts without raising its
+  boot counter has its clock relearned (counted per sender) instead of losing its traps; `v3_strict_time = true`
+  keeps the protocol's strict rule.
+- `woodshed snmp on|off|status`: turns the receiver and its firewall rule on or off (Windows: the installer's
+  "Woodshed SNMP traps (UDP 162)" rule, added turned off; Linux: ufw or firewalld when active), and prints the
+  receiver's state. `woodshed status` shows it too.
+- `woodshed bench --proto trap` measures the whole trap pipeline (v1, v2c, v3, informs) and checks that every trap
+  arrived exactly once.
+- The device page counts every type of record, and a device that sends only traps is online.
+- API: `type=trap` on search, summary, context and saved searches; `/api/snmp`, `/api/snmp/failures`,
+  `/api/snmp/mibs/reload` and `/api/snmp/users`; `listeners.snmp` in settings; `types` and `kind` on exports, which
+  put traps in a `traps/` folder; each device's `types` and `lines_by_type`; the storage history's `type`; banner
+  kinds `snmp_firewall`, `snmp_credentials` and `snmp_mibs`; the refusal reason `community`
+  ([docs/api.md](docs/api.md)).
 - `woodshed search` searches the stored logs from the command line with the Events engine: the same text, Terms and
   Regex modes and every filter (devices, groups, severities, facilities, programs/tags, hosts, their exclusions, and
   `--field KEY=V` / `--not-field KEY=V` for any field), compressed days included. Output is the stored lines, the
@@ -29,9 +57,13 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - `woodshed send` can send SNMP traps and informs for testing (`--proto trap`): SNMPv1, v2c and v3 at every
   security level, with MD5, SHA-1 or SHA-2 authentication and DES or AES-128/192/256 privacy. Informs wait for each
   answer and report round-trip times and timeouts. Communities and passphrases are read from a file or an
-  environment variable, never from the command line. It's the test tool for the SNMP trap receiver coming in 1.2.
+  environment variable, never from the command line.
 
 ### Changed
+- The index migrates once at the first start (each file's data type, the traps' own counters). Syslog files, their
+  place and their format don't change; to go back to 1.1, move `index.db` aside and run 1.1's `woodshed reindex`,
+  which ignores the `traps` folders.
+- Retention, the size cap and the low-disk guard count a device's syslog and traps together, oldest file first.
 - When Woodshed stops, it stores the UDP messages still queued first, for at most a third of the shutdown time
   (5 seconds for the service); any left then are counted as dropped.
 

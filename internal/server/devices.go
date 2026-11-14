@@ -23,6 +23,7 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 		page, err := b.devicesByLiveRate(ctx, q, now, k)
 		k.mark(page.Devices)
 		b.markTLS(page.Devices)
+		b.markTypes(ctx, page.Devices)
 		return page, err
 	}
 	iq := index.DeviceQuery{
@@ -63,6 +64,7 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 	}
 	k.mark(out.Devices)
 	b.markTLS(out.Devices)
+	b.markTypes(ctx, out.Devices)
 	return out, nil
 }
 

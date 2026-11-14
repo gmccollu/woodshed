@@ -33,7 +33,19 @@
 # certificate (owned by the service's account, mode 0600); 1,000 messages sent from another
 # process with `woodshed send --proto tls --ca` (checking the downloaded CA) are on disk
 # exactly once; with SMOKE_UFW=1 on Linux, ufw is turned on first and `tls on` then `tls off`
-# leave its rules as they were.
+# leave its rules as they were. And SNMP traps (SPEC §11.2.7, §11.6): the listener is off after
+# every install, reinstall and the upgrade from an older package (legacy, and upgrade below);
+# `woodshed snmp on` restarts the service, which then holds UDP 162 (on macOS on the wildcard,
+# as _woodshed) and makes snmp-engine.json (owned by the service's account, 0600); 1,000 v2c
+# traps and 20 informs (each answered) sent from another process are stored exactly once,
+# counted with `woodshed search --type trap`; with SMOKE_UFW=1, `snmp on` then `snmp off`
+# leave the ufw rules as they were.
+#
+#   scripts/smoke/unix.sh upgrade OLD NEW   # an earlier Woodshed package (1.1), then this one over it
+#
+# upgrade: OLD is an earlier Woodshed release's deb, rpm or pkg (1.1, without [listeners.snmp]
+# in its config); after NEW goes over it the SNMP listener must still be off, and the old
+# messages still there.
 # VERIFYSEQ points at a built scripts/verifyseq; SMOKE_LOGS is where logs are collected.
 set -euo pipefail
 
@@ -320,6 +332,109 @@ ignored_invalid() {
 	fi
 }
 
+snmp_listener() { # snmp_listener on|off: wait until /api/status lists an ok SNMP listener on 162, or none
+	local want=$1
+	for _ in $(seq 60); do
+		if curl -fsS --max-time 2 "$UI/api/status" -o /tmp/status.json 2>/dev/null &&
+			WANT=$want python3 -c 'import json,os,sys; d=json.load(open("/tmp/status.json")); s=[l for l in d["listeners"] if l["proto"] == "snmp"]; sys.exit(0 if (os.environ["WANT"] == "on" and len(s) == 1 and s[0]["ok"] and s[0]["port"] == 162) or (os.environ["WANT"] == "off" and not s) else 1)'; then
+			return 0
+		fi
+		sleep 1
+	done
+	cat /tmp/status.json 2>/dev/null || true
+	die "the SNMP listener isn't $want within 60 s"
+}
+
+snmp_off() { # snmp_off <what>: nothing turns SNMP on by itself (SPEC §11.7)
+	snmp_listener off
+	curl -fsS "$UI/api/settings" | python3 -c 'import json,sys; sys.exit(1 if json.load(sys.stdin)["listeners"]["snmp"]["enabled"] else 0)' ||
+		die "listeners.snmp.enabled is true after $1"
+	ok "the SNMP listener is off after $1 (no listener, listeners.snmp.enabled = false)"
+}
+
+verify_traps() { # verify_traps <woodshed binary> <run id> <n>: each sequence number stored exactly once
+	local bin=$1 run=$2 n=$3 res=""
+	for _ in $(seq 30); do
+		# As root on the service's folder: woodshed search never writes there (SPEC §11.4).
+		res=$($SUDO "$bin" search --type trap --data "$DATA" --last 1h --raw "seq=$run:" 2>/dev/null |
+			RUN=$run N=$n python3 -c '
+import os, re, sys
+run, n = os.environ["RUN"], int(os.environ["N"])
+seen, dups = {}, 0
+for line in sys.stdin:
+    for m in re.finditer("seq=" + re.escape(run) + r":(\d+)", line):
+        k = int(m.group(1))
+        dups += k in seen
+        seen[k] = 1
+missing = sum(1 for k in range(n) if k not in seen)
+print(f"{len(seen)} {missing} {dups}")
+sys.exit(0 if missing == 0 and dups == 0 else (2 if dups else 1))') && { ok "trap run $run: $n of $n stored, no duplicates (woodshed search --type trap)"; return 0; }
+		case "$res" in *" "*" "[1-9]*) die "trap run $run: duplicates ($res: found missing dups)" ;; esac
+		sleep 1
+	done
+	die "trap run $run: not all stored after 30 s (found, missing, duplicates: $res)"
+}
+
+snmp_check() { # snmp_check <woodshed binary>: snmp on, traps and informs from another process, snmp off
+	local bin=$1 run irun out pid ufw_before="" ufw_after
+	say "SNMP traps: woodshed snmp on, 1,000 traps and 20 informs, woodshed snmp off"
+	snmp_off "the install"
+	if [ "$os" = Linux ] && [ "${SMOKE_UFW:-}" = 1 ] && command -v ufw >/dev/null 2>&1; then
+		$SUDO ufw --force enable >/dev/null
+		ufw_before=$($SUDO ufw status | tee "$LOGS/ufw-before-snmp.txt")
+	fi
+	out=$($SUDO "$bin" snmp on 2>&1) || die "woodshed snmp on failed: $out"
+	echo "$out"
+	echo "$out" | grep -q "Turned the SNMP trap receiver on (UDP port 162)" || die "snmp on: unexpected output"
+	echo "$out" | grep -q "Restarted the service" || die "snmp on didn't restart the service"
+	snmp_listener on
+	wait_up
+	pid=$(service_pid)
+	if [ "$os" = Darwin ]; then
+		$SUDO lsof -nP -a -p "$pid" -i UDP:162 | tee /dev/stderr | grep -q '\*:162' || die "pid $pid doesn't hold UDP 162 on the wildcard"
+		ok "$ACCOUNT bound UDP 162 on the wildcard address (a non-root launchd daemon, SPEC §11.2.1)"
+	else
+		$SUDO ss -H -lnup 'sport = :162' | tee /dev/stderr | grep -q "pid=$pid," || die "pid $pid doesn't hold UDP 162"
+		ok "pid $pid holds UDP 162 (CAP_NET_BIND_SERVICE)"
+	fi
+	[ "$(file_owner_mode "$DATA/snmp-engine.json")" = "$ACCOUNT 600" ] ||
+		die "$DATA/snmp-engine.json is $(file_owner_mode "$DATA/snmp-engine.json"), not $ACCOUNT 600"
+	ok "the service made snmp-engine.json: owned by $ACCOUNT, mode 0600"
+	if [ -n "$ufw_before" ]; then
+		$SUDO ufw status | grep -q "162/udp" || die "snmp on didn't open 162/udp in ufw"
+		ok "snmp on opened 162/udp in the active ufw"
+	fi
+	run=$(run_id)
+	woodshed_cmd send --host 127.0.0.1 --proto trap --port 162 --count 1000 --rate 2000 --run "$run" >/dev/null ||
+		die "woodshed send --proto trap failed"
+	verify_traps "$bin" "$run" 1000
+	irun=$(run_id)
+	woodshed_cmd send --host 127.0.0.1 --proto trap --port 162 --inform --count 20 --rate 100 --run "$irun" ||
+		die "woodshed send --proto trap --inform: not every inform was answered"
+	ok "20 informs answered (woodshed send --inform exits 0 only when every Response arrives)"
+	verify_traps "$bin" "$irun" 20
+	out=$($SUDO "$bin" status 2>&1) || true
+	echo "$out" | grep -q "SNMP traps: *on, UDP 162" || { echo "$out"; die "woodshed status doesn't show SNMP on"; }
+	echo "$out" | grep -q "SNMP engine: *80000000" || { echo "$out"; die "woodshed status doesn't show the engine ID"; }
+	ok "woodshed status shows the SNMP listener and its engine ID"
+	out=$($SUDO "$bin" snmp status 2>&1) || die "woodshed snmp status failed: $out"
+	echo "$out" | grep -q "SNMP 24 h: *[0-9]* received" || { echo "$out"; die "woodshed snmp status doesn't show the last 24 h"; }
+	ok "woodshed snmp status shows the last 24 h"
+	out=$($SUDO "$bin" snmp off 2>&1) || die "woodshed snmp off failed: $out"
+	echo "$out"
+	wait_up
+	snmp_listener off
+	ok "woodshed snmp off turned the listener off"
+	if [ -n "$ufw_before" ]; then
+		ufw_after=$($SUDO ufw status | tee "$LOGS/ufw-after-snmp.txt")
+		[ "$ufw_before" = "$ufw_after" ] || die "ufw rules differ after snmp on and off"
+		$SUDO ufw --force disable >/dev/null
+		ok "snmp on then off left the ufw rules as they were"
+	fi
+	$SUDO test -e "$DATA/snmp-engine.json" || die "snmp off deleted the engine file"
+	ok "snmp off kept the engine ID (devices configured with it need no change)"
+}
+
 case "$mode" in
 deb | rpm)
 	pm=apt-get
@@ -341,6 +456,7 @@ deb | rpm)
 		die "kernel_dropped_24h isn't a number on Linux"
 	ok "kernel UDP drops are visible on Linux"
 	tls_check "$(command -v woodshed)"
+	snmp_check "$(command -v woodshed)"
 	refuses "package already installed" $SUDO "$(command -v woodshed)" install
 	refuses "installed by the package" $SUDO "$(command -v woodshed)" uninstall
 	restart_service
@@ -354,6 +470,7 @@ deb | rpm)
 	echo "$out"
 	ignored_invalid off "$out"
 	wait_up
+	snmp_off "a reinstall"
 	say "reindex: refused as root, works as the service's user (re-test N1)"
 	$SUDO systemctl stop woodshed.service
 	refuses "sudo -u woodshed" $SUDO "$(command -v woodshed)" reindex
@@ -429,6 +546,7 @@ pkg)
 	} | tee "$LOGS/firewall.txt"
 	ok "application firewall on during the install: state above (no GUI session, so no prompt could show); traffic arrived"
 	tls_check /usr/local/bin/woodshed
+	snmp_check /usr/local/bin/woodshed
 	refuses "package already installed" $SUDO "$(command -v woodshed)" install
 	refuses "installed by the package" $SUDO "$(command -v woodshed)" uninstall
 	restart_service
@@ -495,6 +613,7 @@ manual)
 	traffic "$r1"
 	check_status_cmd
 	tls_check /usr/local/bin/woodshed
+	snmp_check /usr/local/bin/woodshed
 	refuses "already installed" $SUDO "$BIN" install
 	restart_service
 	still_there "$r1" "a restart"
@@ -591,8 +710,43 @@ legacy)
 	echo "$out" | grep -q "old Woodpile data in $OLD_DATA" || die "woodshed status doesn't name the old data folder"
 	echo "$out" | grep -q "old Woodpile service" && die "woodshed status still sees the old service"
 	ok "woodshed status names the old data folder, and no old service"
+	snmp_off "the upgrade from an older version (Woodpile's package)"
 	r1=$(run_id)
 	traffic "$r1"
+	;;
+upgrade)
+	old_pkg=$(realpath "$artifact")
+	new_pkg=$(realpath "${3:?upgrade needs the old and the new package}")
+	if [ "$os" = Darwin ]; then
+		install_pkg() { $SUDO installer -pkg "$1" -target /; }
+	elif [ "${old_pkg%.deb}" != "$old_pkg" ]; then
+		install_pkg() { $SUDO apt-get install -y --allow-downgrades "$1"; }
+	else
+		install_pkg() { $SUDO dnf install -y "$1"; }
+	fi
+	say "the earlier Woodshed package: $old_pkg"
+	install_pkg "$old_pkg"
+	check_running
+	r1=$(run_id)
+	traffic "$r1"
+	if $SUDO grep -q '^\[listeners.snmp\]' "$CFG"; then echo "note: the earlier package's config already has [listeners.snmp]"; fi
+	say "this package over it: $new_pkg"
+	install_pkg "$new_pkg"
+	check_running
+	still_there "$r1" "the upgrade"
+	snmp_off "the upgrade from the earlier Woodshed package"
+	snmp_check "$(command -v woodshed)"
+	say "remove it all again, for the next step"
+	if [ "$os" = Darwin ]; then
+		$SUDO /usr/local/share/woodshed/uninstall.sh --delete-logs
+	elif [ "${old_pkg%.deb}" != "$old_pkg" ]; then
+		$SUDO apt-get purge -y woodshed
+	else
+		$SUDO dnf remove -y woodshed
+		$SUDO rm -rf "$DATA" /etc/woodshed
+	fi
+	gone
+	data_gone
 	;;
 *)
 	echo "unknown mode $mode" >&2

@@ -64,6 +64,8 @@ type Listeners struct {
 	TCP Listener `toml:"tcp" json:"tcp" comment:"Syslog over TCP (octet-counted or newline-framed, detected per message)."`
 	// TLS is syslog over TLS (tls.go), off by default.
 	TLS TLSListener `toml:"tls" json:"tls" comment:"Syslog over TLS (RFC 5425), TCP 6514 by default. Off until you turn it on."`
+	// SNMP is the SNMP trap receiver (snmp.go), off by default.
+	SNMP SNMPListener `toml:"snmp" json:"snmp" comment:"SNMP traps and informs (v1, v2c, v3), UDP 162 by default. Off until you turn it on. v3 users and communities are set in Settings and kept in the data folder, not here."`
 	// Allowlist holds IPs or CIDRs; empty accepts every sender.
 	Allowlist []string `toml:"allowlist" json:"allowlist" comment:"Accept messages only from these IPs or CIDRs, e.g. [\"192.0.2.0/24\", \"2001:db8::1\"]. Empty accepts everyone."`
 	// Blocklist holds IPs or CIDRs whose messages are refused; it wins over the
@@ -150,6 +152,7 @@ func Default() Config {
 			UDP:             Listener{Enabled: true, Addr: DefaultListenAddr, Port: DefaultSyslogPort},
 			TCP:             Listener{Enabled: true, Addr: DefaultListenAddr, Port: DefaultSyslogPort},
 			TLS:             TLSListener{Addr: DefaultListenAddr, Port: DefaultTLSPort},
+			SNMP:            DefaultSNMP(),
 			Allowlist:       []string{},
 			Blocklist:       []string{},
 			UDPRcvbufBytes:  DefaultUDPRcvbufBytes,
@@ -183,6 +186,7 @@ func Default() Config {
 func (c Config) Clone() Config {
 	c.Listeners.Allowlist = append([]string{}, c.Listeners.Allowlist...)
 	c.Listeners.Blocklist = append([]string{}, c.Listeners.Blocklist...)
+	c.Listeners.SNMP.Communities = append([]string{}, c.Listeners.SNMP.Communities...)
 	c.UI.ExtraHostnames = append([]string{}, c.UI.ExtraHostnames...)
 	c.UI.TrustedHosts = append([]string{}, c.UI.TrustedHosts...)
 	return c
@@ -199,6 +203,9 @@ func (c *Config) Normalize() {
 	}
 	c.Listeners.Allowlist = al
 	c.Listeners.Blocklist = trimList(c.Listeners.Blocklist)
+	if c.Listeners.SNMP.Communities == nil {
+		c.Listeners.SNMP.Communities = []string{}
+	}
 	c.UI.ExtraHostnames = normalizeHosts(c.UI.ExtraHostnames)
 	c.UI.TrustedHosts = normalizeHosts(c.UI.TrustedHosts)
 	if c.Listeners.UDPRcvbufBytes == 0 {

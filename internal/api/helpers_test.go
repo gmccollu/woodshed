@@ -98,6 +98,7 @@ func newFakeBackend() *fakeBackend {
 				UDP:        ListenerSettings{Enabled: true, Addr: "0.0.0.0", Port: 514},
 				TCP:        ListenerSettings{Enabled: true, Addr: "0.0.0.0", Port: 514},
 				MaxDevices: 10000, NewDeviceBurst: 5000, NewDevicesPerMinute: 200,
+				SNMP: &SNMPListenerSettings{Addr: "0.0.0.0", Port: 162, AnswerInforms: true},
 			},
 			Storage: StorageSettings{DataDir: "/data", RetentionDays: 30, RetentionBytes: 21474836480, PartBytes: 104857600},
 			UI:      UISettings{Port: 0}, // tests run on port 0; a different port here would restart the server onto it
@@ -110,7 +111,7 @@ func newFakeBackend() *fakeBackend {
 			Latest:          &LatestRelease{Version: "1.2.0", URL: "https://example.invalid/releases/tag/v1.2.0"},
 			UpdateAvailable: true,
 		},
-		history: []StorageEntry{{Time: ts("2026-11-09T00:00:01Z"), File: "logs/10.1.0.1/2026-10-10.log.gz", DeviceID: "10.1.0.1", Bytes: 1234, Reason: "age"}},
+		history: []StorageEntry{{Time: ts("2026-11-09T00:00:01Z"), File: "logs/10.1.0.1/2026-10-10.log.gz", DeviceID: "10.1.0.1", Bytes: 1234, Reason: "age", Type: "syslog"}},
 	}
 	for i, d := range []Device{
 		{ID: "10.1.0.1", IP: "10.1.0.1", Name: "edge-fw-01", Group: "HQ", Status: "online", MsgsPerMin: 36720, TotalMsgs: 9123456, BytesOnDisk: 123456789},
@@ -119,6 +120,8 @@ func newFakeBackend() *fakeBackend {
 	} {
 		d.FirstSeen = ts("2026-11-01T00:00:00Z").Add(time.Duration(i) * time.Hour)
 		d.LastHeard = ts("2026-11-10T20:59:00Z")
+		d.Types = []string{"syslog", "trap"}
+		d.LinesByType = map[string]int64{"syslog": d.TotalMsgs, "trap": 0}
 		b.devices[d.ID] = d
 		b.order = append(b.order, d.ID)
 	}

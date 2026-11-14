@@ -29,9 +29,14 @@ import (
 //     appends to it on its next message. Every other uncompressed file is queued
 //     for compression.
 func (s *Store) recover(ctx context.Context) error {
-	entries, temps, err := logfile.List(s.dataDir)
+	entries, temps, unknown, err := logfile.ListAll(s.dataDir)
 	if err != nil {
 		return err
+	}
+	// A folder inside a device folder that no data type claims is left alone
+	// (SPEC §11.1), and said once per start.
+	for _, u := range unknown {
+		s.log.Info("store: ignoring a folder no data type claims", "folder", u)
 	}
 	var notes []string
 	removed := 0
@@ -55,7 +60,7 @@ func (s *Store) recover(ctx context.Context) error {
 		}
 		gz := e.Name
 		gz.Compressed = true
-		g, ok := byRel[logfile.RelPath(e.DeviceID, gz)]
+		g, ok := byRel[logfile.RelPathType(e.Type, e.DeviceID, gz)]
 		if !ok {
 			continue
 		}
@@ -115,17 +120,20 @@ func (s *Store) recover(ctx context.Context) error {
 		return err
 	}
 	today := logfile.DayOf(s.clock())
-	var devOrder []string
-	byDev := map[string][]logfile.Entry{}
+	// Each device's data type has its own active file (SPEC §11.1).
+	type devType struct{ dev, typ string }
+	var devOrder []devType
+	byDev := map[devType][]logfile.Entry{}
 	for _, e := range entries {
-		if _, ok := byDev[e.DeviceID]; !ok {
-			devOrder = append(devOrder, e.DeviceID)
+		k := devType{e.DeviceID, e.Type}
+		if _, ok := byDev[k]; !ok {
+			devOrder = append(devOrder, k)
 		}
-		byDev[e.DeviceID] = append(byDev[e.DeviceID], e)
+		byDev[k] = append(byDev[k], e)
 	}
 	queued := 0
-	for _, dev := range devOrder {
-		list := byDev[dev]
+	for _, k := range devOrder {
+		dev, list := k.dev, byDev[k]
 		var active *logfile.Entry
 		for i := range list {
 			n := list[i].Name
@@ -150,7 +158,7 @@ func (s *Store) recover(ctx context.Context) error {
 				}
 				continue
 			}
-			ce := &catEntry{deviceID: dev, name: e.Name, abs: e.Path, rel: e.Rel, size: e.Size}
+			ce := &catEntry{deviceID: dev, typ: e.Type, name: e.Name, abs: e.Path, rel: e.Rel, size: e.Size}
 			if !e.Name.Compressed {
 				ce.rawSize = e.Size
 				queued++
@@ -179,7 +187,7 @@ func (s *Store) recover(ctx context.Context) error {
 // catalog entry: its state comes from the index row and newest checkpoint when the
 // row matches the file, otherwise from a scan (and the row is rewritten).
 func (s *Store) parkFromDisk(ctx context.Context, e logfile.Entry, row index.File, hasRow bool) (*catEntry, error) {
-	ce := &catEntry{deviceID: e.DeviceID, name: e.Name, abs: e.Path, rel: e.Rel, size: e.Size, rawSize: e.Size, parked: true}
+	ce := &catEntry{deviceID: e.DeviceID, typ: e.Type, name: e.Name, abs: e.Path, rel: e.Rel, size: e.Size, rawSize: e.Size, parked: true}
 	if hasRow && row.Size == e.Size && row.Lines > 0 {
 		last, ok, err := s.idx.LastCheckpoint(ctx, row.ID)
 		if err != nil {

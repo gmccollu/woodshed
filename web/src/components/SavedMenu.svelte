@@ -14,6 +14,7 @@
   import Icon from './Icon.svelte';
 
   let {
+    type = 'syslog',
     current,
     etag,
     query,
@@ -23,6 +24,8 @@
     onsaved,
     ondeleted,
   }: {
+    /** The data type the list shows and new searches are saved as (1.2: "trap" too). */
+    type?: string;
     current: SavedSearch | null;
     etag: string;
     /** The form as a saved query, for Save and Save as. */
@@ -50,7 +53,7 @@
 
   async function load() {
     try {
-      list = await listSavedSearches();
+      list = await listSavedSearches(type);
       listError = '';
     } catch (x) {
       listError = (x as Error).message;
@@ -104,7 +107,7 @@
     nameError = '';
     try {
       if (naming.kind === 'new') {
-        const s = await createSavedSearch({ name, type: 'syslog', query: query() });
+        const s = await createSavedSearch({ name, type, query: query() });
         onsaved(s, '');
       } else {
         const s0 = naming.s;

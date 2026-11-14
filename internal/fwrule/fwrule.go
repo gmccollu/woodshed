@@ -1,6 +1,6 @@
 // Package fwrule opens and closes the host firewall for the TLS syslog listener
-// (SPEC §10.3.6), and reads the Windows rule's state for the tls_firewall
-// banner. The service account can't change the firewall, so only `woodshed tls
+// (SPEC §10.3.6) and the SNMP trap receiver (SPEC §11.2.7, snmp.go), and reads
+// the Windows rules' state for the tls_firewall and snmp_firewall banners. The service account can't change the firewall, so only `woodshed tls
 // on|off`, `woodshed install` and the MSI (as an administrator or SYSTEM) call
 // the changing functions; the running service only reads.
 //
@@ -11,6 +11,9 @@
 //     when it's running (permanent, default zone, then a reload), and records
 //     what it added in <data>/RecordFile; `tls off` removes only that.
 //   - macOS: nothing (the application firewall works per program, not per port).
+//
+// The SNMP rule (SNMPRuleName, inbound UDP 162, SNMPRecordFile) follows the
+// same pattern with `snmp on|off`.
 //
 // Every command goes through a Runner, so the logic is tested with fakes.
 package fwrule
@@ -121,10 +124,30 @@ func parseRules(out string) []rule {
 // noMatch is netsh's answer when no rule has the name (English).
 func noMatch(out string) bool { return strings.Contains(out, "No rules match") }
 
+// spec is one Woodshed firewall rule: the TLS syslog listener's or the SNMP
+// trap receiver's. The exported TLS functions keep their 1.1 names; the SNMP
+// ones carry the SNMP prefix.
+type spec struct {
+	name    string // the Windows rule's name
+	proto   string // "TCP" or "UDP"
+	defPort int    // the port a rule is created on, disabled
+	desc    string // the Windows rule's description
+	record  string // the Linux record file in the data folder
+}
+
+var (
+	tlsSpec = spec{name: RuleName, proto: "TCP", defPort: 6514, record: RecordFile,
+		desc: "Lets devices send syslog to Woodshed over TLS. Turned on by `woodshed tls on`."}
+	snmpSpec = spec{name: SNMPRuleName, proto: "UDP", defPort: 162, record: SNMPRecordFile,
+		desc: "Lets devices send SNMP traps and informs to Woodshed. Turned on by `woodshed snmp on`."}
+)
+
 // WindowsState reads the rule's state for port. It needs no administrator
 // rights. Output it can't read (another language, an error) is StateUnknown.
-func WindowsState(run Runner, port int) string {
-	out, err := run(Netsh(), "advfirewall", "firewall", "show", "rule", "name="+RuleName, "verbose")
+func WindowsState(run Runner, port int) string { return tlsSpec.windowsState(run, port) }
+
+func (sp spec) windowsState(run Runner, port int) string {
+	out, err := run(Netsh(), "advfirewall", "firewall", "show", "rule", "name="+sp.name, "verbose")
 	if noMatch(out) {
 		return StateMissing
 	}
@@ -150,20 +173,20 @@ func stateOf(rules []rule, port int) string {
 	return state
 }
 
-func addArgs(exe string, port int, enable bool) []string {
+func (sp spec) addArgs(exe string, port int, enable bool) []string {
 	en := "no"
 	if enable {
 		en = "yes"
 	}
-	return []string{"advfirewall", "firewall", "add", "rule", "name=" + RuleName, "dir=in", "action=allow",
-		"program=" + exe, "protocol=TCP", "localport=" + strconv.Itoa(port), "profile=any", "enable=" + en,
-		"description=Lets devices send syslog to Woodshed over TLS. Turned on by `woodshed tls on`."}
+	return []string{"advfirewall", "firewall", "add", "rule", "name=" + sp.name, "dir=in", "action=allow",
+		"program=" + exe, "protocol=" + sp.proto, "localport=" + strconv.Itoa(port), "profile=any", "enable=" + en,
+		"description=" + sp.desc}
 }
 
 // exists reports whether the rule is there, and an error when netsh's answer
 // can't be read.
-func exists(run Runner) (bool, error) {
-	out, err := run(Netsh(), "advfirewall", "firewall", "show", "rule", "name="+RuleName)
+func (sp spec) exists(run Runner) (bool, error) {
+	out, err := run(Netsh(), "advfirewall", "firewall", "show", "rule", "name="+sp.name)
 	if noMatch(out) {
 		return false, nil
 	}
@@ -177,11 +200,15 @@ func exists(run Runner) (bool, error) {
 // left exactly as it is, so a reinstall keeps its state). For `woodshed
 // install` and the MSI.
 func WindowsEnsure(run Runner, exe string) (created bool, err error) {
-	ok, err := exists(run)
+	return tlsSpec.windowsEnsure(run, exe)
+}
+
+func (sp spec) windowsEnsure(run Runner, exe string) (created bool, err error) {
+	ok, err := sp.exists(run)
 	if err != nil || ok {
 		return false, err
 	}
-	if _, err := run(Netsh(), addArgs(exe, 6514, false)...); err != nil {
+	if _, err := run(Netsh(), sp.addArgs(exe, sp.defPort, false)...); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -190,36 +217,44 @@ func WindowsEnsure(run Runner, exe string) (created bool, err error) {
 // WindowsEnable enables the rule on port for exe, creating it if it's missing
 // (portable copies and older installs).
 func WindowsEnable(run Runner, exe string, port int) error {
-	ok, err := exists(run)
+	return tlsSpec.windowsEnable(run, exe, port)
+}
+
+func (sp spec) windowsEnable(run Runner, exe string, port int) error {
+	ok, err := sp.exists(run)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		_, err := run(Netsh(), addArgs(exe, port, true)...)
+		_, err := run(Netsh(), sp.addArgs(exe, port, true)...)
 		return err
 	}
-	_, err = run(Netsh(), "advfirewall", "firewall", "set", "rule", "name="+RuleName, "new",
+	_, err = run(Netsh(), "advfirewall", "firewall", "set", "rule", "name="+sp.name, "new",
 		"enable=yes", "localport="+strconv.Itoa(port), "program="+exe)
 	return err
 }
 
 // WindowsDisable disables the rule (it stays, for the next `tls on`).
-func WindowsDisable(run Runner) error {
-	ok, err := exists(run)
+func WindowsDisable(run Runner) error { return tlsSpec.windowsDisable(run) }
+
+func (sp spec) windowsDisable(run Runner) error {
+	ok, err := sp.exists(run)
 	if err != nil || !ok {
 		return err
 	}
-	_, err = run(Netsh(), "advfirewall", "firewall", "set", "rule", "name="+RuleName, "new", "enable=no")
+	_, err = run(Netsh(), "advfirewall", "firewall", "set", "rule", "name="+sp.name, "new", "enable=no")
 	return err
 }
 
 // WindowsRemove deletes the rule (uninstall). A missing rule isn't an error.
-func WindowsRemove(run Runner) error {
-	ok, err := exists(run)
+func WindowsRemove(run Runner) error { return tlsSpec.windowsRemove(run) }
+
+func (sp spec) windowsRemove(run Runner) error {
+	ok, err := sp.exists(run)
 	if err != nil || !ok {
 		return err
 	}
-	_, err = run(Netsh(), "advfirewall", "firewall", "delete", "rule", "name="+RuleName)
+	_, err = run(Netsh(), "advfirewall", "firewall", "delete", "rule", "name="+sp.name)
 	return err
 }
 
@@ -231,9 +266,9 @@ type Record struct {
 	Firewalld []string `json:"firewalld,omitempty"`
 }
 
-func readRecord(dataDir string) (Record, error) {
+func readRecord(dataDir, file string) (Record, error) {
 	var r Record
-	b, err := atomicfile.ReadFile(filepath.Join(dataDir, RecordFile))
+	b, err := atomicfile.ReadFile(filepath.Join(dataDir, file))
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
 	}
@@ -241,13 +276,13 @@ func readRecord(dataDir string) (Record, error) {
 		return r, err
 	}
 	if err := json.Unmarshal(b, &r); err != nil {
-		return r, fmt.Errorf("%s: %w", RecordFile, err)
+		return r, fmt.Errorf("%s: %w", file, err)
 	}
 	return r, nil
 }
 
-func writeRecord(dataDir string, r Record) error {
-	p := filepath.Join(dataDir, RecordFile)
+func writeRecord(dataDir, file string, r Record) error {
+	p := filepath.Join(dataDir, file)
 	if len(r.Ufw) == 0 && len(r.Firewalld) == 0 {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -270,19 +305,25 @@ func firewalldRunning(run Runner) bool {
 
 // LinuxCommands are the commands for the common firewalls, for when neither
 // is active (and for Settings).
-func LinuxCommands(port int) string {
-	p := strconv.Itoa(port) + "/tcp"
+func LinuxCommands(port int) string { return tlsSpec.linuxCommands(port) }
+
+func (sp spec) linuxCommands(port int) string {
+	p := strconv.Itoa(port) + "/" + strings.ToLower(sp.proto)
 	return "  ufw:       sudo ufw allow " + p + "\n" +
 		"  firewalld: sudo firewall-cmd --permanent --add-port=" + p + " && sudo firewall-cmd --reload\n" +
-		"  Other rules (nftables, iptables): allow inbound TCP port " + strconv.Itoa(port) + ".\n"
+		"  Other rules (nftables, iptables): allow inbound " + sp.proto + " port " + strconv.Itoa(port) + ".\n"
 }
 
 // LinuxOpen opens port in ufw (when active) or firewalld (when running), and
 // records it unless it was already open (then `tls off` leaves it alone). It
 // returns what it did, for the user.
 func LinuxOpen(run Runner, dataDir string, port int) (string, error) {
-	p := strconv.Itoa(port) + "/tcp"
-	rec, err := readRecord(dataDir)
+	return tlsSpec.linuxOpen(run, dataDir, port)
+}
+
+func (sp spec) linuxOpen(run Runner, dataDir string, port int) (string, error) {
+	p := strconv.Itoa(port) + "/" + strings.ToLower(sp.proto)
+	rec, err := readRecord(dataDir, sp.record)
 	if err != nil {
 		return "", err
 	}
@@ -298,7 +339,7 @@ func LinuxOpen(run Runner, dataDir string, port int) (string, error) {
 		if !slices.Contains(rec.Ufw, p) {
 			rec.Ufw = append(rec.Ufw, p)
 		}
-		return "Opened " + p + " in ufw.", writeRecord(dataDir, rec)
+		return "Opened " + p + " in ufw.", writeRecord(dataDir, sp.record, rec)
 	case firewalldRunning(run):
 		if _, err := run(linuxTool("firewall-cmd"), "--permanent", "--query-port="+p); err == nil {
 			return "firewalld already allows " + p + "; left as it is.", nil
@@ -312,15 +353,21 @@ func LinuxOpen(run Runner, dataDir string, port int) (string, error) {
 		if !slices.Contains(rec.Firewalld, p) {
 			rec.Firewalld = append(rec.Firewalld, p)
 		}
-		return "Opened " + p + " in firewalld (default zone).", writeRecord(dataDir, rec)
+		return "Opened " + p + " in firewalld (default zone).", writeRecord(dataDir, sp.record, rec)
 	}
-	return "No active ufw or firewalld found, so the firewall wasn't changed. If devices can't connect, open the port:\n" +
-		LinuxCommands(port), nil
+	what := "connect"
+	if sp.proto == "UDP" {
+		what = "reach it"
+	}
+	return "No active ufw or firewalld found, so the firewall wasn't changed. If devices can't " + what + ", open the port:\n" +
+		sp.linuxCommands(port), nil
 }
 
 // LinuxClose removes what LinuxOpen recorded, and nothing else.
-func LinuxClose(run Runner, dataDir string) (string, error) {
-	rec, err := readRecord(dataDir)
+func LinuxClose(run Runner, dataDir string) (string, error) { return tlsSpec.linuxClose(run, dataDir) }
+
+func (sp spec) linuxClose(run Runner, dataDir string) (string, error) {
+	rec, err := readRecord(dataDir, sp.record)
 	if err != nil {
 		return "", err
 	}
@@ -353,7 +400,7 @@ func LinuxClose(run Runner, dataDir string) (string, error) {
 			errs = append(errs, err)
 		}
 	}
-	if err := writeRecord(dataDir, keep); err != nil {
+	if err := writeRecord(dataDir, sp.record, keep); err != nil {
 		errs = append(errs, err)
 	}
 	msg := ""

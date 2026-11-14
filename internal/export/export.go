@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/atomicfile"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -84,6 +85,49 @@ type Filters struct {
 	ExcludeDevices []string           `json:"exclude_devices,omitempty"`
 	ExcludeApps    []string           `json:"exclude_app,omitempty"`
 	ExcludeHosts   []string           `json:"exclude_host,omitempty"`
+	// 1.2: the data types in the zip (empty: syslog, the 1.1 zip) and, with
+	// one type of traps, its filter (SPEC §11.1, docs/api.md).
+	Types []string             `json:"types,omitempty"`
+	Trap  *datatype.TrapFilter `json:"trap,omitempty"`
+}
+
+// TypesOrSyslog is the export's data types, syslog when it names none.
+func (f Filters) TypesOrSyslog() []string {
+	if len(f.Types) == 0 {
+		return []string{datatype.Syslog}
+	}
+	return f.Types
+}
+
+// typeFilter is the request's search filter for one of its types: the
+// filters apply only to an export of one type (the API refuses them with
+// several), so another type gets only the range.
+func (r Request) typeFilter(typ string) search.Filter {
+	ts := r.TypesOrSyslog()
+	if len(ts) == 1 && ts[0] == typ {
+		f := r.filter()
+		f.Type = typ
+		if r.Trap != nil {
+			_ = r.Trap.Compile() // a filter read back from the entry's file
+			f.Trap = r.Trap
+		}
+		return f
+	}
+	return search.Filter{From: r.From, To: r.To, Type: typ}
+}
+
+// Folders maps the zip's folders to the data types (manifest.json).
+var Folders = map[string]string{"logs": datatype.Syslog, "traps": datatype.Trap}
+
+// FolderOf is a type's folder in the zip: syslog stays in logs/ as in 1.1;
+// another type gets its folder name ("traps/" for traps).
+func FolderOf(typ string) string {
+	for f, t := range Folders {
+		if t == typ {
+			return f
+		}
+	}
+	return typ
 }
 
 // Request is a POST /api/exports body, parsed.
@@ -305,7 +349,15 @@ func (m *Manager) resolve(ctx context.Context, r Request) ([]string, error) {
 	if r.Group != "" && r.Ungrouped {
 		return nil, &RequestError{Msg: "group and ungrouped=true are alternatives; send one."}
 	}
-	if err := m.eng.CheckFilter(r.filter()); err != nil {
+	for _, t := range r.TypesOrSyslog() {
+		if datatype.Get(t) == nil {
+			return nil, &RequestError{Msg: fmt.Sprintf("types: unknown data type %q.", t)}
+		}
+	}
+	if len(r.TypesOrSyslog()) > 1 && !r.filtersEmpty() {
+		return nil, &RequestError{Msg: "types: Filters apply to one data type; pick one, or leave the filters out."}
+	}
+	if err := m.eng.CheckFilter(r.typeFilter(r.TypesOrSyslog()[0])); err != nil {
 		var qe *search.QueryError
 		if errors.As(err, &qe) {
 			return nil, &RequestError{Msg: qe.Msg}
@@ -328,7 +380,26 @@ func (m *Manager) Estimate(ctx context.Context, r Request) (search.Estimate, err
 	if err != nil {
 		return search.Estimate{}, err
 	}
-	return m.eng.Estimate(ctx, devs, r.filter())
+	var est search.Estimate
+	for _, t := range r.TypesOrSyslog() {
+		e, err := m.eng.Estimate(ctx, devs, r.typeFilter(t))
+		if err != nil {
+			return search.Estimate{}, err
+		}
+		est.Lines += e.Lines
+		est.Bytes += e.Bytes
+		est.Files += e.Files
+		est.Parts = append(est.Parts, e.Parts...)
+	}
+	return est, nil
+}
+
+// filtersEmpty reports whether the request has no line filters (only the
+// devices and the range).
+func (r Request) filtersEmpty() bool {
+	f := r.Filters
+	return f.Q == "" && f.Exclude == "" && f.Severities == 0 && f.Facilities == 0 && len(f.Apps) == 0 && len(f.Hosts) == 0 &&
+		len(f.ExcludeApps) == 0 && len(f.ExcludeHosts) == 0 && (f.Trap == nil || f.Trap.Empty())
 }
 
 // Create queues an export.

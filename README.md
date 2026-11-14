@@ -84,8 +84,12 @@ As of 1.1.0 (details in the [CHANGELOG](CHANGELOG.md)):
   message. RFC 5424, RFC 3164 and the usual non-compliant variants are parsed leniently, and the raw message is always
   stored exactly as received.
 - Optional syslog over TLS (TCP 6514) with its own CA, so devices import one certificate that renewals don't change.
-- Plain files: one folder per device and one file per day (`logs/<ip>/<day>.log`), gzipped once closed. Read them
-  with grep, an editor or any log tool.
+- Optional SNMP trap receiver (UDP 162): v1, v2c and v3 traps and informs, with v3 users at every security level
+  (MD5, SHA-1 and SHA-2; DES and AES-128/192/256). Traps are stored decoded, one line each, with the raw packet,
+  numeric OIDs and names from a folder of MIB files, next to the device's syslog. Communities are stored only as a
+  hash; v3 passphrases are encrypted for the service's account (Windows) or readable only by it.
+- Plain files: one folder per device and one file per day (`logs/<ip>/<day>.log`, traps in `logs/<ip>/traps/`),
+  gzipped once closed. Read them with grep, an editor or any log tool.
 - Doesn't fill the disk: retention by age and total size (30 days / 20 GiB by default), plus a low-disk guard. Every
   deletion is recorded and shown in Settings.
 - Dropped, truncated and refused messages are counted and shown. Where the OS hides kernel UDP drops (Windows,
@@ -93,8 +97,8 @@ As of 1.1.0 (details in the [CHANGELOG](CHANGELOG.md)):
 - Web UI: a dashboard with the message rate, device tiles and a live tail with server-side filters; an Events page to
   browse and filter all stored history (text or regex, program/tag, host, exclude, devices, time, severity); a
   devices page to rename, group or hide senders; settings that apply without a restart; light and dark modes.
-- `woodshed search` searches the stored logs from a terminal with the same filters as Events, compressed days
-  included, on every OS (natively on Windows, no WSL). It only reads, so it's safe beside the running service.
+- `woodshed search` searches the stored logs (and traps, `--type trap`) from a terminal with the same filters as
+  Events, compressed days included, on every OS (natively on Windows, no WSL). It only reads, so it's safe beside the running service.
 - The UI listens on `127.0.0.1:8514` only by default. LAN mode serves HTTPS with a password.
 - No telemetry. The only outbound connection is an optional daily update check, off until you turn it on: it
   fetches one public file (`https://gmccollu.github.io/woodshed/releases.json`), sends nothing about your

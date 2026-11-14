@@ -14,7 +14,7 @@ type Gap struct {
 	From   time.Time `json:"from"`
 	To     time.Time `json:"to"`
 	Kind   string    `json:"kind"`  // not_running, listener_down or listener_stopped
-	Proto  string    `json:"proto"` // "udp" or "tcp" for listener gaps, else ""
+	Proto  string    `json:"proto"` // "udp", "tcp", "tls" or "snmp" for listener gaps, else ""
 	Detail string    `json:"detail"`
 }
 
@@ -62,6 +62,8 @@ func ClassifyEvent(e index.Event) (EventClass, string) {
 		proto = "tcp"
 	case index.SourceListenerTLS:
 		proto = "tls"
+	case index.SourceListenerSNMP:
+		proto = "snmp"
 	case index.SourceService:
 		switch e.Kind {
 		case index.KindStart:

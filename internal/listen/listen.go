@@ -111,6 +111,12 @@ type Options struct {
 	// OnQueueDrop, if set, receives the UDP queue's drops (see QueueDrop), so
 	// they count for the sender's device.
 	OnQueueDrop QueueDrop
+
+	// Trap handles the SNMP trap listener's datagrams (snmp.go), one at a time
+	// in arrival order from its queue's drainer. Without it an enabled SNMP
+	// listener stays down. OnTrapQueueDrop receives its queue's drops.
+	Trap            TrapHandler
+	OnTrapQueueDrop QueueDrop
 	// DrainTimeout bounds how long Close (and a UDP rebind) waits for the UDP
 	// queue to empty into the sink; what's left then is counted as dropped.
 	// Default DefaultDrainTimeout.
@@ -178,6 +184,11 @@ type Server struct {
 	tcpErr *ListenerStatus
 	tlsErr *ListenerStatus
 	closed bool
+
+	snmp     *snmpListener   // the SNMP trap listener (snmp.go)
+	snmpErr  *ListenerStatus // set while the enabled SNMP listener is down
+	snmpHist *queueHist      // its queue's history, kept across rebinds
+	snmpQ    *udpQueue
 
 	pool      *connPool // TCP and TLS connections together
 	tlsStats  *tlsStats
@@ -257,6 +268,7 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 		tlsStats: newTLSStats(maxTLSSenders),
 		started:  opts.Clock(),
 		udpHist:  &queueHist{},
+		snmpHist: &queueHist{},
 	}
 	s.allow.Store(al)
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
@@ -268,6 +280,7 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	s.startUDP(&ev)
 	s.startTCP(&ev)
 	s.startTLS(&ev)
+	s.startSNMP(&ev)
 	s.mu.Unlock()
 	ev.flush(s)
 
@@ -292,6 +305,9 @@ func (s *Server) Retry() Status {
 		}
 		if s.cfg.TLS.Enabled && s.tls == nil {
 			s.startTLS(&ev)
+		}
+		if s.cfg.SNMP.Enabled && s.snmp == nil {
+			s.startSNMP(&ev)
 		}
 	}
 	s.mu.Unlock()
@@ -347,6 +363,12 @@ func (s *Server) Reconfigure(cfg config.Listeners) error {
 		s.stopTLS(&ev)
 		s.startTLS(&ev)
 	}
+	if snmpChanged(old.SNMP, cfg.SNMP) {
+		s.stopSNMP(&ev)
+		s.startSNMP(&ev)
+	} else if s.snmp != nil {
+		s.snmp.q.setLimits(queueLimits(cfg))
+	}
 	return nil
 }
 
@@ -363,6 +385,7 @@ func (s *Server) Close() error {
 	s.stopUDP(&ev)
 	s.stopTCP(&ev)
 	s.stopTLS(&ev)
+	s.stopSNMP(&ev)
 	close(s.stop)
 	s.mu.Unlock()
 	s.wg.Wait()
@@ -414,6 +437,14 @@ func (s *Server) Status() Status {
 			st.Listeners = append(st.Listeners, *s.tlsErr)
 		}
 	}
+	if s.cfg.SNMP.Enabled {
+		switch {
+		case s.snmp != nil:
+			st.Listeners = append(st.Listeners, s.snmp.status())
+		case s.snmpErr != nil:
+			st.Listeners = append(st.Listeners, *s.snmpErr)
+		}
+	}
 	if kernelDropsSupported {
 		st.KernelDrops = s.kdrops.total(s.udp)
 	}
@@ -431,6 +462,18 @@ func (s *Server) Status() Status {
 			q.setLimits(queueLimits(s.cfg))
 			st.UDPQueues = append(st.UDPQueues, q.status("udp", port, now, s.started))
 		}
+	}
+	if s.cfg.SNMP.Enabled {
+		port := 0
+		if s.snmp != nil {
+			port = int(s.snmp.bound.Port())
+		}
+		q := s.snmpQ
+		if q == nil {
+			q = newUDPQueue(0, 0, s.snmpHist)
+			q.setLimits(queueLimits(s.cfg))
+		}
+		st.UDPQueues = append(st.UDPQueues, q.status("snmp", port, s.opts.Clock(), s.started))
 	}
 	return st
 }
@@ -555,9 +598,19 @@ func (s *Server) enqueue(q *udpQueue, raw []byte, from netip.Addr) {
 	q.push(queued{raw: append(make([]byte, 0, len(raw)), raw...), from: from, at: now, truncated: truncated})
 }
 
-// drainQueue is the drainer: it delivers q's messages in arrival order until q
-// is closed and empty (or abandoned), reporting drops after every batch.
+// drainQueue is syslog's drainer: it hands q's messages to the sink (parsed)
+// in arrival order until q is closed and empty (or abandoned).
 func (s *Server) drainQueue(q *udpQueue) {
+	s.drainQueueWith(q, func(e *queued) {
+		s.handoff(model.Message{Received: e.at, Sender: e.from, Raw: e.raw, Truncated: e.truncated})
+	}, s.opts.OnQueueDrop)
+}
+
+// drainQueueWith is a UDP queue's drainer: it calls deliver with each of q's
+// messages in arrival order until q is closed and empty (or abandoned),
+// reporting drops to onDrop after every batch. Each listener brings its own
+// deliver (syslog's handoff, the SNMP listener's Trap).
+func (s *Server) drainQueueWith(q *udpQueue, deliver func(*queued), onDrop QueueDrop) {
 	batch := make([]queued, 0, drainBatch)
 	for {
 		var ok bool
@@ -568,19 +621,19 @@ func (s *Server) drainQueue(q *udpQueue) {
 				break
 			}
 			e := &batch[i]
-			s.handoff(model.Message{Received: e.at, Sender: e.from, Raw: e.raw, Truncated: e.truncated})
+			deliver(e)
 			*e = queued{}
 		}
-		s.reportQueueDrops(q)
+		s.reportQueueDrops(q, onDrop)
 		if !ok {
 			return
 		}
 	}
 }
 
-// reportQueueDrops hands q's counted drops to OnQueueDrop and logs them at most
+// reportQueueDrops hands q's counted drops to onDrop and logs them at most
 // once a minute.
-func (s *Server) reportQueueDrops(q *udpQueue) {
+func (s *Server) reportQueueDrops(q *udpQueue, onDrop QueueDrop) {
 	p, other := q.takeDrops()
 	if len(p) == 0 && other.n == 0 {
 		return
@@ -588,14 +641,14 @@ func (s *Server) reportQueueDrops(q *udpQueue) {
 	var n int64
 	for from, d := range p {
 		n += d.n
-		if s.opts.OnQueueDrop != nil {
-			s.opts.OnQueueDrop(from, d.at, d.n)
+		if onDrop != nil {
+			onDrop(from, d.at, d.n)
 		}
 	}
 	if other.n > 0 {
 		n += other.n
-		if s.opts.OnQueueDrop != nil {
-			s.opts.OnQueueDrop(netip.Addr{}, other.at, other.n)
+		if onDrop != nil {
+			onDrop(netip.Addr{}, other.at, other.n)
 		}
 	}
 	s.dropLogMu.Lock()

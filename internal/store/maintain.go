@@ -19,6 +19,7 @@ import (
 // catEntry is a closed log file (awaiting compression, or compressed).
 type catEntry struct {
 	deviceID    string
+	typ         string // the data type ("syslog", "trap")
 	name        logfile.Name
 	abs, rel    string
 	first, last time.Time
@@ -39,7 +40,7 @@ type catEntry struct {
 }
 
 func (e *catEntry) row() index.File {
-	return index.File{DeviceID: e.deviceID, Path: e.rel, Day: e.name.Day, Part: e.name.Part, FirstReceived: e.first,
+	return index.File{DeviceID: e.deviceID, Type: e.typ, Path: e.rel, Day: e.name.Day, Part: e.name.Part, FirstReceived: e.first,
 		LastReceived: e.last, Size: e.size, RawSize: e.rawSize, Lines: e.lines, Compressed: e.name.Compressed}
 }
 
@@ -169,22 +170,22 @@ func (s *Store) flushAll(midnight bool) error {
 	return first
 }
 
-// dayClosed reports whether a device's file for day was already closed (it's in
-// the catalog, compressed or not).
-func (s *Store) dayClosed(id, day string) bool {
+// dayClosed reports whether a device's file of a type for day was already closed
+// (it's in the catalog, compressed or not).
+func (s *Store) dayClosed(typ, id, day string) bool {
 	n := logfile.Name{Day: day}
 	gz := logfile.Name{Day: day, Compressed: true}
 	s.catMu.Lock()
 	defer s.catMu.Unlock()
-	if e := s.cat[logfile.RelPath(id, n)]; e != nil && !e.parked {
+	if e := s.cat[logfile.RelPathType(typ, id, n)]; e != nil && !e.parked {
 		return true
 	}
-	return s.cat[logfile.RelPath(id, gz)] != nil
+	return s.cat[logfile.RelPathType(typ, id, gz)] != nil
 }
 
-// takeParked removes and returns a device's parked file for day, if any.
-func (s *Store) takeParked(id, day string) *catEntry {
-	rel := logfile.RelPath(id, logfile.Name{Day: day})
+// takeParked removes and returns a device's parked file of a type for day, if any.
+func (s *Store) takeParked(typ, id, day string) *catEntry {
+	rel := logfile.RelPathType(typ, id, logfile.Name{Day: day})
 	s.catMu.Lock()
 	defer s.catMu.Unlock()
 	e := s.cat[rel]
@@ -354,8 +355,8 @@ func (s *Store) deleteEntry(e *catEntry, reason index.Reason, now time.Time) boo
 	delete(s.cat, e.rel)
 	s.catBytes -= e.size
 	s.catMu.Unlock()
-	s.pushOps(index.FileOp{Kind: index.OpDelete, File: index.File{DeviceID: e.deviceID, Path: e.rel},
-		Deletion: &index.Deletion{Time: now, File: e.rel, DeviceID: e.deviceID, Bytes: e.size, Reason: reason}})
+	s.pushOps(index.FileOp{Kind: index.OpDelete, File: index.File{DeviceID: e.deviceID, Type: e.typ, Path: e.rel},
+		Deletion: &index.Deletion{Time: now, File: e.rel, DeviceID: e.deviceID, Type: e.typ, Bytes: e.size, Reason: reason}})
 	if e.name.Day >= logfile.DayOf(now) {
 		s.event(index.LevelWarn, index.KindDelete, e.deviceID, fmt.Sprintf(
 			"deleted today's logs of %s: %s (%d lines, %d bytes), %s", e.deviceID, e.rel, e.lines, e.size, reasonText(reason)))
@@ -634,6 +635,11 @@ func (s *Store) pruneDevices(now time.Time) {
 	for _, id := range ids {
 		if resident[id] || onDisk[id] > 0 {
 			continue // back already; keep its folder and exemption
+		}
+		for _, t := range logfile.DataTypes { // the types' empty folders first
+			if t.Dir != "" {
+				os.Remove(filepath.Join(s.logsDir, id, t.Dir))
+			}
 		}
 		if err := os.Remove(filepath.Join(s.logsDir, id)); err == nil || errors.Is(err, fs.ErrNotExist) {
 			delete(s.known, id)

@@ -154,11 +154,15 @@ type Store struct {
 	retentionBytes atomic.Int64
 	partBytes      atomic.Int64
 
-	devices  sync.Map // netip.Addr -> *device, for the lock-free lookup in Write
+	// A device's write state is per data type (SPEC §11.1): each *device is
+	// one sender's stream of one type, keyed by (address, type). Admission and
+	// the device cap count addresses: a device is a device, whatever it sends.
+	devices  sync.Map // streamKey -> *device, for the lock-free lookup in Write
 	devMu    sync.Mutex
-	devSet   map[netip.Addr]*device   // the same devices, authoritative (devMu)
+	devSet   map[streamKey]*device    // the same streams, authoritative (devMu)
+	addrRes  map[netip.Addr]int       // resident streams not marked for eviction, per address (devMu)
 	known    map[string]struct{}      // device IDs with logs on disk or seen since Open (devMu)
-	leavingN int                      // residents marked for eviction (devMu)
+	leavingN int                      // resident streams marked for eviction (devMu)
 	readmit  bucket                   // re-admissions at the cap (devMu)
 	resMu    sync.Mutex               // guards resident and device.resElem (a leaf lock)
 	resident list.List                // resident devices, most recently heard first
@@ -318,7 +322,8 @@ func Open(opts Options) (*Store, error) {
 		stop:       make(chan struct{}),
 		compressCh: make(chan struct{}, 1),
 		syncPath:   syncPath,
-		devSet:     map[netip.Addr]*device{},
+		devSet:     map[streamKey]*device{},
+		addrRes:    map[netip.Addr]int{},
 		prefixes:   map[netip.Prefix]*bucket{},
 		known:      map[string]struct{}{},
 		refMinutes: map[int64]int64{},
@@ -411,10 +416,44 @@ func (s *Store) Limits() Limits {
 	}
 }
 
-// Write stores one message. It never blocks on the disk except to write a full
-// buffer (FlushBytes) to the OS. It returns ErrPaused, and counts the message as
-// dropped, while the low-disk guard has paused writing.
-func (s *Store) Write(m model.Message) error {
+// streamKey names one sender's stream of one data type.
+type streamKey struct {
+	addr netip.Addr
+	typ  uint8 // index into logfile.DataTypes
+}
+
+// ErrUnknownType is WriteType's error for a type the store doesn't know.
+var ErrUnknownType = errors.New("store: unknown data type")
+
+// typeIndex returns typ's index in logfile.DataTypes ("" is syslog).
+func typeIndex(typ string) (uint8, bool) {
+	typ = logfile.NormType(typ)
+	for i, t := range logfile.DataTypes {
+		if t.Name == typ {
+			return uint8(i), true
+		}
+	}
+	return 0, false
+}
+
+// Write stores one syslog message. It never blocks on the disk except to write
+// a full buffer (FlushBytes) to the OS. It returns ErrPaused, and counts the
+// message as dropped, while the low-disk guard has paused writing.
+func (s *Store) Write(m model.Message) error { return s.write(0, m) }
+
+// WriteType stores one record of a data type (logfile.TypeTrap, …) in the
+// type's folder inside the device folder (SPEC §11.1): m.Raw is the record,
+// written in the same envelope, buffering, rotation and retention as syslog.
+// The sender limits are the same, per device whatever the type.
+func (s *Store) WriteType(typ string, m model.Message) error {
+	ti, ok := typeIndex(typ)
+	if !ok {
+		return ErrUnknownType
+	}
+	return s.write(ti, m)
+}
+
+func (s *Store) write(ti uint8, m model.Message) error {
 	if s.closed.Load() {
 		return ErrClosed
 	}
@@ -429,7 +468,7 @@ func (s *Store) Write(m model.Message) error {
 	s.watchClock(rec)
 	addr := m.Sender.Unmap()
 	for {
-		d, err := s.device(addr, true)
+		d, err := s.device(streamKey{addr, ti}, true)
 		if err != nil {
 			s.noteRefused(rec)
 			return err
@@ -469,25 +508,28 @@ func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, 
 	return d.appendLocked(rec, m), false
 }
 
-// device returns the state for a sender, creating it on first use. With admit set
-// (messages), a sender with no logs on disk must fit under MaxDevices and take a
-// token from its network's bucket and from the global bucket; otherwise
-// ErrDeviceLimit. A sender with logs on disk is always admitted: at the cap it takes
-// the slot of the least recently heard sender, whose file is flushed and parked.
-// Recovery creates devices unchecked.
-func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
-	if v, ok := s.devices.Load(addr); ok {
+// device returns the state for a sender's stream of a type, creating it on first
+// use. With admit set (messages), a sender with no logs on disk must fit under
+// MaxDevices and take a token from its network's bucket and from the global
+// bucket; otherwise ErrDeviceLimit. A sender with logs on disk is always
+// admitted: at the cap it takes the slot of the least recently heard sender,
+// whose files are flushed and parked. A sender already resident (another type's
+// stream) is admitted as it is: the cap and the buckets count devices, not
+// types. Recovery creates devices unchecked.
+func (s *Store) device(k streamKey, admit bool) (*device, error) {
+	if v, ok := s.devices.Load(k); ok {
 		return v.(*device), nil
 	}
 	s.devMu.Lock()
 	defer s.devMu.Unlock()
-	if d, ok := s.devSet[addr]; ok {
+	if d, ok := s.devSet[k]; ok {
 		return d, nil
 	}
+	addr := k.addr
 	id := model.DeviceID(addr)
 	now := s.clock()
-	if admit {
-		full := len(s.devSet)-s.leavingN >= s.maxDevices
+	if admit && s.addrRes[addr] == 0 {
+		full := len(s.addrRes) >= s.maxDevices
 		if _, known := s.known[id]; known {
 			if full {
 				// Re-admissions at the cap are rate limited, so cycling through many
@@ -511,16 +553,25 @@ func (s *Store) device(addr netip.Addr, admit bool) (*device, error) {
 			}
 		}
 	}
-	d := newDevice(s, addr)
+	d := newDevice(s, addr, k.typ)
 	d.heardMs.Store(now.UnixMilli())
 	d.resTouch = now.UnixMilli()
 	s.resMu.Lock()
 	d.resElem = s.resident.PushFront(d)
 	s.resMu.Unlock()
-	s.devSet[addr] = d
+	s.devSet[k] = d
+	s.addrRes[addr]++
 	s.known[id] = struct{}{}
-	s.devices.Store(addr, d)
+	s.devices.Store(k, d)
 	return d, nil
+}
+
+// resDelLocked counts one of addr's streams out of residency (marked for
+// eviction or evicted); the caller holds devMu.
+func (s *Store) resDelLocked(addr netip.Addr) {
+	if s.addrRes[addr]--; s.addrRes[addr] <= 0 {
+		delete(s.addrRes, addr)
+	}
 }
 
 // Per-network new-sender buckets: one network can't drain the global bucket.
@@ -596,25 +647,39 @@ func (s *Store) prunePrefixesLocked(now time.Time) {
 }
 
 // makeRoomLocked frees a slot for a known sender at the cap: the least recently
-// heard resident (the back of the resident list, O(1)) is marked as leaving, which
-// frees its slot at once, and the closer pool flushes and parks it later, off devMu.
-// It reports false if no resident can be marked.
+// heard resident (the back of the resident list, O(1)) is marked as leaving, with
+// its other types' streams, which frees its device's slot at once, and the closer
+// pool flushes and parks them later, off devMu. It reports false if no resident
+// can be marked.
 func (s *Store) makeRoomLocked() bool {
 	s.resMu.Lock()
-	defer s.resMu.Unlock()
+	var mark []*device
 	for e := s.resident.Back(); e != nil; e = e.Prev() {
 		v := e.Value.(*device)
 		if v.leaving.Load() {
 			continue
 		}
+		mark = append(mark, v)
+		s.resident.MoveToFront(e) // so the next search starts at the next-oldest
+		break
+	}
+	s.resMu.Unlock()
+	if len(mark) == 0 {
+		return false
+	}
+	for ti := range logfile.DataTypes {
+		if o := s.devSet[streamKey{mark[0].addr, uint8(ti)}]; o != nil && o != mark[0] && !o.leaving.Load() {
+			mark = append(mark, o)
+		}
+	}
+	for _, v := range mark {
 		v.leaving.Store(true)
 		v.leaveSeq.Store(v.writeSeq.Load())
 		s.leavingN++
-		s.resident.MoveToFront(e) // so the next search starts at the next-oldest
+		s.resDelLocked(v.addr)
 		s.queueClose(closeJob{evict: v})
-		return true
 	}
-	return false
+	return true
 }
 
 // finishEvict carries out a makeRoomLocked eviction. If the device was written to
@@ -629,6 +694,7 @@ func (s *Store) finishEvict(v *device) {
 		s.devMu.Lock()
 		if v.leaving.Swap(false) {
 			s.leavingN--
+			s.addrRes[v.addr]++
 		}
 		s.devMu.Unlock()
 		return
@@ -641,10 +707,15 @@ func (s *Store) finishEvict(v *device) {
 func (s *Store) evictLocked(d *device) {
 	d.evicted = true
 	s.devMu.Lock()
-	if s.devSet[d.addr] == d {
-		delete(s.devSet, d.addr)
-	}
-	if d.leaving.Swap(false) {
+	k := streamKey{d.addr, d.ti}
+	if s.devSet[k] == d {
+		delete(s.devSet, k)
+		if d.leaving.Swap(false) {
+			s.leavingN--
+		} else {
+			s.resDelLocked(d.addr)
+		}
+	} else if d.leaving.Swap(false) {
 		s.leavingN--
 	}
 	s.resMu.Lock()
@@ -654,7 +725,7 @@ func (s *Store) evictLocked(d *device) {
 	}
 	s.resMu.Unlock()
 	s.devMu.Unlock()
-	s.devices.CompareAndDelete(d.addr, d)
+	s.devices.CompareAndDelete(k, d)
 }
 
 func (s *Store) allDevices() []*device {
@@ -815,7 +886,7 @@ func (s *Store) Usage() Usage {
 		u.PausedSince = time.UnixMilli(s.pausedSince.Load()).UTC()
 	}
 	s.devMu.Lock()
-	u.Devices = len(s.devSet) - s.leavingN // marked senders have given up their slot
+	u.Devices = len(s.addrRes) // devices, not streams; marked senders have given up their slot
 	s.devMu.Unlock()
 	u.MaxDevices = s.Limits().MaxDevices
 	u.RefusedMsgs = s.refusedMsgs.Load()
@@ -941,4 +1012,23 @@ func (s *Store) rel(abs string) string {
 		return filepath.ToSlash(abs)
 	}
 	return filepath.ToSlash(r)
+}
+
+// AdmitType admits a sender for a data type's stream as WriteType would,
+// without storing anything (the trap receiver's discovery Reports go only to
+// admitted senders, SPEC §11.2.3). A refusal isn't counted as a drop: nothing
+// was to be stored.
+func (s *Store) AdmitType(typ string, addr netip.Addr) error {
+	ti, ok := typeIndex(typ)
+	if !ok {
+		return ErrUnknownType
+	}
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	if !addr.IsValid() {
+		return ErrInvalidSender
+	}
+	_, err := s.device(streamKey{addr.Unmap(), ti}, true)
+	return err
 }

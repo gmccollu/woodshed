@@ -24,10 +24,12 @@ import (
 
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
 	"github.com/gmccollu/woodshed/internal/server"
+	"github.com/gmccollu/woodshed/internal/snmp"
 )
 
 // `woodshed search` (SPEC §11.4): the Events search engine on the command line,
@@ -182,6 +184,9 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 	f.set = map[string]bool{}
 	fs.Visit(func(fl *flag.Flag) { f.set[fl.Name] = true })
 
+	if strings.EqualFold(f.typ, search.TypeTrap) {
+		loadSearchMIBs(&f)
+	}
 	values, err := f.values(searchNow(), searchLocation())
 	if err != nil {
 		return usageErr("%v", err)
@@ -513,6 +518,9 @@ func (f *searchFlags) values(now time.Time, loc *time.Location) (url.Values, err
 	slices.Sort(params)
 	for _, p := range params {
 		one := url.Values{p: {strings.Join(v[p], ",")}}
+		if p != "type" {
+			one.Set("type", ts.Type) // a type's own filters are checked as that type's
+		}
 		if _, err := api.ParseSearch(one); err != nil {
 			msg := strings.TrimPrefix(err.Error(), p+": ")
 			return nil, fmt.Errorf("%s: %s", origin[p], msg)
@@ -796,15 +804,18 @@ func (o *searchOut) line(r *search.Result, isMatch bool) {
 	o.printed = true
 	if o.f.json {
 		b, err := api.SearchLine{Received: r.Received, DeviceID: r.DeviceID, Severity: r.Severity, Raw: r.Raw, Ref: r.Ref,
-			App: r.App, Host: r.Host}.MarshalJSON()
+			App: r.App, Host: r.Host, Type: r.Type}.MarshalJSON()
 		if err != nil {
 			o.err = err
 			return
 		}
 		name, _ := json.Marshal(strings.ToValidUTF8(o.names[r.DeviceID], "�"))
-		typ, _ := json.Marshal(o.f.typ)
-		b = append(b[:len(b)-1], `,"type":`...)
-		b = append(b, typ...)
+		b = b[:len(b)-1]
+		if r.Type == "" || r.Type == search.TypeSyslog { // a trap's object has its type already
+			typ, _ := json.Marshal(o.f.typ)
+			b = append(b, `,"type":`...)
+			b = append(b, typ...)
+		}
 		b = append(b, `,"device_name":`...)
 		b = append(b, name...)
 		if o.f.context > 0 {
@@ -860,4 +871,29 @@ func plural(n int64, one, many string) string {
 		return one
 	}
 	return many
+}
+
+// loadSearchMIBs names trap OIDs (in --field trap_oid=linkDown and in the
+// results) with the data folder's MIB set: its config's mib_dir, else its
+// mibs folder, plus the built-in set. It's best effort and reads only: a data
+// folder it can't find leaves the built-in set, and the search reports the
+// folder's own error later.
+func loadSearchMIBs(f *searchFlags) {
+	dir, code, _ := searchDataDir(f, "")
+	if code != 0 {
+		return
+	}
+	mibDir := filepath.Join(dir, "mibs")
+	if !f.set["data"] {
+		if abs, err := filepath.Abs(f.config); err == nil {
+			if c, err := config.Read(abs); err == nil && c.Listeners.SNMP.MIBDir != "" {
+				mibDir = c.Listeners.SNMP.MIBDir
+			}
+		}
+	}
+	if st, err := os.Stat(mibDir); err != nil || !st.IsDir() {
+		return
+	}
+	set, _ := snmp.LoadMIBDir(mibDir)
+	datatype.SetMIBs(set)
 }

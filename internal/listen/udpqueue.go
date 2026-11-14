@@ -22,6 +22,7 @@ import (
 type queued struct {
 	raw       []byte // owned: becomes the message's Raw
 	from      netip.Addr
+	port      uint16    // the sender's port (the SNMP listener replies to it)
 	at        time.Time // when the reader read it (the message's Received time)
 	truncated bool      // raw was cut at the max message size
 }

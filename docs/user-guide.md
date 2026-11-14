@@ -90,6 +90,77 @@ need nothing; **Replace CA** makes a new CA, and every device must import it aga
 either expires, and when the computer gets a DNS name the certificate doesn't cover. More in the install guide:
 [TLS syslog: firewall and certificate](install.md#tls-syslog-firewall-and-certificate).
 
+### Receiving SNMP traps
+
+Woodshed can also receive SNMP traps and informs (v1, v2c and v3) and keep them beside the device's syslog. It's off
+until you turn it on, so an upgrade opens no new port.
+
+1. In **Settings → SNMP traps**, turn the receiver on (UDP port 162). On Windows, also run `woodshed snmp on` once in
+   an administrator prompt, so the firewall lets devices in; Settings shows the command if it's needed. On a server
+   without a browser, `sudo woodshed snmp on` turns it on (see [the install guide](install.md#snmp-traps-firewall)).
+2. Point each device's trap destination (sometimes called a trap receiver, notification target or SNMP manager) at
+   this computer, UDP port 162, with the version and credentials below.
+3. Make the device send one (many devices have a "send test trap" button; unplugging a cable sends linkDown), then
+   open **Events → SNMP traps**.
+
+Port 162 needs the same privileges as 514. Another program often holds it already (an OS trap service, such as
+`snmptrapd` on Linux or the **SNMP Trap** service on Windows): the listener banner names the holder. Stop that
+service, or pick another port in Settings and set it on the devices too.
+
+**v1 and v2c (communities).** By default every community is accepted. To accept only some, add them under
+**Communities** in Settings; a trap with any other community is then refused, counted under **Settings → Refused
+senders** (reason "community") and not stored. A community is often also a device's read (or write) password, so
+Woodshed never shows or stores it: Settings and the stored traps show only `#` and the first 8 hex digits of its
+SHA-256 (`cred=#3f9a1c07`), and the copy of the packet in each record has the community's bytes replaced by `*`.
+
+**v3 (users).** Add each user the devices send as under **v3 users**: the name, the authentication protocol and
+passphrase, and the privacy protocol and passphrase (8 to 256 characters each). The passphrases are write-only:
+Settings shows only "set". MD5, SHA-1 and DES are labelled weak, because they are, but older gear often has nothing
+else, so they're accepted. AES-192 and AES-256 have two incompatible key formats in the wild: if a device's traps
+fail with "can't decrypt", switch the user's **key extension** between *draft* (the default) and *alt*. If you list
+the **engine IDs** the user's devices use, Woodshed keeps only keys made for those engines and forgets the
+passphrases, so a leaked file can't reveal a passphrase used elsewhere; leave the list empty if you add devices
+often.
+
+Credentials are never in the config file, on a command line or in an export. They're kept in the data folder, in
+`snmp-users.json` (readable only by the service's account) on macOS and Linux, and encrypted for the service's
+account in `snmp-users.dat` on Windows. Moving the data folder to another Windows machine leaves the users listed
+but unreadable: a banner asks for their passphrases again.
+
+**Informs and the engine ID.** An inform is a trap the device wants acknowledged. Woodshed answers it once the
+inform is stored, so an inform is never acknowledged and then lost; a retransmission (the same request within a
+minute) is stored again and marked `dup=1`. Replies are limited to 100 a second per sender and 1,000 in all, so a
+forged sender address can't use Woodshed to flood someone. For v3 informs, Woodshed's own **engine ID** (shown in
+Settings, with a copy button) is the one devices must use; most devices discover it by themselves. Turn **Answer
+informs** off to store informs without answering them.
+
+**Names (MIBs).** Woodshed stores OIDs as numbers and adds the names it knows: the standard traps (coldStart,
+warmStart, linkDown, linkUp, authenticationFailure), sysUpTime, snmpTrapOID and the interface table. For your
+devices' own traps, copy their MIB files (`*.mib`, `*.my`, `*.txt`) into the `mibs` folder in the data folder (or
+the folder set in Settings) and press **Reload MIBs**. Woodshed reads only the names and the named numbers from them;
+it isn't a MIB compiler. A file that doesn't load is listed with its line number, and the others still load. Events
+names every trap from the current MIB set, older ones included.
+
+**If a device sends but nothing shows**, look at **Settings → SNMP traps → Senders with failures** (or
+`woodshed snmp status`): it lists each failing sender with the reason, such as an unknown user, a wrong passphrase
+("wrong auth"), the wrong security level, or packets that don't decode. Failed and malformed traps are stored too,
+with their status, because a device sending broken traps is evidence. A v3 device that restarts without raising its
+boot counter would fail the protocol's time check; Woodshed keeps those traps (status `not_in_time`) and relearns the
+device's clock, and the list counts each relearning. Set `v3_strict_time = true` under `[listeners.snmp]` in the
+config file for the protocol's strict rule instead.
+
+To test from another computer, send traps the way a device would (secrets from files or environment variables,
+never on the command line):
+
+```sh
+woodshed send --proto trap --host 192.0.2.50 --count 10                          # v2c, community "public"
+woodshed send --proto trap --host 192.0.2.50 --snmp-version 3 --user monitor \
+    --auth sha-256 --auth-pass-file auth.txt --priv aes-128 --priv-pass-file priv.txt --inform
+```
+
+`--inform` waits for each answer and reports the round trips. `woodshed bench --proto trap` measures the whole trap
+pipeline on this computer, in a temporary folder.
+
 ## 3. Watch
 
 The **Dashboard** shows each device as a tile with a coloured dot (green: heard from in the last 5 minutes, amber:
@@ -125,7 +196,16 @@ The banner goes away an hour after the last drop. When Woodshed stops, it first 
 ## 4. Find the log files
 
 Every message is kept, exactly as it arrived, in plain text: one folder per device and one file per day (UTC).
-Older days are compressed (`.log.gz`).
+Older days are compressed (`.log.gz`). SNMP traps go in a `traps` folder inside the device's folder, with the same
+file names, so the syslog files hold only syslog. Each trap is one line: the received time, the sender and the
+decoded trap, for example
+
+```
+2026-11-14T09:30:58.112Z 192.0.2.1 v=2c pdu=trap id=4711 cred=#3f9a1c07 status=ok uptime=8641234 trap=1.3.6.1.6.3.1.1.5.3(linkDown) vb=1.3.6.1.2.1.2.2.1.8.3(ifOperStatus.3):int:2(down) raw=MIGTAgEB…
+```
+
+with the version, the PDU, the community hash or v3 user, the status, the trap, one `vb=` per value (OID, name,
+type, value), and `raw=`, the whole packet in base64 (the community masked).
 
 | | Installer | Portable |
 |---|---|---|
@@ -133,8 +213,8 @@ Older days are compressed (`.log.gz`).
 | macOS | `/Library/Application Support/Woodshed/logs/` (needs `sudo`) | `woodshed-data/logs/` next to `woodshed` |
 | Linux | `/var/lib/woodshed/logs/` (needs `sudo`) | `woodshed-data/logs/` next to `woodshed` |
 
-By default Woodshed keeps 30 days or 20 GB, whichever comes first, and never fills the disk. Change it in
-**Settings → Storage**.
+By default Woodshed keeps 30 days or 20 GB, whichever comes first, and never fills the disk, counting syslog and
+traps together. Change it in **Settings → Storage**.
 
 ## 5. Events: browse and filter everything stored
 
@@ -220,6 +300,13 @@ so you can bookmark a view or send the link to someone. Links to the old **Searc
 From the Dashboard, **Open in Events** on the live tail opens Events with the same devices, severities and text,
 over the last hour.
 
+When the SNMP receiver is on (or traps are stored), a switch at the top picks **Syslog** or **SNMP traps**. For traps,
+each result shows the time, the device, the trap name and its values on one line; click it for the decoded trap
+(every value with its name) and the traps around it. The fields panel lists the trap's own fields: version, PDU, trap,
+enterprise, generic and specific trap (v1), community or user, and status. The text box searches the decoded trap,
+never the base64 copy. Trap filters take numbers or names: **Trap** `linkDown`, or `1.3.6.1.4.1.32473.*` for every
+trap under an enterprise.
+
 ### Searching from the command line
 
 `woodshed search` runs the same search from a terminal, on every OS, with the UI off, in LAN mode, or with the
@@ -255,6 +342,15 @@ sudo woodshed search --field host=edge-fw-01 --not-field severity=7 --count
   the flag, or the character position in the query), 3 when the data folder can't be read, 4 when there's no data
   folder or index, 130 after Ctrl-C.
 
+- **Traps:** `--type trap` searches the SNMP traps, with their fields: `--field trap_oid=linkDown`,
+  `--field status=auth_failed`, `--not-field version=1`, `--field cred=monitor`. Syslog's flags (`--severities`,
+  `--app` and so on) don't apply to traps, and say so. `--json` prints each trap decoded, like the API.
+
+```
+sudo woodshed search --type trap --last 1h --field trap_oid=linkDown,linkUp
+sudo woodshed search --type trap --field 'trap_oid=1.3.6.1.4.1.32473.*' --devices 192.0.2.10 --json
+```
+
 Run `woodshed search --help` for every flag.
 
 ## 6. Export logs for support
@@ -269,6 +365,9 @@ To send logs to someone (a colleague, a vendor's support team):
 The zip holds the log lines (plain text, one file per device per day), a manifest with line counts and checksums,
 Woodshed's own events for that time (so the reader can tell "the device sent nothing" from "Woodshed wasn't
 running"), and a short README. Exports are deleted after 24 hours.
+
+Exports from the UI hold syslog. The API can export SNMP traps too (`"types": ["trap"]` on `POST /api/exports`,
+see [the API](api.md#exports)); they go in a `traps` folder in the zip, and the README explains the trap lines.
 
 ## 7. Updates
 

@@ -19,6 +19,15 @@
 # and the tls_firewall banner). On Ubuntu, ufw is turned on first (SMOKE_UFW), and `tls on`
 # then `tls off` must leave its rules as they were.
 #
+# SNMP traps (1.2, SPEC §11.6) on every OS: the listener stays off after every install and
+# after an upgrade from an older package (Woodpile's, and the 1.1 deb, PREV_RELEASE below);
+# `woodshed snmp on`, 1,000 traps and 20 informs from another process stored exactly once
+# (`woodshed search --type trap`), `woodshed snmp off`. Windows: the "Woodshed SNMP traps (UDP
+# 162)" rule exists disabled after install, `snmp on` enables it, the service reads its state
+# (snmp_firewall), an MSI upgrade keeps it enabled, `snmp off` disables it, uninstall removes
+# it. Ubuntu with ufw on: `snmp on` then `snmp off` leave its rules as they were. macOS: the
+# traps arrive on the wildcard UDP 162 as _woodshed.
+#
 # macOS and Windows minutes are expensive, so this runs only:
 #   - on a push to ci/install-smoke: the Linux jobs, plus Windows and macOS when the head
 #     commit's message has [smoke all], [smoke windows] or [smoke macos];
@@ -46,6 +55,9 @@ env:
   # The last release under the old name, Woodpile: the legacy steps install its packages
   # (downloaded from this repo's releases) and then this build's over them.
   OLD_RELEASE: v0.9.0-rc3
+  # The last 1.1 release: the deb job installs it, then this build's over it, and the SNMP
+  # listener must stay off (SPEC §11.7). Skipped with a warning while the release doesn't exist.
+  PREV_RELEASE: v1.1.0
   NODE_VERSION: "24"
   WIX_VERSION: "5.0.2"
 
@@ -153,7 +165,7 @@ jobs:
           name: linux-packages
           path: dist
       - run: chmod +x dist/woodshed dist/verifyseq
-      - name: deb (apt install, restart, TLS with ufw on, remove, purge)
+      - name: deb (apt install, restart, TLS and SNMP with ufw on, remove, purge)
         env:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
@@ -164,6 +176,19 @@ jobs:
           VERIFYSEQ: dist/verifyseq
           SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
         run: scripts/smoke/unix.sh manual dist/woodshed
+      - name: the 1.1 deb, then this one over it (the SNMP listener stays off)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFYSEQ: dist/verifyseq
+          SMOKE_LOGS: ${{ runner.temp }}/smoke-logs
+          SMOKE_UFW: "1"
+        run: |
+          if ! gh release view "$PREV_RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::warning::$PREV_RELEASE isn't released here; the 1.1 -> 1.2 upgrade check was skipped"
+            exit 0
+          fi
+          gh release download "$PREV_RELEASE" -R "$GITHUB_REPOSITORY" -p 'woodshed_*_amd64.deb' -D prev
+          scripts/smoke/unix.sh upgrade prev/woodshed_*_amd64.deb dist/*_amd64.deb
       - name: Woodpile's deb, then this one over it
         env:
           GH_TOKEN: ${{ github.token }}
@@ -251,7 +276,7 @@ jobs:
           go build -o dist/woodshed.exe ./cmd/woodshed
           go build -o dist/verifyseq.exe ./scripts/verifyseq
           Get-ChildItem -Recurse dist
-      - name: msi (install, TLS rule, upgrade, repair, uninstall, DELETE_LOGS)
+      - name: msi (install, TLS and SNMP rules, upgrade, repair, uninstall, DELETE_LOGS)
         shell: pwsh
         run: ./scripts/smoke/windows.ps1 -Mode msi -Msi (Resolve-Path dist/v1/*.msi) -UpgradeMsi (Resolve-Path dist/v2/*.msi) -Logs "$env:RUNNER_TEMP/smoke-logs"
       - name: woodshed install / uninstall (no package)
@@ -438,7 +463,7 @@ jobs:
       - name: MSI hardening checks (ACL reset over a hostile folder, required privileges)
         shell: pwsh
         run: ./scripts/smoke/msi-hardening.ps1 -Msi (Resolve-Path dist/v0.0.1/*.msi).Path -Logs "$env:RUNNER_TEMP/smoke-logs"
-      - name: msi (install, TLS rule, upgrade, repair, uninstall, DELETE_LOGS)
+      - name: msi (install, TLS and SNMP rules, upgrade, repair, uninstall, DELETE_LOGS)
         shell: pwsh
         run: ./scripts/smoke/windows.ps1 -Mode msi -Msi (Resolve-Path dist/v0.0.1/*.msi) -UpgradeMsi (Resolve-Path dist/v0.0.2/*.msi) -VerifySeq dist/verifyseq.exe -Logs "$env:RUNNER_TEMP/smoke-logs"
       - name: woodshed install / uninstall (no package)

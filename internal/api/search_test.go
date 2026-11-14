@@ -169,7 +169,7 @@ func TestExportRoutes(t *testing.T) {
 		t.Errorf("keys %v", list[0])
 	}
 	f, _ := json.Marshal(list[0]["filters"])
-	if string(f) != `{"app":["sshd","%FW-6-*"],"case":true,"exclude":"keepalive","exclude_app":[],"exclude_devices":[],"exclude_host":[],"facilities":[],"group":"","host":["web-01"],"q":"link","regex":false,"severities":[0,1,"unknown"],"syntax":"text","type":"syslog","ungrouped":false}` {
+	if string(f) != `{"app":["sshd","%FW-6-*"],"case":true,"exclude":"keepalive","exclude_app":[],"exclude_devices":[],"exclude_host":[],"facilities":[],"group":"","host":["web-01"],"kind":"export","q":"link","regex":false,"severities":[0,1,"unknown"],"syntax":"text","type":"syslog","types":["syslog"],"ungrouped":false}` {
 		t.Errorf("filters %s", f)
 	}
 	if list[0]["ready_at"] != nil {

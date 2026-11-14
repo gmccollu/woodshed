@@ -196,6 +196,7 @@ reached.`, stderr)
 		listenerRows(w, status.Listeners)
 		uiRows(w, cfg, status.UICertFingerprint)
 		statusTLSRows(w, cfg, nil)
+		statusSNMPRows(w, cfg, nil)
 		w.row("Data", status.DataDir)
 		if cfgErr == nil {
 			updateRows(w, cfg, status.Version)
@@ -221,6 +222,7 @@ reached.`, stderr)
 		}
 		uiRows(w, cfg, rs.UI.CertFingerprint)
 		statusTLSRows(w, cfg, &rs)
+		statusSNMPRows(w, cfg, &rs)
 		w.row("Data", cfg.Storage.DataDir)
 		if cfgErr == nil {
 			updateRows(w, cfg, rs.Version)

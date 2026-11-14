@@ -194,6 +194,11 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		exports: s.exports,
 	})
 	s.be.peers.find = opts.FindPeer
+	// The SNMP trap receiver: its engine (boots go up by one), the v3 users and
+	// communities, and the MIB folder (SPEC §11.2), whether or not it's on.
+	if err := s.be.openSNMP(cfg); err != nil {
+		return nil, fmt.Errorf("open the SNMP trap receiver: %w", err)
+	}
 	// The update check: nothing touches the network unless updates.check is "on"
 	// in a release build (SPEC §10.2).
 	s.be.updates = updatecheck.New(updatecheck.Options{
@@ -321,10 +326,12 @@ func (s *Server) Run(ctx context.Context) error {
 		OnQueueDrop: s.be.store.DropQueued,
 		// A third of the shutdown for draining the UDP queue, leaving the rest
 		// for the store's flush and the index.
-		DrainTimeout:   s.opts.ShutdownTimeout / 3,
-		OnEvent:        s.be.listenEvent,
-		Logger:         log,
-		TLSCertificate: s.be.tlsc.certs.Certificate,
+		DrainTimeout:    s.opts.ShutdownTimeout / 3,
+		OnEvent:         s.be.listenEvent,
+		Logger:          log,
+		TLSCertificate:  s.be.tlsc.certs.Certificate,
+		Trap:            s.be.snmp.rcv.Handle,
+		OnTrapQueueDrop: s.be.trapQueueDrop,
 	})
 	if err != nil {
 		// Only an invalid allowlist gets here, and Validate already checked it.

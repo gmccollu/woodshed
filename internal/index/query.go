@@ -70,9 +70,14 @@ func statsUnion(deviceIDs []string, from, to time.Time) (string, []any, bool) {
 		in, a := inList(deviceIDs)
 		devWhere, devArgs = ` AND device_id IN `+in, a
 	}
+	// Every data type counts (SPEC §11.1): syslog's tables and type_stats.
 	q := `SELECT device_id, minute AS start, msgs, bytes, truncated, dropped FROM stats WHERE minute >= ? AND minute < ?` + devWhere +
-		` UNION ALL SELECT device_id, hour AS start, msgs, bytes, truncated, dropped FROM stats_hourly WHERE hour >= ? AND hour < ?` + devWhere
+		` UNION ALL SELECT device_id, hour AS start, msgs, bytes, truncated, dropped FROM stats_hourly WHERE hour >= ? AND hour < ?` + devWhere +
+		` UNION ALL SELECT device_id, minute AS start, msgs, bytes, truncated, dropped FROM type_stats WHERE minute >= ? AND minute < ?` + devWhere +
+		` UNION ALL SELECT device_id, hour AS start, msgs, bytes, truncated, dropped FROM type_stats_hourly WHERE hour >= ? AND hour < ?` + devWhere
 	args := append([]any{fromMin, toMs}, devArgs...)
+	args = append(append(args, fromHour, toMs), devArgs...)
+	args = append(append(args, fromMin, toMs), devArgs...)
 	args = append(append(args, fromHour, toMs), devArgs...)
 	return q, args, true
 }
@@ -166,17 +171,25 @@ func (d *DB) MinuteSeries(ctx context.Context, deviceIDs []string, from, to time
 	if !to.After(from) {
 		return nil, nil
 	}
-	q := `SELECT minute, sum(msgs), sum(bytes), sum(truncated), sum(dropped) FROM stats WHERE minute >= ? AND minute < ?`
-	args := []any{ms(from), ms(to)}
-	if deviceIDs != nil {
-		if len(deviceIDs) == 0 {
-			deviceIDs = []string{""}
+	sel := func(table string) (string, []any) {
+		q := `SELECT minute, msgs, bytes, truncated, dropped FROM ` + table + ` WHERE minute >= ? AND minute < ?`
+		args := []any{ms(from), ms(to)}
+		if deviceIDs != nil {
+			ids := deviceIDs
+			if len(ids) == 0 {
+				ids = []string{""}
+			}
+			in, inArgs := inList(ids)
+			q += ` AND device_id IN ` + in
+			args = append(args, inArgs...)
 		}
-		in, inArgs := inList(deviceIDs)
-		q += ` AND device_id IN ` + in
-		args = append(args, inArgs...)
+		return q, args
 	}
-	q += ` GROUP BY minute`
+	// Every data type counts (SPEC §11.1).
+	q1, a1 := sel("stats")
+	q2, a2 := sel("type_stats")
+	q := `SELECT minute, sum(msgs), sum(bytes), sum(truncated), sum(dropped) FROM (` + q1 + ` UNION ALL ` + q2 + `) GROUP BY minute`
+	args := append(a1, a2...)
 	rows, err := d.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -200,13 +213,13 @@ func (d *DB) MinuteSeries(ctx context.Context, deviceIDs []string, from, to time
 	return out, rows.Err()
 }
 
-const fileCols = `id, device_id, path, day, part, first_received, last_received, size, raw_size, lines, compressed`
+const fileCols = `id, device_id, path, day, part, first_received, last_received, size, raw_size, lines, compressed, type`
 
 func scanFile(r interface{ Scan(...any) error }) (File, error) {
 	var f File
 	var first, last int64
 	var comp int
-	err := r.Scan(&f.ID, &f.DeviceID, &f.Path, &f.Day, &f.Part, &first, &last, &f.Size, &f.RawSize, &f.Lines, &comp)
+	err := r.Scan(&f.ID, &f.DeviceID, &f.Path, &f.Day, &f.Part, &first, &last, &f.Size, &f.RawSize, &f.Lines, &comp, &f.Type)
 	f.FirstReceived, f.LastReceived, f.Compressed = tm(first), tm(last), comp != 0
 	return f, err
 }
@@ -255,13 +268,19 @@ func (d *DB) Files(ctx context.Context, deviceID string) ([]File, error) {
 	return d.queryFiles(ctx, `SELECT `+fileCols+` FROM files WHERE device_id = ? ORDER BY first_received, id`, deviceID)
 }
 
-// FilesInRange returns the files of deviceIDs (nil means all) holding any line
-// received in [from, to] (a zero from or to is unbounded), ordered by device and
-// FirstReceived, each with the checkpoint to start reading at for from. Lines
-// before Start are all older than from; lines after it still need filtering.
+// FilesInRange is FilesInRangeOf for syslog, the 1.1 meaning.
 func (d *DB) FilesInRange(ctx context.Context, deviceIDs []string, from, to time.Time) ([]FileSpan, error) {
-	q := `SELECT ` + fileCols + ` FROM files WHERE 1=1`
-	var args []any
+	return d.FilesInRangeOf(ctx, TypeSyslog, deviceIDs, from, to)
+}
+
+// FilesInRangeOf returns the files of one data type ("" means syslog) of
+// deviceIDs (nil means all) holding any line received in [from, to] (a zero
+// from or to is unbounded), ordered by device and FirstReceived, each with the
+// checkpoint to start reading at for from. Lines before Start are all older
+// than from; lines after it still need filtering.
+func (d *DB) FilesInRangeOf(ctx context.Context, typ string, deviceIDs []string, from, to time.Time) ([]FileSpan, error) {
+	q := `SELECT ` + fileCols + ` FROM files WHERE type = ?`
+	args := []any{fileType(typ)}
 	if !to.IsZero() {
 		q += ` AND first_received <= ?`
 		args = append(args, ms(to))
@@ -375,7 +394,7 @@ func (d *DB) Events(ctx context.Context, from, to time.Time, limit int) ([]Event
 // Deletions returns the storage history with from <= Time < to (zero times are
 // unbounded), newest first, at most limit (0 means no limit).
 func (d *DB) Deletions(ctx context.Context, from, to time.Time, limit int) ([]Deletion, error) {
-	q, args := rangeWhere(`SELECT id, time, file, device_id, bytes, reason FROM deletions`, "time", from, to)
+	q, args := rangeWhere(`SELECT id, time, file, device_id, bytes, reason, type FROM deletions`, "time", from, to)
 	q += ` ORDER BY time DESC, id DESC`
 	if limit > 0 {
 		q += ` LIMIT ?`
@@ -391,7 +410,7 @@ func (d *DB) Deletions(ctx context.Context, from, to time.Time, limit int) ([]De
 		var x Deletion
 		var t int64
 		var reason string
-		if err := rows.Scan(&x.ID, &t, &x.File, &x.DeviceID, &x.Bytes, &reason); err != nil {
+		if err := rows.Scan(&x.ID, &t, &x.File, &x.DeviceID, &x.Bytes, &reason, &x.Type); err != nil {
 			return nil, err
 		}
 		x.Time, x.Reason = tm(t), Reason(reason)

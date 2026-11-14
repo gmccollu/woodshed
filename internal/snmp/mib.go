@@ -105,7 +105,8 @@ type MIBFile struct {
 // LoadMIBDir reads the MIB files (*.mib, *.my, *.txt, any case) in dir, not its
 // subfolders, in name order, plus the built-in set. A file that doesn't parse is
 // skipped and listed in the report's errors; the rest still load. A missing dir
-// is an error in the report and gives the built-in set.
+// gives the built-in set and no error (the receiver reports a missing folder the
+// user named); any other unreadable dir is an error in the report.
 func LoadMIBDir(dir string) (*MIBSet, MIBReport) {
 	var rep MIBReport
 	ents, err := os.ReadDir(dir)

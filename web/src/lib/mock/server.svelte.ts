@@ -44,6 +44,11 @@
 //                      development build, which has no update check). releases_url defaults to the
 //                      project's releases page then
 //   mock_update_result=newer|latest|error  what checks find (default newer: 1.2.0 is out)
+//   mock_snmp=off     the SNMP trap listener is off (default on, UDP 162; stored traps exist either way)
+//   mock_snmp_firewall=STATE with mock_os=windows: the SNMP firewall rule's state (default disabled, as after
+//                      install; ok hides the snmp_firewall banner)
+//   mock_snmp_creds=1  one v3 user's credentials can't be decrypted here (snmp_credentials banner)
+//   mock_snmp_mibs=1   a file in the MIB folder failed to load (snmp_mibs banner)
 //   (at mock_rate=1284 the 20 GiB cap lasts about 13 days, so the size cap limits retention)
 
 import type {
@@ -69,6 +74,11 @@ import { setSessionSecret } from '../api';
 import { matchTerms, parseTerms, TERMS_AND_REGEX } from '../terms';
 import { FLEET, fieldsOf, line, SPECIAL, specialLine, testLine, weighted, type GenLine, type MockDeviceDef, type Special } from './gen';
 import { STEP, deviceAt, lineAt, shareOf } from './history';
+import {
+  TRAP_FIELD_KEYS, TRAP_ONLY, TRAP_ONLY_PARAMS, TRAP_SCHEMA, oidName, trapAt, trapFieldValue, trapFilter, trapRange, trapResult,
+  trapStats, senderAt, type StoredTrap,
+} from './traps';
+import { createUser, deleteUser, failures as snmpFailures, listUsers, mibsJSON, snmpMock, snmpState, unreadableUsers, updateUser } from './snmp';
 
 const P = new URLSearchParams(location.search);
 const n = (k: string, d: number) => {
@@ -297,7 +307,30 @@ function addFleet(now: number, joinedNow = false) {
 
 const thisHost: MockDeviceDef = { ip: '127.0.0.1', name: '', group: '', kind: 'srv', weight: 0.3 };
 
-if (!mock.firstRun) addFleet(Date.now());
+/** The senders that have only traps (SPEC §11.1: a device that sends only traps is still a device). */
+function addTrapOnly(now: number) {
+  const st = trapStats(now);
+  for (const t of TRAP_ONLY) {
+    if (devs.has(t.ip)) continue;
+    const s = st.get(t.ip);
+    devs.set(t.ip, {
+      def: { ip: t.ip, name: t.name, group: t.group, kind: 'srv', weight: 0 },
+      name: t.name,
+      group: t.group,
+      hidden: false,
+      firstSeen: s?.first ?? now,
+      lastHeard: s?.last ?? now,
+      total: 0,
+      bytes: (s?.n ?? 0) * 410,
+      sending: false,
+    });
+  }
+}
+
+if (!mock.firstRun) {
+  addFleet(Date.now());
+  addTrapOnly(Date.now());
+}
 
 const CERT_FP = 'SHA256:3F:9A:1C:77:0B:E4:52:D8:6A:91:C3:0E:F2:48:BB:17:65:2D:A0:C9:8E:11:7F:44:D6:5B:02:E9:A3:C8:70:1D';
 
@@ -425,6 +458,15 @@ let settings: Settings = {
       allow_legacy_tls: P.get('mock_tls_legacy') === '1',
       cert_file: TLS_MODE === 'file' ? '/etc/woodshed/tls/fullchain.pem' : '',
       key_file: TLS_MODE === 'file' ? '/etc/woodshed/tls/privkey.pem' : '',
+    },
+    snmp: {
+      enabled: P.get('mock_snmp') !== 'off',
+      addr: '0.0.0.0',
+      port: 162,
+      answer_informs: true,
+      communities: ['#3f9a1c07', '#b41e07d2'],
+      mib_dir: '',
+      engine_id: '',
     },
   },
   storage: {
@@ -595,6 +637,24 @@ function validate(s: Settings): Record<string, string> {
   }
   if (!s.listeners.udp.enabled && !s.listeners.tcp.enabled && !s.listeners.tls?.enabled)
     e['listeners.udp.enabled'] = 'Keep at least one listener on, or Woodshed receives nothing.';
+  const sn = s.listeners.snmp;
+  if (sn) {
+    port('listeners.snmp.port', sn.port);
+    const u = s.listeners.udp;
+    if (!isIP(sn.addr)) e['listeners.snmp.addr'] = 'Enter an IP address, or 0.0.0.0 / :: for all addresses.';
+    else if (OS.startsWith('darwin') && sn.enabled && !WILDCARD.includes(sn.addr) && sn.port < 1024)
+      e['listeners.snmp.addr'] = 'On macOS a port below 1024 can only be bound on all addresses (0.0.0.0 or ::). Use the sender allowlist to restrict senders.';
+    else if (!e['listeners.snmp.port'] && u.port === sn.port && (u.addr === sn.addr || WILDCARD.includes(u.addr) || WILDCARD.includes(sn.addr)))
+      e['listeners.snmp.port'] = "can't be the same as the UDP syslog listener's port on the same address";
+    if (sn.mib_dir && !(sn.mib_dir.startsWith('/') || /^[A-Za-z]:\\/.test(sn.mib_dir))) e['listeners.snmp.mib_dir'] = 'must be an absolute path (or empty for the mibs folder in the data folder)';
+    const h = sn.engine_id.replace(/^0x/i, '').replace(/:/g, '');
+    if (sn.engine_id && (!/^[0-9a-f]*$/i.test(h) || h.length % 2 || h.length < 10 || h.length > 64))
+      e['listeners.snmp.engine_id'] = 'must be 5 to 32 bytes (10 to 64 hex digits)';
+    if (sn.communities.length > 100) e['listeners.snmp.communities'] = 'at most 100 communities';
+    sn.communities.forEach((c, i) => {
+      if (!c.length || c.length > 255) e[`listeners.snmp.communities[${i}]`] = 'must be 1 to 255 bytes';
+    });
+  }
   const t = s.listeners.tls;
   if (t) {
     port('listeners.tls.port', t.port);
@@ -1006,13 +1066,25 @@ function deviceJSON(d: Dev, now: number): Device {
     group: d.group,
     hidden: d.hidden,
     first_seen: new Date(d.firstSeen).toISOString(),
-    last_heard: new Date(d.lastHeard).toISOString(),
     status: blockedBy(d.def.ip) ? 'blocked' : status(d, now),
     blocked: !!blockedBy(d.def.ip),
     msgs_per_min: running ? Math.round(share * mock.rate * 60 * (0.9 + Math.random() * 0.2)) : 0,
-    total_msgs: d.total,
     bytes_on_disk: d.bytes,
     tls: deviceTls(d.def.ip, now),
+    ...deviceTypes(d, now),
+  };
+}
+
+/** 1.2: the data types a device has on disk and their stored lines; total_msgs counts both. */
+function deviceTypes(d: Dev, now: number): Pick<Device, 'types' | 'lines_by_type' | 'total_msgs' | 'last_heard'> {
+  const t = mock.firstRun ? undefined : trapStats(now).get(d.def.ip);
+  const syslog = d.total;
+  const types = [...(syslog > 0 ? ['syslog'] : []), ...(t ? ['trap'] : [])];
+  return {
+    types,
+    lines_by_type: { ...(syslog > 0 ? { syslog } : {}), ...(t ? { trap: t.n } : {}) },
+    total_msgs: syslog + (t?.n ?? 0),
+    last_heard: new Date(Math.max(d.lastHeard, t?.last ?? 0)).toISOString(),
   };
 }
 
@@ -1034,6 +1106,7 @@ function statusJSON(): Status {
     listeners.push({ proto, addr: c.addr, port: c.port, ok: !h, error: h ? 'bind: address already in use' : '', ...(h ?? {}) });
   }
   if (l.tls?.enabled) listeners.push({ proto: 'tls', addr: l.tls.addr, port: l.tls.port, ok: true, error: '' });
+  if (l.snmp?.enabled) listeners.push({ proto: 'snmp', addr: l.snmp.addr, port: l.snmp.port, ok: true, error: '' });
   const banners: Status['banners'] = [];
   const down = listeners.filter((x) => !x.ok);
   if (down.length) {
@@ -1080,6 +1153,7 @@ function statusJSON(): Status {
       text: 'The OS gave the UDP listener a 208 KiB receive buffer; Woodshed asked for 32 MiB. Bursts of messages may be dropped before Woodshed sees them. In a container, raise net.core.rmem_max on the host; otherwise check /etc/sysctl.d/60-woodshed.conf is applied.',
     });
   banners.push(...tlsBanners());
+  banners.push(...snmpBanners());
   if (mock.queueFull && l.udp.enabled)
     banners.push({
       kind: 'udp_queue_full',
@@ -1154,6 +1228,20 @@ function queueJSON(now: number): Stats['udp_queue'] {
       dropped_24h: droppedByQueue,
       high_water_by_hour: by,
     },
+    ...(settings.listeners.snmp?.enabled
+      ? [
+          {
+            listener: 'snmp',
+            port: settings.listeners.snmp.port,
+            capacity_messages: QUEUE_CAP,
+            capacity_bytes: 64 * MiB,
+            depth: 0,
+            high_water_24h: 12,
+            dropped_24h: 0,
+            high_water_by_hour: by.map((x, i) => Math.min(12, 1 + ((x + i) % 9))),
+          },
+        ]
+      : []),
   ];
 }
 
@@ -1250,6 +1338,9 @@ function rejected(now: number): RejectedSender[] {
   }
   // One host opening more TCP connections than the per-source limit allows.
   out.push({ ip: '10.9.0.66', count_24h: Math.round(2_310 + 40 * mins), last_seen: new Date(now - 9000).toISOString(), reason: 'per_source' });
+  // A v2c sender whose community isn't on listeners.snmp.communities.
+  if (settings.listeners.snmp?.enabled && settings.listeners.snmp.communities.length)
+    out.push({ ip: '10.3.0.9', count_24h: Math.round(64 + mins / 2), last_seen: new Date(now - 95_000).toISOString(), reason: 'community' });
   return out.sort((a, b) => b.count_24h - a.count_24h);
 }
 
@@ -1614,6 +1705,7 @@ function textMatcher(v: string, syntax: string, isRe: boolean, cs: boolean): ((r
 function lineFilter(u: URLSearchParams, now: number): LineFilter | string {
   const type = u.get('type') ?? 'syslog';
   if (type !== 'syslog') return `type: unknown data type "${type}".`;
+  for (const k of TRAP_ONLY_PARAMS) if (u.has(k)) return `${k}: not a filter for syslog.`;
   const syntax = u.get('syntax') ?? 'text';
   if (syntax !== 'text' && syntax !== 'terms') return `syntax must be text or terms, not "${syntax}"`;
   const isRe = u.get('regex') === 'true';
@@ -1737,6 +1829,189 @@ function searchRoute(u: URLSearchParams, now: number): Response {
   });
 }
 
+// ---------- SNMP traps (docs/api.md → Data types: type=trap; 1.2) ----------
+
+/** A community as the server shows it: "#" and 8 hex digits (a stand-in for SHA-256's first 4 bytes). */
+function communityHash(c: string): string {
+  if (/^#[0-9a-f]{8}$/i.test(c)) return c.toLowerCase();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193) >>> 0;
+  return `#${h.toString(16).padStart(8, '0')}`;
+}
+
+const trapDevicePasses = (u: URLSearchParams) => {
+  const f: MockFilters = { devices: u.get('devices')?.split(',').filter(Boolean), group: u.get('group') ?? undefined, ungrouped: u.get('ungrouped') === 'true', sev: null };
+  const ex = listParam(u, 'exclude_devices');
+  return (ip: string) => deviceMatches(ip, f, true) && !ex.includes(ip);
+};
+
+function trapSearchRoute(u: URLSearchParams, now: number): Response {
+  const f = trapFilter(u, now, trapDevicePasses(u));
+  if (typeof f === 'string') return err(400, f);
+  const order = u.get('order') === 'asc' ? 'asc' : 'desc';
+  const limit = Math.min(5000, Math.max(1, Number(u.get('limit') || 500)));
+  const sig = signature(u);
+  const { lo, hi } = trapRange(f.from, f.to, now);
+  let i = order === 'desc' ? hi : lo;
+  const cur = u.get('cursor');
+  if (cur) {
+    const [idx, s2] = cur.split('.');
+    if (s2 !== sig) return err(400, 'The cursor belongs to a different search.');
+    i = Number(idx);
+  }
+  const step = order === 'desc' ? -1 : 1;
+  const results = [];
+  const files = new Set<string>();
+  let scanned = 0;
+  for (; i >= lo && i <= hi && results.length < limit; i += step) {
+    scanned++;
+    const t = trapAt(i);
+    files.add(`${t.ip}/${Math.floor(t.ms / (24 * H))}`);
+    if (f.pass(t)) results.push(trapResult(t));
+  }
+  const exhausted = i < lo || i > hi;
+  return json({ results, next_cursor: exhausted ? '' : `${i}.${sig}`, scanned_bytes: scanned * 410, scanned_files: files.size, elapsed_ms: 25, partial: false });
+}
+
+function trapSummaryRoute(u: URLSearchParams, now: number): Response {
+  const f = trapFilter(u, now, trapDevicePasses(u));
+  if (typeof f === 'string') return err(400, f);
+  const fieldsArg = u.get('fields');
+  const want = fieldsArg === null || fieldsArg === '' ? TRAP_FIELD_KEYS : fieldsArg === 'none' ? [] : fieldsArg.split(',').map((x) => x.trim()).filter(Boolean);
+  for (const k of want) if (!TRAP_FIELD_KEYS.includes(k)) return err(400, `fields: unknown field "${k}".`);
+  const top = u.has('top') ? Number(u.get('top')) : 10;
+  const bucketSec = u.has('bucket') ? Number(u.get('bucket')) : defaultBucket(f.to - f.from);
+  const bucketMs = bucketSec * 1000;
+  const firstB = bucketStart(f.from, bucketMs);
+  const nBuckets = Math.ceil((f.to - firstB) / bucketMs);
+  if (nBuckets > 1000) return err(400, `bucket=${bucketSec} gives ${nBuckets} buckets over this range; the limit is 1,000. Pick a larger bucket.`);
+  const { lo, hi } = trapRange(f.from, f.to, now);
+  const tallies = new Map<string, { values: Map<string, number>; none: number }>(want.map((k) => [k, { values: new Map(), none: 0 }]));
+  const hist = new Map<number, number>();
+  const files = new Set<string>();
+  let matched = 0;
+  for (let i = hi; i >= lo; i--) {
+    const t: StoredTrap = trapAt(i);
+    files.add(`${t.ip}/${Math.floor(t.ms / (24 * H))}`);
+    if (!f.pass(t)) continue;
+    matched++;
+    const b = bucketStart(t.ms, bucketMs);
+    hist.set(b, (hist.get(b) ?? 0) + 1);
+    for (const [k, ts] of tallies) {
+      const v = trapFieldValue(t, k);
+      if (!v) ts.none++;
+      else ts.values.set(v, (ts.values.get(v) ?? 0) + 1);
+    }
+  }
+  const buckets = [];
+  for (let k = 0; k < nBuckets; k++) {
+    const start = firstB + k * bucketMs;
+    buckets.push({ start: new Date(start).toISOString(), count: hist.get(start) ?? 0, approx: false });
+  }
+  const fields = want.map((key) => {
+    const desc = TRAP_SCHEMA.fields.find((x) => x.key === key)!;
+    const ts = tallies.get(key)!;
+    const all = [...ts.values.entries()].map(([value, count]) => {
+      // trap_oid and enterprise values are OIDs; their label is the MIB name when the current set has one.
+      const label = desc.domain
+        ? (desc.domain.find((x) => x.value === value)?.label ?? value)
+        : key === 'device'
+          ? devLabel(value)
+          : key === 'trap_oid' || key === 'enterprise'
+            ? oidName(value) || value
+            : value;
+      return { value, label, count, filterable: !value.includes(',') };
+    });
+    all.sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : 1));
+    const values = desc.domain ? all : all.slice(0, top);
+    const listed = values.reduce((s, v) => s + v.count, 0);
+    const withValue = all.reduce((s, v) => s + v.count, 0);
+    return { key, label: desc.label, values, other: withValue - listed, none: ts.none, distinct: ts.values.size, distinct_capped: false };
+  });
+  return json({
+    type: 'trap',
+    from: new Date(f.from).toISOString(),
+    to: new Date(f.to).toISOString(),
+    matched,
+    counted_from: new Date(f.from).toISOString(),
+    ...(u.get('histogram') !== 'false' ? { histogram: { bucket_seconds: bucketSec, source: f.unfiltered && bucketSec >= 60 ? 'index' : 'scan', buckets } } : {}),
+    fields,
+    next_cursor: '',
+    partial: false,
+    scanned_bytes: (hi - lo + 1) * 410,
+    scanned_files: files.size,
+    elapsed_ms: 30,
+  });
+}
+
+function trapContextRoute(u: URLSearchParams, now: number): Response {
+  const i = Number((u.get('ref') ?? '').slice(1));
+  const before = Math.min(500, Number(u.get('before') ?? 50));
+  const after = Math.min(500, Number(u.get('after') ?? 50));
+  const { lo, hi } = trapRange(0, now, now);
+  if (i < lo || i > hi) return err(404, 'That line is no longer stored.');
+  const ip = senderAt(i).ip;
+  const older: number[] = [];
+  for (let j = i - 1; older.length < before && j >= lo; j--) if (senderAt(j).ip === ip) older.push(j);
+  const newer: number[] = [];
+  for (let j = i + 1; newer.length < after && j <= hi; j++) if (senderAt(j).ip === ip) newer.push(j);
+  const idx = [...older.reverse(), i, ...newer];
+  let atStart = true;
+  for (let j = idx[0] - 1; j >= lo; j--) if (senderAt(j).ip === ip) { atStart = false; break; }
+  let atEnd = true;
+  for (let j = idx[idx.length - 1] + 1; j <= hi; j++) if (senderAt(j).ip === ip) { atEnd = false; break; }
+  return json({ lines: idx.map((j) => trapResult(trapAt(j))), hit_index: older.length, at_start: atStart, at_end: atEnd });
+}
+
+const mibDir = () => settings.listeners.snmp?.mib_dir || `${settings.storage.data_dir}${OS.startsWith('windows') ? '\\' : '/'}mibs`;
+
+function snmpRoute(method: string, p: string, body: unknown, now: number): Response | null {
+  const sn = settings.listeners.snmp;
+  if (method === 'GET' && p === '/api/snmp')
+    return json(snmpState({ enabled: !!sn?.enabled, port: sn?.port ?? 162, mibDir: mibDir(), windows: OS.startsWith('windows'), started: STARTED, now }));
+  if (method === 'POST' && p === '/api/snmp/mibs/reload') {
+    snmpMock.reloads++;
+    snmpMock.loadedAt = now;
+    return json(mibsJSON(mibDir()));
+  }
+  if (method === 'GET' && p === '/api/snmp/failures') return json(snmpFailures(now));
+  const reply = (r: { status: number; body: unknown }) => (r.status === 204 ? new Response(null, { status: 204 }) : json(r.body, r.status));
+  if (p === '/api/snmp/users') {
+    if (method === 'GET') return json(listUsers());
+    if (method === 'POST') return reply(createUser((body ?? {}) as object));
+  }
+  const m = /^\/api\/snmp\/users\/([^/]+)$/.exec(p);
+  if (m) {
+    const name = decodeURIComponent(m[1]);
+    if (method === 'PUT') return reply(updateUser(name, (body ?? {}) as object));
+    if (method === 'DELETE') return reply(deleteUser(name));
+  }
+  return null;
+}
+
+function snmpBanners(): Status['banners'] {
+  const out: Status['banners'] = [];
+  const sn = settings.listeners.snmp;
+  if (sn?.enabled && OS.startsWith('windows') && snmpMock.firewall !== 'ok')
+    out.push({
+      kind: 'snmp_firewall',
+      action: '',
+      level: 'warn',
+      text: `The SNMP trap listener is on, but the Windows firewall rule "Woodshed SNMP traps (UDP ${sn.port})" is ${snmpMock.firewall === 'missing' ? 'missing' : snmpMock.firewall === 'wrong_port' ? 'on another port' : 'disabled'}, so devices can't reach it. Run "woodshed snmp on" in an administrator prompt.`,
+    });
+  const bad = unreadableUsers();
+  if (bad)
+    out.push({
+      kind: 'snmp_credentials',
+      action: '',
+      level: 'warn',
+      text: `${bad} SNMP v3 user${bad === 1 ? "'s" : "s'"} credentials can't be decrypted on this machine (the data folder moved to another machine or account). Enter ${bad === 1 ? 'its passphrases' : 'their passphrases'} again in Settings → SNMP traps.`,
+    });
+  if (snmpMock.mibErrors)
+    out.push({ kind: 'snmp_mibs', action: '', level: 'info', text: '1 file in the MIB folder failed to load; the rest loaded. Settings → SNMP traps lists it.' });
+  return out;
+}
+
 // ---------- Events v2: schema, summary (docs/api.md, 1.1) ----------
 
 const SCHEMA = {
@@ -1759,6 +2034,7 @@ const SCHEMA = {
         { key: 'app', label: 'Program/tag', param: 'app', exclude_param: 'exclude_app', domain: null },
       ],
     },
+    TRAP_SCHEMA,
   ],
 };
 const FIELD_KEYS = SCHEMA.types[0].fields.map((x) => x.key);
@@ -1986,6 +2262,7 @@ function seedSaved() {
   add('Edge denies', { q: 'deny NOT 10.1.0.255', syntax: 'terms', devices: ['10.1.0.1', '10.1.0.2'], range: { last: '1h' } });
   add('Auth failures', { q: 'failed', app: ['sshd'], devices: ['10.2.0.20', '10.9.9.9'], range: { last: '24h' } });
   add('Switch port flaps', { q: 'flap', group: 'HQ', exclude_app: ['lldpd'], range: { last: '7d' } });
+  savedList.push({ id: 'ss_trapdown', name: 'Links going down', type: 'trap', created: t, updated: t, query: { trap_oid: ['linkDown'], range: { last: '24h' } }, version: 1 });
 }
 seedSaved();
 
@@ -2014,8 +2291,14 @@ function validateSaved(b: { name?: unknown; type?: unknown; query?: SavedQuery }
   const name = typeof b.name === 'string' ? b.name.trim() : '';
   if (!name) e.name = 'Give the search a name.';
   else if ([...name].length > 80) e.name = 'At most 80 characters.';
-  if (b.type !== undefined && b.type !== 'syslog') e.type = `Unknown data type "${String(b.type)}".`;
+  if (b.type !== undefined && b.type !== 'syslog' && b.type !== 'trap') e.type = `Unknown data type "${String(b.type)}".`;
   const q = b.query ?? {};
+  // Each type refuses the other's filters (docs/api.md → Saved searches).
+  const foreign = b.type === 'trap' ? ['severities', 'facilities', 'app', 'exclude_app', 'host', 'exclude_host'] : TRAP_ONLY_PARAMS;
+  for (const k of foreign) {
+    const v = q[k];
+    if (Array.isArray(v) ? v.length : v !== undefined && v !== '') e[`query.${k}`] = `not a filter for ${b.type === 'trap' ? 'SNMP traps' : 'syslog'}.`;
+  }
   const syntax = q.syntax ?? 'text';
   if (syntax !== 'text' && syntax !== 'terms') e['query.syntax'] = 'Must be text or terms.';
   if (q.regex && syntax === 'terms') e['query.syntax'] = TERMS_AND_REGEX;
@@ -2028,7 +2311,7 @@ function validateSaved(b: { name?: unknown; type?: unknown; query?: SavedQuery }
       }
     }
   }
-  for (const k of ['devices', 'exclude_devices', 'app', 'exclude_app', 'host', 'exclude_host', 'severities', 'facilities'] as const) {
+  for (const k of ['devices', 'exclude_devices', 'app', 'exclude_app', 'host', 'exclude_host', 'severities', 'facilities', ...TRAP_ONLY_PARAMS]) {
     const v = q[k];
     if (v !== undefined && (!Array.isArray(v) || v.length > 1000)) e[`query.${k}`] = 'A list of at most 1,000 items.';
   }
@@ -2054,8 +2337,8 @@ function savedRoute(method: string, p: string, u: URLSearchParams, body: unknown
   if (p === '/api/saved-searches') {
     if (method === 'GET') {
       const type = u.get('type') ?? 'syslog';
-      if (type !== 'syslog') return err(400, `type: unknown data type "${type}".`);
-      return json([...savedList].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })).map(savedJSON));
+      if (type !== 'syslog' && type !== 'trap') return err(400, `type: unknown data type "${type}".`);
+      return json([...savedList].filter((s) => s.type === type).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })).map(savedJSON));
     }
     if (method === 'POST') {
       const b = (body ?? {}) as { name?: string; type?: string; query?: SavedQuery };
@@ -2064,7 +2347,7 @@ function savedRoute(method: string, p: string, u: URLSearchParams, body: unknown
       if (v.conflict) return err(409, v.conflict);
       if (savedList.length >= SAVED_LIMIT) return err(409, `There are already ${SAVED_LIMIT} saved searches; delete one first.`);
       const t = new Date(now).toISOString();
-      const s: MockSaved = { id: `ss_${Math.random().toString(16).slice(2, 10)}`, name: b.name!.trim(), type: 'syslog', created: t, updated: t, query: b.query ?? {}, version: 1 };
+      const s: MockSaved = { id: `ss_${Math.random().toString(16).slice(2, 10)}`, name: b.name!.trim(), type: b.type === 'trap' ? 'trap' : 'syslog', created: t, updated: t, query: b.query ?? {}, version: 1 };
       savedList.push(s);
       return json(savedJSON(s), 201, { ETag: savedEtag(s) });
     }
@@ -2212,10 +2495,17 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const errors = validate(s);
     if (Object.keys(errors).length) return json({ errors }, 400);
     const wasLan = settings.ui.lan_mode;
+    const prev = { snmp: settings.listeners.snmp };
     const restarting = wasLan !== s.ui.lan_mode || settings.ui.port !== s.ui.port;
     // A PUT without updates keeps it (docs/api.md).
     const check = s.updates?.check ?? settings.updates?.check ?? 'ask';
     settings = structuredClone({ ...s, updates: settings.updates });
+    // docs/api.md: a plain community is stored and comes back only as "#<hash8>" (the mock's hash isn't SHA-256).
+    if (settings.listeners.snmp) {
+      const prevSnmp = s.listeners.snmp ? undefined : structuredClone(prev.snmp);
+      if (prevSnmp) settings.listeners.snmp = prevSnmp; // a PUT without it (a 1.1 client) keeps it
+      settings.listeners.snmp!.communities = [...new Set(settings.listeners.snmp!.communities.map(communityHash))];
+    }
     if (check !== settings.updates?.check) setUpdateCheck(check, now);
     settingsRev++;
     // docs/api.md: turning TLS on for the first time without cert_file creates the CA and certificate.
@@ -2279,6 +2569,13 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     if (settings.listeners.tls?.cert_file) return err(404, 'This server uses your own certificate; get its CA from whoever issued it.');
     if (!wsCa) return err(404, "TLS hasn't been turned on yet, so there's no CA certificate.");
     return caDownload(caDl[1] as 'pem' | 'der');
+  }
+  if (method === 'GET' && p === '/api/search' && url.searchParams.get('type') === 'trap') return trapSearchRoute(url.searchParams, now);
+  if (method === 'GET' && p === '/api/search/summary' && url.searchParams.get('type') === 'trap') return trapSummaryRoute(url.searchParams, now);
+  if (method === 'GET' && p === '/api/context' && /^t\d+$/.test(url.searchParams.get('ref') ?? '')) return trapContextRoute(url.searchParams, now);
+  if (p.startsWith('/api/snmp')) {
+    const r = snmpRoute(method, p, body, now);
+    if (r) return r;
   }
   if (method === 'GET' && p === '/api/search') return searchRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/search/schema') return json(SCHEMA);

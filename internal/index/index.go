@@ -208,6 +208,37 @@ CREATE TABLE saved_searches (
 	version  INTEGER NOT NULL DEFAULT 1
 );
 `,
+	// 5 -> 6: data types (SPEC §11.1, §11.7). Every 1.1 file row reads as syslog;
+	// other types' stats go into their own tables, so syslog's are untouched; each
+	// deletion records its file's type.
+	`
+ALTER TABLE files ADD COLUMN type TEXT NOT NULL DEFAULT 'syslog';
+CREATE INDEX files_type_device_time ON files (type, device_id, first_received);
+ALTER TABLE deletions ADD COLUMN type TEXT NOT NULL DEFAULT 'syslog';
+CREATE TABLE type_stats (
+	device_id TEXT NOT NULL,
+	type      TEXT NOT NULL,
+	minute    INTEGER NOT NULL,
+	msgs      INTEGER NOT NULL DEFAULT 0,
+	bytes     INTEGER NOT NULL DEFAULT 0,
+	truncated INTEGER NOT NULL DEFAULT 0,
+	dropped   INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (device_id, type, minute)
+) WITHOUT ROWID;
+CREATE INDEX type_stats_minute ON type_stats (minute);
+CREATE INDEX type_stats_type_minute ON type_stats (type, minute, device_id);
+CREATE TABLE type_stats_hourly (
+	device_id TEXT NOT NULL,
+	type      TEXT NOT NULL,
+	hour      INTEGER NOT NULL,
+	msgs      INTEGER NOT NULL DEFAULT 0,
+	bytes     INTEGER NOT NULL DEFAULT 0,
+	truncated INTEGER NOT NULL DEFAULT 0,
+	dropped   INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (device_id, type, hour)
+) WITHOUT ROWID;
+CREATE INDEX type_stats_hourly_hour ON type_stats_hourly (hour);
+`,
 }
 
 // CurrentSchema is the schema version this build writes.

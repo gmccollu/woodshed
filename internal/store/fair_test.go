@@ -406,7 +406,7 @@ func TestPruneKeepsReturningSender(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The sender is back: resident, not flushed yet. Then the prune runs.
-	if _, err := e.s.device(a, true); err != nil {
+	if _, err := e.s.device(streamKey{addr: a}, true); err != nil {
 		t.Fatal(err)
 	}
 	e.s.pruneDevices(e.clock.Now())

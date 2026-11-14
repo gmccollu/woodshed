@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/gmccollu/woodshed/internal/hub"
+	"github.com/gmccollu/woodshed/internal/datatype"
 )
 
 // Summaries: the Events field panel and histogram (GET /api/search/summary,
@@ -222,12 +222,14 @@ func foldKey(v string, app bool) string {
 	return v
 }
 
-// held is a line found but not yet committed to the counts.
+// held is a line found but not yet committed to the counts. For a data type
+// other than syslog, ext is its row in sumState.extRows (-1: none).
 type held struct {
 	ms        int64
 	dev       int32
 	pri       int16 // -1: no PRI
 	host, app int32
+	ext       int32
 }
 
 type sumState struct {
@@ -241,8 +243,15 @@ type sumState struct {
 
 	devs   []string
 	labels []string
-	sevs   hub.SeveritySet
-	facs   FacilitySet
+	dt     datatype.Type // the data type
+
+	// Another type than syslog: the non-device fields counted (genKeys, in
+	// schema order), a tally each, and the held lines' value rows (extRows,
+	// reused through extFree once committed).
+	genKeys []string
+	gen     []*tally
+	extRows [][]int32
+	extFree []int32
 
 	wantFields []string // keys in schema order
 	wantHist   bool
@@ -430,14 +439,28 @@ func (e *Engine) decodeSummaryCursor(s string, bind []byte) (id [16]byte, seq ui
 
 // ---- the request ----
 
-// knownField reports whether k is a field key of the syslog type.
-func knownField(k string) bool {
-	for _, f := range syslogFields {
+// knownField reports whether k is a field key of the type.
+func knownField(dt datatype.Type, k string) bool {
+	for _, f := range dt.Fields() {
 		if f.Key == k {
 			return true
 		}
 	}
 	return false
+}
+
+// syslog reports whether the summary counts syslog (its own counters).
+func (st *sumState) syslog() bool { return st.dt == nil || st.dt.Name() == TypeSyslog }
+
+// extRow returns a free row of len(genKeys) value IDs for a held line.
+func (st *sumState) extRow() int32 {
+	if n := len(st.extFree); n > 0 {
+		r := st.extFree[n-1]
+		st.extFree = st.extFree[:n-1]
+		return r
+	}
+	st.extRows = append(st.extRows, make([]int32, len(st.genKeys)))
+	return int32(len(st.extRows) - 1)
 }
 
 // CheckBucket validates a bucket size for a range: one of BucketSizes, giving
@@ -458,7 +481,7 @@ func CheckBucket(size time.Duration, fromMs, toMs int64) error {
 // the histogram can come from the index.
 func histogramUnfiltered(f Filter) bool {
 	return f.Q == "" && f.Exclude == "" && len(f.Apps) == 0 && len(f.Hosts) == 0 && len(f.ExcludeApps) == 0 &&
-		len(f.ExcludeHosts) == 0 && f.Severities == 0 && f.Facilities == 0
+		len(f.ExcludeHosts) == 0 && f.Severities == 0 && f.Facilities == 0 && (f.Trap == nil || f.Trap.Empty())
 }
 
 // Summary runs one request of a summary.
@@ -475,7 +498,7 @@ func (e *Engine) Summary(ctx context.Context, q SummaryQuery) (Summary, error) {
 		return Summary{}, err
 	}
 	for _, f := range q.Fields {
-		if !knownField(f) {
+		if !knownField(c.dt, f) {
 			return Summary{}, &QueryError{Msg: fmt.Sprintf("fields: unknown field %q.", f)}
 		}
 	}
@@ -496,7 +519,7 @@ func (e *Engine) Summary(ctx context.Context, q SummaryQuery) (Summary, error) {
 			return Summary{}, ErrSummaryExpired
 		}
 	} else {
-		if st, err = e.newSummary(ctx, q, bind); err != nil {
+		if st, err = e.newSummary(ctx, q, bind, c); err != nil {
 			return Summary{}, err
 		}
 	}
@@ -536,8 +559,8 @@ func (e *Engine) Summary(ctx context.Context, q SummaryQuery) (Summary, error) {
 	return out, nil
 }
 
-func (e *Engine) newSummary(ctx context.Context, q SummaryQuery, bind []byte) (*sumState, error) {
-	st := &sumState{bind: bind, wantHist: !q.NoHistogram, sevs: q.Severities, facs: q.Facilities, kept: newKeptReaders()}
+func (e *Engine) newSummary(ctx context.Context, q SummaryQuery, bind []byte, c compiled) (*sumState, error) {
+	st := &sumState{bind: bind, wantHist: !q.NoHistogram, dt: c.dt, kept: newKeptReaders()}
 	_, _ = rand.Read(st.id[:])
 	var err error
 	if st.fromMs, st.toMs, err = e.resolveRange(q.Filter); err != nil {
@@ -552,16 +575,20 @@ func (e *Engine) newSummary(ctx context.Context, q SummaryQuery, bind []byte) (*
 	st.bucketMs = size.Milliseconds()
 	st.origin = bucketStart(st.fromMs, st.bucketMs)
 	st.nb = int((bucketStart(st.toMs-1, st.bucketMs)-st.origin)/st.bucketMs) + 1
-	for _, f := range syslogFields {
+	for _, f := range st.dt.Fields() {
 		if q.Fields == nil || slices.Contains(q.Fields, f.Key) {
 			st.wantFields = append(st.wantFields, f.Key)
+			if !st.syslog() && f.Key != FieldDevice {
+				st.genKeys = append(st.genKeys, f.Key)
+				st.gen = append(st.gen, newTally())
+			}
 		}
 	}
 	all, err := e.idx.ListDevices(ctx)
 	if err != nil {
 		return nil, err
 	}
-	none := q.Severities == hub.SeverityNone || q.Facilities == FacilityNone
+	none := c.none
 	if !none {
 		st.devs = selectDevices(all, q.Devices, q.Group, q.Ungrouped, q.ExcludeDevices)
 	}
@@ -631,6 +658,18 @@ func (st *sumState) flush(r *run, streams []*stream) {
 func (st *sumState) commit(h held) {
 	st.committed++
 	st.devN[h.dev]++
+	if !st.syslog() {
+		if h.ext >= 0 {
+			for i, id := range st.extRows[h.ext] {
+				st.gen[i].add(id)
+			}
+			st.extFree = append(st.extFree, h.ext)
+		}
+		if st.scanHist {
+			st.hist[(h.ms-st.origin)/st.bucketMs]++
+		}
+		return
+	}
 	sev, fac := 8, 24
 	if h.pri >= 0 {
 		sev, fac = int(h.pri&7), int(h.pri>>3)
@@ -680,21 +719,32 @@ func (e *Engine) summaryOut(st *sumState, top int) Summary {
 	}
 	for _, k := range st.wantFields {
 		var fs FieldSchema
-		for _, f := range syslogFields {
+		for _, f := range st.dt.Fields() {
 			if f.Key == k {
 				fs = f
 			}
 		}
 		fc := FieldCounts{Key: k, Label: fs.Label, Values: []FieldValue{}}
 		var vals []FieldValue
-		switch k {
-		case FieldDevice:
+		gi := slices.Index(st.genKeys, k)
+		switch {
+		case gi >= 0:
+			t := st.gen[gi]
+			for _, s := range t.slots {
+				if s.n > 0 {
+					vals = append(vals, FieldValue{Value: s.value, Label: st.dt.ValueLabel(k, s.value), Count: s.n,
+						Filterable: filterable(s.value, false)})
+				}
+			}
+			fc.None, fc.DistinctCapped = t.none, t.capped
+			fc.Other += t.overflow
+		case k == FieldDevice:
 			for i, n := range st.devN {
 				if n > 0 {
 					vals = append(vals, FieldValue{Value: st.devs[i], Label: st.labels[i], Count: n, Filterable: true})
 				}
 			}
-		case FieldSeverity, FieldFacility:
+		case k == FieldSeverity || k == FieldFacility:
 			counts := st.sevN[:]
 			if k == FieldFacility {
 				counts = st.facN[:]

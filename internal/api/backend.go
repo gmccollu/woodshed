@@ -171,6 +171,8 @@ type Backend interface {
 
 	// The TLS syslog listener (tls.go).
 	TLSBackend
+	// The SNMP trap receiver (snmp.go).
+	SNMPBackend
 }
 
 // ErrNotFound is returned (possibly wrapped) by UpdateDevice, Context and the
@@ -347,6 +349,11 @@ type Device struct {
 	BytesOnDisk int64  `json:"bytes_on_disk"`
 	// TLS is the device's TLS counts, nil until it has tried TLS (since start).
 	TLS *DeviceTLS `json:"tls"`
+	// Types are the data types the device has on disk ("syslog", "trap"), and
+	// LinesByType their stored lines (SPEC §11.1: the device page counts every
+	// type). TotalMsgs counts every type too.
+	Types       []string         `json:"types"`
+	LinesByType map[string]int64 `json:"lines_by_type"`
 }
 
 // DevicePatch is the body of PATCH /api/devices/{id}; nil fields are left alone.
@@ -377,11 +384,13 @@ type UpdatesSettings struct {
 
 // ListenersSettings holds the syslog listener settings.
 type ListenersSettings struct {
-	UDP       ListenerSettings    `json:"udp"`
-	TCP       ListenerSettings    `json:"tcp"`
-	TLS       TLSListenerSettings `json:"tls"`
-	Allowlist []string            `json:"allowlist"`
-	Blocklist []string            `json:"blocklist"`
+	UDP ListenerSettings    `json:"udp"`
+	TCP ListenerSettings    `json:"tcp"`
+	TLS TLSListenerSettings `json:"tls"`
+	// SNMP is the trap receiver; a PUT without it (a 1.1 client) leaves it as it is.
+	SNMP      *SNMPListenerSettings `json:"snmp,omitempty"`
+	Allowlist []string              `json:"allowlist"`
+	Blocklist []string              `json:"blocklist"`
 	// New-sender limits (the device_limit banner).
 	MaxDevices          int `json:"max_devices"`
 	NewDeviceBurst      int `json:"new_device_burst"`
@@ -403,6 +412,20 @@ type TLSListenerSettings struct {
 	AllowLegacyTLS bool   `json:"allow_legacy_tls"`
 	CertFile       string `json:"cert_file"` // empty: Woodshed's own CA and certificate
 	KeyFile        string `json:"key_file"`
+}
+
+// SNMPListenerSettings is the SNMP trap receiver's settings (SPEC §11.2.1).
+// Communities are secrets: GET returns each as "#<hash8>", and a PUT that
+// sends a "#…" value back keeps the community it stands for, while a plain
+// string adds a new one (docs/api.md).
+type SNMPListenerSettings struct {
+	Enabled       bool     `json:"enabled"`
+	Addr          string   `json:"addr"`
+	Port          int      `json:"port"`
+	AnswerInforms bool     `json:"answer_informs"`
+	Communities   []string `json:"communities"`
+	MIBDir        string   `json:"mib_dir"`
+	EngineID      string   `json:"engine_id"`
 }
 
 // StorageSettings holds the storage settings. DataDir is read-only in v1.
@@ -487,6 +510,7 @@ type StorageEntry struct {
 	DeviceID string    `json:"device_id"`
 	Bytes    int64     `json:"bytes"`
 	Reason   string    `json:"reason"` // age, cap, low_disk
+	Type     string    `json:"type"`   // the file's data type: syslog, trap (SPEC §11.1)
 }
 
 // ---- normalization: UTC times, [] rather than null ----
@@ -546,6 +570,10 @@ func (s *Stats) normalize() { s.Sparkline = nonNil(s.Sparkline) }
 func (d *Device) normalize() {
 	d.FirstSeen = d.FirstSeen.UTC()
 	d.LastHeard = d.LastHeard.UTC()
+	d.Types = nonNil(d.Types)
+	if d.LinesByType == nil {
+		d.LinesByType = map[string]int64{}
+	}
 	if t := d.TLS; t != nil {
 		if t.LastConnected != nil {
 			lc := t.LastConnected.UTC()
@@ -562,6 +590,9 @@ func (s *Settings) normalize() {
 	s.Listeners.Blocklist = nonNil(s.Listeners.Blocklist)
 	s.UI.ExtraHostnames = nonNil(s.UI.ExtraHostnames)
 	s.UI.TrustedHosts = nonNil(s.UI.TrustedHosts)
+	if s.Listeners.SNMP != nil {
+		s.Listeners.SNMP.Communities = nonNil(s.Listeners.SNMP.Communities)
+	}
 }
 
 // ErrSettingsChanged is SaveSettings's answer to a stale If-Match.

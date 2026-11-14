@@ -10,10 +10,14 @@ import (
 // the exact meaning of Received.
 type Checkpoint = logfile.Checkpoint
 
+// TypeSyslog is the data type of every 1.1 row, and the default.
+const TypeSyslog = logfile.TypeSyslog
+
 // File is one log file.
 type File struct {
 	ID       int64 // stable across a part rename and compression
 	DeviceID string
+	Type     string // the data type ("syslog", "trap"); "" means syslog
 	Path     string // relative to the data dir, '/'-separated
 	Day      string // YYYY-MM-DD (UTC) from the file name
 	Part     int    // 0 for "<day>.log" (the day's newest part), else the part number
@@ -92,6 +96,7 @@ const RefusedDeviceID = "_refused"
 // Activity is a counter delta for one device and one minute, as the store reports it.
 type Activity struct {
 	DeviceID   string
+	Type       string // the data type; "" and "syslog" go to the stats tables, others to type_stats
 	IP         string
 	Minute     time.Time // start of the minute (truncated if not)
 	FirstHeard time.Time // earliest message in the delta (for first_seen)
@@ -154,10 +159,11 @@ type Source string
 // Event sources. The service records its start and stop with SourceService;
 // each listener records its start, stop and bind errors with its own source.
 const (
-	SourceService     Source = "service"
-	SourceListenerUDP Source = "listener/udp"
-	SourceListenerTCP Source = "listener/tcp"
-	SourceListenerTLS Source = "listener/tls"
+	SourceService      Source = "service"
+	SourceListenerUDP  Source = "listener/udp"
+	SourceListenerTCP  Source = "listener/tcp"
+	SourceListenerTLS  Source = "listener/tls"
+	SourceListenerSNMP Source = "listener/snmp"
 )
 
 // ListenerSource is the source of a listener's events, for proto "udp", "tcp" or
@@ -170,6 +176,8 @@ func ListenerSource(proto string) Source {
 		return SourceListenerTCP
 	case "tls":
 		return SourceListenerTLS
+	case "snmp":
+		return SourceListenerSNMP
 	}
 	return ""
 }
@@ -201,7 +209,8 @@ type Deletion struct {
 	Time     time.Time
 	File     string // path relative to the data dir
 	DeviceID string
-	Bytes    int64 // bytes freed on disk
+	Type     string // the file's data type ("" means syslog)
+	Bytes    int64  // bytes freed on disk
 	Reason   Reason
 }
 

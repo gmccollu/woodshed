@@ -154,6 +154,24 @@
           <a class="text-link underline" href="#/settings?section=tls">Settings → Syslog over TLS</a>.
         </div>
       {/if}
+      {#if b.kind === 'snmp_firewall'}
+        <div class="detail-text">
+          Open a Command Prompt or PowerShell with <b>Run as administrator</b> and run <code>woodshed snmp on</code>. The firewall state is also in
+          <a class="text-link underline" href="#/settings?section=snmp">Settings → SNMP traps</a>.
+        </div>
+      {/if}
+      {#if b.kind === 'snmp_credentials'}
+        <div class="detail-text">
+          Edit each user marked "needs its passphrases again" in <a class="text-link underline" href="#/settings?section=snmp-users">Settings → SNMP traps</a>.
+          Until then its traps are stored as unknown_user.
+        </div>
+      {/if}
+      {#if b.kind === 'snmp_mibs'}
+        <div class="detail-text">
+          The files and their errors are listed in <a class="text-link underline" href="#/settings?section=snmp-mibs">Settings → SNMP traps</a>. Fix them,
+          then press Reload MIBs.
+        </div>
+      {/if}
       {#if b.kind === 'listener_bind'}
         {#each lines as ln (ln.key)}
           <div class="detail-text" data-holder>
