@@ -33,20 +33,38 @@ func parseType(t string) (string, error) {
 }
 
 // parseTypeFilter refuses another type's filter parameters for typ, and reads
-// the trap type's own (nil for syslog, whose filters 1.1's code reads).
-func parseTypeFilter(typ string, get func(string) string) (*datatype.TrapFilter, error) {
+// the trap or poll type's own (both nil for syslog, whose filters 1.1's code
+// reads).
+func parseTypeFilter(typ string, get func(string) string) (*datatype.TrapFilter, *datatype.PollFilter, error) {
 	dt := datatype.Get(typ)
 	if err := datatype.CheckParams(dt, func(p string) bool { return strings.TrimSpace(get(p)) != "" }); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if typ != datatype.Trap {
-		return nil, nil
+	switch typ {
+	case datatype.Trap:
+		tf, err := datatype.ParseTrapFilter(get)
+		if err != nil || tf.Empty() {
+			return nil, nil, err
+		}
+		return tf, nil, nil
+	case datatype.Poll:
+		pf, err := datatype.ParsePollFilter(get)
+		if err != nil || pf.Empty() {
+			return nil, nil, err
+		}
+		return nil, pf, nil
 	}
-	tf, err := datatype.ParseTrapFilter(get)
-	if err != nil || tf.Empty() {
-		return nil, err
+	return nil, nil, nil
+}
+
+// typeListsGet reads a body's trap and poll lists by parameter name.
+func typeListsGet(t *TrapLists, p *PollLists) func(string) string {
+	return func(name string) string {
+		if v := t.get(name); v != "" {
+			return v
+		}
+		return p.get(name)
 	}
-	return tf, nil
 }
 
 // parseSyntax reads syntax=: false for text (the default), true for terms.
@@ -392,8 +410,10 @@ type SavedQuery struct {
 	ExcludeHost    []string   `json:"exclude_host"`
 	Order          string     `json:"order"` // "desc" | "asc"
 	Range          SavedRange `json:"range"`
-	// The trap type's filters (1.2), as lists; absent for syslog.
+	// The trap type's filters (1.2) and the poll type's (1.3), as lists;
+	// absent for syslog.
 	TrapLists
+	PollLists
 }
 
 func (q *SavedQuery) normalize() {
@@ -423,8 +443,11 @@ func (q SavedQuery) FilterOf(typ string) SearchRequest {
 		typ = datatype.Syslog
 	}
 	r.Type = typ
-	if typ == datatype.Trap {
+	switch typ {
+	case datatype.Trap:
 		r.Trap, _ = q.TrapLists.Filter()
+	case datatype.Poll:
+		r.Poll, _ = q.PollLists.Filter()
 	}
 	return r
 }
@@ -523,6 +546,7 @@ type savedQueryBody struct {
 	Order          string          `json:"order"`
 	Range          json.RawMessage `json:"range"`
 	TrapLists
+	PollLists
 }
 
 // readSaved decodes and checks a create or update body. It writes the error
@@ -617,23 +641,32 @@ func readSaved(w http.ResponseWriter, r *http.Request) (SavedSearchInput, bool) 
 			if syslogSet[p] {
 				return "set"
 			}
-			return qb.TrapLists.get(p)
+			return typeListsGet(&qb.TrapLists, &qb.PollLists)(p)
 		}
 		if err := datatype.CheckParams(datatype.Get(in.Type), func(p string) bool { return get(p) != "" }); err != nil {
 			var pe *datatype.ParamError
 			if errors.As(err, &pe) {
 				errs["query."+pe.Param] = err.Error()
 			}
-		} else if in.Type == datatype.Trap {
-			if _, err := qb.TrapLists.Filter(); err != nil {
+		} else {
+			var err error
+			switch in.Type {
+			case datatype.Trap:
+				if _, err = qb.TrapLists.Filter(); err == nil {
+					q.TrapLists = qb.TrapLists
+				}
+			case datatype.Poll:
+				if _, err = qb.PollLists.Filter(); err == nil {
+					q.PollLists = qb.PollLists
+				}
+			}
+			if err != nil {
 				var pe *datatype.ParamError
 				if errors.As(err, &pe) {
 					errs["query."+pe.Param] = err.Error()
 				} else {
 					errs["query"] = err.Error()
 				}
-			} else {
-				q.TrapLists = qb.TrapLists
 			}
 		}
 	}
