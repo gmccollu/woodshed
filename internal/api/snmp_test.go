@@ -25,7 +25,7 @@ func (b *fakeBackend) snmp() *fakeSNMP {
 	}
 	fs := &fakeSNMP{
 		state: SNMPState{Enabled: true, Port: 162, Engine: SNMPEngine{ID: "8000000005a1b2c3d4e5f60718", Boots: 12, Time: 86400},
-			Counts24h: SNMPCounts{Received: 15230, InformsAnswered: 212, ByStatus: map[string]int64{"ok": 15201, "auth_failed": 25}},
+			Counts24h: SNMPCounts{Received: 15230, InformsAnswered: 212, ByStatus: map[string]int64{"ok": 15201, "malformed": 4, "auth_failed": 25}},
 			MIBs:      SNMPMIBs{Dir: "/var/lib/woodshed/mibs", Files: 41, Names: 18234, LoadedAt: ts("2026-11-14T08:00:03Z")}},
 		users: map[string]SNMPUser{},
 		failures: []SNMPFailure{{IP: "198.51.100.7", Count24h: 25, LastSeen: ts("2026-11-14T09:10:00Z"), Status: "auth_failed",

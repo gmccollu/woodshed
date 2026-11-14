@@ -98,6 +98,7 @@ func newFakeBackend() *fakeBackend {
 				UDP:        ListenerSettings{Enabled: true, Addr: "0.0.0.0", Port: 514},
 				TCP:        ListenerSettings{Enabled: true, Addr: "0.0.0.0", Port: 514},
 				MaxDevices: 10000, NewDeviceBurst: 5000, NewDevicesPerMinute: 200,
+				SNMP: &SNMPListenerSettings{Addr: "0.0.0.0", Port: 162, AnswerInforms: true},
 			},
 			Storage: StorageSettings{DataDir: "/data", RetentionDays: 30, RetentionBytes: 21474836480, PartBytes: 104857600},
 			UI:      UISettings{Port: 0}, // tests run on port 0; a different port here would restart the server onto it
