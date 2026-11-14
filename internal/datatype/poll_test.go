@@ -22,7 +22,9 @@ var pollRecs = map[string]string{
 }
 
 func TestPollParams(t *testing.T) {
-	has := func(names ...string) func(string) bool { return func(p string) bool { return slices.Contains(names, p) } }
+	has := func(names ...string) func(string) bool {
+		return func(p string) bool { return slices.Contains(names, p) }
+	}
 	var pe *ParamError
 	if err := CheckParams(Get(Poll), has("severities")); !errors.As(err, &pe) || pe.Msg != "severities: not a filter for SNMP polls." {
 		t.Errorf("poll with severities: %v", err)
