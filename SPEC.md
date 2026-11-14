@@ -372,7 +372,7 @@ All of it is designed in §11 **(owner, 2026-11-14: all of these in 1.2, with th
 - Security:
   - It polls only addresses the user configured.
   - v2c communities and v3 auth/priv keys are encrypted at rest with the OS key store where there is one (DPAPI on
-    Windows, the Keychain on macOS), and otherwise kept in a file only the service account can read. 1.2's trap
+    Windows, the the 0600 service-account file on macOS (§11.9)), and otherwise kept in a file only the service account can read. 1.2's trap
     receiver settles how on each OS (§11.2.6): macOS uses the file, because the Keychain needs cgo.
   - SECURITY.md's outbound rule gains "SNMP polls to devices you configure".
 - Out of scope: discovery, topology, polling hundreds of OIDs, threshold dashboards, a MIB browser.
@@ -1761,15 +1761,17 @@ Everything below is **decided (coordinator, 2026-11-14, owner-delegated)**:
 27. The community allowlist is kept in the credentials store, not the TOML, and shown only as hash prefixes
     (§11.2.1).
 
-### 11.9 Open questions (1.2)
-1. Register an IANA Private Enterprise Number for the project, so the engine ID (and any future MIB) has a proper
-   prefix?
-2. macOS Keychain: accept the 0600 file (§11.2.6), or allow a cgo build for macOS only to use the Keychain? The 1.3
-   roadmap line says "Keychain on macOS".
-3. Should the live tail show traps (a type switch on the Dashboard), or stay syslog-only until a later release?
-4. Should a trap-only sender count against `max_devices` exactly like a syslog sender (it does in this design), or
-   should SNMP have its own cap?
-5. The load targets (2,000 v2c / 1,000 v3 traps a second) are estimates; adjust after the first bench.
+### 11.9 Questions settled (1.2), decided (coordinator, 2026-11-14, owner-delegated)
+1. No IANA Private Enterprise Number for now; the engine ID keeps the placeholder (§11.2). Revisit if the project
+   ever publishes a MIB.
+2. macOS keeps the 0600 service-account file (§11.2.6), no cgo build. The 1.3 roadmap line is amended to match.
+3. The live tail stays syslog-only in 1.2; a type switch on the Dashboard is a later item.
+4. A trap-only sender counts against `max_devices` like any sender: a device is a device. No separate SNMP cap.
+5. The load targets stand as starting points and are adjusted after the first bench, with the measured numbers
+   recorded here.
+6. Build order (to keep merges small): (a) `internal/snmp` codec, USM, fuzzing and `woodshed send --proto trap`;
+   (b) the UDP queue; (c) `woodshed search`. Then (d) the data-type framework plus trap integration, on top of
+   (a) and (b). Then (e) the incident bundle, on top of (d).
 
 ## 12. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
