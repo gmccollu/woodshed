@@ -137,6 +137,12 @@
           <a class="text-link underline" href={CONTAINERS_DOC} target="_blank" rel="noopener noreferrer">Install guide → Containers</a>.
         </div>
       {/if}
+      {#if b.kind === 'udp_queue_full'}
+        <div class="detail-text">
+          The queue's size is set in the config file (woodshed.toml, not in Settings); restart Woodshed after changing it. Its hourly
+          history is on the <a class="text-link underline" href="#/about">About page</a>.
+        </div>
+      {/if}
       {#if b.kind === 'tls_legacy'}
         <div class="detail-text">
           Turn it off in <a class="text-link underline" href="#/settings?section=tls">Settings → Syslog over TLS</a>.

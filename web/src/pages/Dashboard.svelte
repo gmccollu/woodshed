@@ -212,6 +212,11 @@
     </div>
     {#if stats}
       <p class="sub">
+        {#if stats.dropped_by_reason?.queue_full}
+          <a class="block text-link underline" href="#/about" title="Writing to disk fell behind and the UDP receive queue overflowed"
+            >{num(stats.dropped_by_reason.queue_full)} because the UDP queue was full</a
+          >
+        {/if}
         {#if stats.kernel_dropped_24h === null}
           Kernel drops aren't visible on {osName}. <a class="text-link underline" href="#/about">Why</a>
         {:else}

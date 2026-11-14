@@ -6,7 +6,7 @@
 
   let open = $state(false);
 
-  function toggle(key: 'clash' | 'paused' | 'cycle') {
+  function toggle(key: 'clash' | 'paused' | 'cycle' | 'queueFull') {
     mock[key] = !mock[key];
     refreshStatus();
   }
@@ -62,6 +62,7 @@
         </div>
         <label class="row"><input type="checkbox" checked={mock.clash} onchange={() => toggle('clash')} /> TCP 514 port clash</label>
         <label class="row"><input type="checkbox" checked={mock.paused} onchange={() => toggle('paused')} /> Writes paused (low disk)</label>
+        <label class="row"><input type="checkbox" checked={mock.queueFull} onchange={() => toggle('queueFull')} /> UDP queue full (disk fell behind)</label>
         <label class="row"><input type="checkbox" checked={mock.cycle} onchange={() => toggle('cycle')} /> Cycle branch-ap-08 quiet/offline</label>
         <label class="row">
           <span>Latency (ms)</span>

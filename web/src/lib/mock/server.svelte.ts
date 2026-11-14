@@ -7,6 +7,9 @@
 //   mock_rate=N       simulated msgs/s across all devices (default 40; above 50 the live tail is sampled)
 //   mock_clash=1      TCP 514 is held by another process (red banner, Retry clears it)
 //   mock_paused=1     writes paused by the low-disk guard (red banner)
+//   mock_uptime_hours=N how long ago the server started (default 3 h 17 min)
+//   mock_queue_full=1 the UDP receive queue overflows (writing to disk fell behind): udp_queue_full banner,
+//                     queue_full drops, and capacity reached at the top of some hours on the About page
 //   mock_firstrun=1   no messages yet: opens on the welcome page; the test message arrives after mock_firstmsg s
 //   mock_firstmsg=N   seconds until the first message in first-run mode (default 12; 0 = only via the panel)
 //   mock_os=linux     server OS (darwin, linux, windows); changes kernel-drop visibility and the buffer size
@@ -79,6 +82,8 @@ export const mock = $state({
   rate: n('mock_rate', 40),
   clash: P.get('mock_clash') === '1',
   paused: P.get('mock_paused') === '1',
+  /** The UDP queue is overflowing (the udp_queue_full banner). */
+  queueFull: P.get('mock_queue_full') === '1',
   firstRun: P.get('mock_firstrun') === '1',
   cycle: P.get('mock_cycle') !== '0',
   latency: n('mock_latency', 120),
@@ -251,6 +256,8 @@ function recordFailure(now: number) {
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
 const START = Date.now();
+/** When the mock server "started" (started_at; the UDP queue's hourly history begins there). */
+const STARTED = START - (P.has('mock_uptime_hours') ? n('mock_uptime_hours', 0) * 3600_000 : (3 * 60 + 17) * 60_000);
 const MIN = 60_000;
 
 // ---------- Fleet state ----------
@@ -680,6 +687,9 @@ let trueThisSecond = 0;
 const spark: number[] = Array.from({ length: 60 }, (_, i) => Math.max(0, mock.rate * (0.8 + 0.25 * Math.sin(i / 6)) + (Math.random() - 0.5) * mock.rate * 0.15));
 let sparkMinute = Math.floor(Date.now() / MIN);
 let droppedByGuard = 0;
+// UDP queue drops (mock_queue_full): a share of UDP traffic while the queue is "full", plus the earlier
+// stalls the hourly history shows.
+let droppedByQueue = mock.queueFull ? 1234 : 0;
 // A fleet that's been running started when its oldest device was first seen.
 let firstMessageAt = devs.size ? Math.min(...[...devs.values()].map((d) => d.firstSeen)) : 0;
 const subs = new Set<LiveSub>();
@@ -750,6 +760,7 @@ function tick() {
     }
   }
   if (mock.paused) droppedByGuard += whole;
+  else if (mock.queueFull) droppedByQueue += Math.ceil(whole * 0.03);
 }
 
 function secondTick() {
@@ -1069,6 +1080,13 @@ function statusJSON(): Status {
       text: 'The OS gave the UDP listener a 208 KiB receive buffer; Woodshed asked for 32 MiB. Bursts of messages may be dropped before Woodshed sees them. In a container, raise net.core.rmem_max on the host; otherwise check /etc/sysctl.d/60-woodshed.conf is applied.',
     });
   banners.push(...tlsBanners());
+  if (mock.queueFull && l.udp.enabled)
+    banners.push({
+      kind: 'udp_queue_full',
+      action: '',
+      level: 'warn',
+      text: `${droppedByQueue.toLocaleString('en-US')} UDP messages were dropped in the last hour because writing to disk fell behind (the queue holds ${QUEUE_CAP.toLocaleString('en-US')}). Check the disk, or raise listeners.udp_queue_messages.`,
+    });
   if (mock.paused)
     banners.push({
       kind: 'writes_paused',
@@ -1082,7 +1100,7 @@ function statusJSON(): Status {
     build: 'abc1234',
     os: OS,
     data_dir: settings.storage.data_dir,
-    started_at: new Date(START - 3 * 3600_000 - 17 * MIN).toISOString(),
+    started_at: new Date(STARTED).toISOString(),
     first_message_at: firstMessageAt ? new Date(firstMessageAt).toISOString() : null,
     udp_rcvbuf_bytes: smallBuffer ? 212_992 : OS.startsWith('darwin') ? 7_454_720 : 33_554_432,
     udp_rcvbuf_requested_bytes: 32 * MiB,
@@ -1108,6 +1126,37 @@ function estimateFor(capBytes: number) {
   return { estimated_days: days, bytes_per_day: bpd, compression_ratio: bpd ? RATIO : null };
 }
 
+const QUEUE_CAP = 100_000;
+
+// The syslog UDP queue: a few hundred waiting at the busiest moment of each hour, scaled by the rate,
+// and with mock_queue_full a stall at the top of every sixth hour that fills it.
+function queueJSON(now: number): Stats['udp_queue'] {
+  const u = settings.listeners.udp;
+  if (!u.enabled) return [];
+  const hours = Math.min(24, Math.floor(now / 3600_000) - Math.floor(STARTED / 3600_000) + 1);
+  const nowHour = Math.floor(now / 3600_000);
+  const scale = Math.max(1, mock.rate / 40);
+  const by = Array.from({ length: hours }, (_, i) => {
+    const h = nowHour - (hours - 1 - i);
+    const base = Math.round((30 + ((h * 7919) % 97) + (h % 3 === 0 ? 120 : 0)) * scale);
+    if (mock.queueFull && (h % 6 === 0 || i === hours - 1)) return QUEUE_CAP;
+    return Math.min(QUEUE_CAP, base);
+  });
+  const depth = mock.queueFull ? QUEUE_CAP - 40 : mock.paused ? 0 : Math.round(3 * scale);
+  return [
+    {
+      listener: 'udp',
+      port: u.port,
+      capacity_messages: QUEUE_CAP,
+      capacity_bytes: 64 * MiB,
+      depth,
+      high_water_24h: Math.max(...by),
+      dropped_24h: droppedByQueue,
+      high_water_by_hour: by,
+    },
+  ];
+}
+
 function statsJSON(now: number): Stats {
   const visible = [...devs.values()].filter((d) => !d.hidden && !blockedBy(d.def.ip));
   const st = visible.map((d) => status(d, now));
@@ -1131,10 +1180,12 @@ function statsJSON(now: number): Stats {
         return { ...e, limited_by: e.estimated_days === null ? null : e.estimated_days < settings.storage.retention_days ? 'cap' : 'age' } as const;
       })(),
     },
-    dropped_24h: droppedByGuard,
+    dropped_24h: droppedByGuard + droppedByQueue,
     kernel_dropped_24h: OS.startsWith('linux') ? 12 : null,
     truncated_24h: devs.size > 1 ? 3 : 0,
     rejected_24h: rejected(now).reduce((n, r) => n + r.count_24h, 0),
+    dropped_by_reason: { paused: droppedByGuard, write_error: 0, refused: 0, queue_full: droppedByQueue },
+    udp_queue: queueJSON(now),
   };
 }
 
