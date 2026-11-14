@@ -63,6 +63,8 @@ type backend struct {
 	tlsc *tlsSide
 	// snmp is the SNMP trap receiver (snmp.go).
 	snmp *snmpSide
+	// poll is the SNMP poller (poll.go).
+	poll *pollSide
 
 	cfgMu sync.RWMutex
 	cfg   config.Config
@@ -277,6 +279,7 @@ func (b *backend) listenerState(ctx context.Context, cfg config.Config) (listen.
 	if b.snmp != nil {
 		banners = append(banners, b.snmpBanners(cfg, b.now())...)
 	}
+	banners = append(banners, b.pollBanners()...)
 	if ban := udpBufferBanner(runtime.GOOS, ls.UDPRcvbufBytes, ls.UDPRcvbufRequestedBytes); ban != nil {
 		banners = append(banners, *ban)
 	}
@@ -636,6 +639,7 @@ func (b *backend) Devices(ctx context.Context) ([]api.Device, error) {
 	b.blocker().mark(out)
 	b.markTLS(out)
 	b.markTypes(ctx, out)
+	b.markPolled(ctx, out)
 	return out, nil
 }
 
@@ -750,6 +754,7 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 	b.blocker().mark(out)
 	b.markTLS(out)
 	b.markTypes(ctx, out)
+	b.markPolled(ctx, out)
 	out[0].BlockedBy = blockedBy
 	return out[0], nil
 }
@@ -842,6 +847,7 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 			NewDevicesPerMinute: float64(next.Listeners.NewDevicesPerMinute),
 		})
 	}
+	b.applyPollSettings(cur.Poll, next.Poll)
 	if b.snmp != nil && trapSettings(cur.Listeners.SNMP) != trapSettings(next.Listeners.SNMP) {
 		if err := b.snmp.rcv.Apply(trapSettings(next.Listeners.SNMP)); err != nil {
 			return api.Settings{}, fmt.Errorf("apply the SNMP settings: %w", err)

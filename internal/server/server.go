@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -61,6 +62,11 @@ type Options struct {
 	// updateTesting points the update check at a test server, on a fake clock
 	// (tests in this package only; nothing else can set it).
 	updateTesting *updatecheck.TestHooks
+	// pollOnSend sees every SNMP poll request's destination (tests in this
+	// package only).
+	pollOnSend func(netip.AddrPort)
+	// pollUnit shortens poll intervals (tests in this package only).
+	pollUnit time.Duration
 }
 
 // Server is an opened Woodshed service. Call Run once.
@@ -199,6 +205,9 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	if err := s.be.openSNMP(cfg); err != nil {
 		return nil, fmt.Errorf("open the SNMP trap receiver: %w", err)
 	}
+	// The SNMP poller: nothing is polled or sent until Run gives it the
+	// configured targets, and with none it opens no socket (SPEC §12.9).
+	s.be.openPoll(cfg, opts.pollOnSend, opts.pollUnit)
 	// The update check: nothing touches the network unless updates.check is "on"
 	// in a release build (SPEC §10.2).
 	s.be.updates = updatecheck.New(updatecheck.Options{
@@ -340,6 +349,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.be.setListeners(ln)
 	s.exports.Start()
+	if err := s.be.startPoll(context.Background()); err != nil {
+		log.Error("SNMP polling didn't start: the poll targets can't be read", "err", err)
+	}
 	// The listeners log what they bound and the UDP buffer the OS granted; a
 	// buffer too small for bursts is a warning (and a banner).
 	lst := ln.Status()
@@ -428,6 +440,8 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 			s.log.Info("listeners stopped", "received", st.Received, "truncated", st.Truncated, "rejected", st.Rejected,
 				"udp_queue_dropped", queueDropped)
 		}
+		setStep("stopping the SNMP poller")
+		s.be.closePoll()
 		setStep("closing the live hub")
 		s.hub.Close()
 		if apiCancel != nil {
@@ -482,6 +496,9 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 
 // closeOpened closes what Open managed to open, after an Open error.
 func (s *Server) closeOpened() {
+	if s.be != nil {
+		s.be.closePoll()
+	}
 	if s.store != nil {
 		_ = s.store.Close()
 	}

@@ -198,7 +198,6 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 		return usageErr("%v", err)
 	}
 	q := server.SearchQuery(req)
-	q.Poll = req.Poll // the poll type's filter (1.3)
 
 	cmdline := "woodshed search"
 	for _, a := range args {

@@ -108,7 +108,7 @@ func fromFacilitySet(set search.FacilitySet) api.Facilities {
 func searchFilter(r api.SearchRequest) search.Filter {
 	return search.Filter{Q: r.Q, Regex: r.Regex, Terms: r.Terms, Case: r.Case, Severities: toSeveritySet(r.Severities),
 		Facilities: toFacilitySet(r.Facilities), From: r.From, To: r.To, Apps: r.App, Hosts: r.Host, ExcludeApps: r.ExcludeApp,
-		ExcludeHosts: r.ExcludeHost, Exclude: r.Exclude, Type: r.Type, Trap: r.Trap}
+		ExcludeHosts: r.ExcludeHost, Exclude: r.Exclude, Type: r.Type, Trap: r.Trap, Poll: r.Poll}
 }
 
 // SearchQuery is the engine query of a /api/search request. `woodshed search`
@@ -144,7 +144,7 @@ func toExportRequest(r api.ExportRequest) export.Request {
 		Group: r.Group, Ungrouped: r.Ungrouped, Severities: toSeveritySet(r.Severities), Q: r.Q, Regex: r.Regex, Case: r.Case,
 		Apps: r.App, Hosts: r.Host, Exclude: r.Exclude, Terms: r.Terms, Facilities: toFacilitySet(r.Facilities),
 		ExcludeDevices: r.ExcludeDevices, ExcludeApps: r.ExcludeApp, ExcludeHosts: r.ExcludeHost, Types: exportTypes(r.Types),
-		Trap: r.Trap}}
+		Trap: r.Trap, Poll: r.Poll}}
 	if r.Kind == export.KindBundle {
 		at := r.At
 		req.Kind, req.At, req.Before, req.After, req.ActiveDevices = export.KindBundle, &at, r.Before, r.After, r.ActiveDevices
@@ -171,7 +171,8 @@ func toAPIExport(e export.Info) api.ExportInfo {
 			Type: "syslog", Syntax: map[bool]string{false: "text", true: "terms"}[e.Filters.Terms],
 			Facilities: fromFacilitySet(e.Filters.Facilities), ExcludeDevices: e.Filters.ExcludeDevices,
 			ExcludeApp: e.Filters.ExcludeApps, ExcludeHost: e.Filters.ExcludeHosts,
-			Kind: export.KindExport, Types: e.Filters.TypesOrSyslog(), Trap: api.TrapListsOf(e.Filters.Trap)},
+			Kind: export.KindExport, Types: e.Filters.TypesOrSyslog(), Trap: api.TrapListsOf(e.Filters.Trap),
+			Poll: api.PollListsOf(e.Filters.Poll)},
 	}
 	if ts := e.Filters.TypesOrSyslog(); len(ts) == 1 {
 		out.Filters.Type = ts[0]
