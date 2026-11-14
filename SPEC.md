@@ -1278,6 +1278,7 @@ port = 162             # traps and informs; any free port
 answer_informs = true  # reply to InformRequests (§11.2.3)
 mib_dir = ""           # MIB files for names; "" means <data>/mibs
 engine_id = ""         # Woodshed's own v3 engine ID, hex; "" means the generated one (§11.2.3)
+v3_strict_time = false # true: RFC 3414's time window for traps as written, no relearning (§11.8 #28)
 ```
 - The listener shows in `/api/status.listeners` as `proto: "snmp"`, with the usual `listener_bind` banner and Retry.
   Port 162 is often held by an OS trap service; the banner names the holder as for 514.
@@ -1310,9 +1311,10 @@ engine_id = ""         # Woodshed's own v3 engine ID, hex; "" means the generate
 - **v3 failures are kept too**, with their status: `unknown_user`, `unknown_engine` (an inform to the wrong engine
   ID), `not_in_time` (outside the 150 s window), `auth_failed` (wrong digest), `decrypt_failed` (the decrypted bytes
   don't decode) and `level` (below the user's level). A failure stores only the parts that are readable without the
-  keys (user name, engine ID, security level and the raw bytes), never decrypted guesses. Each failure is also
-  counted per sender in `GET /api/snmp/failures`, like TLS handshake failures, so "the device sends but nothing
-  shows" is diagnosable.
+  keys (user name, engine ID, security level and the raw bytes), never decrypted guesses. The one exception is an
+  authenticated trap that fails only the time window: it's stored whole as `not_in_time` (§11.8 #28). Each failure
+  is also counted per sender in `GET /api/snmp/failures`, like TLS handshake failures, so "the device sends but
+  nothing shows" is diagnosable.
 
 #### 11.2.3 Informs and engine IDs
 **Woodshed answers informs (`answer_informs = true`).** An unanswered inform is retransmitted (so it's stored several
@@ -1323,8 +1325,9 @@ Woodshed starts (SECURITY.md is unchanged).
   inform is in the store's write buffer: it's sent by the queue's drainer (§11.5), so a full queue drops the inform
   unanswered and the sender's retry is the backpressure. An inform is never acknowledged and then lost by Woodshed.
 - Replies are rate-limited (100 a second per source address, 1,000 a second in all; the excess are dropped and
-  counted) so a spoofed source can't use Woodshed to reflect traffic at someone. The Response is no larger than the
-  inform, so there's no amplification.
+  counted) so a spoofed source can't use Woodshed to reflect traffic at someone. The Response echoes the inform's
+  request ID and varbinds byte for byte, so it's the inform's size give or take the re-encoded v3 header (at most 32
+  bytes more, or it isn't sent; §11.8, build 7): there's no amplification.
 - A retransmitted inform (the same source, engine and request ID within 60 s) is answered again and stored again,
   marked `dup=1`, so nothing is lost and the count is still honest.
 - `answer_informs = false` stores informs without answering.
@@ -1341,7 +1344,9 @@ Woodshed starts (SECURITY.md is unchanged).
   to admitted senders and count against the reply rate limits. Settings shows the engine ID so it can be configured on
   devices.
 - Key localization costs a 1 MiB hash per user and engine ID. Localized keys are cached (10,000 entries, least
-  recently used out), and at most 20 new localizations run a second, so spoofed engine IDs can't burn the CPU.
+  recently used out), and at most 20 new localizations run a second, so spoofed engine IDs can't burn the CPU. (As
+  built, the 1 MiB password hash is done once per user and kept; only the alt AES key extension needs one per engine,
+  so only that is limited: §11.8, build 6.)
 
 #### 11.2.4 The stored record
 One line per trap, in `logs/<dev>/traps/<day>.log`, inside the usual envelope:
@@ -1760,6 +1765,86 @@ Everything below is **decided (coordinator, 2026-11-14, owner-delegated)**:
     direct (§11.5).
 27. The community allowlist is kept in the credentials store, not the TOML, and shown only as hash prefixes
     (§11.2.1).
+28. **Traps outside the time window are relearned, not lost** (2026-11-14, answering the build's flag on devices that
+    reboot without raising their boots). An authenticated v3 trap that fails only the timeliness check is still
+    decrypted (if priv) and stored with its full contents, with status `not_in_time`, so it's visible and never
+    silently trusted. The receiver then adopts that trap's boots and time as the sender engine's clock, so the
+    device's following traps are in time again. Only a message whose digest verified moves the clock; noAuthNoPriv
+    messages have no timeliness and never do. Each resync is counted per sender, so a replay shows as a burst.
+    `listeners.snmp.v3_strict_time = true` keeps RFC 3414's rule (the header only, no relearning). Informs are
+    unchanged: the authenticated Report already resyncs their senders.
+
+SNMP codec, **decided (build, 2026-11-14)**: the calls build step (a) (`internal/snmp`, `woodshed send --proto trap`,
+the interop job) made where §11.2 and §11.6 left room. Nothing here is user-facing yet.
+1. **Leniency and bounds.** Definite lengths only. Accepted: non-minimal lengths and integers, unsigned values sent
+   with the sign bit set (read as unsigned), a v1 agent-addr sent as an OCTET STRING and a time-stamp as an INTEGER,
+   UInteger32 (read as Gauge32), and bytes after the message (ignored; `raw=` keeps them). An OID has at most 128
+   sub-identifiers (RFC 2578 §3.5), each at most 2^32−1. Any value that doesn't decode makes the message `malformed`;
+   its record keeps what decoded before the break (`v`, `pdu`, `id`, `cred`) and no `vb=`.
+2. **Value types beyond §11.2.4's list:** a tag outside the SMI (BOOLEAN, NsapAddress, a constructed value) and an
+   IpAddress that isn't 4 octets are stored as `hex:` of the content (`raw=` keeps the tag). `str` means printable UTF-8
+   by Go's `unicode.IsPrint` (space yes; tab, CR, LF and NUL no, so they're `hex`); an empty octet string is `str:""`.
+3. **Unexpected PDUs** are named `get`, `getnext`, `response`, `set`, `getbulk`, `report`, or `0xNN` for another PDU
+   tag, and keep their decoded varbinds. A v1 Trap-PDU in a v2c/v3 message, and an SNMPv2-Trap in a v1 message, are
+   `unexpected_pdu`. A first byte that isn't a SEQUENCE is `malformed` ("not an SNMP message").
+4. **Discovery probes** (an empty engine ID, reportable) are answered with the Report and counted, and not stored:
+   they carry no notification, and every v3 inform sender sends one.
+5. **unknown_engine and Reports.** A reportable message (an inform) naming another engine ID is `unknown_engine` and
+   gets a `usmStatsUnknownEngineIDs` Report with Woodshed's ID (RFC 3414 §3.2 step 3), so a sender with a stale ID
+   recovers. `unknown_engine` also covers a user with engine-bound keys and an engine not in its list, an
+   authenticated trap with an empty engine ID, and a localization refused by the rate limit (the error says which).
+   Only discovery, unknown engines and time-window misses get Reports; unknown users, wrong digests, decryption errors
+   and level failures don't (the RFC allows them, but they'd let a scanner enumerate user names).
+6. **Keys.** Each user's password-to-key results (Ku) are computed once when the users are set (the passphrases aren't
+   kept by USM after that); a new engine then costs one small hash, so a reboot storm of many devices with new
+   engine IDs isn't throttled. The 20-a-second limit applies only to the 1 MiB hash the alt AES-192/256 key extension
+   needs per engine. Passphrases have at least 8 characters (RFC 3414 §11.2), for users and for `woodshed send`.
+7. **Replies.** The Response echoes the inform's request-id and varbind-list encodings as received, with error-status
+   and error-index 0, at the inform's level, with Woodshed's boots and time; it may be at most 32 bytes larger than the
+   inform (`snmp.MaxReplyGrowth`), or it isn't built. The not-in-time Report is authNoPriv with the user's key (RFC 3414
+   §3.2 step 7a); the others are noAuthNoPriv. A Report's request ID is the request's when the PDU is plaintext, else 0.
+8. **Time window for traps:** RFC 3414 §3.2 step 7b per sender engine (10,000 engines kept, least recently used out),
+   updated only by authenticated messages; the first message from an engine is accepted. Outside the window, #28
+   applies: the codec sets `Message.TimeResync`, keeps the status `not_in_time` and the full PDU, adopts the trap's
+   boots and time, and counts `Counters.TimeResyncs`; the listener (step d) counts them per sender.
+   `USM.SetStrictTime(true)` is `v3_strict_time`. A sender at the latched boots (2^31−1) stays out of the window
+   either way.
+9. **v3 failures show only the header**, even when the PDU is plaintext (noAuthNoPriv below the user's level, or
+   authNoPriv with a wrong digest): unauthenticated content in a record would look real. A #28 trap is the
+   exception, because its digest verified.
+10. **Record details.** v3 `cred` (and `ctx`) is bare when it's letters, digits and `._-@+%:/` and doesn't start with
+    `#` or `0x`; quoted when it's other printable text; `0x` and hex otherwise. `ctx_engine` is written only when it
+    differs from `engine`. `agent=` is dotted, or `0x` and hex when it isn't 4 octets. `generic=` is the number alone.
+11. **Names in the record:** an OID gets the name of the OID itself, or of the object or notification it's an instance
+    of plus the index (`ifOperStatus.3`); an OID under a plain `OBJECT IDENTIFIER` node gets none
+    (`enterprises.32473.1` would say nothing the number doesn't). A record that would pass 1 MiB (less 256 bytes) with
+    names is written without them; without names the largest datagram fits.
+12. **Masking in broken datagrams:** the community is found leniently (the second element of the outer SEQUENCE when
+    it's an OCTET STRING and the version isn't 3), clipped at the end of a truncated datagram. A datagram too broken to
+    show a version and an OCTET STRING there has nothing masked.
+13. **The MIB reader** also takes the conformance macros (OBJECT-GROUP, NOTIFICATION-GROUP, MODULE-COMPLIANCE,
+    AGENT-CAPABILITIES) and any other macro of the `name MACRO-NAME … ::= { … }` shape, since they assign OIDs the same
+    way. Comments end at the next `--` or the end of the line (X.680). Identifiers are at most 128 characters. A file
+    holding a built-in module replaces it. A bare name two modules define with different OIDs is ambiguous for filters
+    (name the module: `IF-MIB::linkDown`). Imports from the macro-only modules (SNMPv2-CONF, SNMPv2-TC, RFC-1212,
+    RFC-1215) aren't warned about; unresolvable parents and cycles are warnings. The built-in set is SNMPv2-SMI,
+    RFC1155-SMI, RFC1213-MIB, SNMPv2-MIB, IF-MIB, SNMPv2-TC, SNMP-FRAMEWORK-MIB, SNMP-USER-BASED-SM-MIB and
+    SNMP-COMMUNITY-MIB, trimmed to OIDs and enumerations.
+14. **The engine file** `snmp-engine.json` is `{"engine_id": "<hex>", "engine_boots": N}`, mode 0600, written
+    atomically; an `engine_id` override doesn't replace the stored ID; boots stop at 2^31−1.
+15. **`woodshed send --proto trap`:** v2c by default; the community is `public` when no file or variable gives one.
+    Passphrases come from `--auth-pass-file`/`--priv-pass-file` (one line; a trailing newline is dropped) or the
+    variables. The sequence varbind is `1.3.6.1.4.1.32473.1.1.1.0` = `str:"seq=<run>:<n>"` (plus ` <--message>`),
+    and the default trap OID `1.3.6.1.4.1.32473.1.0.1`, under 32473, IANA's enterprise number for documentation
+    (RFC 5612). `--varbinds` adds mixed-type fillers under `…32473.1.1.2`. v3 traps use a random engine ID with
+    boots 1; informs discover the receiver (or take `--engine-id` and learn boots and time from its first Report) and
+    send each inform once more after a Report; there are no other retransmissions, so a missing Response is a timeout
+    (exit 1). `--timeout` (default 2 s) is the wait for each Response. verifyseq's counting ends the number at the first
+    non-digit, so it reads a trap record's quoted value as it reads syslog.
+16. **Interop in CI** requires MD5, SHA-1, SHA-2 and AES-128 from the distribution's tools; DES and AES-192/256 cases
+    are skipped, and listed in the job summary, where the build lacks them. net-snmp's `AES-192`/`AES-256` are the
+    draft key extension and `AES-192-C`/`AES-256-C` the alt one. Its datagrams for the short-key AES-192/256 cases are
+    logged with the fixed test passphrases, as key-extension vectors.
 
 **Decided (build, 2026-11-14), `woodshed search` (§11.4, step (c)):**
 1. `index.db` is opened `mode=ro` while its `-wal` and `-shm` exist (a writer has it open), and `immutable=1` when

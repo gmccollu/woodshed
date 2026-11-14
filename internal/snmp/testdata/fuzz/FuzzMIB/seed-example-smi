@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\nEXAMPLE-SMI DEFINITIONS ::= BEGIN\nIMPORTS enterprises, MODULE-IDENTITY FROM SNMPv2-SMI;\nexample MODULE-IDENTITY\n    LAST-UPDATED \"202611140000Z\"\n    ORGANIZATION \"Example\"\n    CONTACT-INFO \"nobody -- not a comment inside a string\"\n    DESCRIPTION  \"The documentation enterprise (RFC 5612).\"\n    ::= { enterprises 32473 }\nexampleProducts OBJECT IDENTIFIER ::= { example 1 }\nStatus ::= TEXTUAL-CONVENTION\n    STATUS current\n    DESCRIPTION \"A status.\"\n    SYNTAX INTEGER { ok(1), warning(2), failed(3), unknown(-1) }\nEND\n")

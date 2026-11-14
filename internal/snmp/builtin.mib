@@ -1,0 +1,172 @@
+-- Woodshed's built-in MIB set: just enough of the standard modules to name the
+-- common notifications and their varbinds with no MIB files (SPEC §11.2.4).
+-- Trimmed from SNMPv2-SMI (RFC 2578), SNMPv2-MIB (RFC 3418), IF-MIB (RFC 2863),
+-- SNMP-USER-BASED-SM-MIB (RFC 3414), SNMP-COMMUNITY-MIB (RFC 3584) and
+-- RFC1155-SMI / RFC1213-MIB. Only the OID assignments and enumerations are
+-- here: descriptions, syntaxes without enumerations and conformance are left
+-- out. A MIB file that holds one of these modules replaces it.
+
+SNMPv2-SMI DEFINITIONS ::= BEGIN
+org            OBJECT IDENTIFIER ::= { iso 3 }
+dod            OBJECT IDENTIFIER ::= { org 6 }
+internet       OBJECT IDENTIFIER ::= { dod 1 }
+directory      OBJECT IDENTIFIER ::= { internet 1 }
+mgmt           OBJECT IDENTIFIER ::= { internet 2 }
+mib-2          OBJECT IDENTIFIER ::= { mgmt 1 }
+transmission   OBJECT IDENTIFIER ::= { mib-2 10 }
+experimental   OBJECT IDENTIFIER ::= { internet 3 }
+private        OBJECT IDENTIFIER ::= { internet 4 }
+enterprises    OBJECT IDENTIFIER ::= { private 1 }
+security       OBJECT IDENTIFIER ::= { internet 5 }
+snmpV2         OBJECT IDENTIFIER ::= { internet 6 }
+snmpDomains    OBJECT IDENTIFIER ::= { snmpV2 1 }
+snmpProxys     OBJECT IDENTIFIER ::= { snmpV2 2 }
+snmpModules    OBJECT IDENTIFIER ::= { snmpV2 3 }
+zeroDotZero    OBJECT IDENTIFIER ::= { 0 0 }
+END
+
+RFC1155-SMI DEFINITIONS ::= BEGIN
+IMPORTS internet, directory, mgmt, experimental, private, enterprises FROM SNMPv2-SMI;
+END
+
+RFC1213-MIB DEFINITIONS ::= BEGIN
+IMPORTS mib-2 FROM SNMPv2-SMI;
+system         OBJECT IDENTIFIER ::= { mib-2 1 }
+interfaces     OBJECT IDENTIFIER ::= { mib-2 2 }
+at             OBJECT IDENTIFIER ::= { mib-2 3 }
+ip             OBJECT IDENTIFIER ::= { mib-2 4 }
+icmp           OBJECT IDENTIFIER ::= { mib-2 5 }
+tcp            OBJECT IDENTIFIER ::= { mib-2 6 }
+udp            OBJECT IDENTIFIER ::= { mib-2 7 }
+egp            OBJECT IDENTIFIER ::= { mib-2 8 }
+snmp           OBJECT IDENTIFIER ::= { mib-2 11 }
+END
+
+SNMPv2-MIB DEFINITIONS ::= BEGIN
+IMPORTS mib-2, snmpModules FROM SNMPv2-SMI;
+
+system OBJECT IDENTIFIER ::= { mib-2 1 }
+sysDescr     OBJECT-TYPE SYNTAX DisplayString ::= { system 1 }
+sysObjectID  OBJECT-TYPE SYNTAX OBJECT IDENTIFIER ::= { system 2 }
+sysUpTime    OBJECT-TYPE SYNTAX TimeTicks ::= { system 3 }
+sysContact   OBJECT-TYPE SYNTAX DisplayString ::= { system 4 }
+sysName      OBJECT-TYPE SYNTAX DisplayString ::= { system 5 }
+sysLocation  OBJECT-TYPE SYNTAX DisplayString ::= { system 6 }
+sysServices  OBJECT-TYPE SYNTAX INTEGER (0..127) ::= { system 7 }
+sysORLastChange OBJECT-TYPE SYNTAX TimeStamp ::= { system 8 }
+
+snmp OBJECT IDENTIFIER ::= { mib-2 11 }
+snmpEnableAuthenTraps OBJECT-TYPE SYNTAX INTEGER { enabled(1), disabled(2) } ::= { snmp 30 }
+
+snmpMIB        OBJECT IDENTIFIER ::= { snmpModules 1 }
+snmpMIBObjects OBJECT IDENTIFIER ::= { snmpMIB 1 }
+snmpTrap       OBJECT IDENTIFIER ::= { snmpMIBObjects 4 }
+snmpTrapOID        OBJECT-TYPE SYNTAX OBJECT IDENTIFIER ::= { snmpTrap 1 }
+snmpTrapEnterprise OBJECT-TYPE SYNTAX OBJECT IDENTIFIER ::= { snmpTrap 3 }
+snmpTraps      OBJECT IDENTIFIER ::= { snmpMIBObjects 5 }
+
+coldStart             NOTIFICATION-TYPE STATUS current ::= { snmpTraps 1 }
+warmStart             NOTIFICATION-TYPE STATUS current ::= { snmpTraps 2 }
+authenticationFailure NOTIFICATION-TYPE STATUS current ::= { snmpTraps 5 }
+-- RFC 3584 §3.1 maps the v1 generic trap egpNeighborLoss (5) to snmpTraps.6.
+egpNeighborLoss       NOTIFICATION-TYPE STATUS current ::= { snmpTraps 6 }
+END
+
+IF-MIB DEFINITIONS ::= BEGIN
+IMPORTS mib-2 FROM SNMPv2-SMI snmpTraps FROM SNMPv2-MIB;
+
+interfaces OBJECT IDENTIFIER ::= { mib-2 2 }
+ifNumber   OBJECT-TYPE SYNTAX Integer32 ::= { interfaces 1 }
+ifTable    OBJECT-TYPE SYNTAX SEQUENCE OF IfEntry ::= { interfaces 2 }
+ifEntry    OBJECT-TYPE SYNTAX IfEntry INDEX { ifIndex } ::= { ifTable 1 }
+ifIndex        OBJECT-TYPE SYNTAX InterfaceIndex ::= { ifEntry 1 }
+ifDescr        OBJECT-TYPE SYNTAX DisplayString ::= { ifEntry 2 }
+ifType         OBJECT-TYPE SYNTAX IANAifType ::= { ifEntry 3 }
+ifMtu          OBJECT-TYPE SYNTAX Integer32 ::= { ifEntry 4 }
+ifSpeed        OBJECT-TYPE SYNTAX Gauge32 ::= { ifEntry 5 }
+ifPhysAddress  OBJECT-TYPE SYNTAX PhysAddress ::= { ifEntry 6 }
+ifAdminStatus  OBJECT-TYPE SYNTAX INTEGER { up(1), down(2), testing(3) } ::= { ifEntry 7 }
+ifOperStatus   OBJECT-TYPE SYNTAX INTEGER { up(1), down(2), testing(3), unknown(4),
+                                            dormant(5), notPresent(6), lowerLayerDown(7) } ::= { ifEntry 8 }
+ifLastChange   OBJECT-TYPE SYNTAX TimeTicks ::= { ifEntry 9 }
+ifInOctets     OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 10 }
+ifInUcastPkts  OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 11 }
+ifInNUcastPkts OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 12 }
+ifInDiscards   OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 13 }
+ifInErrors     OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 14 }
+ifInUnknownProtos OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 15 }
+ifOutOctets    OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 16 }
+ifOutUcastPkts OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 17 }
+ifOutNUcastPkts OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 18 }
+ifOutDiscards  OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 19 }
+ifOutErrors    OBJECT-TYPE SYNTAX Counter32 ::= { ifEntry 20 }
+ifOutQLen      OBJECT-TYPE SYNTAX Gauge32 ::= { ifEntry 21 }
+ifSpecific     OBJECT-TYPE SYNTAX OBJECT IDENTIFIER ::= { ifEntry 22 }
+
+ifMIB          OBJECT IDENTIFIER ::= { mib-2 31 }
+ifMIBObjects   OBJECT IDENTIFIER ::= { ifMIB 1 }
+ifXTable       OBJECT-TYPE SYNTAX SEQUENCE OF IfXEntry ::= { ifMIBObjects 1 }
+ifXEntry       OBJECT-TYPE SYNTAX IfXEntry ::= { ifXTable 1 }
+ifName                  OBJECT-TYPE SYNTAX DisplayString ::= { ifXEntry 1 }
+ifInMulticastPkts       OBJECT-TYPE SYNTAX Counter32 ::= { ifXEntry 2 }
+ifInBroadcastPkts       OBJECT-TYPE SYNTAX Counter32 ::= { ifXEntry 3 }
+ifOutMulticastPkts      OBJECT-TYPE SYNTAX Counter32 ::= { ifXEntry 4 }
+ifOutBroadcastPkts      OBJECT-TYPE SYNTAX Counter32 ::= { ifXEntry 5 }
+ifHCInOctets            OBJECT-TYPE SYNTAX Counter64 ::= { ifXEntry 6 }
+ifHCInUcastPkts         OBJECT-TYPE SYNTAX Counter64 ::= { ifXEntry 7 }
+ifHCInMulticastPkts     OBJECT-TYPE SYNTAX Counter64 ::= { ifXEntry 8 }
+ifHCInBroadcastPkts     OBJECT-TYPE SYNTAX Counter64 ::= { ifXEntry 9 }
+ifHCOutOctets           OBJECT-TYPE SYNTAX Counter64 ::= { ifXEntry 10 }
+ifHCOutUcastPkts        OBJECT-TYPE SYNTAX Counter64 ::= { ifXEntry 11 }
+ifHCOutMulticastPkts    OBJECT-TYPE SYNTAX Counter64 ::= { ifXEntry 12 }
+ifHCOutBroadcastPkts    OBJECT-TYPE SYNTAX Counter64 ::= { ifXEntry 13 }
+ifLinkUpDownTrapEnable  OBJECT-TYPE SYNTAX INTEGER { enabled(1), disabled(2) } ::= { ifXEntry 14 }
+ifHighSpeed             OBJECT-TYPE SYNTAX Gauge32 ::= { ifXEntry 15 }
+ifPromiscuousMode       OBJECT-TYPE SYNTAX TruthValue ::= { ifXEntry 16 }
+ifConnectorPresent      OBJECT-TYPE SYNTAX TruthValue ::= { ifXEntry 17 }
+ifAlias                 OBJECT-TYPE SYNTAX DisplayString ::= { ifXEntry 18 }
+ifCounterDiscontinuityTime OBJECT-TYPE SYNTAX TimeStamp ::= { ifXEntry 19 }
+
+linkDown NOTIFICATION-TYPE OBJECTS { ifIndex, ifAdminStatus, ifOperStatus } STATUS current ::= { snmpTraps 3 }
+linkUp   NOTIFICATION-TYPE OBJECTS { ifIndex, ifAdminStatus, ifOperStatus } STATUS current ::= { snmpTraps 4 }
+END
+
+SNMPv2-TC DEFINITIONS ::= BEGIN
+TruthValue ::= TEXTUAL-CONVENTION STATUS current DESCRIPTION "" SYNTAX INTEGER { true(1), false(2) }
+RowStatus ::= TEXTUAL-CONVENTION STATUS current DESCRIPTION "" SYNTAX INTEGER {
+    active(1), notInService(2), notReady(3), createAndGo(4), createAndWait(5), destroy(6) }
+StorageType ::= TEXTUAL-CONVENTION STATUS current DESCRIPTION "" SYNTAX INTEGER {
+    other(1), volatile(2), nonVolatile(3), permanent(4), readOnly(5) }
+END
+
+SNMP-FRAMEWORK-MIB DEFINITIONS ::= BEGIN
+IMPORTS snmpModules FROM SNMPv2-SMI;
+snmpFrameworkMIB       OBJECT IDENTIFIER ::= { snmpModules 10 }
+snmpFrameworkMIBObjects OBJECT IDENTIFIER ::= { snmpFrameworkMIB 2 }
+snmpEngine             OBJECT IDENTIFIER ::= { snmpFrameworkMIBObjects 1 }
+snmpEngineID           OBJECT-TYPE SYNTAX SnmpEngineID ::= { snmpEngine 1 }
+snmpEngineBoots        OBJECT-TYPE SYNTAX INTEGER (1..2147483647) ::= { snmpEngine 2 }
+snmpEngineTime         OBJECT-TYPE SYNTAX INTEGER (0..2147483647) ::= { snmpEngine 3 }
+snmpEngineMaxMessageSize OBJECT-TYPE SYNTAX INTEGER (484..2147483647) ::= { snmpEngine 4 }
+END
+
+SNMP-USER-BASED-SM-MIB DEFINITIONS ::= BEGIN
+IMPORTS snmpModules FROM SNMPv2-SMI;
+snmpUsmMIB          OBJECT IDENTIFIER ::= { snmpModules 15 }
+usmMIBObjects       OBJECT IDENTIFIER ::= { snmpUsmMIB 1 }
+usmStats            OBJECT IDENTIFIER ::= { usmMIBObjects 1 }
+usmStatsUnsupportedSecLevels OBJECT-TYPE SYNTAX Counter32 ::= { usmStats 1 }
+usmStatsNotInTimeWindows     OBJECT-TYPE SYNTAX Counter32 ::= { usmStats 2 }
+usmStatsUnknownUserNames     OBJECT-TYPE SYNTAX Counter32 ::= { usmStats 3 }
+usmStatsUnknownEngineIDs     OBJECT-TYPE SYNTAX Counter32 ::= { usmStats 4 }
+usmStatsWrongDigests         OBJECT-TYPE SYNTAX Counter32 ::= { usmStats 5 }
+usmStatsDecryptionErrors     OBJECT-TYPE SYNTAX Counter32 ::= { usmStats 6 }
+END
+
+SNMP-COMMUNITY-MIB DEFINITIONS ::= BEGIN
+IMPORTS snmpModules FROM SNMPv2-SMI;
+snmpCommunityMIB        OBJECT IDENTIFIER ::= { snmpModules 18 }
+snmpCommunityMIBObjects OBJECT IDENTIFIER ::= { snmpCommunityMIB 1 }
+snmpTrapAddress   OBJECT-TYPE SYNTAX IpAddress ::= { snmpCommunityMIBObjects 3 }
+snmpTrapCommunity OBJECT-TYPE SYNTAX OCTET STRING ::= { snmpCommunityMIBObjects 4 }
+END

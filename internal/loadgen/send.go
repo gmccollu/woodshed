@@ -1,5 +1,6 @@
 // Package loadgen is Woodshed's test tooling, behind `woodshed send` and
-// `woodshed bench`. Send sends numbered syslog messages to any syslog server;
+// `woodshed bench`. Send sends numbered syslog messages to any syslog server
+// (or numbered SNMP traps and informs to any trap receiver, Proto "trap");
 // Bench runs an in-process Woodshed pipeline (listener, store, live hub) in a temp
 // data dir, sends to it at a target rate, and then checks on disk that every
 // message arrived exactly once.
@@ -30,8 +31,8 @@ const (
 
 // SendOptions configures Send.
 type SendOptions struct {
-	Addr    string // host:port of the syslog server
-	Proto   string // "udp" (default), "tcp" or "tls" (syslog over TLS, RFC 5425)
+	Addr    string // host:port of the syslog server (or trap receiver)
+	Proto   string // "udp" (default), "tcp", "tls" (syslog over TLS, RFC 5425) or "trap" (SNMP, UDP)
 	Framing string // TCP and TLS: "lf" (newline, default) or "octet" (RFC 6587 octet counting)
 	// TLS is the client configuration for Proto "tls" (ClientTLSConfig makes
 	// one). Required for "tls".
@@ -54,6 +55,11 @@ type SendOptions struct {
 	// Source is the local IP address to send from (for example 127.0.0.2, to test
 	// several senders from one machine). Empty lets the OS choose.
 	Source string
+
+	// Trap configures Proto "trap": each trap or inform carries SeqTag(RunID) and
+	// its sequence number in the SeqOID varbind. Size and Hostname don't apply;
+	// Message is appended to the sequence varbind.
+	Trap TrapOptions
 }
 
 // SendResult describes a Send.
@@ -65,6 +71,8 @@ type SendResult struct {
 	// Backpressure counts sends the OS refused for lack of buffer space (UDP
 	// ENOBUFS) and that were retried; no message is skipped for it.
 	Backpressure int
+	// Informs holds the Responses' results for Proto "trap" with Trap.Inform.
+	Informs *InformStats
 }
 
 // NewRunID returns a random 8-hex-digit run tag.
@@ -75,7 +83,8 @@ func NewRunID() string {
 }
 
 // SeqTag returns the marker every message of a run carries, followed by the
-// sequence number: "seq=<run>:".
+// sequence number: "seq=<run>:". The number ends at the first non-digit (a
+// space in syslog, the closing quote of a trap's str varbind).
 func SeqTag(runID string) string { return "seq=" + runID + ":" }
 
 // message appends one RFC 5424 message (without framing) for seq.
@@ -109,12 +118,16 @@ func (o *SendOptions) defaults() error {
 	case "":
 		o.Proto = "udp"
 	case "udp", "tcp":
+	case "trap":
+		if err := o.Trap.defaults(); err != nil {
+			return err
+		}
 	case "tls":
 		if o.TLS == nil {
 			return errors.New("loadgen: TLS needs a CA certificate to trust (or insecure)")
 		}
 	default:
-		return fmt.Errorf("loadgen: unknown protocol %q (udp, tcp or tls)", o.Proto)
+		return fmt.Errorf("loadgen: unknown protocol %q (udp, tcp, tls or trap)", o.Proto)
 	}
 	switch o.Framing {
 	case "":
@@ -206,9 +219,12 @@ func Send(ctx context.Context, o SendOptions) (SendResult, error) {
 	res := SendResult{RunID: o.RunID}
 	var err error
 	start := time.Now()
-	if o.Proto == "udp" {
+	switch o.Proto {
+	case "udp":
 		err = sendUDP(ctx, &o, &res)
-	} else {
+	case "trap":
+		err = sendTrap(ctx, &o, &res)
+	default:
 		err = sendTCP(ctx, &o, &res)
 	}
 	res.Elapsed = time.Since(start)

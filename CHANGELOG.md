@@ -26,6 +26,10 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - API: `/api/stats` gains `dropped_by_reason` and `udp_queue`; banner kind `udp_queue_full` ([docs/api.md](docs/api.md)).
 - `woodshed bench` reports the UDP queue's high-water mark and drops, and says whether every missing message was
   counted. `--stall-every` and `--stall-for` fake a slow disk, and `--udp-queue-messages` sets the queue's size.
+- `woodshed send` can send SNMP traps and informs for testing (`--proto trap`): SNMPv1, v2c and v3 at every
+  security level, with MD5, SHA-1 or SHA-2 authentication and DES or AES-128/192/256 privacy. Informs wait for each
+  answer and report round-trip times and timeouts. Communities and passphrases are read from a file or an
+  environment variable, never from the command line. It's the test tool for the SNMP trap receiver coming in 1.2.
 
 ### Changed
 - When Woodshed stops, it stores the UDP messages still queued first, for at most a third of the shutdown time
