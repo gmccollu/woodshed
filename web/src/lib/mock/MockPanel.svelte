@@ -3,6 +3,7 @@
   import { loadSession } from '../session.svelte';
   import { live, refreshDevices, refreshStatus } from '../status.svelte';
   import { go } from '../router.svelte';
+  import { snmpMock } from './snmp';
 
   let open = $state(false);
 
@@ -116,6 +117,22 @@
           />
           TLS firewall rule off (Windows)
         </label>
+        <label class="row" title={windows ? '' : 'Start the mock with mock_os=windows'}>
+          <input
+            type="checkbox"
+            disabled={!windows}
+            checked={snmpMock.firewall !== 'ok'}
+            onchange={(e) => {
+              snmpMock.firewall = e.currentTarget.checked ? 'disabled' : 'ok';
+              refreshStatus();
+            }}
+          />
+          SNMP firewall rule off (Windows)
+        </label>
+        <label class="row"
+          ><input type="checkbox" checked={snmpMock.mibErrors} onchange={(e) => { snmpMock.mibErrors = e.currentTarget.checked; refreshStatus(); }} /> A MIB file fails to load</label
+        >
+        <p class="hint">SNMP: <code>?mock_snmp=off</code> starts with the trap listener off; <code>?mock_snmp_creds=1</code> with a v3 user that can't be decrypted.</p>
         <p class="hint">TLS 1.0/1.1 banner: tick "Allow TLS 1.0 and 1.1" in Settings and save.</p>
         <p class="hint">Mock password: <code>{MOCK_PASSWORD}</code>. Ten wrong tries lock logins for 15 min.</p>
         <p class="hint">Settings validation: try port 70000, a bad CIDR, or offline &lt; quiet.</p>
