@@ -261,6 +261,30 @@ type Stats struct {
 	KernelDropped24h *int64       `json:"kernel_dropped_24h"` // nil where the OS doesn't expose it
 	Truncated24h     int64        `json:"truncated_24h"`
 	Rejected24h      int64        `json:"rejected_24h"`
+	// DroppedByReason splits the drops (SPEC §11.5); counted since the server
+	// started, so across a restart it can sum to less than Dropped24h.
+	DroppedByReason DroppedByReason `json:"dropped_by_reason"`
+	UDPQueue        []UDPQueue      `json:"udp_queue"` // one per enabled UDP listener
+}
+
+// DroppedByReason is /api/stats dropped_by_reason (last 24 hours).
+type DroppedByReason struct {
+	Paused     int64 `json:"paused"`      // the low-disk guard had paused writing
+	WriteError int64 `json:"write_error"` // a write to the log file failed
+	Refused    int64 `json:"refused"`     // new senders over the device limits
+	QueueFull  int64 `json:"queue_full"`  // a UDP listener's queue was full
+}
+
+// UDPQueue is one UDP listener's receive queue (/api/stats udp_queue).
+type UDPQueue struct {
+	Listener         string `json:"listener"` // "udp" (syslog), later "snmp"
+	Port             int    `json:"port"`
+	CapacityMessages int    `json:"capacity_messages"`
+	CapacityBytes    int64  `json:"capacity_bytes"`
+	Depth            int    `json:"depth"`
+	HighWater24h     int    `json:"high_water_24h"`
+	Dropped24h       int64  `json:"dropped_24h"`
+	HighWaterByHour  []int  `json:"high_water_by_hour"` // oldest first, the last 24 hours (fewer just after start)
 }
 
 // DeviceCounts counts non-hidden devices by status.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -272,6 +273,9 @@ func (b *backend) listenerState(ctx context.Context, cfg config.Config) (listen.
 	if ban := udpBufferBanner(runtime.GOOS, ls.UDPRcvbufBytes, ls.UDPRcvbufRequestedBytes); ban != nil {
 		banners = append(banners, *ban)
 	}
+	if ban := udpQueueBanner(ls.UDPQueues); ban != nil {
+		banners = append(banners, *ban)
+	}
 	// The estimate is a hint: an index error leaves the banner out, not the status.
 	if ban, err := b.retentionBanner(ctx, u.CapBytes, cfg.Storage.RetentionDays); err != nil {
 		b.log.Warn("retention estimate failed", "err", err)
@@ -334,6 +338,59 @@ func udpBufferText(granted, requested int) string {
 		"otherwise raise it here (the Linux packages install /etc/sysctl.d/60-woodshed.conf: apply it with sudo sysctl --system). "+
 		"Then restart Woodshed.",
 		shortBytes(int64(granted)), shortBytes(int64(requested)))
+}
+
+// udpQueueBanner is the udp_queue_full warn banner (SPEC §11.5): UDP messages
+// were dropped in the last hour because a listener's queue was full. The advice
+// names the limit that refused the latest drop. Nil otherwise.
+func udpQueueBanner(qs []listen.QueueStatus) *api.Banner {
+	var n int64
+	var last *listen.QueueStatus
+	for i := range qs {
+		q := &qs[i]
+		if q.DroppedLastHour == 0 {
+			continue
+		}
+		n += q.DroppedLastHour
+		if last == nil || (q.LastDrop != nil && last.LastDrop != nil && q.LastDrop.After(*last.LastDrop)) {
+			last = q
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	return &api.Banner{Kind: "udp_queue_full", Level: api.LevelWarn, Text: udpQueueText(n, last)}
+}
+
+func udpQueueText(n int64, q *listen.QueueStatus) string {
+	msgs := "message was"
+	if n != 1 {
+		msgs = "messages were"
+	}
+	holds, key := groupDigits(int64(q.CapacityMessages)), "listeners.udp_queue_messages"
+	if q.LastFullBy == listen.FullByBytes {
+		holds, key = shortBytes(q.CapacityBytes), "listeners.udp_queue_bytes"
+	}
+	return fmt.Sprintf("%s UDP %s dropped in the last hour because writing to disk fell behind (the queue holds %s). "+
+		"Check the disk, or raise %s.", groupDigits(n), msgs, holds, key)
+}
+
+// groupDigits writes n with thousands separators ("100,000").
+func groupDigits(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
 }
 
 // firstMessageAt is the earliest device first_seen in the index, or the first
@@ -491,10 +548,18 @@ func (b *backend) Stats(ctx context.Context) (api.Stats, error) {
 	if st.Truncated24h, st.Dropped24h, err = b.idx.DropCounts(ctx, now.Add(-24*time.Hour)); err != nil {
 		return st, err
 	}
+	r := b.store.DropsByReason24h()
+	st.DroppedByReason = api.DroppedByReason{Paused: r.Paused, WriteError: r.WriteError, Refused: r.Refused, QueueFull: r.QueueFull}
+	st.UDPQueue = []api.UDPQueue{}
 	if ln := b.ln.Load(); ln != nil {
 		st.Rejected24h = ln.Rejected24h()
 		if n, ok := ln.KernelDropped24h(); ok {
 			st.KernelDropped24h = &n
+		}
+		for _, q := range ln.Status().UDPQueues {
+			st.UDPQueue = append(st.UDPQueue, api.UDPQueue{Listener: q.Listener, Port: q.Port,
+				CapacityMessages: q.CapacityMessages, CapacityBytes: q.CapacityBytes, Depth: q.Depth,
+				HighWater24h: q.HighWater24h, Dropped24h: q.Dropped24h, HighWaterByHour: q.HighWaterByHour})
 		}
 	}
 	return st, nil
@@ -739,7 +804,8 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 }
 
 func listenersEqual(a, b config.Listeners) bool {
-	if a.UDP != b.UDP || a.TCP != b.TCP || a.TLS != b.TLS || a.UDPRcvbufBytes != b.UDPRcvbufBytes || a.MaxMessageBytes != b.MaxMessageBytes {
+	if a.UDP != b.UDP || a.TCP != b.TCP || a.TLS != b.TLS || a.UDPRcvbufBytes != b.UDPRcvbufBytes || a.MaxMessageBytes != b.MaxMessageBytes ||
+		a.UDPQueueMessages != b.UDPQueueMessages || a.UDPQueueBytes != b.UDPQueueBytes {
 		return false
 	}
 	return slices.Equal(a.Allowlist, b.Allowlist) && slices.Equal(a.Blocklist, b.Blocklist)

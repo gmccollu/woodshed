@@ -317,7 +317,11 @@ func (s *Server) Run(ctx context.Context) error {
 		fmt.Sprintf("Woodshed %s (%s) started on %s/%s; data folder %s.", s.opts.Version, s.opts.Commit, runtime.GOOS, runtime.GOARCH, cfg.Storage.DataDir))
 
 	ln, err := listen.Start(cfg.Listeners, listen.Options{
-		Sink:           s.be.sink,
+		Sink:        s.be.sink,
+		OnQueueDrop: s.be.store.DropQueued,
+		// A third of the shutdown for draining the UDP queue, leaving the rest
+		// for the store's flush and the index.
+		DrainTimeout:   s.opts.ShutdownTimeout / 3,
 		OnEvent:        s.be.listenEvent,
 		Logger:         log,
 		TLSCertificate: s.be.tlsc.certs.Certificate,
@@ -405,11 +409,17 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 		var errs []error
 		if ln != nil {
 			setStep("stopping the listeners")
-			st := ln.Status()
+			// Close drains the UDP queue into the store first (bounded).
 			if err := ln.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("listeners: %w", err))
 			}
-			s.log.Info("listeners stopped", "received", st.Received, "truncated", st.Truncated, "rejected", st.Rejected)
+			st := ln.Status()
+			var queueDropped int64
+			for _, q := range st.UDPQueues {
+				queueDropped += q.Dropped
+			}
+			s.log.Info("listeners stopped", "received", st.Received, "truncated", st.Truncated, "rejected", st.Rejected,
+				"udp_queue_dropped", queueDropped)
 		}
 		setStep("closing the live hub")
 		s.hub.Close()
