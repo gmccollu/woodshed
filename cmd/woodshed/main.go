@@ -30,6 +30,7 @@ commands:
   status          show service and listener status
   reindex         rebuild the index from the log files
   search          search the stored logs from the command line
+  bundle          build an incident bundle: every record around a moment, in a zip
   set-password    set the UI password (for servers without a browser)
   lan-mode        turn LAN mode on or off (HTTPS on the network, with a login)
   tls             syslog over TLS: on, off, renew the certificate, status
@@ -60,6 +61,7 @@ func init() {
 		{"status", cmdStatus},
 		{"reindex", cmdReindex},
 		{"search", cmdSearch},
+		{"bundle", cmdBundle},
 		{"set-password", cmdSetPassword},
 		{"lan-mode", cmdLANMode},
 		{"tls", cmdTLS},
