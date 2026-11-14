@@ -638,3 +638,32 @@ func TestPollerCantSendASet(t *testing.T) {
 		t.Fatalf("checked only %d files", checked)
 	}
 }
+
+// A target added while another is already polled gets polled too (it shares
+// the open socket).
+func TestTargetAddedLater(t *testing.T) {
+	a, err := agenttest.Start(agenttest.Options{Community: testComm})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	sink := &memSink{}
+	p := New(Options{Sink: sink, Creds: &memCreds{comm: map[string][]byte{"pt_1": []byte(testComm), "pt_2": []byte(testComm)}},
+		IntervalUnit: 10 * time.Millisecond})
+	defer p.Close()
+	s := defaultSettings()
+	s.Port, s.Presets = int(a.Addr().Port()), []string{config.PresetSystem}
+	p.SetTargets([]Target{{ID: "pt_1", Settings: s}})
+	s2 := s
+	s2.DeviceID = "127.0.0.2"
+	p.SetTargets([]Target{{ID: "pt_1", Settings: s}, {ID: "pt_2", Settings: s2}})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st := p.States()
+		if st["pt_1"].Status == StateOK && st["pt_2"].Status == StateOK {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("states %+v", p.States())
+}

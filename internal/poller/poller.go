@@ -72,7 +72,11 @@ type Options struct {
 	Concurrency int // at most this many devices at once (32 by default)
 	// OnSend, when set, sees every destination a request goes to (tests).
 	OnSend func(netip.AddrPort)
-	Logger *slog.Logger
+	// IntervalUnit is what one second of a target's interval (and of the
+	// backoff and unreachable limits) takes: time.Second, except in tests
+	// that run many cycles quickly.
+	IntervalUnit time.Duration
+	Logger       *slog.Logger
 	// Event records a line in Woodshed's events log (may be nil).
 	Event func(level, text string)
 }
@@ -149,6 +153,9 @@ func New(o Options) *Poller {
 	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
+	}
+	if o.IntervalUnit <= 0 {
+		o.IntervalUnit = time.Second
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &Poller{o: o, now: o.Now, log: o.Logger, targets: map[string]*tstate{}, conc: o.Concurrency,
@@ -231,7 +238,11 @@ func (p *Poller) SetTargets(ts []Target) {
 			continue
 		}
 		st := newState(t)
+		st.unit = p.o.IntervalUnit
 		st.nextDue = now.Add(offset(t.ID, st.interval()))
+		if p.sock != nil {
+			st.attach(p.sock)
+		}
 		if old != nil {
 			old.mu.Lock()
 			old.retired = true
@@ -482,7 +493,7 @@ func (p *Poller) Unreachable() []string {
 	var out []string
 	for _, st := range sts {
 		st.mu.Lock()
-		if st.t.Enabled && st.fails > 0 && !st.failingSince.IsZero() && now.Sub(st.failingSince) >= UnreachableAfter {
+		if st.t.Enabled && st.fails > 0 && !st.failingSince.IsZero() && now.Sub(st.failingSince) >= st.scaled(UnreachableAfter) {
 			name := st.t.DeviceID
 			if st.t.Address != st.t.DeviceID {
 				name += " (" + st.t.Address + ")"

@@ -149,6 +149,12 @@ type Input struct {
 	MaxInterfaces *int        `json:"max_interfaces"`
 	Pinned        []IfRef     `json:"pinned"`
 	Custom        []Custom    `json:"custom"`
+
+	// Read-only fields of GET's target, accepted and ignored, so a GET body
+	// can be PUT back as it is. ID also names the target for a test poll.
+	ID           *string         `json:"id"`
+	CommunitySet *bool           `json:"community_set"`
+	State        json.RawMessage `json:"state"`
 }
 
 // ValidationError is a 400 with errors by field (docs/api.md).

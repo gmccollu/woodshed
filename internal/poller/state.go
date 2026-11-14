@@ -23,6 +23,7 @@ type tstate struct {
 	sessErr  string // why the session can't be made (a missing credential)
 	credHash string // the community's #hash8
 
+	unit     time.Duration // what a second of the interval takes (Options.IntervalUnit)
 	nextDue  time.Time
 	busy     bool
 	dropSess bool // drop the session when the running cycle ends (credentials changed)
@@ -78,7 +79,7 @@ type ifState struct {
 }
 
 func newState(t Target) *tstate {
-	st := &tstate{t: t, oidPrev: map[string]sample{}}
+	st := &tstate{t: t, oidPrev: map[string]sample{}, unit: time.Second}
 	st.device, _ = DeviceAddr(t.DeviceID)
 	if a, err := netip.ParseAddr(t.Address); err == nil {
 		st.to = netip.AddrPortFrom(a.Unmap(), uint16(t.Port))
@@ -94,7 +95,10 @@ func (st *tstate) sameSettings(t Target) bool {
 	return reflect.DeepEqual(st.t.Settings, t.Settings)
 }
 
-func (st *tstate) interval() time.Duration { return time.Duration(st.t.IntervalS) * time.Second }
+func (st *tstate) interval() time.Duration { return time.Duration(st.t.IntervalS) * st.unit }
+
+// scaled is a limit in seconds, in the target's interval unit.
+func (st *tstate) scaled(d time.Duration) time.Duration { return d / time.Second * st.unit }
 
 // effInterval is the interval with backoff: after BackoffAfter failed cycles
 // in a row it doubles for each further failure, up to MaxBackoff.
@@ -106,7 +110,7 @@ func (st *tstate) effInterval() time.Duration {
 	if st.fails < BackoffAfter {
 		return iv
 	}
-	cap := max(MaxBackoff, iv)
+	cap := max(st.scaled(MaxBackoff), iv)
 	for i := BackoffAfter - 1; i < st.fails && iv < cap; i++ {
 		iv *= 2
 	}
@@ -152,7 +156,7 @@ func (st *tstate) state(now time.Time) State {
 		s.Status = StateFailing
 	default:
 		s.Status = StateBackingOff
-		s.BackoffS = int(st.effInterval() / time.Second)
+		s.BackoffS = int(st.effInterval() / st.unit)
 	}
 	if st.sess != nil {
 		if e := st.sess.Engine(); e.Known() {
