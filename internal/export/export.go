@@ -63,8 +63,12 @@ var (
 	ErrClosed   = errors.New("export: closed")
 )
 
-// RequestError is an invalid request (a 400).
-type RequestError struct{ Msg string }
+// RequestError is an invalid request (a 400). Empty marks a bundle whose
+// window held nothing from any device it would pick (`woodshed bundle` exits 1).
+type RequestError struct {
+	Msg   string
+	Empty bool
+}
 
 func (e *RequestError) Error() string { return e.Msg }
 
@@ -89,10 +93,32 @@ type Filters struct {
 	// one type of traps, its filter (SPEC §11.1, docs/api.md).
 	Types []string             `json:"types,omitempty"`
 	Trap  *datatype.TrapFilter `json:"trap,omitempty"`
+	// 1.2: the incident bundle (SPEC §11.3): Kind "bundle", the moment and
+	// the spans before and after it, and whether the devices are the ones
+	// active in the window. A bundle's Types are resolved when it's created
+	// (every type with data in the window when the request names none).
+	Kind          string        `json:"kind,omitempty"` // "" (an export) or KindBundle
+	At            *time.Time    `json:"at,omitempty"`
+	Before        time.Duration `json:"before,omitempty"`
+	After         time.Duration `json:"after,omitempty"`
+	ActiveDevices bool          `json:"active_devices,omitempty"`
 }
 
-// TypesOrSyslog is the export's data types, syslog when it names none.
+// Kinds of export (docs/api.md: kind).
+const (
+	KindExport = "export"
+	KindBundle = "bundle"
+)
+
+// IsBundle reports whether the request is an incident bundle.
+func (f Filters) IsBundle() bool { return f.Kind == KindBundle }
+
+// TypesOrSyslog is the export's data types, syslog when it names none. A
+// bundle's are its own (none when nothing was stored in its window).
 func (f Filters) TypesOrSyslog() []string {
+	if f.IsBundle() {
+		return f.Types
+	}
 	if len(f.Types) == 0 {
 		return []string{datatype.Syslog}
 	}
@@ -170,6 +196,9 @@ type Options struct {
 
 	// Level is the deflate level (default 5).
 	Level int
+	// Location is the local time zone a bundle's README names (default
+	// time.Local).
+	Location *time.Location
 	// zip64Limit lowers the zip64 threshold, for tests.
 	zip64Limit int64
 	// janitor is how often expiry runs (default 1 min).
@@ -180,12 +209,10 @@ type Options struct {
 
 // Manager is the export queue. It is safe for concurrent use.
 type Manager struct {
+	builder
 	opts Options
 	dir  string
-	idx  *index.DB
-	eng  *search.Engine
 	log  *slog.Logger
-	now  func() time.Time
 
 	mu      sync.Mutex
 	entries map[string]*entry
@@ -224,14 +251,11 @@ func Open(opts Options) (*Manager, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	if opts.Level == 0 {
-		opts.Level = 5
-	}
 	if opts.janitor <= 0 {
 		opts.janitor = time.Minute
 	}
-	m := &Manager{opts: opts, dir: filepath.Join(opts.DataDir, Dir), idx: opts.Index, eng: opts.Search, log: opts.Logger,
-		now: opts.Now, entries: map[string]*entry{}, wake: make(chan struct{}, 1), stop: make(chan struct{})}
+	m := &Manager{builder: newBuilder(opts), opts: opts, dir: filepath.Join(opts.DataDir, Dir), log: opts.Logger,
+		entries: map[string]*entry{}, wake: make(chan struct{}, 1), stop: make(chan struct{})}
 	if err := os.MkdirAll(m.dir, 0o750); err != nil {
 		return nil, fmt.Errorf("export: %w", err)
 	}
@@ -332,8 +356,15 @@ func (r Request) filter() search.Filter {
 		From: r.From, To: r.To, Apps: r.Apps, Hosts: r.Hosts, ExcludeApps: r.ExcludeApps, ExcludeHosts: r.ExcludeHosts, Exclude: r.Exclude}
 }
 
-// resolve validates a request and returns its devices.
-func (m *Manager) resolve(ctx context.Context, r Request) ([]string, error) {
+// resolve validates a request and returns its devices. A bundle's window and
+// types are resolved into r (resolveBundle).
+func (b *builder) resolve(ctx context.Context, r *Request) ([]string, error) {
+	if r.IsBundle() {
+		return b.resolveBundle(ctx, r)
+	}
+	if r.Kind != "" && r.Kind != KindExport {
+		return nil, &RequestError{Msg: fmt.Sprintf("kind must be %q or %q, not %q.", KindExport, KindBundle, r.Kind)}
+	}
 	if r.From.IsZero() || r.To.IsZero() {
 		return nil, &RequestError{Msg: `"from" and "to" are required.`}
 	}
@@ -357,14 +388,14 @@ func (m *Manager) resolve(ctx context.Context, r Request) ([]string, error) {
 	if len(r.TypesOrSyslog()) > 1 && !r.filtersEmpty() {
 		return nil, &RequestError{Msg: "types: Filters apply to one data type; pick one, or leave the filters out."}
 	}
-	if err := m.eng.CheckFilter(r.typeFilter(r.TypesOrSyslog()[0])); err != nil {
+	if err := b.eng.CheckFilter(r.typeFilter(r.TypesOrSyslog()[0])); err != nil {
 		var qe *search.QueryError
 		if errors.As(err, &qe) {
 			return nil, &RequestError{Msg: qe.Msg}
 		}
 		return nil, err
 	}
-	devs, err := m.eng.ResolveDevices(ctx, r.Devices, r.Group, r.Ungrouped, r.ExcludeDevices)
+	devs, err := b.eng.ResolveDevices(ctx, r.Devices, r.Group, r.Ungrouped, r.ExcludeDevices)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +407,7 @@ func (m *Manager) resolve(ctx context.Context, r Request) ([]string, error) {
 
 // Estimate is POST /api/exports/estimate: an upper bound from the index.
 func (m *Manager) Estimate(ctx context.Context, r Request) (search.Estimate, error) {
-	devs, err := m.resolve(ctx, r)
+	devs, err := m.resolve(ctx, &r)
 	if err != nil {
 		return search.Estimate{}, err
 	}
@@ -404,13 +435,11 @@ func (r Request) filtersEmpty() bool {
 
 // Create queues an export.
 func (m *Manager) Create(ctx context.Context, r Request) (Info, error) {
-	devs, err := m.resolve(ctx, r)
+	devs, err := m.resolve(ctx, &r)
 	if err != nil {
 		return Info{}, err
 	}
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	info := Info{ID: "exp_" + hex.EncodeToString(b[:]), Created: m.now().UTC(), Devices: devs,
+	info := Info{ID: newID(), Created: m.now().UTC(), Devices: devs,
 		From: r.From.UTC(), To: r.To.UTC(), State: Queued, Filters: r.Filters, Named: r.Devices}
 	m.mu.Lock()
 	if m.closed {
@@ -427,9 +456,20 @@ func (m *Manager) Create(ctx context.Context, r Request) (Info, error) {
 	case m.wake <- struct{}{}:
 	default:
 	}
-	m.event(index.LevelInfo, fmt.Sprintf("Export %s queued: %s, %s to %s.", info.ID, plural(len(devs), "device"),
+	what := "Export"
+	if r.IsBundle() {
+		what = "Incident bundle"
+	}
+	m.event(index.LevelInfo, fmt.Sprintf("%s %s queued: %s, %s to %s.", what, info.ID, plural(len(devs), "device"),
 		info.From.Format(time.RFC3339), info.To.Format(time.RFC3339)))
 	return info, nil
+}
+
+// newID returns a new export ID.
+func newID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "exp_" + hex.EncodeToString(b[:])
 }
 
 // List returns every export, newest first.

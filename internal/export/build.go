@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 type buildResult struct {
 	lines, size int64
 	files       int
+	summary     []DeviceSummary // a bundle's
+	gaps        []Gap
 }
 
 // Manifest is manifest.json.
@@ -42,6 +45,12 @@ type Manifest struct {
 	Kind    string            `json:"kind"`
 	Types   []string          `json:"types"`
 	Folders map[string]string `json:"folders"`
+	// A bundle's moment, spans and per-device summary (docs/api.md).
+	At          *time.Time      `json:"at,omitempty"`
+	Before      string          `json:"before,omitempty"`
+	After       string          `json:"after,omitempty"`
+	Summary     []DeviceSummary `json:"summary,omitempty"`
+	SummaryNote string          `json:"summary_note,omitempty"`
 }
 
 // ManifestReq echoes the request.
@@ -54,10 +63,11 @@ type ManifestReq struct {
 
 // ManifestDevice is one exported device.
 type ManifestDevice struct {
-	ID    string `json:"id"`
-	IP    string `json:"ip"`
-	Name  string `json:"name"`
-	Group string `json:"group"`
+	ID     string `json:"id"`
+	IP     string `json:"ip"`
+	Name   string `json:"name"`
+	Group  string `json:"group"`
+	hidden bool
 }
 
 // ManifestFilters are the request's filters in API form.
@@ -80,6 +90,8 @@ type ManifestFilters struct {
 	ExcludeDevices []string `json:"exclude_devices"` // [] = none excluded
 	ExcludeApp     []string `json:"exclude_app"`
 	ExcludeHost    []string `json:"exclude_host"`
+	// 1.2: a bundle of the devices active in its window.
+	ActiveDevices bool `json:"active_devices,omitempty"`
 }
 
 // ManifestFile is one log file in the zip.
@@ -125,24 +137,6 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 	m.mu.Lock()
 	info := e.info
 	m.mu.Unlock()
-	req := Request{Devices: info.Named, From: info.From, To: info.To, Filters: info.Filters}
-	types := req.TypesOrSyslog()
-
-	type hk struct{ typ, dev, day string }
-	hint := map[hk]int64{}
-	var total int64
-	for _, t := range types {
-		est, err := m.eng.Estimate(ctx, info.Devices, req.typeFilter(t))
-		if err != nil {
-			return buildResult{}, err
-		}
-		for _, p := range est.Parts {
-			hint[hk{t, p.Device, p.Day}] = p.Bytes
-		}
-		total += est.Bytes
-	}
-	total = max(total, 1)
-
 	tmp := m.tmpPath(info.ID)
 	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o640)
 	if err != nil {
@@ -155,8 +149,47 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 			os.Remove(tmp)
 		}
 	}()
-	exportedAt := m.now().UTC()
-	zw := newZipWriter(f, m.opts.zip64Limit, exportedAt, m.opts.Level)
+	res, err := m.write(ctx, f, info, func(p float64) { m.setProgress(e, p) })
+	if err != nil {
+		return res, err
+	}
+	if err := f.Sync(); err != nil {
+		return res, err
+	}
+	if err := f.Close(); err != nil {
+		return res, err
+	}
+	if err := atomicfile.Rename(tmp, m.zipPath(info.ID)); err != nil {
+		return res, err
+	}
+	ok = true
+	return res, nil
+}
+
+// write writes an export's (or a bundle's) zip to f, which must be empty.
+// progress gets the share done so far. It only reads the index and the log
+// files, so `woodshed bundle` runs it on a read-only index (Build).
+func (b *builder) write(ctx context.Context, f *os.File, info Info, progress func(float64)) (buildResult, error) {
+	req := Request{Devices: info.Named, From: info.From, To: info.To, Filters: info.Filters}
+	types := req.TypesOrSyslog()
+
+	type hk struct{ typ, dev, day string }
+	hint := map[hk]int64{}
+	var total int64
+	for _, t := range types {
+		est, err := b.eng.Estimate(ctx, info.Devices, req.typeFilter(t))
+		if err != nil {
+			return buildResult{}, err
+		}
+		for _, p := range est.Parts {
+			hint[hk{t, p.Device, p.Day}] = p.Bytes
+		}
+		total += est.Bytes
+	}
+	total = max(total, 1)
+
+	exportedAt := b.now().UTC()
+	zw := newZipWriter(f, b.zip64Limit, exportedAt, b.level)
 
 	var res buildResult
 	var files []ManifestFile
@@ -168,15 +201,24 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 			cur = nil
 		}
 	}
+	// A bundle counts what it writes, per device and type (its summary).
+	var sums *summaries
+	if info.Filters.IsBundle() {
+		sums = newSummaries(info.Devices, types)
+	}
 	var done int64
-	var line []byte
+	var line, rec []byte
 	for _, typ := range types {
 		flt := req.typeFilter(typ)
 		folder := FolderOf(typ)
 		for _, dev := range info.Devices {
-			sc, err := m.eng.NewScanner(ctx, dev, flt)
+			sc, err := b.eng.NewScanner(ctx, dev, flt)
 			if err != nil {
 				return res, err
+			}
+			var ts *typeCount
+			if sums != nil {
+				ts = sums.of(dev, typ)
 			}
 			n := 0
 			for {
@@ -197,8 +239,8 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 					}
 					cur = &fileOut{mf: ManifestFile{Path: name, DeviceID: dev, Day: h.Day, First: h.Received}, sum: sha256.New()}
 				}
-				if m.opts.testHookLine != nil {
-					m.opts.testHookLine()
+				if b.testHookLine != nil {
+					b.testHookLine()
 				}
 				// The line as stored: "<received> <sender> <message>", with CR, LF and
 				// backslash in the message escaped, so every message is one line.
@@ -212,8 +254,12 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 				cur.mf.Bytes += int64(len(line))
 				cur.mf.Last = h.Received
 				res.lines++
+				if ts != nil {
+					rec = logfile.Unescape(rec[:0], h.Escaped)
+					ts.add(rec, h.Received)
+				}
 				if n++; n%4096 == 0 {
-					m.setProgress(e, 0.97*float64(done+sc.Scanned())/float64(total))
+					progress(0.97 * float64(done+sc.Scanned()) / float64(total))
 					if ctx.Err() != nil {
 						break
 					}
@@ -233,7 +279,7 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 	finish()
 
 	// The service's own events in the range, and the gaps they show.
-	evs, err := m.idx.Events(ctx, time.Time{}, info.To, 0)
+	evs, err := b.idx.Events(ctx, time.Time{}, info.To, 0)
 	if err != nil {
 		return res, err
 	}
@@ -243,7 +289,7 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 			inRange = append(inRange, ev)
 		}
 	}
-	allFiles, err := m.idx.Files(ctx, "")
+	allFiles, err := b.idx.Files(ctx, "")
 	if err != nil {
 		return res, err
 	}
@@ -278,39 +324,54 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 		}
 	}
 
-	if err := zw.create("README.txt", -1); err != nil {
-		return res, err
-	}
-	if _, err := zw.Write([]byte(readme(info))); err != nil {
-		return res, err
-	}
-
 	devs := make([]ManifestDevice, 0, len(info.Devices))
 	for _, id := range info.Devices {
-		d, err := m.idx.Device(ctx, id)
+		d, err := b.idx.Device(ctx, id)
 		if err != nil {
 			d = index.Device{ID: id}
 		}
-		devs = append(devs, ManifestDevice{ID: d.ID, IP: d.IP, Name: d.Name, Group: d.Group})
+		devs = append(devs, ManifestDevice{ID: d.ID, IP: d.IP, Name: d.Name, Group: d.Group, hidden: d.Hidden})
 	}
+	if sums != nil {
+		if res.summary, err = b.summarize(ctx, info, sums, devs, gaps); err != nil {
+			return res, err
+		}
+	}
+
+	if err := zw.create("README.txt", -1); err != nil {
+		return res, err
+	}
+	text := readme(info)
+	if sums != nil {
+		text = b.bundleReadme(info, res.summary)
+	}
+	if _, err := zw.Write([]byte(text)); err != nil {
+		return res, err
+	}
+
 	man := Manifest{
-		Format: "woodshed-export/1", WoodshedVersion: m.opts.Version, ExportedAt: exportedAt, ID: info.ID,
+		Format: "woodshed-export/1", WoodshedVersion: b.version, ExportedAt: exportedAt, ID: info.ID,
 		Request: ManifestReq{From: info.From, To: info.To, Devices: devs, Filters: ManifestFilters{
 			Devices: nonNil(info.Named), Group: info.Filters.Group, Ungrouped: info.Filters.Ungrouped, Severities: SeverityList(info.Filters.Severities),
 			Q: info.Filters.Q, Regex: info.Filters.Regex, Case: info.Filters.Case,
 			App: nonNil(info.Filters.Apps), Host: nonNil(info.Filters.Hosts), Exclude: info.Filters.Exclude,
 			Type: "syslog", Syntax: syntaxName(info.Filters.Terms), Facilities: info.Filters.Facilities.List(),
 			ExcludeDevices: nonNil(info.Filters.ExcludeDevices), ExcludeApp: nonNil(info.Filters.ExcludeApps),
-			ExcludeHost: nonNil(info.Filters.ExcludeHosts)}},
+			ExcludeHost: nonNil(info.Filters.ExcludeHosts), ActiveDevices: info.Filters.ActiveDevices}},
 		Files: nonNil(files), Lines: res.lines, Gaps: nonNil(gaps), GapsNote: GapsNote,
 		EventsFile: "woodshed-events.log", Events: len(inRange),
-		Kind: "export", Types: types, Folders: map[string]string{},
+		Kind: KindExport, Types: nonNil(types), Folders: map[string]string{},
 	}
 	for _, t := range types {
 		man.Folders[FolderOf(t)] = t
 	}
 	if len(types) == 1 && types[0] != datatype.Syslog {
 		man.Request.Filters.Type = types[0]
+	}
+	if sums != nil {
+		at := info.Filters.At.UTC()
+		man.Kind, man.At, man.Before, man.After = KindBundle, &at, FormatSpan(info.Filters.Before), FormatSpan(info.Filters.After)
+		man.Summary, man.SummaryNote = res.summary, SummaryNote
 	}
 	mb, err := json.MarshalIndent(man, "", "  ")
 	if err != nil {
@@ -328,21 +389,11 @@ func (m *Manager) build(ctx context.Context, e *entry) (buildResult, error) {
 	if err := ctx.Err(); err != nil {
 		return res, err
 	}
-	if err := f.Sync(); err != nil {
-		return res, err
-	}
 	st, err := f.Stat()
 	if err != nil {
 		return res, err
 	}
-	if err := f.Close(); err != nil {
-		return res, err
-	}
-	if err := atomicfile.Rename(tmp, m.zipPath(info.ID)); err != nil {
-		return res, err
-	}
-	ok = true
-	res.size, res.files = st.Size(), len(files)
+	res.size, res.files, res.gaps = st.Size(), len(files), gaps
 	return res, nil
 }
 
@@ -374,7 +425,17 @@ func readme(info Info) string {
 		b.WriteString("Filters: none (every line in the range)\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(strings.TrimLeft(`
+	b.WriteString(readmeFiles(info))
+	return b.String()
+}
+
+// readmeFiles is README.txt's part about each file in the zip.
+func readmeFiles(info Info) string {
+	bundle := info.Filters.IsBundle()
+	logs := !bundle || slices.Contains(info.Filters.TypesOrSyslog(), datatype.Syslog)
+	var b strings.Builder
+	if logs {
+		b.WriteString(strings.TrimLeft(`
 logs/<device>/<YYYY-MM-DD>.log
     The messages Woodshed received from each device on that day (UTC), oldest
     first, one message per line, exactly as Woodshed stores them:
@@ -385,20 +446,37 @@ logs/<device>/<YYYY-MM-DD>.log
         perl -pe 's/\\(\\|r|n)/$1 eq "r" ? "\r" : $1 eq "n" ? "\n" : "\\"/ge' <file>
     <device> is the sender's IP address (":" written as "_" for IPv6).
 
-`+trapReadme(info)+`manifest.json
+`, "\n"))
+	}
+	b.WriteString(trapReadme(info))
+	b.WriteString(`manifest.json
     What was exported: the request (devices with their names and groups, the
     range and any filters), each log file's line count and SHA-256, and "gaps":
     periods in the range when Woodshed wasn't running or a listener was down,
     so "the device sent nothing" can be told apart from "Woodshed wasn't
     listening". "gaps_note" says how the gaps are worked out.
-
+`)
+	if bundle {
+		b.WriteString(`    A bundle's manifest also has "at", "before", "after" and "summary": the
+    numbers above, per device, as JSON ("summary_note" says where they come
+    from).
+`)
+	}
+	b.WriteString(`
 woodshed-events.log
     Woodshed's own events in the range: starts and stops, listener bind errors,
     file rotations and deletions, dropped messages, paused writes.
 
-To check a file: sha256sum logs/<device>/<day>.log (or on Windows:
+`)
+	if logs {
+		b.WriteString(`To check a file: sha256sum logs/<device>/<day>.log (or on Windows:
 certutil -hashfile <file> SHA256) and compare with manifest.json.
-`, "\n"))
+`)
+	} else {
+		b.WriteString(`To check a file: sha256sum traps/<device>/<day>.log (or on Windows:
+certutil -hashfile <file> SHA256) and compare with manifest.json.
+`)
+	}
 	return b.String()
 }
 
