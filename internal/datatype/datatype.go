@@ -22,6 +22,7 @@ import (
 const (
 	Syslog = logfile.TypeSyslog
 	Trap   = logfile.TypeTrap
+	Poll   = logfile.TypePoll
 )
 
 // DomainValue is one value of a closed field.
@@ -93,7 +94,7 @@ const FieldDevice = "device"
 var deviceField = Field{Key: FieldDevice, Label: "Device", Param: "devices", ExcludeParam: "exclude_devices"}
 
 // types is the registry, syslog first.
-var types = []Type{syslogType{}, trapType{}}
+var types = []Type{syslogType{}, trapType{}, pollType{}}
 
 // Types returns every type, the default first.
 func Types() []Type { return types }
