@@ -17,6 +17,7 @@ import (
 
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/snmp"
 )
 
 func cmdSend(args []string, stdout, stderr io.Writer) int {
@@ -173,8 +174,19 @@ Measure sustained throughput: run an in-process Woodshed (listener on
 for --duration, then read the files back and check that every message arrived
 exactly once. It doesn't touch a running Woodshed or its data.
 
+--proto trap runs the SNMP trap listener and receiver instead (SPEC §11.6):
+--snmp-version 1, 2c or 3, --inform to send InformRequests (each Response is
+timed), and for v3 --auth and --priv (the run makes up its own user and
+passphrases, in memory).
+
 Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
-	proto := fs.String("proto", "udp", "`protocol`: udp, tcp, tls or all (udp, tcp lf, tcp octet, tls lf in turn)")
+	proto := fs.String("proto", "udp", "`protocol`: udp, tcp, tls, trap or all (udp, tcp lf, tcp octet, tls lf in turn)")
+	snmpVersion := fs.String("snmp-version", "2c", "trap: SNMP `version` 1, 2c or 3")
+	inform := fs.Bool("inform", false, "trap: send InformRequests and time each Response (2c, 3)")
+	authProto := fs.String("auth", "sha-256", "trap v3: authentication `protocol` (none, md5, sha, sha-224, sha-256, sha-384, sha-512)")
+	privProto := fs.String("priv", "aes-128", "trap v3: privacy `protocol` (none, des, aes-128, aes-192, aes-256)")
+	keyExt := fs.String("key-ext", "draft", "trap v3, AES-192/256: key extension `method`, draft or alt")
+	varbinds := fs.Int("varbinds", 1, "trap: varbinds per trap after the header (`n`, the sequence one first)")
 	framing := fs.String("framing", "lf", "TCP and TLS `framing`: lf or octet")
 	rate := fs.Float64("rate", loadgen.DefaultBenchRate, "target `messages` per second")
 	duration := fs.Duration("duration", loadgen.DefaultBenchDuration, "how long to send (a `duration` such as 30s or 10m)")
@@ -209,9 +221,19 @@ Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 		runs = []run{{strings.ToLower(*proto), *framing}}
 	case "all":
 		runs = []run{{"udp", ""}, {"tcp", "lf"}, {"tcp", "octet"}, {"tls", "lf"}}
+	case "trap":
+		runs = []run{{"trap", ""}}
 	default:
-		fmt.Fprintf(stderr, "woodshed bench: --proto must be udp, tcp, tls or all, not %q\n\n%s", *proto, fs.help())
+		fmt.Fprintf(stderr, "woodshed bench: --proto must be udp, tcp, tls, trap or all, not %q\n\n%s", *proto, fs.help())
 		return 2
+	}
+	var trapOpts loadgen.TrapOptions
+	if runs[0].proto == "trap" {
+		var err error
+		if trapOpts, err = benchTrapOptions(*snmpVersion, *inform, *authProto, *privProto, *keyExt, *varbinds); err != nil {
+			fmt.Fprintf(stderr, "woodshed bench: %v\n", err)
+			return 2
+		}
 	}
 	if *rate <= 0 || *duration <= 0 {
 		fmt.Fprintln(stderr, "woodshed bench: --rate and --duration must be positive")
@@ -227,11 +249,19 @@ Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 	var results []loadgen.BenchResult
 	for _, r := range runs {
 		if !*asJSON {
-			fmt.Fprintf(stdout, "bench: %s %s at %.0f msg/s for %v...\n", strings.ToUpper(r.proto), r.framing, *rate, *duration)
+			what := strings.ToUpper(r.proto) + " " + r.framing
+			if r.proto == "trap" {
+				what = trapOpts.Describe()
+				if trapOpts.Inform {
+					what += " informs"
+				}
+			}
+			fmt.Fprintf(stdout, "bench: %s at %.0f msg/s for %v...\n", strings.TrimSpace(what), *rate, *duration)
 		}
 		res, err := loadgen.Bench(ctx, loadgen.BenchOptions{
 			Proto: r.proto, Framing: r.framing, Rate: *rate, Duration: *duration, Size: *size,
 			DataDir: *dataDir, Keep: *keep, QueueMessages: *queue, StallEvery: *stallEvery, StallFor: *stallFor,
+			Trap: trapOpts,
 		})
 		results = append(results, res)
 		if err != nil {
@@ -261,4 +291,37 @@ Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 		return 1
 	}
 	return 0
+}
+
+// benchTrapOptions reads `woodshed bench --proto trap`'s flags.
+func benchTrapOptions(version string, inform bool, auth, priv, keyExt string, varbinds int) (loadgen.TrapOptions, error) {
+	to := loadgen.TrapOptions{Version: version, Inform: inform, Varbinds: varbinds}
+	switch version {
+	case "1", "2c", "3":
+	default:
+		return to, fmt.Errorf("--snmp-version must be 1, 2c or 3, not %q", version)
+	}
+	if inform && version == "1" {
+		return to, errors.New("--inform needs --snmp-version 2c or 3 (v1 has no informs)")
+	}
+	if varbinds < 1 || varbinds > 1000 {
+		return to, fmt.Errorf("--varbinds must be from 1 to 1000, not %d", varbinds)
+	}
+	if version != "3" {
+		return to, nil
+	}
+	var err error
+	if to.Auth, err = snmp.ParseAuthProtocol(auth); err != nil {
+		return to, fmt.Errorf("--auth: %v", strings.TrimPrefix(err.Error(), "snmp: "))
+	}
+	if to.Priv, err = snmp.ParsePrivProtocol(priv); err != nil {
+		return to, fmt.Errorf("--priv: %v", strings.TrimPrefix(err.Error(), "snmp: "))
+	}
+	if to.KeyExt, err = snmp.ParseKeyExt(keyExt); err != nil {
+		return to, fmt.Errorf("--key-ext: %v", strings.TrimPrefix(err.Error(), "snmp: "))
+	}
+	if to.Priv != snmp.PrivNone && to.Auth == snmp.AuthNone {
+		return to, errors.New("--priv needs --auth (privacy needs authentication)")
+	}
+	return to, nil
 }

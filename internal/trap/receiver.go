@@ -11,6 +11,7 @@ package trap
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -49,6 +50,11 @@ type Options struct {
 	Event  func(level, text string)
 	Clock  func() time.Time
 	Logger *slog.Logger
+
+	// ReplyPerSource and ReplyTotal override the reply limits (replies a
+	// second; 0: ReplyPerSource and ReplyTotal, SPEC §11.2.3). Only `woodshed
+	// bench` sets them, to measure informs from one sender past the limit.
+	ReplyPerSource, ReplyTotal int
 }
 
 // Receiver handles the SNMP listener's datagrams. Safe for concurrent use.
@@ -88,6 +94,13 @@ func Open(opts Options, set Settings) (*Receiver, error) {
 	r := &Receiver{opts: opts, set: set}
 	r.failures.m = map[netip.Addr]*failure{}
 	r.limit.per = map[netip.Addr]*bucket{}
+	r.limit.perSource, r.limit.all = ReplyPerSource, ReplyTotal
+	if opts.ReplyPerSource > 0 {
+		r.limit.perSource = float64(opts.ReplyPerSource)
+	}
+	if opts.ReplyTotal > 0 {
+		r.limit.all = float64(opts.ReplyTotal)
+	}
 	r.dups.seen = map[string]time.Time{}
 	r.answer.Store(set.AnswerInforms)
 	override, err := engineOverride(set.EngineID)
@@ -236,6 +249,9 @@ func (r *Receiver) ReloadMIBs() api.SNMPMIBs {
 	set, rep := snmp.LoadMIBDir(dir)
 	datatype.SetMIBs(set)
 	info := api.SNMPMIBs{Dir: dir, Files: rep.Files, Names: rep.Names, LoadedAt: r.opts.Clock().UTC()}
+	if _, err := os.Stat(dir); custom && err != nil {
+		info.Errors = append(info.Errors, api.SNMPMIBError{File: dir, Message: "the MIB folder can't be read: " + osErrText(err)})
+	}
 	for _, e := range rep.Errors {
 		info.Errors = append(info.Errors, api.SNMPMIBError{File: e.File, Line: e.Line, Message: e.Msg})
 	}
@@ -396,3 +412,12 @@ func (r *Receiver) LastTrap() time.Time {
 }
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
+
+// osErrText is an OS error without the path (the folder is shown beside it).
+func osErrText(err error) string {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
+}

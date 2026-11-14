@@ -37,7 +37,7 @@ const (
 
 // BenchOptions configures Bench.
 type BenchOptions struct {
-	Proto    string        // "udp" (default), "tcp" or "tls"
+	Proto    string        // "udp" (default), "tcp", "tls" or "trap" (SNMP: the trap listener and receiver)
 	Framing  string        // TCP: "lf" (default) or "octet"
 	Rate     float64       // target messages per second (default 10,000)
 	Duration time.Duration // how long to send (default 30 s)
@@ -61,6 +61,11 @@ type BenchOptions struct {
 	// block for StallFor, as a store whose write hangs on an fsync would.
 	// Both zero: no stalls.
 	StallEvery, StallFor time.Duration
+
+	// Trap configures Proto "trap" (SPEC §11.6): the version, informs, the v3
+	// protocols and the varbinds. A v3 run's user and passphrases are made up
+	// for the run, in memory; no secret is read or kept.
+	Trap TrapOptions
 }
 
 // BenchResult is what Bench measured. Missing and Duplicates come from reading
@@ -98,10 +103,20 @@ type BenchResult struct {
 
 	DataDir  string // where the files are (removed unless Keep or a given DataDir)
 	LogBytes int64  // bytes of log files written
+
+	// Trap runs: what was sent, and the informs' Responses.
+	Trap    string       `json:",omitempty"` // TrapOptions.Describe()
+	Informs *InformStats `json:",omitempty"`
 }
 
-// OK reports whether every message sent arrived exactly once.
-func (r BenchResult) OK() bool { return r.Sent > 0 && r.Missing == 0 && r.Duplicates == 0 }
+// OK reports whether every message sent arrived exactly once (and, for
+// informs, every one was answered).
+func (r BenchResult) OK() bool {
+	if r.Informs != nil && (r.Informs.Answered != int(r.Sent) || r.Informs.TimedOut != 0) {
+		return false
+	}
+	return r.Sent > 0 && r.Missing == 0 && r.Duplicates == 0
+}
 
 // Accounted reports whether every message sent was stored once or counted as a
 // UDP queue drop (by the listener and by the store alike): nothing was lost
@@ -117,6 +132,9 @@ func (r BenchResult) String() string {
 	if r.Proto == "tcp" || r.Proto == "tls" {
 		proto += " (" + r.Framing + ")"
 	}
+	if r.Proto == "trap" {
+		proto = r.Trap
+	}
 	verdict := "PASS"
 	if !r.OK() {
 		verdict = "FAIL"
@@ -128,12 +146,18 @@ func (r BenchResult) String() string {
 		fmt.Fprintf(&b, ", %d other lines", r.Foreign)
 	}
 	fmt.Fprintf(&b, "\n  pipeline: listener %d, store wrote %d, store dropped %d\n", r.Listened, r.Stored, r.StoreDropped)
-	if r.Proto == "udp" {
-		fmt.Fprintf(&b, "  UDP receive buffer: %d bytes granted of %d requested\n", r.UDPRcvbufBytes, r.UDPRcvbufRequestedBytes)
-		if r.KernelDropsVisible {
-			fmt.Fprintf(&b, "  kernel UDP drops: %d\n", r.KernelDrops)
-		} else {
-			b.WriteString("  kernel UDP drops: not visible on this OS\n")
+	if in := r.Informs; in != nil {
+		fmt.Fprintf(&b, "  informs: %d answered, %d timed out, %d resent after a Report; Response p50 %v, p99 %v\n",
+			in.Answered, in.TimedOut, in.Resent, in.Percentile(50).Round(time.Microsecond), in.Percentile(99).Round(time.Microsecond))
+	}
+	if r.Proto == "udp" || r.Proto == "trap" {
+		if r.Proto == "udp" {
+			fmt.Fprintf(&b, "  UDP receive buffer: %d bytes granted of %d requested\n", r.UDPRcvbufBytes, r.UDPRcvbufRequestedBytes)
+			if r.KernelDropsVisible {
+				fmt.Fprintf(&b, "  kernel UDP drops: %d\n", r.KernelDrops)
+			} else {
+				b.WriteString("  kernel UDP drops: not visible on this OS\n")
+			}
 		}
 		fmt.Fprintf(&b, "  UDP queue: high-water %d of %d messages, %d dropped because it was full\n",
 			r.QueueHighWater, r.QueueCapacity, r.QueueDropped)
@@ -225,6 +249,8 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	switch o.Proto {
 	case "udp":
 		cfg.UDP = ln
+	case "trap":
+		cfg.SNMP = config.SNMPListener{Enabled: true, Addr: ln.Addr, Port: 0, AnswerInforms: true}
 	case "tls":
 		// Woodshed's own CA and certificate, made in the bench's data folder.
 		cfg.TLS = config.TLSListener{Enabled: true, Addr: ln.Addr, Port: 0}
@@ -263,6 +289,17 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	if certs != nil {
 		lopts.TLSCertificate = certs.Certificate
 	}
+	trapOpts := o.Trap
+	if o.Proto == "trap" {
+		rcv, to, err := benchReceiver(dir, st, stall, &stalls, &writeErrs, o.Logger, o.Trap, o.Rate)
+		if err != nil {
+			return res, err
+		}
+		trapOpts = to
+		lopts.Trap = rcv.Handle
+		lopts.OnTrapQueueDrop = func(from netip.Addr, at time.Time, n int64) { st.DropQueuedType(logfile.TypeTrap, from, at, n) }
+		res.Trap = trapOpts.Describe()
+	}
 	srv, err := listen.Start(cfg, lopts)
 	if err != nil {
 		return res, err
@@ -275,6 +312,8 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	}()
 	addr, ok := srv.UDPAddr()
 	switch o.Proto {
+	case "trap":
+		addr, ok = srv.SNMPAddr()
 	case "tcp":
 		addr, ok = srv.TCPAddr()
 	case "tls":
@@ -292,9 +331,10 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 
 	sres, sendErr := Send(ctx, SendOptions{
 		Addr: addr.String(), Proto: o.Proto, Framing: o.Framing, TLS: clientTLS,
-		Rate: o.Rate, Duration: o.Duration, Size: o.Size, RunID: res.RunID,
+		Rate: o.Rate, Duration: o.Duration, Size: o.Size, RunID: res.RunID, Trap: trapOpts,
 	})
 	res.Sent, res.SendTime, res.AchievedRate, res.Backpressure = int64(sres.Sent), sres.Elapsed, sres.Rate, sres.Backpressure
+	res.Informs = sres.Informs
 	if sendErr != nil && res.Sent == 0 {
 		return res, sendErr
 	}

@@ -181,9 +181,11 @@ func (b *bucket) take(now time.Time, rate float64) bool {
 }
 
 type limiter struct {
-	mu    sync.Mutex
-	total bucket
-	per   map[netip.Addr]*bucket
+	mu        sync.Mutex
+	total     bucket
+	per       map[netip.Addr]*bucket
+	perSource float64 // replies a second per source (ReplyPerSource)
+	all       float64 // in all (ReplyTotal)
 }
 
 // allow takes a token for one reply to a, from a's bucket and the total.
@@ -207,11 +209,11 @@ func (l *limiter) allow(a netip.Addr, now time.Time) bool {
 	}
 	// Peek the total first so a refused reply costs the source nothing.
 	t := l.total
-	if !t.take(now, ReplyTotal) {
+	if !t.take(now, l.all) {
 		l.total = t
 		return false
 	}
-	if !b.take(now, ReplyPerSource) {
+	if !b.take(now, l.perSource) {
 		return false
 	}
 	l.total = t
