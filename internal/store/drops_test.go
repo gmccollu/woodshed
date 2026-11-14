@@ -66,7 +66,7 @@ func TestDropsByReason(t *testing.T) {
 	// A failed write drops the buffered lines (the other one is already in
 	// the buffer).
 	e.write(ip(1), "<13>two")
-	v, _ := e.s.devices.Load(ip(1))
+	v, _ := e.s.devices.Load(streamKey{addr: ip(1)})
 	d := v.(*device)
 	d.mu.Lock()
 	d.failBufferLocked(errors.New("disk on fire"))

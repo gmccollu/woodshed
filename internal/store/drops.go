@@ -62,7 +62,16 @@ func (s *Store) DropsByReason24h() DropReasons { return s.reasons.sum(s.clock())
 // stored. A sender that isn't admitted (the device cap or new-device rate), or
 // an invalid from (the listener's per-sender table was full), is counted under
 // index.RefusedDeviceID, still as queue_full.
-func (s *Store) DropQueued(from netip.Addr, at time.Time, n int64) {
+func (s *Store) DropQueued(from netip.Addr, at time.Time, n int64) { s.dropQueued(0, from, at, n) }
+
+// DropQueuedType is DropQueued for a data type's listener (the trap
+// listener's queue): the drops count for the sender's stream of that type.
+func (s *Store) DropQueuedType(typ string, from netip.Addr, at time.Time, n int64) {
+	ti, _ := typeIndex(typ)
+	s.dropQueued(ti, from, at, n)
+}
+
+func (s *Store) dropQueued(ti uint8, from netip.Addr, at time.Time, n int64) {
 	if n <= 0 || s.closed.Load() {
 		return
 	}
@@ -73,7 +82,7 @@ func (s *Store) DropQueued(from netip.Addr, at time.Time, n int64) {
 	if from.IsValid() {
 		addr := from.Unmap()
 		for {
-			d, err := s.device(addr, true)
+			d, err := s.device(streamKey{addr, ti}, true)
 			if err != nil {
 				break
 			}
