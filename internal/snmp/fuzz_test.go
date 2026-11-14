@@ -2,6 +2,7 @@ package snmp
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -371,4 +372,98 @@ func TestWriteFuzzSeeds(t *testing.T) {
 	write("FuzzMIB", "seed-example-smi", []byte(exampleMIBs))
 	write("FuzzMIB", "seed-example-traps", []byte(exampleTraps))
 	write("FuzzMIB", "seed-builtin", builtinMIB)
+}
+
+// fuzzTransport returns one fixed datagram as the reply to whatever is sent,
+// and records what was.
+type fuzzTransport struct {
+	reply []byte
+	sent  [][]byte
+}
+
+func (f *fuzzTransport) Exchange(_ context.Context, req []byte, _ int64, _ time.Duration) ([]byte, error) {
+	f.sent = append(f.sent, req)
+	if f.reply == nil {
+		return nil, ErrTimeout
+	}
+	r := f.reply
+	f.reply = nil // one reply; a retry times out
+	return r, nil
+}
+
+var fuzzRespEngine = []byte{0x80, 0, 0x1f, 0x88, 0x80, 1, 2, 3, 4, 5, 6, 7, 8}
+
+// FuzzResponse feeds any datagram to a session as the reply to a Get (SPEC
+// §12.8): no panic, and a reply is accepted only when it is a Response whose
+// request ID (and, for v3, msgID and digest) match the request.
+func FuzzResponse(f *testing.F) {
+	ids := []int32{1000, 1001, 1002, 1003}
+	sha := combo{auth: AuthSHA256, priv: PrivAES128}
+	u := sha.user("monitor")
+	keys, err := LocalizeKeys(u.Auth, u.Priv, u.KeyExt, u.AuthPass, u.PrivPass, fuzzRespEngine)
+	if err != nil {
+		f.Fatal(err)
+	}
+	sec := Security{Auth: u.Auth, Priv: u.Priv, Keys: keys}
+	u.AuthPass, u.PrivPass = nil, nil
+	u.EngineKeys = []EngineKeys{{EngineID: fuzzRespEngine, Keys: keys}}
+	vbs := []Varbind{{OID: OIDSysUpTime, Value: Value{Kind: KindTimeTicks, Uint: 77}}}
+	f.Add(EncodeCommunity(V2c, []byte("c"), EncodePDU(&PDU{Type: PDUResponse, RequestID: int64(ids[0]), Varbinds: vbs})), false)
+	f.Add(EncodeCommunity(V2c, []byte("c"), EncodePDU(&PDU{Type: PDUResponse, RequestID: int64(ids[0]), ErrorStatus: 1})), false)
+	f.Add(EncodeCommunity(V2c, []byte("c"), EncodePDU(&PDU{Type: PDUTrap, RequestID: int64(ids[0]), Varbinds: vbs})), false)
+	v3, _ := EncodeV3(V3Header{MsgID: int64(ids[1]), Level: AuthPriv, EngineID: fuzzRespEngine, EngineBoots: 1, EngineTime: 10,
+		User: []byte("monitor"), ContextEngineID: fuzzRespEngine}, sec, 1, EncodePDU(&PDU{Type: PDUResponse, RequestID: int64(ids[0]), Varbinds: vbs}))
+	f.Add(v3, true)
+	rep, _ := EncodeV3(V3Header{MsgID: int64(ids[0]), Level: NoAuthNoPriv, EngineID: fuzzRespEngine, User: []byte("monitor")}, Security{}, 0,
+		EncodePDU(&PDU{Type: PDUReport, Varbinds: []Varbind{{OID: OIDUsmStatsUnknownUserNames, Value: Value{Kind: KindCounter32, Uint: 1}}}}))
+	f.Add(rep, true)
+	f.Add([]byte{0x30, 0x80}, false)
+	f.Fuzz(func(t *testing.T, data []byte, v3 bool) {
+		if len(data) > 65535 {
+			return
+		}
+		tr := &fuzzTransport{reply: data}
+		cfg := SessionConfig{Version: V2c, Community: []byte("c"), Timeout: time.Millisecond}
+		if v3 {
+			uu := u
+			cfg = SessionConfig{Version: V3, User: &uu, Timeout: time.Millisecond,
+				Engine: EngineInfo{ID: fuzzRespEngine, Boots: 1, Time: 10, At: time.Now()}}
+		}
+		s, err := NewSession(cfg, tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		randomID = func() int32 { n++; return ids[(n-1)%len(ids)] }
+		defer func() { randomID = cryptoRandomID }()
+		got, err := s.Get(context.Background(), []OID{OIDSysUpTime})
+		if err != nil {
+			return
+		}
+		// Accepted: it must really be the Response to the request sent.
+		if len(got) != 1 || !got[0].OID.Equal(OIDSysUpTime) {
+			t.Fatalf("accepted %v", got)
+		}
+		req := tr.sent[len(tr.sent)-1]
+		var m *Message
+		if v3 {
+			m = DecodeResponse(data, func(e []byte) (Security, bool) { return sec, bytes.Equal(e, fuzzRespEngine) })
+			_, reqMsgID, _ := PeekID(req)
+			if m.Level != AuthPriv || m.MsgID != reqMsgID {
+				t.Fatalf("accepted a v3 reply at %s, msgID %d (sent %d)", m.Level, m.MsgID, reqMsgID)
+			}
+		} else {
+			m = DecodeResponse(data, nil)
+		}
+		if m.Status != StatusOK || m.PDU.Type != PDUResponse {
+			t.Fatalf("accepted %v %v", m.Status, m.PDU)
+		}
+		if !v3 {
+			if _, id, _ := PeekID(req); m.PDU.RequestID != id {
+				t.Fatalf("accepted request ID %d for %d", m.PDU.RequestID, id)
+			}
+		} else if m.PDU.RequestID != int64(ids[0]) { // the session draws the request ID, then the msgID
+			t.Fatalf("accepted request ID %d for %d", m.PDU.RequestID, ids[0])
+		}
+	})
 }
