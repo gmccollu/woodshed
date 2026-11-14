@@ -231,7 +231,9 @@ func TestSendInformResync(t *testing.T) {
 
 func TestSendInformTimeouts(t *testing.T) {
 	r := startTrapReceiver(t)
+	r.mu.Lock()
 	r.drop = func(n int) bool { return n%3 == 0 }
+	r.mu.Unlock()
 	res, err := Send(context.Background(), SendOptions{Addr: r.addr(), Proto: "trap", Count: 9, RunID: "run3",
 		Trap: TrapOptions{Version: "2c", Inform: true, Timeout: 200 * time.Millisecond}})
 	if err != nil {
