@@ -241,8 +241,12 @@ export function parseEngineIds(s: string): string[] {
 /** A community as /api/settings shows it: "#" and 8 hex digits of its SHA-256 (the community itself is never shown). */
 export const isCommunityHash = (c: string) => /^#[0-9a-f]{8}$/i.test(c);
 
-/** The Events page's own URL keys (text, mode, devices, range, syslog filters, order, saved search, type). */
-const PAGE_KEYS = new Set(['q', 're', 'syn', 'cs', 'dev', 'group', 'ug', 'r', 'from', 'to', 'sev', 'app', 'host', 'ex', 'fac', 'xdev', 'xapp', 'xhost', 'order', 'saved', 'type']);
+/**
+ * The Events page's own URL keys (text, mode, devices, range, syslog filters, order, saved search, type), and the
+ * incident bundle's preview (bundle.ts BUNDLE_KEYS).
+ */
+const PAGE_KEYS = new Set(['q', 're', 'syn', 'cs', 'dev', 'group', 'ug', 'r', 'from', 'to', 'sev', 'app', 'host', 'ex', 'fac', 'xdev', 'xapp', 'xhost', 'order', 'saved', 'type',
+  'bundle', 'bb', 'ba', 'bdev', 'bgroup', 'bug', 'btypes']);
 
 /**
  * A non-syslog type's filters from the page URL: every key the page doesn't use itself is one

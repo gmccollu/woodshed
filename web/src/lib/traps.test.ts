@@ -126,5 +126,8 @@ test('v3 user form checks', () => {
 test('a trap link: every key the page does not own is a trap filter', () => {
   const q = new URLSearchParams('type=trap&q=x&dev=10.1.0.1&r=24h&trap_oid=linkDown,linkUp&status=auth_failed&exclude_cred=');
   assert.deepEqual(typeFiltersFromQuery(q), { status: ['auth_failed'], trap_oid: ['linkDown', 'linkUp'] });
+  // The bundle preview's keys are the page's own too.
+  const b = new URLSearchParams('type=trap&bundle=2026-11-14T09:42:00Z&bb=30m&ba=10m&bdev=10.1.0.1&btypes=trap&trap_oid=linkDown');
+  assert.deepEqual(typeFiltersFromQuery(b), { trap_oid: ['linkDown'] });
   assert.deepEqual(savedTypeFilters({ q: 'x', severities: [], devices: ['a'], trap_oid: ['linkDown'], status: [] }), { trap_oid: ['linkDown'] });
 });
