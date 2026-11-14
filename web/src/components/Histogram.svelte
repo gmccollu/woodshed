@@ -25,6 +25,7 @@
     cursorText = 'Bundle around',
     mark = null,
     hint = 'Drag across the bars to zoom in; Back zooms out.',
+    pollMarks = [],
   }: {
     hist: Histogram | null;
     from: string;
@@ -40,6 +41,8 @@
     /** A moment to mark with a line (RFC 3339), or null. */
     mark?: string | null;
     hint?: string;
+    /** 1.3: poll restart and oper-change markers (PollStrips), as lines across the bars; left in % of the span. */
+    pollMarks?: { left: number; title: string; kind: string }[];
   } = $props();
 
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -192,6 +195,7 @@
     onpointerleave={() => (hover = null)}
     onpointercancel={() => (drag = null)}
   >
+    {#each pollMarks as m, i (i)}<span class="pmark {m.kind === 'restart' ? 'restart' : 'oper'}" style:left="{m.left}%" title={m.title}></span>{/each}
     {#if markLeft !== null}<span class="mark" style:left="{markLeft}%" title="The bundle's moment" aria-hidden="true"></span>{/if}
     {#if hoverAt}
       <span class="cursor" style:left="{leftOf(hoverAt)}%" aria-hidden="true"
@@ -332,6 +336,27 @@
   .hist.picking,
   .hist.picking .bar {
     cursor: copy;
+  }
+  .pmark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    margin-left: -3px;
+    z-index: 1;
+    cursor: help;
+  }
+  .pmark::before {
+    content: '';
+    position: absolute;
+    left: 3px;
+    top: 0;
+    bottom: 0;
+    border-left: 2px solid var(--sev-warn);
+    opacity: 0.85;
+  }
+  .pmark.oper::before {
+    border-left: 1.5px dashed var(--sev-unknown);
   }
   .mark,
   .cursor {

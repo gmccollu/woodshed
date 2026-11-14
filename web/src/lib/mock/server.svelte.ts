@@ -81,7 +81,7 @@ import {
   trapStats, senderAt, type StoredTrap,
 } from './traps';
 import { createUser, deleteUser, failures as snmpFailures, listUsers, mibsJSON, snmpMock, snmpState, unreadableUsers, updateUser } from './snmp';
-import { devicePoll, deviceRoute as pollDeviceRoute, pollBanners, pollDefaults, pollRoute, seriesRoute as pollSeriesRoute, setPollUsers, timelineRoute as pollTimelineRoute } from './poll';
+import { POLL_SCHEMA, devicePoll, deviceRoute as pollDeviceRoute, pollBanners, pollDefaults, pollRoute, seriesRoute as pollSeriesRoute, setPollUsers, timelineRoute as pollTimelineRoute } from './poll';
 import { POLL_RANGES } from '../poll';
 
 setPollUsers(() => listUsers().map((u) => u.name));
@@ -1727,7 +1727,7 @@ function canonDuration(ms: number): string {
   return out;
 }
 
-const DATA_TYPES = ['syslog', 'trap'];
+const DATA_TYPES = ['syslog', 'trap', 'poll'];
 /** Syslog's filters in an export body (they're a 400 with types ["trap"]). */
 const SYSLOG_BODY_FILTERS = ['severities', 'app', 'host', 'facilities', 'exclude_app', 'exclude_host'] as const;
 const present = (v: unknown) => (Array.isArray(v) ? v.length > 0 : typeof v === 'string' ? v !== '' : v === true);
@@ -2232,6 +2232,7 @@ const SCHEMA = {
       ],
     },
     TRAP_SCHEMA,
+    POLL_SCHEMA,
   ],
 };
 const FIELD_KEYS = SCHEMA.types[0].fields.map((x) => x.key);
@@ -2766,6 +2767,14 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     if (settings.listeners.tls?.cert_file) return err(404, 'This server uses your own certificate; get its CA from whoever issued it.');
     if (!wsCa) return err(404, "TLS hasn't been turned on yet, so there's no CA certificate.");
     return caDownload(caDl[1] as 'pem' | 'der');
+  }
+  // 1.3: poll lines are searchable (the CLI and the API); the mock stores none, so a poll search finds nothing.
+  if (method === 'GET' && (p === '/api/search' || p === '/api/search/summary') && url.searchParams.get('type') === 'poll') {
+    const base = { next_cursor: '', partial: false, scanned_bytes: 0, scanned_files: 0, elapsed_ms: 1 };
+    if (p === '/api/search') return json({ results: [], ...base });
+    const from = url.searchParams.get('from') ?? new Date(now - 86_400_000).toISOString();
+    const to = url.searchParams.get('to') ?? new Date(now).toISOString();
+    return json({ type: 'poll', from, to, matched: 0, counted_from: from, fields: [], ...base });
   }
   if (method === 'GET' && p === '/api/search' && url.searchParams.get('type') === 'trap') return trapSearchRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/search/summary' && url.searchParams.get('type') === 'trap') return trapSummaryRoute(url.searchParams, now);
