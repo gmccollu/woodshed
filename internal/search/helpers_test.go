@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -86,29 +89,180 @@ var (
 // real store with small parts, so the data dir has compressed parts and day
 // files, and plain active files on the last day. Devices A and B are in group
 // HQ, C has no group and H is hidden.
+//
+// The fixture is the test's own copy of one built once per package run (see
+// sharedFixture): it has no store, so it's for tests that only search. A test
+// that writes uses newWritableFixture.
 func newFixture(t testing.TB, days, perDay int) *fixture {
 	t.Helper()
 	return newFixtureParts(t, days, perDay, 16<<10)
 }
 
-// newBigFixture has files large enough for many checkpoints (one every ~64 KiB
-// written over more than a minute), so time ranges seek inside files.
+// longTests runs the heavy variants at their full size: WOODSHED_LONG_TESTS=1.
+// CI runs them once, on ubuntu without -race; the default sizes cross the same
+// boundaries (parts, days, gzip blocks, checkpoints, cursors) with fewer lines.
+var longTests = os.Getenv("WOODSHED_LONG_TESTS") == "1"
+
+// newBigFixture has files large enough for several checkpoints (one every
+// ~64 KiB written over more than a minute) and two parts per device and day,
+// so time ranges seek inside files. With WOODSHED_LONG_TESTS=1 it's the
+// benchmark's size (bigShape): 2.5x the lines, each file over 512 KiB.
 func newBigFixture(t testing.TB) *fixture {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("big fixture")
 	}
-	return newFixtureParts(t, 2, 10000, 512<<10)
+	if longTests {
+		return sharedFixture(t, bigShape)
+	}
+	return newFixtureParts(t, 2, 4000, 192<<10)
 }
+
+// bigShape is the benchmark's fixture: 60,000 visible lines over two days.
+var bigShape = fixtureShape{2, 10000, 512 << 10}
 
 func newFixtureParts(t testing.TB, days, perDay int, partBytes int64) *fixture {
 	t.Helper()
+	return sharedFixture(t, fixtureShape{days, perDay, partBytes})
+}
+
+// newWritableFixture is newFixture built for this test alone, with its store
+// open, for tests that write more.
+func newWritableFixture(t testing.TB, days, perDay int) *fixture {
+	t.Helper()
+	return buildFixture(t, t.TempDir(), fixtureShape{days, perDay, 16 << 10}, t.Cleanup)
+}
+
+type fixtureShape struct {
+	days, perDay int
+	partBytes    int64
+}
+
+// The shared fixtures: each shape is written through a real store once per
+// package run (that is most of a fixture's cost, ~25x more under -race), and
+// every test gets a copy of its data dir and index. The template's store and
+// index stay open and idle until TestMain ends, exactly as a fresh fixture's
+// stay open during its test, so a copy holds the same files and rows.
+var (
+	sharedMu       sync.Mutex
+	sharedRoot     string
+	sharedFixtures = map[fixtureShape]*sharedTemplate{}
+	sharedClosers  []func()
+)
+
+type sharedTemplate struct {
+	once sync.Once
+	f    *fixture // nil if the build failed
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	sharedMu.Lock()
+	for i := len(sharedClosers) - 1; i >= 0; i-- {
+		sharedClosers[i]()
+	}
+	if sharedRoot != "" {
+		os.RemoveAll(sharedRoot)
+	}
+	sharedMu.Unlock()
+	os.Exit(code)
+}
+
+func sharedFixture(t testing.TB, shape fixtureShape) *fixture {
+	t.Helper()
+	sharedMu.Lock()
+	tpl := sharedFixtures[shape]
+	if tpl == nil {
+		tpl = &sharedTemplate{}
+		sharedFixtures[shape] = tpl
+	}
+	sharedMu.Unlock()
+	tpl.once.Do(func() {
+		sharedMu.Lock()
+		if sharedRoot == "" {
+			root, err := os.MkdirTemp("", "woodshed-search-fixtures-")
+			if err != nil {
+				sharedMu.Unlock()
+				t.Fatal(err)
+			}
+			sharedRoot = root
+		}
+		dir := filepath.Join(sharedRoot, fmt.Sprintf("%dx%d-%d", shape.days, shape.perDay, shape.partBytes))
+		sharedMu.Unlock()
+		addCloser := func(fn func()) {
+			sharedMu.Lock()
+			sharedClosers = append(sharedClosers, fn)
+			sharedMu.Unlock()
+		}
+		tpl.f = buildFixture(t, dir, shape, addCloser) // t.Fatal leaves tpl.f nil
+	})
+	if tpl.f == nil {
+		t.Fatalf("the shared %+v fixture didn't build", shape)
+	}
+	return tpl.f.clone(t)
+}
+
+// clone copies the template's data dir and index (the database and its WAL;
+// SQLite rebuilds the -shm) into the test's own directory.
+func (tpl *fixture) clone(t testing.TB) *fixture {
+	t.Helper()
 	dir := t.TempDir()
-	idx, err := index.Open(dir + "/" + index.FileName)
+	err := filepath.WalkDir(tpl.dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(tpl.dir, path)
+		dst := filepath.Join(dir, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.MkdirAll(dst, info.Mode().Perm())
+		}
+		if rel == index.FileName+"-shm" || !info.Mode().IsRegular() {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, b, info.Mode().Perm()); err != nil {
+			return err
+		}
+		return os.Chtimes(dst, info.ModTime(), info.ModTime())
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := index.Open(filepath.Join(dir, index.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { idx.Close() })
+	f := &fixture{t: t, dir: dir, idx: idx, clock: &fakeClock{t: tpl.clock.Now()}, recs: slices.Clip(tpl.recs),
+		day0: tpl.day0, devs: tpl.devs}
+	f.eng = f.newEngine()
+	return f
+}
+
+func (f *fixture) newEngine() *Engine {
+	return New(Options{DataDir: f.dir, Index: f.idx, Now: f.clock.Now, Logger: quiet, block: 4 << 10})
+}
+
+// buildFixture writes the fixture into dir (see newFixture); cleanup gets the
+// closes of its store and index.
+func buildFixture(t testing.TB, dir string, shape fixtureShape, cleanup func(func())) *fixture {
+	t.Helper()
+	days, perDay, partBytes := shape.days, shape.perDay, shape.partBytes
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := index.Open(dir + "/" + index.FileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup(func() { idx.Close() })
 	day0 := time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{t: day0}
 	st, err := store.Open(store.Options{
@@ -119,7 +273,7 @@ func newFixtureParts(t testing.TB, days, perDay int, partBytes int64) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{t: t, dir: dir, idx: idx, st: st, clock: clock, day0: day0, devs: []netip.Addr{devA, devB, devC, devH}}
-	t.Cleanup(func() { st.Close() })
+	cleanup(func() { st.Close() })
 	seq := 0
 	for d := 0; d < days; d++ {
 		start := day0.Add(time.Duration(d) * 24 * time.Hour)
@@ -158,7 +312,7 @@ func newFixtureParts(t testing.TB, days, perDay int, partBytes int64) *fixture {
 	if _, err := idx.UpdateDevice(bg, model.DeviceID(devH), index.DeviceUpdate{Hidden: &yes}); err != nil {
 		t.Fatal(err)
 	}
-	f.eng = New(Options{DataDir: dir, Index: idx, Now: clock.Now, Logger: quiet, block: 4 << 10})
+	f.eng = f.newEngine()
 	return f
 }
 

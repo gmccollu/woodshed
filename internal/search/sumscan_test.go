@@ -11,11 +11,17 @@ import (
 // that takes many requests decompresses each byte about once, because a pass
 // paused by the budget keeps its reader for the next request.
 func TestSummaryGzipRoundsReadEachByteOnce(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("big part")
 	}
 	// One large part per device per day: the first two days are compressed.
-	f := newFixtureParts(t, 3, 6000, 64<<20)
+	// About 300 one-block requests serially (850 with WOODSHED_LONG_TESTS=1).
+	perDay, minGz := 2500, int64(1<<20)
+	if longTests {
+		perDay, minGz = 6000, 2<<20
+	}
+	f := newFixtureParts(t, 3, perDay, 64<<20)
 	q := SummaryQuery{Filter: Filter{From: f.day0, To: f.day0.Add(48 * time.Hour)}, Top: MaxTop, forceScan: true}
 	files, _ := f.idx.Files(bg, "")
 	var gz, gzFiles int64
@@ -25,7 +31,7 @@ func TestSummaryGzipRoundsReadEachByteOnce(t *testing.T) {
 			gzFiles++
 		}
 	}
-	if gzFiles < 6 || gz < 2<<20 {
+	if gzFiles < 6 || gz < minGz {
 		t.Fatalf("fixture: %d gz files, %d bytes", gzFiles, gz)
 	}
 	want := f.expect(Query{Filter: q.Filter})
@@ -59,6 +65,7 @@ func TestSummaryGzipRoundsReadEachByteOnce(t *testing.T) {
 }
 
 func TestSummaryKeptReadersClose(t *testing.T) {
+	t.Parallel()
 	f := newFixtureParts(t, 2, 2000, 64<<20)
 	f.eng.testMaxSteps, f.eng.sumWorkers = 1, 1
 	q := SummaryQuery{Filter: Filter{From: f.day0, To: f.day0.Add(24 * time.Hour)}, forceScan: true}

@@ -172,6 +172,7 @@ func (f *fixture) runSummary(t *testing.T, what string, q SummaryQuery, want []r
 }
 
 func TestSummaryExact(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 3, 400)
 	all := Filter{From: f.day0.Add(3 * time.Hour), To: f.day0.Add(70 * time.Hour)}
 	cases := map[string]SummaryQuery{
@@ -218,6 +219,7 @@ func TestSummaryExact(t *testing.T) {
 }
 
 func TestSummaryExactBigFixture(t *testing.T) {
+	t.Parallel()
 	f := newBigFixture(t)
 	all := Filter{From: f.day0.Add(5 * time.Hour), To: f.day0.Add(47 * time.Hour)}
 	for _, steps := range []int{0, 7} {
@@ -244,6 +246,7 @@ func withF(f Filter, fn func(*Filter)) Filter {
 // TestSummaryHistogramIndexMatchesScan: on unfiltered data the index source
 // (stats and checkpoints) gives exactly the scan's buckets.
 func TestSummaryHistogramIndexMatchesScan(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 3, 400)
 	end := f.day0.Add(72 * time.Hour) // the fixture's clock is just before this
 	type tc struct {
@@ -319,6 +322,7 @@ func d(x int64) int64 {
 }
 
 func TestSummaryIndexSkipsStatsBeforeOldestFile(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 3, 400)
 	end := f.day0.Add(72 * time.Hour)
 	// Retention took the first day's files of every device; their stats stay.
@@ -368,6 +372,7 @@ func TestSummaryIndexSkipsStatsBeforeOldestFile(t *testing.T) {
 }
 
 func TestSummaryCursorAndState(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 2, 300)
 	clock := f.day0.Add(48 * time.Hour)
 	f.clock.Set(clock)
@@ -465,6 +470,7 @@ func TestSummaryCursorAndState(t *testing.T) {
 }
 
 func TestSummaryScanLimit(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 1, 200)
 	q := SummaryQuery{Filter: Filter{From: f.day0, To: f.day0.Add(24 * time.Hour), Q: "seq"}, Budget: 30 * time.Millisecond}
 	// Two scans already running: a third waits within its budget and returns
@@ -490,6 +496,7 @@ func TestSummaryScanLimit(t *testing.T) {
 }
 
 func TestSummaryRequestErrors(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 1, 50)
 	day := Filter{From: f.day0, To: f.day0.Add(24 * time.Hour)}
 	var qe *QueryError
@@ -548,6 +555,7 @@ func TestSummaryRequestErrors(t *testing.T) {
 }
 
 func TestTallyCap(t *testing.T) {
+	t.Parallel()
 	tl := newTally()
 	for i := 0; i < MaxDistinct+5; i++ {
 		tl.add(tl.id(fmt.Sprintf("Host-%d", i), false))

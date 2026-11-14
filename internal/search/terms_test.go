@@ -30,6 +30,7 @@ func show(n *termNode) string {
 }
 
 func TestTermsGrammar(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ q, want string }{
 		{``, `<all>`},
 		{`   `, `<all>`},
@@ -68,6 +69,7 @@ func TestTermsGrammar(t *testing.T) {
 }
 
 func TestTermsErrors(t *testing.T) {
+	t.Parallel()
 	many := strings.Repeat("a ", 40)
 	cases := []struct{ q, want string }{
 		{`deny "tcp`, `Unclosed quote starting at character 6.`},
@@ -111,6 +113,7 @@ func TestTermsErrors(t *testing.T) {
 }
 
 func TestTermsMatch(t *testing.T) {
+	t.Parallel()
 	line := []byte(`<134>Nov 10 web-01 sshd[312]: Deny TCP from 10.0.0.1 user="bob" (pid 312) NOT FOUND`)
 	cases := []struct {
 		q    string
@@ -166,6 +169,7 @@ func TestTermsMatch(t *testing.T) {
 }
 
 func TestTermsWithRegexRefused(t *testing.T) {
+	t.Parallel()
 	e := &Engine{}
 	if _, err := e.compile(Filter{Q: "a", Terms: true, Regex: true}); err == nil || err.Error() != ErrTermsWithRegex {
 		t.Fatalf("%v", err)

@@ -32,6 +32,7 @@ func (f *fixture) each(q Query) ([]Result, EachStats) {
 }
 
 func TestEachEqualsSearchPages(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 3, 400)
 	all := Filter{From: f.day0, To: f.day0.Add(72 * time.Hour)}
 	cases := map[string]Query{
@@ -84,6 +85,7 @@ func lines(rs []Result) []Line {
 }
 
 func TestEachStopsAndCounts(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 2, 300)
 	q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(48 * time.Hour)}, Asc: true}
 	stop := errors.New("stop")
@@ -158,6 +160,7 @@ func fileLines(t *testing.T, dir, rel string) (offs []int64, ls [][]byte) {
 }
 
 func TestAroundMatchesTheFile(t *testing.T) {
+	t.Parallel()
 	for name, f := range map[string]*fixture{"small files": newFixture(t, 3, 400), "checkpointed files": newBigFixture(t)} {
 		all := Filter{Q: "seq=", From: f.day0, To: f.day0.Add(72 * time.Hour)}
 		cache := map[int64][2]any{}       // each file's lines, read once
@@ -222,6 +225,7 @@ func TestAroundMatchesTheFile(t *testing.T) {
 // without the whole-file cache it would decompress far more: the test can
 // tell the two apart).
 func TestAroundDescReadsCompressedFilesOnce(t *testing.T) {
+	t.Parallel()
 	f := newBigFixture(t)
 	q := Query{Filter: Filter{Q: "link", From: f.day0, To: f.day0.Add(72 * time.Hour)}}
 	hits, _ := f.each(q)

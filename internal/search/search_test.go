@@ -21,6 +21,7 @@ import (
 )
 
 func TestSeverityAgreesWithParse(t *testing.T) {
+	t.Parallel()
 	corpus := []string{"", "<", "<>", "<1>", "<191>x", "<192>x", "<0>", "<007>x", "<1234>x", "<12", " <13>x", "\t\r\n\x00<14>x",
 		"\xef\xbb\xbf<15>x", "\xef\xbb\xbf \xef\xbb\xbf<11>x", "x<13>", "\xef\xbb<13>", "<-1>x", "<+1>x", "<1 >x", "\n\n<165>1 - - -"}
 	rng := rand.New(rand.NewSource(1))
@@ -42,6 +43,7 @@ func TestSeverityAgreesWithParse(t *testing.T) {
 }
 
 func TestParseMillis(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewSource(2))
 	for i := 0; i < 20000; i++ {
 		tm := time.UnixMilli(rng.Int63n(1 << 42)).UTC()
@@ -64,6 +66,7 @@ func TestParseMillis(t *testing.T) {
 }
 
 func TestMatcher(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		q            string
 		regex, cs    bool
@@ -119,8 +122,9 @@ func TestMatcher(t *testing.T) {
 }
 
 func TestSearchFilters(t *testing.T) {
-	t.Run("small files", func(t *testing.T) { testSearchFilters(t, newFixture(t, 3, 400)) })
-	t.Run("checkpointed files", func(t *testing.T) { testSearchFilters(t, newBigFixture(t)) })
+	t.Parallel()
+	t.Run("small files", func(t *testing.T) { t.Parallel(); testSearchFilters(t, newFixture(t, 3, 400)) })
+	t.Run("checkpointed files", func(t *testing.T) { t.Parallel(); testSearchFilters(t, newBigFixture(t)) })
 }
 
 func testSearchFilters(t *testing.T, f *fixture) {
@@ -263,6 +267,7 @@ func facs(v ...int) FacilitySet {
 }
 
 func TestFacilityAgreesWithParse(t *testing.T) {
+	t.Parallel()
 	for _, raw := range []string{"<0>x", "<191>x", "<192>x", "x", "<13>x", "\xef\xbb\xbf<165>1 - -", "<8>", "<"} {
 		var m model.Message
 		syslog.Parse([]byte(raw), &m)
@@ -293,12 +298,21 @@ func TestFacilityAgreesWithParse(t *testing.T) {
 }
 
 func TestPaginationContinuity(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 3, 300)
-	for _, q := range []Query{
+	queries := []Query{
 		{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour)}},
-		{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour), Q: "seq=00"}},
+		// A text filter that skips most lines (one in 13), so limit 1 still
+		// pages across parts and days without thousands of pages.
+		{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour), Q: "deny TCP"}},
 		{Filter: Filter{From: f.day0.Add(20 * time.Hour), To: f.day0.Add(52 * time.Hour), Severities: sevs(4, 5, model.Unknown)}},
-	} {
+	}
+	if longTests {
+		// A text filter every line matches, at limit 1: a page boundary after
+		// every line of the fixture (2,700 pages each way).
+		queries = append(queries, Query{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour), Q: "seq=00"}})
+	}
+	for _, q := range queries {
 		for _, asc := range []bool{false, true} {
 			q.Asc = asc
 			full := q
@@ -348,6 +362,7 @@ func toRecs(ls []Line) []rec {
 }
 
 func TestPartialAndResume(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 3, 300)
 	f.eng.testMaxSteps = 1 // every request reads one block, then stops (not a time: Windows timers are coarse)
 	for _, asc := range []bool{false, true} {
@@ -387,6 +402,7 @@ func TestPartialAndResume(t *testing.T) {
 }
 
 func TestCursorTamperAndBinding(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 1, 200)
 	q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(24 * time.Hour), Q: "seq"}, Limit: 10}
 	p, err := f.eng.Search(bg, q)
@@ -492,6 +508,7 @@ func TestCursorTamperAndBinding(t *testing.T) {
 }
 
 func TestContextAcrossFiles(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 2, 600)
 	devA := model.DeviceID(devA)
 	var mine []rec
@@ -563,6 +580,7 @@ func TestContextAcrossFiles(t *testing.T) {
 }
 
 func TestVanishingFileIsSkipped(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 3, 300)
 	files, _ := f.idx.Files(bg, model.DeviceID(devB))
 	victim := files[len(files)/2]
@@ -591,6 +609,7 @@ func TestVanishingFileIsSkipped(t *testing.T) {
 }
 
 func TestBigFixturePartialAndContext(t *testing.T) {
+	t.Parallel()
 	f := newBigFixture(t)
 	// A compressed file read newest-first needs one forward pass; a budget far
 	// below one pass makes that quadratic, so give each request a few blocks.
@@ -633,7 +652,8 @@ func TestBigFixturePartialAndContext(t *testing.T) {
 // rotates parts, compresses and deletes by retention underneath. No request may
 // fail, no line may repeat, and each device's lines come in file order.
 func TestSearchWhileWriting(t *testing.T) {
-	f := newFixture(t, 2, 200)
+	t.Parallel()
+	f := newWritableFixture(t, 2, 200)
 	f.st.SetLimits(store.Limits{RetentionDays: 30, RetentionBytes: 64 << 10, PartBytes: 8 << 10})
 	// The writer and the searches interleave by construction, not by timing:
 	// each page the searches read lets the writer write a batch (rotating parts,
@@ -726,6 +746,7 @@ func TestSearchWhileWriting(t *testing.T) {
 // matches don't fit one pass's ring, so pages are served from cached passes
 // that dropped older matches, then from passes over the rest.
 func TestDeepPaginationSmallRing(t *testing.T) {
+	t.Parallel()
 	f := newBigFixture(t)
 	f.eng.ringBytes = 8 << 10
 	for _, text := range []string{"", "conn opened"} {
@@ -743,6 +764,7 @@ func TestDeepPaginationSmallRing(t *testing.T) {
 // TestFieldFiltersReadCompressedFiles checks the app, host and exclude filters
 // reach lines in .gz files as well as plain ones, in both orders.
 func TestFieldFiltersReadCompressedFiles(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t, 3, 400)
 	files, err := f.idx.Files(bg, "")
 	if err != nil {
@@ -776,6 +798,7 @@ func TestFieldFiltersReadCompressedFiles(t *testing.T) {
 }
 
 func TestFields(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ raw, app, host string }{
 		{"<166>Nov 10 20:41:07 edge-fw-01 %FW-6-302013: Built conn", "%FW-6-302013", "edge-fw-01"},
 		{"<86>Nov 10 20:41:07 web-01 sshd[4721]: Accepted publickey", "sshd", "web-01"},

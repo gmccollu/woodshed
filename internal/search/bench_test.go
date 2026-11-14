@@ -10,7 +10,7 @@ import (
 // per-line checks shows up as ns/op. Run it with -benchtime=Nx for stable
 // numbers; building the fixture takes a few seconds and isn't timed.
 func BenchmarkSearch(b *testing.B) {
-	f := newBigFixture(b)
+	f := sharedFixture(b, bigShape)
 	all := Filter{From: f.day0, To: f.day0.Add(48 * time.Hour)}
 	with := func(fn func(q *Query)) Query {
 		q := Query{Filter: all, Limit: MaxLimit}
