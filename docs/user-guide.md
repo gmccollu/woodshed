@@ -161,6 +161,68 @@ woodshed send --proto trap --host 192.0.2.50 --snmp-version 3 --user monitor \
 `--inform` waits for each answer and reports the round trips. `woodshed bench --proto trap` measures the whole trap
 pipeline on this computer, in a temporary folder.
 
+### Polling devices (SNMP)
+
+Woodshed can also ask the devices you choose for a few numbers every minute: uptime, each interface's traffic,
+packets, errors, discards and up/down state, and CPU and memory where the device has them. They're kept as evidence
+beside the device's syslog and traps, graphed on its page and on the Events timeline, and a restart or reboot is
+marked. It's off until you add a device, and with none added Woodshed sends nothing.
+
+1. Turn on SNMP on the device (read-only is enough: Woodshed only reads, and can't send a `Set`), with a community
+   (v1, v2c) or a v3 user, and allow this computer's address.
+2. In **Devices**, press **Add polling** on the device's row (its address filled in), or **Add by address** for one
+   Woodshed hasn't heard from yet. Pick the version and the community, or a v3 user from **Settings → SNMP traps**
+   (the same users the trap receiver uses). If the device sends syslog from one address and answers SNMP on another
+   (a management address), put the polled address under address and the syslog address under device, so everything
+   stays in one device folder.
+3. Press **Test poll**. It runs the poll once, without saving, and shows each step: v3 discovery, the system group,
+   HOST-RESOURCES, the interfaces (and whether they have 64-bit counters), and each custom OID. Fix what it reports,
+   then **Save**. Polling starts within one interval.
+
+From a terminal, `woodshed poll test 192.0.2.1 --community-file comm.txt` does the same from wherever you run it
+(secrets from files or `WOODSHED_SNMP_COMMUNITY`, `_AUTH_PASS`, `_PRIV_PASS`, never on the command line); add
+`--version 3 --v3-user monitor --auth sha-256 --auth-pass-file auth.txt --priv aes-128 --priv-pass-file priv.txt` for
+v3. It exits 0 when everything answered, 1 for no answer, 3 for an authentication or privacy error and 4 when some
+OIDs aren't supported.
+
+**What's polled.** Every 60 s by default (30 s to 10 min per device), with only standard MIBs:
+- *system*: `sysUpTime`, and from HOST-RESOURCES `hrSystemUptime`, the processors' load (averaged) and RAM used and
+  size. Devices without HOST-RESOURCES show "CPU and memory: not available on this device".
+- *interfaces*: for every interface up to the limit (64 by default), the 64-bit in and out octets and unicast,
+  multicast and broadcast packets, errors, discards, up/down state and the discontinuity time; names, aliases and
+  speeds hourly. A device without 64-bit counters (or SNMPv1) gets the 32-bit ones, and its page warns that rates
+  above about 115 Mb/s at a 5-minute interval can be wrong. Over the limit, Woodshed polls the interfaces you
+  **pinned**, then the ones that are up, fastest first; the device page says how many were left out.
+- *system-info*: `sysName`, `sysDescr` and `sysObjectID`, hourly.
+- *custom OIDs* (up to 32 per device): a value (`1.3.6.1.4.1.…0`) or a walk of a table column (up to 128 rows by
+  default). Counters become rates; numbers are kept as values; text is kept but not graphed.
+
+**Rates and restarts.** Traffic is stored as bits per second, packets as packets per second and errors as the number
+since the last poll, worked out as each answer arrives, with the raw counters on the same line. A 32-bit counter
+that went down counts as a wrap only when the result is believable for the interface's speed; anything else (a
+counter reset, a renamed interface, a changed discontinuity time, an agent restart) leaves a gap rather than a spike,
+marked `disc=1`. When `sysUpTime` goes down (not its normal wrap after 497 days), the agent restarted; it's a
+**reboot** when `hrSystemUptime` went down too. Without HOST-RESOURCES the marker says "the device may have
+rebooted". Restarts show on the device page, on the Events timeline and in incident bundles, where a coldStart trap
+within 2 minutes of a poll restart is the same reboot.
+
+**When a device stops answering**, each failed poll is recorded with its reason (`timeout`, `auth_failed`,
+`unknown_user`, `not_in_time`, …) so "it didn't answer from 10:02 to 10:09" is evidence too. After 3 failures in a row
+Woodshed polls it less often, doubling up to every 10 minutes, and goes back to normal at its first answer. After 10
+minutes a banner names it. Woodshed accepts answers only from the address and port it polled; an agent that answers
+from another address is ignored, and Test poll says so.
+
+**Where it's kept.** Polls are a third kind of record, in `logs/<device>/poll/<day>.log` beside the syslog and
+traps, with the same rotation, compression and retention (they count towards the device's share). One device with 24
+interfaces at 60 s writes about 17 MB a day uncompressed and about 1.4 MB once the day's file is compressed
+(measured, see SPEC §12.11). Search them like anything else: `woodshed search --type poll --field kind=restart --last
+7d` lists restarts, and exports and bundles get CSV files per device (`poll/<device>/system.csv`, `interfaces.csv`,
+`oids.csv`).
+
+**Settings → Polling** holds the defaults for new devices, how many devices are polled at once (32), the per-device
+interface limit and the limit on polled devices (500), and the last hour's cycles, failures and skipped cycles. If
+cycles are skipped because polling couldn't keep up, a banner suggests a longer interval or more devices at once.
+
 ## 3. Watch
 
 The **Dashboard** shows each device as a tile with a coloured dot (green: heard from in the last 5 minutes, amber:

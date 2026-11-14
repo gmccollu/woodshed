@@ -2162,8 +2162,8 @@ binary series format:
 - Every part of 1.2 works on them unchanged: rotation, compression, crash repair, the index, `reindex`, retention and
   the disk guard, export, the bundle, context, and `woodshed search`.
 - gzip shrinks them well, because each line repeats its keys: a device with 24 interfaces at 60 s writes about
-  7 MB a day uncompressed and about 0.7 MB a day compressed (a measured number replaces this estimate after the first
-  bench).
+  17 MB a day uncompressed and about 1.4 MB a day compressed (measured, §12.11 #4; the first estimate was 7 MB and
+  0.7 MB, before the packet counters).
 - A columnar store would be smaller, but it would be a second storage engine, with its own crash safety, retention and
   rebuild, for data that's tiny next to syslog. The 2.0 flow store may still need one; polls don't.
 
@@ -2381,6 +2381,70 @@ Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
     (§12.7).
 15. Windows is tested as a poller, not as a polled agent (§12.8).
 
+**Decided (build, 2026-11-15)**, where the contract was silent; each can be overruled:
+1. **Requests.** `internal/snmp`'s requester has one request type with three values (Get, GetNext, GetBulk); a test
+   tries every value and finds only those three PDUs, and an AST test in `internal/poller` checks the package
+   reaches no encoder but the session's. The per-cycle interface counters are `Get`s of the exact instances polled
+   (32 varbinds each); `GetBulk` (max-repetitions 25) is for walks: custom walks, HOST-RESOURCES and the hourly
+   interface columns. Hourly walks stop at 4,096 rows per interface column and 256 for HOST-RESOURCES.
+2. **`unreachable`** is a send the OS refuses as host or network unreachable. An ICMP error on the shared
+   unconnected socket can't be tied to one target, so a closed port shows as `timeout`.
+3. **Record keys** beyond §12.3's example, all in `internal/pollrec`'s fixed order: `if` lines carry `oper_was` when
+   the state changed since the last sample (what oper markers are read from, with a cheap byte filter), `bits=32` for
+   the 32-bit fallback, the packet counters `in_ucast` … `out_bcast` and their `*_pps` rates (§12.11 #1), and
+   `wraps=` naming the counters that wrapped; `sys` and `status` lines carry `interval_s`; a capped walk's last row has
+   `capped=1`; `info` lines are either the system form (`sys_name`, `sys_descr`, `sys_oid`, `hc`, `hr`, `ifs_total`,
+   `ifs_polled`) or one per polled interface (`if`, `name`, `descr`, `alias`, `speed_mbps`), hourly and after a
+   discontinuity. Errors and discards are stored as per-cycle deltas only (`_d`); per second is the delta over
+   `interval_s`.
+4. **Custom OIDs** are asked every cycle even when missing (stored as `type=nosuchobject`, an empty walk as one such
+   line); only the presets' parts turn off until the hourly refresh.
+5. **Defaults are copied.** Fields a body leaves out take Settings → Polling's values at the time of the request and
+   are stored with the target; changing the defaults later affects new targets. Of the defaults, only `concurrency`
+   changes running polls.
+6. **`pinned`** (a list of `ifName`s or indexes, default `[]`) is the target field behind §12.11 #3's pinning.
+7. **One target per device.** A second target with the same `device_id` is a `400` on `device_id`, so a device's poll
+   files hold one target's cycles. `device_id` is a device ID, so an IP address (IPv6 with `_`, as everywhere).
+   A target over `poll.max_targets` or for an address and port already polled is a `409`.
+8. **Device identity in the store.** Poll lines pass the store's device admission (`max_devices`, the new-sender
+   buckets) like any type. A failed cycle's `status` line is a stored line of that device, so it counts as heard
+   (its `last_heard` moves) even while it doesn't answer; `poll_status`, the `poll_unreachable` banner and the device
+   page are what say a polled device isn't answering.
+9. **State kept in memory.** Previous samples (rates, uptimes, oper states) live in the poller only: the first cycle
+   after Woodshed starts has no rates and can't see a restart that happened while Woodshed was stopped. The v3 engine
+   (ID, boots, time and when it was seen) is written to `poll_targets` when it changes, so a restart needs no
+   discovery. Rollups are merged into `poll_hourly` once a minute and at stop; a crash can lose the last minute's
+   rollups until `reindex`.
+10. **A partly answered cycle** (an early request answered, a later one failed) keeps the lines written, adds a
+   `status` line, counts as a failure in the hour's totals, and doesn't count towards backoff (the device answered).
+   An `overrun` takes its own cycle number.
+11. **Graph reads.** `from` defaults to a day before `to`; file reads use the summary's 2 s budget, and a `partial`
+   response's `next_cursor` resumes from the time reached. Markers are capped at 100 per device. The timeline's
+   "busiest" is the highest hourly in or out rollup in the range.
+12. **Test polls** are limited to 10 a minute in all and one at a time per target (by ID, or address and port for an
+   unsaved body); `{"id"}` with other fields tests the stored target with those fields changed. The CLI's `--walk`
+   reads at most 128 rows.
+13. **The allowlist test** also flags datagram sends on an unconnected socket (`WriteToUDP`, `WriteToUDPAddrPort`,
+   `WriteMsgUDP`, `WriteMsgUDPAddrPort`), which need no `Dial`; `internal/poller` and the test agent
+   `internal/snmp/agenttest` (test support, imported only by tests, checked) join the list, and `internal/listen`'s
+   entry names its inform replies.
+14. **Exports** (fork of this build): the zip's `poll/` holds only the three CSVs, not the lines; a CSV's `lines` in
+   the manifest count its rows; CSVs use CRLF line ends (RFC 4180), times RFC 3339 UTC with milliseconds, `uptime_s`
+   as ticks/100. The packet counters stay in the lines only (§12.6 lists no CSV columns for them). A merged reboot's
+   `source` is one string, `"poll, coldStart trap"`, with the earlier time and the poll's `detail`; restarts with
+   `reboot=0` or `?` are listed too. The README lists at most 3 oper changes per device, then "and N more".
+15. **Search fields:** `status` is `ok` on every line but `status` lines; `if` is the name (or the index without
+   one) on `if` and interface `info` lines; `ifs` matches names ignoring case, or indexes exactly. A result's
+   `values` holds every key but `kind`, `cycle` and the promoted `oper`, `status` and `reboot`.
+16. **UI:** the device page is a route of its own, `#/device?id=…`, reached from Devices (not in the nav); "Polled" is
+   a view of the poll-target list; pinning is a `PUT` with `pinned`; delta series are drawn as avg × count per
+   bucket; at most 40 markers per chart or strip, the rest counted; chart colours are new `--chart-1…8` and
+   `--chart-mark` tokens, in the contrast check.
+17. **Shared request fixtures.** `web/src/lib/fixtures/ui-requests.json` holds the UI's exact request bodies,
+   written from the forms' own body builders (the web tests fail on drift; the mock replays it) and posted to a real
+   in-process server by `internal/server`'s `TestUIRequestBodiesAgainstServer`, so the mock and the server can't
+   drift (coordinator, 2026-11-15, after the 1.2 `key_ext` bug).
+
 ### 12.11 Questions settled (1.3), decided (coordinator, 2026-11-15, owner-delegated)
 1. The `interfaces` preset also polls the HC packet counters in and out: unicast, multicast and broadcast
    (`ifHCIn/OutUcastPkts`, `…MulticastPkts`, `…BroadcastPkts`, 32-bit fallbacks as for octets). Packet and broadcast
@@ -2391,6 +2455,12 @@ Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
 3. `max_interfaces` (default 64) picks, in order: interfaces the user pinned, then interfaces that are up, by
    `ifHighSpeed` descending, then by index. The device page says when interfaces were left out and offers pinning.
 4. The storage estimate is measured by the first bench and recorded here before it's published in the docs.
+   **Measured (build, 2026-11-15):** one device with 24 interfaces at 60 s with the default presets (system with
+   HOST-RESOURCES, system-info, interfaces with the packet counters of #1) writes 36,600 lines a day (1,440 `sys`
+   lines, 34,560 `if` lines, 600 hourly `info` lines): **16.8 MB a day uncompressed and 1.38 MB gzipped** (12.2×), as
+   the store compresses a closed day (`TestPollStoragePerDay` in `internal/poller`, `WOODSHED_POLL_STORAGE=1`). It's
+   about twice §12.3's estimate because of the six packet counters and their rates added here; the current day stays
+   uncompressed until midnight UTC.
 
 ## 13. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
