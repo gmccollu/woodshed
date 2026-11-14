@@ -72,14 +72,24 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # -timeout is a safety net above Go's 10 min default (one package's tests
+      # under -race on macOS reached it, CI run 43625655826); a package should
+      # finish in a small part of it.
       - name: go test
-        run: go test ${{ matrix.race }} ./...
+        run: go test ${{ matrix.race }} -timeout 20m ./...
+
+      # The heavy internal/search variants at full size, once, without -race.
+      - name: Long search tests without -race
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          WOODSHED_LONG_TESTS: "1"
+        run: go test -count=1 -timeout 20m ./internal/search/...
 
       # The 10,000-device timing limits apply without -race only (instrumented
       # SQLite is ~25x slower on these runners); results are checked under -race above.
       - name: Scale test without -race
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
-        run: go test -count=1 -run 'Scale|10000' -v ./internal/server/...
+        run: go test -count=1 -timeout 20m -run 'Scale|10000' -v ./internal/server/...
 
       - name: go build
         run: |
@@ -131,7 +141,7 @@ jobs:
         run: go vet ./...
 
       - name: go test
-        run: go test ${{ matrix.race }} ./...
+        run: go test ${{ matrix.race }} -timeout 20m ./...
 
       - name: go build
         run: |

@@ -20,6 +20,7 @@ serves it against mock data, and `npm run dev` against a Woodshed running on `12
 ```sh
 make test                  # go vet + go test -race ./..., including the end-to-end tests of the real binary
 go test -short ./...       # everything except the end-to-end tests
+WOODSHED_LONG_TESTS=1 go test ./internal/search/   # the search tests at full fixture size (CI: once, without -race)
 make fuzz                  # every fuzz target for 30 s (FUZZTIME=5m make fuzz for longer)
 cd web && npm run check    # type-check the UI
 ```
