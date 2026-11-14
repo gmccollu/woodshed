@@ -586,3 +586,52 @@ func (b *backend) applyPollSettings(cur, next config.Poll) {
 		b.poll.p.SetConcurrency(next.Concurrency)
 	}
 }
+
+// RunStatePoll is the run-state file's polling part (docs/api.md "Run-state
+// file"), for `woodshed status`.
+type RunStatePoll struct {
+	Targets      int                  `json:"targets"`
+	Answering    int                  `json:"answering"`
+	NotAnswering []RunStatePollTarget `json:"not_answering"`
+	LastCycle    *time.Time           `json:"last_cycle"`
+}
+
+// RunStatePollTarget is a target that isn't answering.
+type RunStatePollTarget struct {
+	DeviceID string    `json:"device_id"`
+	Address  string    `json:"address"`
+	Since    time.Time `json:"since"`
+}
+
+// runStatePoll is nil without targets.
+func (b *backend) runStatePoll() *RunStatePoll {
+	if b.poll == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	rows, err := b.idx.PollTargets(ctx)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	states := b.poll.p.States()
+	rs := &RunStatePoll{Targets: len(rows), NotAnswering: []RunStatePollTarget{}}
+	for _, r := range rows {
+		st := states[r.ID]
+		switch st.Status {
+		case poller.StateOK:
+			rs.Answering++
+		case poller.StateFailing, poller.StateBackingOff:
+			since := time.Time{}
+			if st.FailingSince != nil {
+				since = st.FailingSince.Truncate(time.Second)
+			}
+			rs.NotAnswering = append(rs.NotAnswering, RunStatePollTarget{DeviceID: r.DeviceID, Address: r.Address, Since: since})
+		}
+		if st.LastAttempt != nil && (rs.LastCycle == nil || st.LastAttempt.After(*rs.LastCycle)) {
+			t := st.LastAttempt.Truncate(time.Second)
+			rs.LastCycle = &t
+		}
+	}
+	return rs
+}

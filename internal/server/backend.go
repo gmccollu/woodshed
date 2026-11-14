@@ -328,6 +328,7 @@ func (b *backend) fillRunState(rs *RunState) {
 	api.SortBanners(rs.Banners)
 	rs.TLS = b.runStateTLS(cfg)
 	rs.SNMP = b.runStateSNMP(cfg)
+	rs.Poll = b.runStatePoll()
 }
 
 // udpBufferMin is the UDP receive buffer below which a burst is likely to

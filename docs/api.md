@@ -1145,7 +1145,9 @@ listeners start. `ui.error` and `ui.cert_fingerprint` are omitted when empty. On
 is on (or a v3 user is set, or a trap was received), an `snmp` object gives `enabled`, `port`, `answer_informs`,
 `engine_id`, `engine_boots`, `received_24h`, `informs_answered_24h`, `replies_rate_limited_24h`, `time_resyncs_24h`,
 `by_status_24h`, `users`, `unreadable_users`, `mib_names`, `mib_errors` and `failures` (the 5 senders failing most:
-`ip`, `count_24h`, `status`, `detail`, `last_seen`), for `woodshed status` and `woodshed snmp status`.
+`ip`, `count_24h`, `status`, `detail`, `last_seen`), for `woodshed status` and `woodshed snmp status`. While any
+SNMP poll target is configured (since 1.3), a `poll` object gives `targets`, `answering`, `not_answering` (each
+`device_id`, `address`, `since`) and `last_cycle`, for `woodshed status`'s Polling row.
 
 ## Errors
 
