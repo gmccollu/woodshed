@@ -33,6 +33,7 @@ commands:
   set-password    set the UI password (for servers without a browser)
   lan-mode        turn LAN mode on or off (HTTPS on the network, with a login)
   tls             syslog over TLS: on, off, renew the certificate, status
+  snmp            the SNMP trap receiver: on, off, status
   update-check    turn the daily update check on or off (or back to asking)
   reset-password  remove the UI password and turn LAN mode off
   send            send test messages to a syslog server
@@ -62,6 +63,7 @@ func init() {
 		{"set-password", cmdSetPassword},
 		{"lan-mode", cmdLANMode},
 		{"tls", cmdTLS},
+		{"snmp", cmdSNMP},
 		{"update-check", cmdUpdateCheck},
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},
