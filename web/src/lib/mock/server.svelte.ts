@@ -637,6 +637,24 @@ function validate(s: Settings): Record<string, string> {
   }
   if (!s.listeners.udp.enabled && !s.listeners.tcp.enabled && !s.listeners.tls?.enabled)
     e['listeners.udp.enabled'] = 'Keep at least one listener on, or Woodshed receives nothing.';
+  const sn = s.listeners.snmp;
+  if (sn) {
+    port('listeners.snmp.port', sn.port);
+    const u = s.listeners.udp;
+    if (!isIP(sn.addr)) e['listeners.snmp.addr'] = 'Enter an IP address, or 0.0.0.0 / :: for all addresses.';
+    else if (OS.startsWith('darwin') && sn.enabled && !WILDCARD.includes(sn.addr) && sn.port < 1024)
+      e['listeners.snmp.addr'] = 'On macOS a port below 1024 can only be bound on all addresses (0.0.0.0 or ::). Use the sender allowlist to restrict senders.';
+    else if (!e['listeners.snmp.port'] && u.port === sn.port && (u.addr === sn.addr || WILDCARD.includes(u.addr) || WILDCARD.includes(sn.addr)))
+      e['listeners.snmp.port'] = "can't be the same as the UDP syslog listener's port on the same address";
+    if (sn.mib_dir && !(sn.mib_dir.startsWith('/') || /^[A-Za-z]:\\/.test(sn.mib_dir))) e['listeners.snmp.mib_dir'] = 'must be an absolute path (or empty for the mibs folder in the data folder)';
+    const h = sn.engine_id.replace(/^0x/i, '').replace(/:/g, '');
+    if (sn.engine_id && (!/^[0-9a-f]*$/i.test(h) || h.length % 2 || h.length < 10 || h.length > 64))
+      e['listeners.snmp.engine_id'] = 'must be 5 to 32 bytes (10 to 64 hex digits)';
+    if (sn.communities.length > 100) e['listeners.snmp.communities'] = 'at most 100 communities';
+    sn.communities.forEach((c, i) => {
+      if (!c.length || c.length > 255) e[`listeners.snmp.communities[${i}]`] = 'must be 1 to 255 bytes';
+    });
+  }
   const t = s.listeners.tls;
   if (t) {
     port('listeners.tls.port', t.port);
@@ -1813,6 +1831,14 @@ function searchRoute(u: URLSearchParams, now: number): Response {
 
 // ---------- SNMP traps (docs/api.md → Data types: type=trap; 1.2) ----------
 
+/** A community as the server shows it: "#" and 8 hex digits (a stand-in for SHA-256's first 4 bytes). */
+function communityHash(c: string): string {
+  if (/^#[0-9a-f]{8}$/i.test(c)) return c.toLowerCase();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < c.length; i++) h = Math.imul(h ^ c.charCodeAt(i), 0x01000193) >>> 0;
+  return `#${h.toString(16).padStart(8, '0')}`;
+}
+
 const trapDevicePasses = (u: URLSearchParams) => {
   const f: MockFilters = { devices: u.get('devices')?.split(',').filter(Boolean), group: u.get('group') ?? undefined, ungrouped: u.get('ungrouped') === 'true', sev: null };
   const ex = listParam(u, 'exclude_devices');
@@ -2469,10 +2495,17 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const errors = validate(s);
     if (Object.keys(errors).length) return json({ errors }, 400);
     const wasLan = settings.ui.lan_mode;
+    const prev = { snmp: settings.listeners.snmp };
     const restarting = wasLan !== s.ui.lan_mode || settings.ui.port !== s.ui.port;
     // A PUT without updates keeps it (docs/api.md).
     const check = s.updates?.check ?? settings.updates?.check ?? 'ask';
     settings = structuredClone({ ...s, updates: settings.updates });
+    // docs/api.md: a plain community is stored and comes back only as "#<hash8>" (the mock's hash isn't SHA-256).
+    if (settings.listeners.snmp) {
+      const prevSnmp = s.listeners.snmp ? undefined : structuredClone(prev.snmp);
+      if (prevSnmp) settings.listeners.snmp = prevSnmp; // a PUT without it (a 1.1 client) keeps it
+      settings.listeners.snmp!.communities = [...new Set(settings.listeners.snmp!.communities.map(communityHash))];
+    }
     if (check !== settings.updates?.check) setUpdateCheck(check, now);
     settingsRev++;
     // docs/api.md: turning TLS on for the first time without cert_file creates the CA and certificate.

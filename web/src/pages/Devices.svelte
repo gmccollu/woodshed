@@ -169,6 +169,15 @@
     { c: 'total_msgs', label: 'Messages', num: true },
     { c: 'bytes_on_disk', label: 'On disk', num: true },
   ];
+
+  /** "9,120,000 syslog + 3,456 SNMP traps": what Messages counts (SPEC §11.1: every type). */
+  function typeCounts(d: Device): string {
+    const by = d.lines_by_type ?? {};
+    const parts = Object.entries(by)
+      .filter(([, n]) => n > 0)
+      .map(([t, n]) => `${num(n)} ${t === 'trap' ? 'SNMP traps' : t}`);
+    return parts.length > 1 ? `${parts.join(' + ')} stored` : '';
+  }
 </script>
 
 <section class="card overflow-hidden p-0">
@@ -282,7 +291,16 @@
             <td class="whitespace-nowrap" title={dateTime(d.first_seen)}>{date(d.first_seen)}</td>
             <td class="whitespace-nowrap" title={dateTime(d.last_heard)}>{ago(d.last_heard, live.now, NOW_WITHIN_S)}</td>
             <td class="text-right whitespace-nowrap tabular-nums">{rate(d.msgs_per_min)}</td>
-            <td class="text-right whitespace-nowrap tabular-nums">{num(d.total_msgs)}</td>
+            <td class="text-right whitespace-nowrap tabular-nums" title={typeCounts(d)}>
+              {num(d.total_msgs)}
+              {#if d.types?.includes('trap')}
+                <a
+                  class="tcount text-link"
+                  href="#/events?type=trap&dev={encodeURIComponent(d.id)}&r=24h"
+                  title="Open this device's SNMP traps in Events">{num(d.lines_by_type?.trap ?? 0)} trap{(d.lines_by_type?.trap ?? 0) === 1 ? '' : 's'}</a
+                >
+              {/if}
+            </td>
             <td class="text-right whitespace-nowrap tabular-nums">{bytes(d.bytes_on_disk)}</td>
             <td class="acts text-right whitespace-nowrap">
               <button
@@ -417,6 +435,11 @@
   /* Hide starts with its icon, so an inline-flex baseline would sit it higher than Block. */
   .acts .ghost-btn {
     vertical-align: middle;
+  }
+  .tcount {
+    display: block;
+    font-size: 12px;
+    text-decoration: underline;
   }
   .ipcell {
     display: inline-flex;
