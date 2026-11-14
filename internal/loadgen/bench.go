@@ -330,9 +330,15 @@ func Verify(dataDir, runID string, n int) (VerifyResult, error) {
 				return nil
 			}
 			num := l.Escaped[i+len(tag):]
-			if j := bytes.IndexByte(num, ' '); j >= 0 {
-				num = num[:j]
+			j := 0
+			for j < len(num) && num[j] >= '0' && num[j] <= '9' {
+				j++
 			}
+			if j < len(num) && num[j] != ' ' && num[j] != '"' {
+				v.Foreign++ // "seq=<run>:12x": not one of ours
+				return nil
+			}
+			num = num[:j]
 			seq, err := strconv.Atoi(string(num))
 			if err != nil || seq < 0 || seq >= n {
 				v.Foreign++

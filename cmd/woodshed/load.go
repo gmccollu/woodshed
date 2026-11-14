@@ -24,16 +24,26 @@ Send test syslog messages to a syslog server (Woodshed or any other). Each
 message is RFC 5424 and carries a run tag and a sequence number
 ("seq=<run>:<n>"), so you can find it in the logs.
 
+With --proto trap it sends SNMP traps or informs (v1, v2c or v3) to a trap
+receiver on UDP port 162 instead; the run tag and sequence number are in a
+varbind. Communities and passphrases are read from files or the environment
+($WOODSHED_SNMP_COMMUNITY, $WOODSHED_SNMP_AUTH_PASS, $WOODSHED_SNMP_PRIV_PASS),
+never from the command line.
+
 Examples:
   woodshed send --message "hello from woodshed"          one message to 127.0.0.1:514 over UDP
   woodshed send --host 192.0.2.10 --proto tcp --count 100
   woodshed send --port 15514 --rate 200 --duration 60s    a steady stream for a minute
   woodshed send --host logs-01.example.net --proto tls --ca woodshed-ca.pem
                                                          over TLS (port 6514), checking the
-                                                         certificate against the downloaded CA`, stderr)
-	host := fs.String("host", "127.0.0.1", "syslog server `host` name or IP")
-	port := fs.Int("port", 514, "syslog server `port` (6514 with --proto tls)")
-	proto := fs.String("proto", "udp", "`protocol`: udp, tcp or tls")
+                                                         certificate against the downloaded CA
+  woodshed send --proto trap --count 10                   ten SNMPv2c traps to 127.0.0.1:162
+  WOODSHED_SNMP_AUTH_PASS=… WOODSHED_SNMP_PRIV_PASS=… woodshed send --proto trap --snmp-version 3 \
+      --user monitor --auth sha-256 --priv aes-128 --inform
+                                                         SNMPv3 authPriv informs, waiting for each Response`, stderr)
+	host := fs.String("host", "127.0.0.1", "syslog server (or trap receiver) `host` name or IP")
+	port := fs.Int("port", 514, "syslog server `port` (6514 with --proto tls, 162 with --proto trap)")
+	proto := fs.String("proto", "udp", "`protocol`: udp, tcp, tls or trap (SNMP traps over UDP)")
 	framing := fs.String("framing", "lf", "TCP and TLS `framing`: lf (newline) or octet (RFC 6587 octet counting)")
 	caFile := fs.String("ca", "", "TLS: the CA certificate `file` to trust (PEM or DER, e.g. Woodshed's woodshed-ca.pem)")
 	insecure := fs.Bool("insecure", false, "TLS: don't check the server's certificate (a quick test only)")
@@ -47,6 +57,7 @@ Examples:
 	hostname := fs.String("hostname", loadgen.DefaultHostname, "the messages' HOSTNAME `field`")
 	runID := fs.String("run", "", "run `id` carried in every message (default: random); with --first-seq, lets several sends share one numbered run")
 	firstSeq := fs.Int("first-seq", 0, "sequence `number` of the first message")
+	tf := addTrapFlags(fs)
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
@@ -58,11 +69,24 @@ Examples:
 		return usageErr(fmt.Errorf("--port %d is out of range (1-65535)", *port))
 	}
 	*proto = strings.ToLower(*proto)
-	if *proto != "udp" && *proto != "tcp" && *proto != "tls" {
-		return usageErr(fmt.Errorf("--proto must be udp, tcp or tls, not %q", *proto))
+	if *proto != "udp" && *proto != "tcp" && *proto != "tls" && *proto != "trap" {
+		return usageErr(fmt.Errorf("--proto must be udp, tcp, tls or trap, not %q", *proto))
+	}
+	if err := checkTrapFlags(fs, *proto); err != nil {
+		return usageErr(err)
 	}
 	portSet := false
 	fs.Visit(func(f *flag.Flag) { portSet = portSet || f.Name == "port" })
+	var trapOpts loadgen.TrapOptions
+	if *proto == "trap" {
+		if !portSet {
+			*port = 162
+		}
+		var err error
+		if trapOpts, err = tf.options(); err != nil {
+			return usageErr(err)
+		}
+	}
 	var tlsCfg *tls.Config
 	if *proto == "tls" {
 		if !portSet {
@@ -99,7 +123,7 @@ Examples:
 		Addr: net.JoinHostPort(*host, strconv.Itoa(*port)), Proto: *proto, Framing: *framing, TLS: tlsCfg,
 		Count: *count, Rate: *rate, Duration: *duration, Size: *size,
 		Message: *message, Source: *source, Hostname: *hostname,
-		RunID: *runID, FirstSeq: *firstSeq,
+		RunID: *runID, FirstSeq: *firstSeq, Trap: trapOpts,
 	}
 	if *firstSeq < 0 {
 		return usageErr(errors.New("--first-seq can't be negative"))
@@ -107,6 +131,9 @@ Examples:
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	res, err := loadgen.Send(ctx, o)
+	if *proto == "trap" {
+		return sendTrapResult(stdout, stderr, o, res, err)
+	}
 	what := strings.ToUpper(*proto)
 	if *proto == "tcp" || *proto == "tls" {
 		what += " (" + *framing + ")"
