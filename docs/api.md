@@ -758,7 +758,7 @@ first, at most 200:
   "engine_ids": [], "auth_set": true, "priv_set": true, "stored": "passphrase", "readable": true, "weak": []}]
 ```
 - Sorted by name. `auth`: `none`, `md5`, `sha`, `sha-224`, `sha-256`, `sha-384`, `sha-512`. `priv`: `none`, `des`,
-  `aes-128`, `aes-192`, `aes-256`. `key_ext` is `draft` or `alt` for AES-192/256 (`draft` otherwise). `level` follows
+  `aes-128`, `aes-192`, `aes-256`. `key_ext` is `draft` or `alt` for AES-192/256 (`draft` otherwise); a body may send `draft` with any `priv`, while `alt` with anything but AES-192/256 is a `400`. `level` follows
   from them; a user accepts its own level and above, never below.
 - `weak` lists the user's protocols Settings labels weak (`md5`, `sha`, `des`). They're accepted.
 - `stored`: `"passphrase"`, or `"localized"` when `engine_ids` is set: then only the keys localized to those engines
