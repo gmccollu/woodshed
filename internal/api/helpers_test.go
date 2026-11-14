@@ -119,6 +119,8 @@ func newFakeBackend() *fakeBackend {
 	} {
 		d.FirstSeen = ts("2026-11-01T00:00:00Z").Add(time.Duration(i) * time.Hour)
 		d.LastHeard = ts("2026-11-10T20:59:00Z")
+		d.Types = []string{"syslog", "trap"}
+		d.LinesByType = map[string]int64{"syslog": d.TotalMsgs, "trap": 0}
 		b.devices[d.ID] = d
 		b.order = append(b.order, d.ID)
 	}

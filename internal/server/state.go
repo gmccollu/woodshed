@@ -37,6 +37,8 @@ type RunState struct {
 	// TLS is the TLS syslog listener: its certificate fingerprints and expiry,
 	// and the senders failing most (omitted while it was never turned on).
 	TLS *RunStateTLS `json:"tls,omitempty"`
+	// SNMP is the SNMP trap receiver (snmpstate.go).
+	SNMP *RunStateSNMP `json:"snmp,omitempty"`
 }
 
 // RunStateUI is the UI server's state.

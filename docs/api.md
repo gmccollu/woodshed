@@ -125,8 +125,12 @@ id, IP or name (case-insensitive substring); `hidden` and `blocked` default to `
 [{"id": "10.1.0.1", "ip": "10.1.0.1", "name": "edge-fw-01", "group": "HQ", "hidden": false,
   "first_seen": "...", "last_heard": "...", "status": "online", "blocked": false,   // status: online | quiet | offline | blocked
   "msgs_per_min": 36720, "total_msgs": 9123456, "bytes_on_disk": 123456789,
-  "tls": null}]                                // null until the device has tried TLS since the server started; see below
+  "tls": null,                                 // null until the device has tried TLS since the server started; see below
+  "types": ["syslog", "trap"], "lines_by_type": {"syslog": 9120000, "trap": 3456}}]
 ```
+`total_msgs` counts every data type (syslog and SNMP traps, SPEC §11.1), so a device that sends only traps is online.
+`types` lists the data types the device has files of on disk now (`[]` when none), and `lines_by_type` their stored
+lines (records), from the index.
 `tls`, once the device has tried syslog over TLS (counts since the server started, kept 24 h):
 ```json
 {"connections_24h": 288, "version": "TLS 1.3", "cipher": "TLS_AES_128_GCM_SHA256", "last_connected": "2026-11-13T15:09:51Z",
