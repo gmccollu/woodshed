@@ -677,7 +677,10 @@ func TestSearchBesideWriter(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if upTo := flushedUpTo; upTo < 600 {
+	wmu.Lock()
+	upTo := flushedUpTo
+	wmu.Unlock()
+	if upTo < 600 {
 		t.Logf("only %d lines written", upTo)
 	}
 }
