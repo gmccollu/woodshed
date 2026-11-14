@@ -14,8 +14,11 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,7 +110,7 @@ type running struct {
 
 func start(t *testing.T, cfgPath string) *running {
 	t.Helper()
-	srv, err := Open(cfgPath, Options{Version: "1.2.3", Commit: "abc1234", Logger: quiet})
+	srv, err := Open(cfgPath, Options{Version: "1.2.3", Commit: "abc1234", Logger: testLogger(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,15 +138,70 @@ func (r *running) stop(t *testing.T) {
 	if r.cancel == nil {
 		return
 	}
+	stopAt := time.Now()
+	// A shutdown still running after slowStopDump: keep every stack from then,
+	// and show them if it turns out slow (where a slow step waits).
+	var slowDump atomic.Pointer[string]
+	dumpTimer := time.AfterFunc(slowStopDump, func() { d := allStacks(); slowDump.Store(&d) })
+	defer func() {
+		dumpTimer.Stop()
+		took := time.Since(stopAt)
+		t.Logf("shutdown took %v", took.Round(time.Millisecond))
+		if d := slowDump.Load(); d != nil {
+			t.Logf("still shutting down after %v:\n%s", slowStopDump, *d)
+		}
+	}()
 	r.cancel()
 	r.cancel = nil
 	select {
 	case err := <-r.done:
 		if err != nil {
-			t.Errorf("Run: %v", err)
+			// A shutdown past its limit: the stuck step's goroutine is still
+			// running, so every stack shows where it waits.
+			t.Errorf("Run: %v\n%s", err, allStacks())
 		}
 	case <-time.After(20 * time.Second):
-		t.Fatal("Run didn't return")
+		t.Fatalf("Run didn't return\n%s", allStacks())
+	}
+}
+
+// testLogger logs the server's warnings and errors (a slow shutdown step says
+// which, and how long) to the test's log, and drops anything logged after the
+// test ended (a goroutine still stuck in a shutdown past its limit).
+func testLogger(t *testing.T) *slog.Logger {
+	w := &testLog{t: t}
+	t.Cleanup(func() { w.mu.Lock(); w.done = true; w.mu.Unlock() }) // runs after the server's stop: Cleanups are LIFO
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelWarn}))
+}
+
+type testLog struct {
+	mu   sync.Mutex
+	t    *testing.T
+	done bool
+}
+
+func (w *testLog) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.done {
+		w.t.Log(strings.TrimRight(string(p), "\n"))
+	}
+	return len(p), nil
+}
+
+// slowStopDump is when a test's server shutdown counts as slow enough to keep
+// a goroutine dump (shown with -v, or with a failure).
+var slowStopDump = 5 * time.Second
+
+// allStacks is every goroutine's stack, for a shutdown that didn't finish.
+func allStacks() string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return "goroutine dump:\n" + string(buf[:n])
+		}
+		buf = make([]byte, 2*len(buf))
 	}
 }
 
