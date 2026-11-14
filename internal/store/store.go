@@ -1013,3 +1013,22 @@ func (s *Store) rel(abs string) string {
 	}
 	return filepath.ToSlash(r)
 }
+
+// AdmitType admits a sender for a data type's stream as WriteType would,
+// without storing anything (the trap receiver's discovery Reports go only to
+// admitted senders, SPEC §11.2.3). A refusal isn't counted as a drop: nothing
+// was to be stored.
+func (s *Store) AdmitType(typ string, addr netip.Addr) error {
+	ti, ok := typeIndex(typ)
+	if !ok {
+		return ErrUnknownType
+	}
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	if !addr.IsValid() {
+		return ErrInvalidSender
+	}
+	_, err := s.device(streamKey{addr.Unmap(), ti}, true)
+	return err
+}
