@@ -32,13 +32,25 @@ const (
 	DefaultMaxConns    = 1000
 	DefaultIdleTimeout = time.Duration(config.DefaultTCPIdleTimeout)
 	DefaultEvictIdle   = 30 * time.Second
+	// DefaultDrainTimeout: a full default queue (100,000 messages) drains in
+	// well under a second on a healthy disk.
+	DefaultDrainTimeout = 5 * time.Second
 )
 
 // Sink receives every accepted message. It's called concurrently from the UDP
-// reader and from each TCP connection's goroutine, so it must be safe for
-// concurrent use, and it should be quick: a slow sink makes UDP drop in the
-// kernel. The message's Raw is freshly allocated and owned by the sink.
+// queue's drainer and from each TCP connection's goroutine, so it must be safe
+// for concurrent use. A slow sink holds up TCP senders (flow control pushes
+// back) and fills the UDP queue (SPEC §11.5), whose overflow is counted
+// (Options.OnQueueDrop). The message's Raw is freshly allocated and owned by
+// the sink.
 type Sink func(model.Message)
+
+// QueueDrop reports n UDP messages from one sender dropped because its
+// listener's queue was full (the latest received at at). from is invalid for
+// drops past the per-sender table's size (maxPendingDrops). It's called from the
+// drainer, never while the Server's lock is held, in batches: during a stall
+// the counts wait until the sink returns.
+type QueueDrop func(from netip.Addr, at time.Time, n int64)
 
 // Event kinds and levels. They have the same values as index.Kind and index.Level,
 // so the server can record an Event with index.AddEvent unchanged.
@@ -96,6 +108,14 @@ type Options struct {
 	MaxHandshakesPerAddr int
 	HandshakeTimeout     time.Duration
 
+	// OnQueueDrop, if set, receives the UDP queue's drops (see QueueDrop), so
+	// they count for the sender's device.
+	OnQueueDrop QueueDrop
+	// DrainTimeout bounds how long Close (and a UDP rebind) waits for the UDP
+	// queue to empty into the sink; what's left then is counted as dropped.
+	// Default DefaultDrainTimeout.
+	DrainTimeout time.Duration
+
 	// Holder names the process holding proto ("udp" or "tcp") port, best effort, or
 	// "". Default: the OS lookup (lsof on macOS, /proc on Linux, the IP Helper
 	// tables on Windows).
@@ -138,6 +158,10 @@ type Status struct {
 	TLSHandshakes      int   // in progress
 	TLSHandshakesBusy  int64 // closed at once: over the handshake limits
 	TLSHandshakeFailed int64 // failed (any other reason) since Start
+
+	// UDPQueues has one entry per enabled UDP listener (SPEC §11.5), running or
+	// not, so its history shows while it's down.
+	UDPQueues []QueueStatus
 }
 
 // Server owns the listeners. Its methods are safe for concurrent use.
@@ -173,6 +197,12 @@ type Server struct {
 
 	rejects *rejects
 	kdrops  *kernelDrops
+
+	started   time.Time
+	udpHist   *queueHist // the syslog UDP queue's history, kept across rebinds (guarded by the queue holding it, or s.mu while none does)
+	udpQ      *udpQueue  // the queue of the running UDP listener, or the last one (for Status while it's down)
+	dropLogMu sync.Mutex
+	dropLog   time.Time // last "queue full" log line
 
 	stop chan struct{}
 	wg   sync.WaitGroup
@@ -210,6 +240,9 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	if opts.HandshakeTimeout <= 0 {
 		opts.HandshakeTimeout = DefaultHandshakeTimeout
 	}
+	if opts.DrainTimeout <= 0 {
+		opts.DrainTimeout = DefaultDrainTimeout
+	}
 	al, err := newAllowlist(cfg)
 	if err != nil {
 		return nil, err
@@ -222,6 +255,8 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 		stop:     make(chan struct{}),
 		pool:     newConnPool(),
 		tlsStats: newTLSStats(maxTLSSenders),
+		started:  opts.Clock(),
+		udpHist:  &queueHist{},
 	}
 	s.allow.Store(al)
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
@@ -296,10 +331,13 @@ func (s *Server) Reconfigure(cfg config.Listeners) error {
 	if old.UDP != cfg.UDP {
 		s.stopUDP(&ev)
 		s.startUDP(&ev)
-	} else if s.udp != nil && rcvbufOf(old) != rcvbufOf(cfg) {
-		s.udp.requested = rcvbufOf(cfg)
-		s.udp.granted = setRcvbuf(s.udp.conn, s.udp.requested)
-		s.log.Info("listen: UDP receive buffer changed", "requested", s.udp.requested, "granted", s.udp.granted)
+	} else if s.udp != nil {
+		if rcvbufOf(old) != rcvbufOf(cfg) {
+			s.udp.requested = rcvbufOf(cfg)
+			s.udp.granted = setRcvbuf(s.udp.conn, s.udp.requested)
+			s.log.Info("listen: UDP receive buffer changed", "requested", s.udp.requested, "granted", s.udp.granted)
+		}
+		s.udp.q.setLimits(queueLimits(cfg))
 	}
 	if old.TCP != cfg.TCP {
 		s.stopTCP(&ev)
@@ -379,6 +417,21 @@ func (s *Server) Status() Status {
 	if kernelDropsSupported {
 		st.KernelDrops = s.kdrops.total(s.udp)
 	}
+	if s.cfg.UDP.Enabled {
+		port := 0
+		if s.udp != nil {
+			port = int(s.udp.bound.Port())
+		}
+		now := s.opts.Clock()
+		if s.udpQ != nil {
+			st.UDPQueues = append(st.UDPQueues, s.udpQ.status("udp", port, now, s.started))
+		} else {
+			// Never bound: an empty queue with the configured capacity.
+			q := newUDPQueue(0, 0, s.udpHist)
+			q.setLimits(queueLimits(s.cfg))
+			st.UDPQueues = append(st.UDPQueues, q.status("udp", port, now, s.started))
+		}
+	}
 	return st
 }
 
@@ -456,7 +509,7 @@ func (s *Server) KernelDropped24h() (int64, bool) {
 }
 
 // deliver applies the blocklist and the allowlist (before anything else), truncation
-// and parsing to one framed message and
+// and parsing to one framed TCP or TLS message and
 // hands it to the sink. raw is only read; the message gets its own copy.
 func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool) (refused string) {
 	now := s.opts.Clock().UTC()
@@ -465,18 +518,95 @@ func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool) (refused s
 		s.rejects.add(from, now, 1, r)
 		return r
 	}
+	raw, truncated = s.cut(raw, truncated)
+	s.handoff(model.Message{Received: now, Sender: from, Raw: append(make([]byte, 0, len(raw)), raw...), Truncated: truncated})
+	return ""
+}
+
+// cut truncates raw at the max message size.
+func (s *Server) cut(raw []byte, truncated bool) ([]byte, bool) {
 	if max := int(s.maxSize.Load()); len(raw) > max {
-		raw = raw[:max]
-		truncated = true
+		return raw[:max], true
 	}
-	m := model.Message{Received: now, Sender: from, Raw: append(make([]byte, 0, len(raw)), raw...), Truncated: truncated}
+	return raw, truncated
+}
+
+// handoff parses m, counts it and calls the sink.
+func (s *Server) handoff(m model.Message) {
 	syslog.Parse(m.Raw, &m)
-	if truncated {
+	if m.Truncated {
 		s.truncated.Add(1)
 	}
 	s.received.Add(1)
 	s.opts.Sink(m)
-	return ""
+}
+
+// enqueue is the UDP reader's half of deliver: the blocklist and the allowlist,
+// truncation, and a copy into q (or a counted drop when q is full). raw is only
+// read.
+func (s *Server) enqueue(q *udpQueue, raw []byte, from netip.Addr) {
+	now := s.opts.Clock().UTC()
+	from = from.Unmap()
+	if r := s.allow.Load().refusal(from); r != "" {
+		s.rejects.add(from, now, 1, r)
+		return
+	}
+	raw, truncated := s.cut(raw, false)
+	q.push(queued{raw: append(make([]byte, 0, len(raw)), raw...), from: from, at: now, truncated: truncated})
+}
+
+// drainQueue is the drainer: it delivers q's messages in arrival order until q
+// is closed and empty (or abandoned), reporting drops after every batch.
+func (s *Server) drainQueue(q *udpQueue) {
+	batch := make([]queued, 0, drainBatch)
+	for {
+		var ok bool
+		batch, ok = q.pop(batch[:0], drainBatch)
+		for i := range batch {
+			if q.abort.Load() {
+				q.dropBatch(batch[i:])
+				break
+			}
+			e := &batch[i]
+			s.handoff(model.Message{Received: e.at, Sender: e.from, Raw: e.raw, Truncated: e.truncated})
+			*e = queued{}
+		}
+		s.reportQueueDrops(q)
+		if !ok {
+			return
+		}
+	}
+}
+
+// reportQueueDrops hands q's counted drops to OnQueueDrop and logs them at most
+// once a minute.
+func (s *Server) reportQueueDrops(q *udpQueue) {
+	p, other := q.takeDrops()
+	if len(p) == 0 && other.n == 0 {
+		return
+	}
+	var n int64
+	for from, d := range p {
+		n += d.n
+		if s.opts.OnQueueDrop != nil {
+			s.opts.OnQueueDrop(from, d.at, d.n)
+		}
+	}
+	if other.n > 0 {
+		n += other.n
+		if s.opts.OnQueueDrop != nil {
+			s.opts.OnQueueDrop(netip.Addr{}, other.at, other.n)
+		}
+	}
+	s.dropLogMu.Lock()
+	logIt := time.Since(s.dropLog) >= time.Minute
+	if logIt {
+		s.dropLog = time.Now()
+	}
+	s.dropLogMu.Unlock()
+	if logIt {
+		s.log.Warn("listen: UDP queue full; messages dropped (writing to disk fell behind)", "dropped", n, "senders", len(p))
+	}
 }
 
 // --- lifecycle (callers hold s.mu) ---
@@ -486,14 +616,16 @@ func (s *Server) startUDP(ev *events) {
 	if !s.cfg.UDP.Enabled || s.closed {
 		return
 	}
-	u, err := listenUDP(s, s.cfg.UDP, rcvbufOf(s.cfg))
+	q := newUDPQueue(0, 0, s.udpHist)
+	q.setLimits(queueLimits(s.cfg))
+	u, err := listenUDP(s, s.cfg.UDP, rcvbufOf(s.cfg), q)
 	if err != nil {
 		st := s.bindFailure("udp", s.cfg.UDP, err)
 		s.udpErr = &st
 		ev.bind(st)
 		return
 	}
-	s.udp = u
+	s.udp, s.udpQ = u, q
 	s.kdrops.attach(u)
 	ev.add("udp", LevelInfo, KindStart, fmt.Sprintf("UDP listener started on %s; receive buffer %s granted of %s requested",
 		hostPort(s.cfg.UDP.Addr, int(u.bound.Port())), sizeText(u.granted), sizeText(u.requested)))

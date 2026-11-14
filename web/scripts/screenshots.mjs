@@ -187,6 +187,30 @@ const SHOTS = [
   }),
   ...both({ name: 'about', url: '/?mock_panel=0#/about' }),
   { name: 'about-linux-light', mode: 'light', url: '/?mock_panel=0&mock_os=linux#/about' },
+  // The UDP receive queue (SPEC §11.5): the banner while it overflows, and its hourly high-water view.
+  ...both({
+    name: 'banner-udp-queue-full',
+    url: '/?mock_panel=0&mock_queue_full=1#/dashboard',
+    wait: 1500,
+    check: `[...document.querySelectorAll('.banner.warn')].some((b) => /UDP messages were dropped in the last hour because writing to disk fell behind \\(the queue holds 100,000\\)/.test(b.textContent)
+      && !!b.querySelector('a[href="#/about"]')) && document.body.innerText.includes('because the UDP queue was full')`,
+  }),
+  ...both({
+    name: 'about-udp-queue-full',
+    url: '/?mock_panel=0&mock_queue_full=1&mock_uptime_hours=30#/about',
+    wait: 1500,
+    check: `document.body.innerText.includes('UDP receive queue') && document.querySelectorAll('.plot .col').length === 24
+      && document.querySelectorAll('.plot .bar.warn').length >= 1 && document.body.innerText.includes('UDP queue full')`,
+  }),
+  {
+    name: 'about-udp-queue-calm-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_uptime_hours=30#/about',
+    wait: 1500,
+    check: `document.body.innerText.includes('Most at once, 24 h') && document.querySelectorAll('.plot .bar.warn').length === 0
+      && document.body.innerText.includes('lost before Woodshed read them')
+      && ![...document.querySelectorAll('.banner')].some((b) => b.textContent.includes('UDP messages were dropped'))`,
+  },
   // ---- Dashboard layout, wrap, severity chips ----
   { name: 'dashboard-2000-light', mode: 'light', w: 2000, h: 1100, url: '/?mock_panel=0#/dashboard', wait: 3000 },
   { name: 'dashboard-2000-dark', mode: 'dark', w: 2000, h: 1100, url: '/?mock_panel=0#/dashboard', wait: 3000 },

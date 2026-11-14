@@ -41,7 +41,8 @@ export type BannerKind =
   | 'tls_legacy'
   | 'tls_cert_expiring'
   | 'tls_cert_names'
-  | 'tls_firewall';
+  | 'tls_firewall'
+  | 'udp_queue_full';
 /** update_choice: Turn on / No thanks (PUT /api/updates); update_dismiss: hide this version (POST /api/updates/dismiss).
  *  tls_renew opens Settings → Syslog over TLS; it never renews by itself. */
 export type BannerAction = '' | 'retry_listeners' | 'update_choice' | 'update_dismiss' | 'tls_renew';
@@ -102,6 +103,35 @@ export interface Stats {
   truncated_24h: number;
   /** Messages from senders outside the allowlist. */
   rejected_24h: number;
+  /** dropped_24h by reason (1.2), counted since the server started. */
+  dropped_by_reason: DroppedByReason;
+  /** One per enabled UDP listener (1.2). */
+  udp_queue: UdpQueue[];
+}
+
+export interface DroppedByReason {
+  /** The low-disk guard had paused writing. */
+  paused: number;
+  write_error: number;
+  /** New senders over the device limits. */
+  refused: number;
+  /** A UDP listener's receive queue was full: writing to disk fell behind. */
+  queue_full: number;
+}
+
+/** A UDP listener's receive queue (docs/api.md → UDP receive queue). */
+export interface UdpQueue {
+  /** "udp" (syslog), or "snmp" for the trap listener. */
+  listener: string;
+  /** 0 while the listener isn't bound. */
+  port: number;
+  capacity_messages: number;
+  capacity_bytes: number;
+  depth: number;
+  high_water_24h: number;
+  dropped_24h: number;
+  /** The most messages waiting at once per hour, oldest first, the current hour last (up to 24). */
+  high_water_by_hour: number[];
 }
 
 export interface RejectedSender {

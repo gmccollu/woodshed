@@ -28,7 +28,8 @@ Change this file first if the contract changes.
                "action": "retry_listeners"}]   // action: "" | "retry_listeners" | "update_choice" | "update_dismiss" | "tls_renew";
                                                // kinds: listener_bind, writes_paused, low_disk, ui_port_busy, udp_buffer_small,
                                                // update_prompt, update_available (see "Update check"), tls_legacy, tls_cert_expiring,
-                                               // tls_cert_names, tls_firewall (see "TLS syslog listener"); an optional "url" on any banner
+                                               // tls_cert_names, tls_firewall (see "TLS syslog listener"), udp_queue_full
+                                               // (see "UDP receive queue"); an optional "url" on any banner
 }
 ```
 A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
@@ -49,12 +50,44 @@ because this copy holds the UI port.
   "devices": {"total": 14, "online": 12, "quiet": 1, "offline": 1},
   "disk": {"used_bytes": 3435973836, "cap_bytes": 21474836480, "free_bytes": 400000000000, "days_kept": 30,
            "bytes_per_day": 2361393152, "compression_ratio": 9.2, "estimated_days": 9.1, "limited_by": "cap"},
-  "dropped_24h": 0,                           // drops Woodshed itself saw (disk guard, write errors)
+  "dropped_24h": 0,                           // drops Woodshed itself saw (disk guard, write errors, refused new senders, UDP queue full)
+  "dropped_by_reason": {"paused": 0, "write_error": 0, "refused": 0, "queue_full": 0},
   "kernel_dropped_24h": null,                 // integer on Linux, null where the OS doesn't expose it
   "truncated_24h": 0,
-  "rejected_24h": 0                           // refused messages and TCP connections (allowlist, per-source limit)
+  "rejected_24h": 0,                          // refused messages and TCP connections (allowlist, per-source limit)
+  "udp_queue": [{"listener": "udp", "port": 514, "capacity_messages": 100000, "capacity_bytes": 67108864,
+                 "depth": 12, "high_water_24h": 3210, "dropped_24h": 0,
+                 "high_water_by_hour": [120, 3210, 88]}]   // oldest first, the last 24 hours
 }
 ```
+**Drops by reason** (since 1.2): `dropped_by_reason` splits `dropped_24h`: `paused` (the low-disk guard had paused
+writing, UDP messages still in the queue included), `write_error` (a log file write failed), `refused` (new senders
+over the device limits, see `device_limit`) and `queue_full` (a UDP listener's queue was full, below). `dropped_24h`
+still counts every drop, `queue_full` included. The reasons are counted since the server started, so for a day after a
+restart they can sum to less than `dropped_24h`, which comes from the index.
+
+**UDP receive queue** (since 1.2, SPEC §11.5): each UDP socket's reader only reads, stamps, applies the blocklist and
+allowlist and queues; one drainer parses and stores in arrival order, so a slow disk fills the queue instead of the OS
+socket buffer. `udp_queue` has one entry per enabled UDP listener (syslog's `"udp"`, and later `"snmp"` while the trap
+listener is on), with `port` 0 while it isn't bound:
+- `capacity_messages` and `capacity_bytes`: the limits, whichever fills first. `capacity_bytes` counts message bytes.
+- `depth`: messages waiting now. `high_water_24h`: the most waiting at once in the last 24 hours.
+- `high_water_by_hour`: the most waiting at once in each hour, oldest first, the current hour last: 24 entries, or
+  fewer within a day of the start (the About page draws it, to show stalls that cluster at the top of the hour).
+- `dropped_24h`: messages dropped because this queue was full. A queue drop counts for the sender's device, so it's in
+  the device's `dropped` stats, the top-level `dropped_24h` and an export's losses, and the events log gets one
+  `drop` event a minute with the count.
+- If messages are lost while the queue never fills, the loss happened before Woodshed read them (the OS socket buffer
+  or the network).
+- File-only settings (not in `/api/settings`): `listeners.udp_queue_messages` (default 100,000, 1,000–2,000,000) and
+  `listeners.udp_queue_bytes` (default 67,108,864, 1 MiB–1 GiB), for every UDP listener.
+- At shutdown the queue drains into the store first, for at most a third of the shutdown timeout; anything still
+  queued then counts as `queue_full`.
+
+Banner `udp_queue_full` (warn, action `""`, since 1.2): UDP messages were dropped in the last hour because a queue was
+full: "123 UDP messages were dropped in the last hour because writing to disk fell behind (the queue holds 100,000).
+Check the disk, or raise `listeners.udp_queue_messages`." When the byte limit refused the latest drop, it gives the
+byte size and names `listeners.udp_queue_bytes` instead.
 Banner `udp_buffer_small` (warn, Linux): the OS granted a UDP receive buffer below 8 MiB (`udp_rcvbuf_bytes` <
 `udp_rcvbuf_requested_bytes`). Text names both sizes, says bursts may be dropped before Woodshed sees them, and gives
 the fix (`net.core.rmem_max` on the host for containers; the package's sysctl file otherwise). Logged at WARN at start.
@@ -822,21 +855,11 @@ the stored one, unless the protocol changes (then it's required).
 
 ### UDP queue and drops
 
-`/api/stats` gains:
-```json
-{"dropped_by_reason": {"paused": 0, "write_error": 0, "refused": 0, "queue_full": 0},
- "udp_queue": [{"listener": "udp", "port": 514, "capacity_messages": 100000, "capacity_bytes": 67108864,
-                "depth": 12, "high_water_24h": 3210, "dropped_24h": 0,
-                "high_water_by_hour": [120, 3210, 88]}]}   // oldest first, the last 24 hours
-```
-- `dropped_24h` still counts every drop, `queue_full` included.
-- `udp_queue` has one entry per UDP listener (syslog's, and `"snmp"` while the trap listener is on).
-- File-only settings (not in `/api/settings`): `listeners.udp_queue_messages` (default 100,000, 1,000–2,000,000) and
-  `listeners.udp_queue_bytes` (default 67,108,864, 1 MiB–1 GiB), for every UDP listener.
+Shipped: see "Status and stats" (`dropped_by_reason`, `udp_queue`, the `udp_queue_full` banner). The SNMP trap
+listener adds its own `udp_queue` entry, `"listener": "snmp"`, while it's on.
 
 ### Banners (1.2)
-- `udp_queue_full` (warn, action `""`): there were queue drops in the last hour; the text gives the count and the
-  setting to raise.
+- `udp_queue_full`: shipped, see "Status and stats".
 - `snmp_firewall` (warn, action `""`): Windows only, while the SNMP listener is on and its firewall rule is disabled,
   missing or on another port; the text gives `woodshed snmp on`.
 - `snmp_credentials` (warn, action `""`): v3 users whose credentials can't be decrypted here (`readable: false`).

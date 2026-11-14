@@ -208,6 +208,7 @@ type Store struct {
 	maintMu   sync.Mutex
 	lastPrune time.Time
 
+	reasons    reasonHours // drops by reason, last 24 h (DropsByReason24h)
 	dropMu     sync.Mutex
 	dropCounts map[dropKey]int64 // drops not yet reported in an event
 	dropErrs   map[string]string // device -> last write error
@@ -462,7 +463,7 @@ func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, 
 		s.resMu.Unlock()
 	}
 	if s.paused.Load() {
-		d.dropLocked(rec, 1)
+		d.dropLocked(rec, 1, dropPaused)
 		return ErrPaused, false
 	}
 	return d.appendLocked(rec, m), false
@@ -676,6 +677,7 @@ func (s *Store) setRefuseReason(r string) {
 func (s *Store) noteRefused(rec time.Time) {
 	s.refusedMsgs.Add(1)
 	s.dropped.Add(1)
+	s.reasons.add(rec, dropRefused, 1)
 	s.lastRefused.Store(s.clock().UnixMilli())
 	s.refMu.Lock()
 	s.refMinutes[rec.UnixMilli()/60000]++
@@ -786,7 +788,7 @@ type Usage struct {
 	PendingCompression int       // closed files not yet gzipped
 	WritesPaused       bool      // the low-disk guard stopped writing (red banner)
 	PausedSince        time.Time // zero when not paused
-	Dropped            int64     // messages dropped since Open (paused, write errors, refused senders)
+	Dropped            int64     // messages dropped since Open (paused, write errors, refused senders, UDP queue full)
 	Written            int64     // messages written since Open
 
 	Devices           int       // senders held in memory now

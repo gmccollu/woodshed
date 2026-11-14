@@ -186,11 +186,13 @@ func (d *device) accFor(list *[]actAcc, rec time.Time) *actAcc {
 	return &(*list)[len(*list)-1]
 }
 
-// dropLocked counts n messages received at rec that won't be stored.
-func (d *device) dropLocked(rec time.Time, n int64) {
+// dropLocked counts n messages received at rec that won't be stored, for
+// reason dropPaused or dropQueueFull.
+func (d *device) dropLocked(rec time.Time, n int64, reason dropReason) {
 	d.accFor(&d.act, rec).c.Dropped += n
 	d.s.dropped.Add(n)
-	d.s.noteDrop(d.id, dropPaused, n)
+	d.s.reasons.add(rec, reason, n)
+	d.s.noteDrop(d.id, reason, n)
 }
 
 func (d *device) startDayLocked(day string) {
@@ -290,6 +292,7 @@ func (d *device) failBufferLocked(err error) {
 	putBuf(d.buf)
 	d.buf = nil
 	d.s.dropped.Add(lines)
+	d.s.reasons.add(d.s.clock(), dropWriteError, lines)
 	d.s.noteDrop(d.id, dropWriteError, lines)
 	d.s.noteWriteError(d.id, d.rel, err)
 	d.closeFileLocked(false)

@@ -21,10 +21,12 @@ type udpListener struct {
 	bound     netip.AddrPort
 	requested int
 	granted   int
-	done      chan struct{}
+	q         *udpQueue
+	done      chan struct{} // the reader ended
+	drained   chan struct{} // the drainer ended
 }
 
-func listenUDP(s *Server, ln config.Listener, rcvbuf int) (*udpListener, error) {
+func listenUDP(s *Server, ln config.Listener, rcvbuf int, q *udpQueue) (*udpListener, error) {
 	ap, err := bindAddr(ln)
 	if err != nil {
 		return nil, err
@@ -41,10 +43,13 @@ func listenUDP(s *Server, ln config.Listener, rcvbuf int) (*udpListener, error) 
 		addr:      ln.Addr,
 		bound:     conn.LocalAddr().(*net.UDPAddr).AddrPort(),
 		requested: rcvbuf,
+		q:         q,
 		done:      make(chan struct{}),
+		drained:   make(chan struct{}),
 	}
 	u.granted = setRcvbuf(conn, rcvbuf)
 	go u.run()
+	go u.drain()
 	return u, nil
 }
 
@@ -53,6 +58,9 @@ func (u *udpListener) status() ListenerStatus {
 }
 
 // run reads datagrams until the socket is closed. One datagram is one message.
+// It only reads, stamps, applies the blocklist and allowlist and queues
+// (SPEC §11.5): parsing and the store are the drainer's, so a slow disk can't
+// hold up the socket.
 func (u *udpListener) run() {
 	defer close(u.done)
 	buf := make([]byte, udpReadBuf)
@@ -81,13 +89,36 @@ func (u *udpListener) run() {
 		if len(msg) == 0 {
 			continue
 		}
-		u.srv.deliver(msg, from.Addr(), false)
+		u.srv.enqueue(u.q, msg, from.Addr())
 	}
 }
 
+// drain hands queued messages to the sink in arrival order until the queue is
+// closed and empty, and reports queue drops.
+func (u *udpListener) drain() {
+	defer close(u.drained)
+	u.srv.drainQueue(u.q)
+}
+
+// close stops the reader, then lets the drainer empty the queue into the sink
+// for at most the drain timeout. Whatever is still queued then is counted as
+// dropped; close still waits for the message being delivered, so no sink call
+// happens after it returns.
 func (u *udpListener) close() {
 	u.conn.Close()
 	<-u.done
+	u.q.close()
+	t := time.NewTimer(u.srv.opts.DrainTimeout)
+	defer t.Stop()
+	select {
+	case <-u.drained:
+		return
+	case <-t.C:
+	}
+	u.q.abandon()
+	<-u.drained
+	u.srv.log.Warn("listen: UDP queue not drained in time at stop; the rest counted as dropped",
+		"timeout", u.srv.opts.DrainTimeout)
 }
 
 // setRcvbuf asks for a receive buffer of want bytes and returns what the OS

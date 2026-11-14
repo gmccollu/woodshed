@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
@@ -154,8 +155,19 @@ Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 	dataDir := fs.String("data-dir", "", "write the logs here instead of a temporary `folder` (kept afterwards)")
 	keep := fs.Bool("keep", false, "keep the temporary data folder")
 	asJSON := fs.Bool("json", false, "print the results as JSON")
+	queue := fs.Int("udp-queue-messages", 0, "UDP receive queue capacity in `messages` (default 100000)")
+	stallEvery := fs.Duration("stall-every", 0, "fake a slow disk: stall writes every `duration` (e.g. 1m) from the start")
+	stallFor := fs.Duration("stall-for", 0, "for this `duration` each time (e.g. 3s)")
 	if code, done := parse(fs, args, stdout); done {
 		return code
+	}
+	if *queue != 0 && (*queue < config.MinUDPQueueMessages || *queue > config.MaxUDPQueueMessages) {
+		fmt.Fprintf(stderr, "woodshed bench: --udp-queue-messages must be between %d and %d\n", config.MinUDPQueueMessages, config.MaxUDPQueueMessages)
+		return 2
+	}
+	if *stallEvery < 0 || *stallFor < 0 || (*stallEvery > 0) != (*stallFor > 0) || (*stallEvery > 0 && *stallFor >= *stallEvery) {
+		fmt.Fprintln(stderr, "woodshed bench: --stall-every and --stall-for go together, and --stall-for must be shorter")
+		return 2
 	}
 	type run struct{ proto, framing string }
 	var runs []run
@@ -192,7 +204,7 @@ Exit status: 0 when every message arrived exactly once, 1 otherwise.`, stderr)
 		}
 		res, err := loadgen.Bench(ctx, loadgen.BenchOptions{
 			Proto: r.proto, Framing: r.framing, Rate: *rate, Duration: *duration, Size: *size,
-			DataDir: *dataDir, Keep: *keep,
+			DataDir: *dataDir, Keep: *keep, QueueMessages: *queue, StallEvery: *stallEvery, StallFor: *stallFor,
 		})
 		results = append(results, res)
 		if err != nil {

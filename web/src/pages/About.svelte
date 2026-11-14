@@ -1,7 +1,25 @@
 <script lang="ts">
-  import { bytes, dateTime, duration } from '../lib/format';
+  import { getStats, type Stats } from '../lib/api';
+  import { bytes, dateTime, duration, num } from '../lib/format';
   import { live } from '../lib/status.svelte';
   import CopyButton from '../components/CopyButton.svelte';
+  import QueueChart from '../components/QueueChart.svelte';
+
+  // The UDP queue and the drop reasons come from /api/stats.
+  let stats = $state<Stats | null>(null);
+  $effect(() => {
+    const load = () =>
+      getStats()
+        .then((s) => (stats = s))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 10_000);
+    return () => clearInterval(t);
+  });
+  const reasons = $derived(stats?.dropped_by_reason);
+  const anyReason = $derived(!!reasons && reasons.paused + reasons.write_error + reasons.refused + reasons.queue_full > 0);
+  const queueName = (l: string) => (l === 'udp' ? 'Syslog over UDP' : l === 'snmp' ? 'SNMP traps' : l.toUpperCase());
+  const pct = (a: number, b: number) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
 
   const st = $derived(live.status);
   const osName = $derived(
@@ -60,9 +78,15 @@
     <section class="card">
       <h2 class="m-0 mb-2 text-[17px] font-bold">Dropped messages</h2>
       <p class="m-0 text-[14.5px] leading-relaxed">
-        Woodshed counts every message it drops itself (when the low-disk guard pauses writing, or a write fails), and shows the count on the
-        dashboard.
+        Woodshed counts every message it drops itself (when the low-disk guard pauses writing, a write fails, a new sender is over the device
+        limits, or the UDP receive queue is full), and shows the count on the dashboard.
       </p>
+      {#if anyReason && reasons}
+        <p class="mt-2 mb-0 text-[14.5px]">
+          Last 24 hours, by reason:
+          {#each [['writes paused (low disk)', reasons.paused], ['write errors', reasons.write_error], ['new senders refused', reasons.refused], ['UDP queue full', reasons.queue_full]].filter(([, n]) => Number(n) > 0) as [what, n], i (what)}{i ? ' · ' : ' '}<b>{num(Number(n))}</b> {what}{/each}.
+        </p>
+      {/if}
       {#if st.kernel_drops_visible}
         <p class="mt-2 mb-0 text-[14.5px] leading-relaxed">
           On {osName} it also reads the kernel's UDP drop counter for its socket, so packets the OS discarded before Woodshed could read them
@@ -76,6 +100,36 @@
         </p>
       {/if}
     </section>
+
+    {#each stats?.udp_queue ?? [] as q (q.listener)}
+      <section class="card" aria-labelledby="queue-{q.listener}">
+        <h2 id="queue-{q.listener}" class="m-0 mb-2 text-[17px] font-bold">UDP receive queue <span class="font-normal text-muted">· {queueName(q.listener)}</span></h2>
+        <p class="m-0 text-[14.5px] leading-relaxed">
+          UDP messages wait here while writing to disk catches up, so a slow disk doesn't make the OS drop them. It holds up to
+          <b>{num(q.capacity_messages)}</b> messages or <b>{bytes(q.capacity_bytes)}</b>, whichever fills first.
+        </p>
+        <dl class="mt-3 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-[14.5px]">
+          <dt>Waiting now</dt>
+          <dd>{num(q.depth)}</dd>
+          <dt>Most at once, 24 h</dt>
+          <dd>{num(q.high_water_24h)} <span class="text-muted">({pct(q.high_water_24h, q.capacity_messages)}% of capacity)</span></dd>
+          <dt>Dropped, queue full</dt>
+          <dd class:text-bad-fg={q.dropped_24h > 0}>{num(q.dropped_24h)} <span class="text-muted">in 24 h</span></dd>
+        </dl>
+        {#if q.high_water_by_hour.length}
+          <QueueChart values={q.high_water_by_hour} capacity={q.capacity_messages} now={live.now} />
+        {/if}
+        <p class="mt-3 mb-0 text-[13px] leading-relaxed text-muted">
+          {#if q.dropped_24h > 0}
+            When the queue fills, the disk is falling behind: check its health and what else is using it, or raise
+            <code class="font-mono">listeners.udp_queue_messages</code> in the config file and restart Woodshed.
+          {:else}
+            If senders report messages missing while this queue never fills, they were lost before Woodshed read them: in the OS
+            socket buffer or on the network.
+          {/if}
+        </p>
+      </section>
+    {/each}
 
     <section class="card">
       <h2 class="m-0 mb-2 text-[17px] font-bold">Listeners</h2>

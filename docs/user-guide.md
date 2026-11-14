@@ -97,6 +97,31 @@ quiet, red: not heard from in an hour), the message rate and disk use, and a **l
 Click a device to follow only that one (click it again to see all), or type in the box at the top to filter
 the devices and messages. On the **Devices** page you can give a device a friendly name and a group.
 
+### Dropped messages
+
+The **Dropped** card counts the messages Woodshed received but couldn't store in the last 24 hours, and **About**
+splits them by reason: writing paused because the disk is nearly full, a failed write, new senders over the device
+limits, or a full UDP queue.
+
+**"UDP messages were dropped in the last hour because writing to disk fell behind"** (a yellow banner): UDP has no
+way to tell a device to slow down, so Woodshed reads each UDP message off the network at once and queues it until the
+disk takes it. The queue holds 100,000 messages (about 10 seconds at 10,000 messages a second) or 64 MiB. If the disk
+stalls for longer than that, new messages are dropped and counted, for their device, instead of vanishing unseen.
+What to do:
+
+- Check the disk Woodshed writes to: is it failing, nearly full, or shared with something that writes a lot (a
+  backup, an antivirus scan, another log server)? A local SSD is best.
+- Look at **About → UDP receive queue**: it shows the most messages waiting at once in each of the last 24 hours. A
+  full bar at the same time every day or every hour points at a scheduled job.
+- If the stalls are short and expected, give the queue more room: set `udp_queue_messages` (1,000 to 2,000,000) or,
+  for large messages, `udp_queue_bytes` (1 MiB to 1 GiB) under `[listeners]` in the config file
+  ([where it is](install.md#where-things-live)) and restart Woodshed. The banner names the limit that filled.
+- If a device reports missing messages while this queue never fills, they were lost before Woodshed read them: in the
+  computer's network buffer (see the receive buffer on **About**) or on the network. Use TCP or TLS for devices where
+  every message matters.
+
+The banner goes away an hour after the last drop. When Woodshed stops, it first stores what's in the queue.
+
 ## 4. Find the log files
 
 Every message is kept, exactly as it arrived, in plain text: one folder per device and one file per day (UTC).

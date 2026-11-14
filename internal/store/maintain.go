@@ -469,6 +469,8 @@ type dropReason int
 const (
 	dropPaused dropReason = iota
 	dropWriteError
+	dropRefused   // only in reasonHours: refused senders have their own events (collectRefused)
+	dropQueueFull // a UDP queue drop (DropQueued)
 )
 
 type dropKey struct {
@@ -483,6 +485,20 @@ func (s *Store) noteDrop(dev string, r dropReason, n int64) {
 	s.dropMu.Lock()
 	s.dropCounts[dropKey{dev, r}] += n
 	s.dropMu.Unlock()
+}
+
+// queueFullEventText is the one event a minute for UDP queue drops, however
+// many devices they were from.
+func queueFullEventText(n int64, devices int) string {
+	from := ""
+	switch {
+	case devices == 1:
+		from = " from 1 device"
+	case devices > 1:
+		from = fmt.Sprintf(" from %d devices", devices)
+	}
+	return fmt.Sprintf("dropped %d UDP messages%s: the UDP receive queue was full because writing to disk fell behind "+
+		"(check the disk, or raise listeners.udp_queue_messages)", n, from)
 }
 
 func (s *Store) noteWriteError(dev, rel string, err error) {
@@ -510,14 +526,32 @@ func (s *Store) reportDrops(now time.Time, force bool) {
 	sort.Slice(keys, func(i, j int) bool {
 		return keys[i].dev < keys[j].dev || (keys[i].dev == keys[j].dev && keys[i].reason < keys[j].reason)
 	})
+	var qfN int64
+	qfDevs := map[string]bool{}
 	for _, k := range keys {
 		var text string
-		if k.reason == dropPaused {
+		switch k.reason {
+		case dropQueueFull:
+			qfN += counts[k]
+			if k.dev != "" {
+				qfDevs[k.dev] = true
+			}
+			continue
+		case dropPaused:
 			text = fmt.Sprintf("dropped %d messages: writes paused (low disk space)", counts[k])
-		} else {
+		default:
 			text = fmt.Sprintf("dropped %d messages: write error (%s)", counts[k], errs[k.dev])
 		}
 		s.event(index.LevelError, index.KindDrop, k.dev, text)
+	}
+	if qfN > 0 {
+		dev := ""
+		if len(qfDevs) == 1 {
+			for d := range qfDevs {
+				dev = d
+			}
+		}
+		s.event(index.LevelWarn, index.KindDrop, dev, queueFullEventText(qfN, len(qfDevs)))
 	}
 }
 
