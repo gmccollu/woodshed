@@ -289,8 +289,10 @@ func (c *creds) put(in api.SNMPUserInput, update string, self []byte) (api.SNMPU
 	if err != nil {
 		errs["key_ext"] = `Must be "draft" (the default) or "alt".`
 	}
-	if in.KeyExt != "" && pp != snmp.PrivAES192 && pp != snmp.PrivAES256 && errs["key_ext"] == "" {
-		errs["key_ext"] = "Only for aes-192 and aes-256."
+	// "draft" is the default and what GET returns for every user, so it's accepted with any priv (a GET → PUT
+	// round trip and the documented example must work); only "alt" is meaningful for AES-192/256 alone.
+	if ke == snmp.KeyExtAlt && pp != snmp.PrivAES192 && pp != snmp.PrivAES256 && errs["key_ext"] == "" {
+		errs["key_ext"] = `"alt" is only for aes-192 and aes-256.`
 	}
 	var engines [][]byte
 	var engineHex []string
