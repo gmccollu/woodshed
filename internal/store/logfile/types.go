@@ -10,6 +10,7 @@ package logfile
 const (
 	TypeSyslog = "syslog"
 	TypeTrap   = "trap"
+	TypePoll   = "poll"
 )
 
 // DataType is one type's name and its folder inside a device folder ("" is the
@@ -20,7 +21,7 @@ type DataType struct {
 }
 
 // DataTypes lists every type, syslog first.
-var DataTypes = []DataType{{Name: TypeSyslog, Dir: ""}, {Name: TypeTrap, Dir: "traps"}}
+var DataTypes = []DataType{{Name: TypeSyslog, Dir: ""}, {Name: TypeTrap, Dir: "traps"}, {Name: TypePoll, Dir: "poll"}}
 
 // TypeDir returns the folder of a type ("" for syslog and for an unknown
 // type, which is read as syslog like every 1.1 row).
