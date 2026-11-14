@@ -32,6 +32,7 @@ func TestCloseWithOpenStreamsAndCompression(t *testing.T) {
 		t.Fatal(err)
 	}
 	inGzip := make(chan struct{}, 64)
+	s.testKeepPrio = true // this test is about Close mid-compression, not about a starved background thread
 	s.testHookGzip = func(string) {
 		select {
 		case inGzip <- struct{}{}:

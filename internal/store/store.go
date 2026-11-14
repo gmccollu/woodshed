@@ -254,6 +254,10 @@ type Store struct {
 	// testHookLowerPrio, if set, runs where the compressor lowers its thread's
 	// priority (tests stall it, as a starved thread would be).
 	testHookLowerPrio func()
+	// testKeepPrio, if set, skips lowering the compressor's thread priority, for tests
+	// about Close and compression that mustn't depend on the OS scheduling a
+	// background-band thread (TestCloseDoesntWaitForAStarvedCompressor covers that).
+	testKeepPrio bool
 }
 
 // watchClock records a warning event when a message's received time is more

@@ -52,8 +52,10 @@ func (s *Store) compressLoop() {
 				if s.testHookLowerPrio != nil {
 					s.testHookLowerPrio()
 				}
-				if err := lowerThreadPriority(); err != nil {
-					s.log.Debug("store: couldn't lower the compressor's priority", "err", err)
+				if !s.testKeepPrio {
+					if err := lowerThreadPriority(); err != nil {
+						s.log.Debug("store: couldn't lower the compressor's priority", "err", err)
+					}
 				}
 			}
 			s.compressPending(s.ctx)
