@@ -3,11 +3,14 @@
     ApiError,
     ALL_SEVS,
     getContext,
+    getDevices,
     getSavedSearch,
     getSchema,
     getSummary,
     search,
     SUMMARY_EXPIRED,
+    isTrap,
+    type AnyResult,
     type DataType,
     type FieldDescriptor,
     type SavedSearch,
@@ -16,7 +19,28 @@
     type SevKey,
     type SummaryParams,
     type SummaryResponse,
+    type TrapResult,
   } from '../lib/api';
+  import {
+    SYSLOG,
+    SYSLOG_SAVED_KEYS,
+    TRAP,
+    cleanFilters,
+    excludeValue,
+    includeValue,
+    isFailure,
+    pduLabel,
+    removeValue,
+    savedTypeFilters,
+    statusLabel,
+    ticks,
+    trapTitle,
+    typeFiltersFromQuery,
+    typeFromQuery,
+    typeToQuery,
+    varbindLine,
+    type TypeFilters,
+  } from '../lib/traps';
   import { bytes, num, stamp } from '../lib/format';
   import { matcher } from '../lib/highlight';
   import { prefs } from '../lib/prefs.svelte';
@@ -49,7 +73,7 @@
   } from '../lib/events';
   import { termsError } from '../lib/terms';
   import { sevClass, sevLabel } from '../lib/severity';
-  import { deviceName } from '../lib/status.svelte';
+  import { deviceName, live } from '../lib/status.svelte';
   import { splitRaw } from '../lib/syslog';
   import DevicePicker from '../components/DevicePicker.svelte';
   import FieldPanel from '../components/FieldPanel.svelte';
@@ -81,6 +105,10 @@
   let fields = $state<FieldFilters>(noFields());
   let extras = $state<Extras>(noExtras());
   let showRaw = $state(false);
+  /** The data type (SPEC §11.1): syslog, or SNMP traps (type=trap in the URL; links without it open syslog). */
+  let dtype = $state<string>(SYSLOG);
+  /** A non-syslog type's own filters, by parameter name (trap_oid, status, …). */
+  let tf = $state<TypeFilters>({});
 
   // ----- the saved search the form was opened from (SPEC §10.1.4) -----
   let savedCur = $state<SavedSearch | null>(null);
@@ -100,14 +128,27 @@
     exclude: fields.exclude,
     extras: $state.snapshot(extras),
   });
-  const changed = $derived(!!savedCur && differsFromSaved(form(), savedCur.query));
+  const changed = $derived(
+    !!savedCur &&
+      (differsFromSaved(form(), savedCur.query) || (dtype !== SYSLOG && JSON.stringify(cleanFilters(tf)) !== JSON.stringify(savedTypeFilters(savedCur.query)))),
+  );
+
+  /** The saved query for the form: a trap search saves its own filters and none of syslog's (the server refuses them). */
+  function savedQuery() {
+    const q: Record<string, unknown> = savedQueryOf(form());
+    if (dtype === SYSLOG) return q;
+    for (const k of SYSLOG_SAVED_KEYS) delete q[k];
+    return { ...q, ...cleanFilters(tf) };
+  }
 
   // ----- the search behind the results (frozen, so "Load more" sends the same parameters) -----
   let active = $state<SearchParams | null>(null);
   let activeScope = $state<Scope>(allScope());
   let activeMode = $state<Mode>('text');
   let activeExtras = $state<Extras>(noExtras());
-  let results = $state.raw<SearchResult[]>([]);
+  let activeType = $state<string>(SYSLOG);
+  let activeTf = $state<TypeFilters>({});
+  let results = $state.raw<AnyResult[]>([]);
   let seen = new Set<string>();
   let cursor = $state('');
   let status = $state<'idle' | 'running' | 'done' | 'cancelled' | 'error'>('idle');
@@ -120,7 +161,9 @@
   let gen = 0;
 
   // ----- the field panel and histogram: one summary for the active search -----
-  let schema = $state<DataType | null>(null);
+  let schemas = $state<DataType[]>([]);
+  /** The field panel's fields: the schema of the type being searched. */
+  const schema = $derived(schemas.find((t) => t.type === dtype) ?? (dtype === SYSLOG ? (schemas.find((t) => t.default) ?? null) : null));
   let summary = $state.raw<SummaryResponse | null>(null);
   let sumStatus = $state<'idle' | 'running' | 'paused' | 'done' | 'error'>('idle');
   let sumError = $state('');
@@ -129,8 +172,33 @@
   let sumGen = 0;
 
   getSchema()
-    .then((s) => (schema = s.types.find((t) => t.default) ?? s.types[0] ?? null))
+    .then((s) => (schemas = s.types))
     .catch((x) => (sumError = `Couldn't load the field list: ${(x as Error).message}`));
+
+  // The type switch shows when the server has another type (SPEC §11.2.5): the SNMP listener is on, or some device has trap files.
+  let trapFilesSeen = $state(false);
+  getDevices({ limit: 1000, sort: 'last_heard', hidden: 'include' })
+    .then((p) => (trapFilesSeen = p.devices.some((d) => d.types?.includes(TRAP))))
+    .catch(() => {});
+  const trapType = $derived(schemas.find((t) => t.type === TRAP));
+  const showTypes = $derived(
+    dtype !== SYSLOG ||
+      (!!trapType &&
+        (trapFilesSeen || !!live.status?.listeners.some((l) => l.proto === 'snmp') || !!live.devices?.some((d) => d.types?.includes(TRAP)))),
+  );
+
+  /** Switching type keeps the text, devices, range and order; the other type's filters don't apply, so they're cleared. */
+  function setType(t: string) {
+    if (t === dtype) return;
+    dtype = t;
+    tf = {};
+    sev = [...ALL_SEVS];
+    fields = { ...noFields(), exclude: fields.exclude };
+    extras = { ...noExtras(), xdev: extras.xdev };
+    savedCur = null;
+    savedEtag = '';
+    run();
+  }
 
   function toQuery(): string {
     const p = new URLSearchParams();
@@ -139,12 +207,24 @@
     if (cs) p.set('cs', '1');
     scopeToQuery(scope, p);
     rangeToQuery(range, p);
-    sevToQuery(sev, p);
-    fieldsToQuery(fields, p);
-    extrasToQuery(extras, p);
+    typeQuery(p, dtype, sev, fields, extras, tf);
     if (order === 'asc') p.set('order', 'asc');
     if (savedCur) p.set('saved', savedCur.id);
     return p.toString();
+  }
+
+  /** The type and its filters in the page URL: syslog's severities, program/tag, host and facility, or the other type's own. */
+  function typeQuery(p: URLSearchParams, t: string, sv: SevKey[], fl: FieldFilters, ex: Extras, f: TypeFilters) {
+    typeToQuery(t, p);
+    if (t === SYSLOG) {
+      sevToQuery(sv, p);
+      fieldsToQuery(fl, p);
+      extrasToQuery(ex, p);
+      return;
+    }
+    fieldsToQuery({ app: '', host: '', exclude: fl.exclude }, p);
+    extrasToQuery({ ...noExtras(), xdev: ex.xdev }, p);
+    for (const k of Object.keys(f).sort()) if (f[k].length) p.set(k, f[k].join(','));
   }
 
   function fromQuery(s: string) {
@@ -158,6 +238,8 @@
     fields = fieldsFromQuery(p);
     extras = extrasFromQuery(p);
     order = p.get('order') === 'asc' ? 'asc' : 'desc';
+    dtype = typeFromQuery(p);
+    tf = dtype === SYSLOG ? {} : typeFiltersFromQuery(p);
     const id = p.get('saved') ?? '';
     if (!id) {
       savedCur = null;
@@ -247,7 +329,9 @@
     activeScope = $state.snapshot(scope);
     activeMode = mode;
     activeExtras = $state.snapshot(extras);
-    active = {
+    activeType = dtype;
+    activeTf = cleanFilters($state.snapshot(tf));
+    const shared: SearchParams = {
       q,
       regex: mode === 'regex',
       case: cs,
@@ -255,17 +339,23 @@
       ...scopeParams(scope),
       from,
       to,
-      severities: [...sev],
-      app: splitList(fields.app),
-      host: splitList(fields.host),
       exclude: fields.exclude,
-      facilities: facKeys(extras.fac),
       exclude_devices: [...extras.xdev],
-      exclude_app: [...extras.xapp],
-      exclude_host: [...extras.xhost],
       order,
       limit: PAGE,
     };
+    active =
+      dtype === SYSLOG
+        ? {
+            ...shared,
+            severities: [...sev],
+            app: splitList(fields.app),
+            host: splitList(fields.host),
+            facilities: facKeys(extras.fac),
+            exclude_app: [...extras.xapp],
+            exclude_host: [...extras.xhost],
+          }
+        : { ...shared, type: dtype, filters: activeTf };
     results = [];
     seen = new Set();
     cursor = '';
@@ -370,12 +460,20 @@
   });
   const fieldCh = (pick: (r: SearchResult) => string, label: string) => {
     let w = label.length;
-    for (const r of results) w = Math.max(w, pick(r).length);
+    for (const r of results) if (!isTrap(r)) w = Math.max(w, pick(r).length);
     return Math.min(w, FIELD_MAX);
   };
   const hnCh = $derived(fieldCh((r) => r.host ?? '', 'Host'));
   const apCh = $derived(fieldCh((r) => r.app ?? '', 'Program/tag'));
+  /** The Trap column fits its longest name (or OID). */
+  const trCh = $derived.by(() => {
+    let w = 4;
+    for (const r of results) if (isTrap(r)) w = Math.max(w, trapTitle(r.fields).length);
+    return Math.min(w, 34);
+  });
   const text = (r: SearchResult) => (showRaw ? r.raw : splitRaw(r.raw).body);
+  /** A trap's line: its varbinds by name, or (Raw) the stored record. */
+  const trapText = (r: TrapResult) => (showRaw ? r.raw : r.fields.varbinds.length ? varbindLine(r.fields.varbinds) : r.fields.error || '(no varbinds)');
 
   /** Clicking a Host or Program/tag value narrows the search to it. */
   function narrow(e: Event, kind: 'host' | 'app', v: string) {
@@ -399,6 +497,18 @@
 
   function pick(f: FieldDescriptor, value: string, exclude: boolean) {
     const param = exclude && f.exclude_param ? f.exclude_param : f.param;
+    if (dtype !== SYSLOG && f.param !== 'devices') {
+      // Another type's own field, by the schema alone: a closed field sends its selected values (or the
+      // complement to leave one out); an open one adds the value to its parameter or to its exclude form.
+      if (f.domain) {
+        const cur = tf[f.param] ?? [];
+        tf = cleanFilters({ ...tf, [f.param]: exclude ? domainExclude(cur, domainOf(f), value) : domainInclude(cur, value) });
+      } else if (exclude && f.exclude_param) tf = excludeValue(tf, f.param, f.exclude_param, value);
+      else if (!exclude) tf = includeValue(tf, f.param, f.exclude_param, value);
+      else return;
+      run();
+      return;
+    }
     switch (param) {
       case 'devices':
         scope = { mode: 'devices', group: '', devices: scope.mode === 'devices' ? addItem(scope.devices, value) : [value] };
@@ -438,6 +548,15 @@
 
   /** Whether a value is in the active search's filters ("in"), left out ("out"), or neither. */
   function valueState(f: FieldDescriptor, value: string): 'in' | 'out' | '' {
+    if (activeType !== SYSLOG && f.param !== 'devices') {
+      const lc = (xs: string[] | undefined) => (xs ?? []).some((x) => x.toLowerCase() === value.toLowerCase());
+      if (f.domain) {
+        const s = activeTf[f.param] ?? [];
+        return !s.length ? '' : s.includes(value) ? 'in' : 'out';
+      }
+      if (lc(activeTf[f.exclude_param])) return 'out';
+      return lc(activeTf[f.param]) ? 'in' : '';
+    }
     switch (f.param) {
       case 'devices':
         if (activeExtras.xdev.includes(value)) return 'out';
@@ -475,6 +594,27 @@
           scope = rest.length ? { ...scope, devices: rest } : allScope();
         });
     for (const d of extras.xdev) chip(`xdev:${d}`, `not ${deviceName(d)}`, `Leaving out device ${d}`, true, () => (extras.xdev = removeItem(extras.xdev, d)));
+    if (dtype !== SYSLOG) {
+      // The other type's fields: labels from the domain, or from the field panel's counts (a trap OID's MIB name).
+      const counted = (key: string, v: string) => summary?.fields.find((x) => x.key === key)?.values.find((x) => x.value === v)?.label ?? v;
+      for (const f of schema.fields) {
+        if (f.param === 'devices') continue;
+        if (f.domain) {
+          const cur = tf[f.param] ?? [];
+          for (const c of domainChips(cur, domainOf(f))) {
+            const lab = label(f.param, c.value);
+            chip(`${f.param}:${c.value}`, `${c.included ? '' : 'not '}${lab}`, `${f.label} ${lab}`, !c.included,
+              () => (tf = cleanFilters({ ...tf, [f.param]: domainRemove(tf[f.param] ?? [], domainOf(f), c.value, c.included) })));
+          }
+          continue;
+        }
+        for (const v of tf[f.param] ?? []) chip(`${f.param}:${v}`, counted(f.key, v), `${f.label} ${v}`, false, () => (tf = removeValue(tf, f.param, v)));
+        if (f.exclude_param)
+          for (const v of tf[f.exclude_param] ?? [])
+            chip(`${f.exclude_param}:${v}`, `not ${counted(f.key, v)}`, `Leaving out ${f.label.toLowerCase()} ${v}`, true, () => (tf = removeValue(tf, f.exclude_param, v)));
+      }
+      return out;
+    }
     for (const h of splitList(fields.host)) chip(`host:${h}`, h, `Host ${h}`, false, () => (fields.host = removeFromList(fields.host, h, hostKey)));
     for (const h of extras.xhost) chip(`xhost:${h}`, `not ${h}`, `Leaving out host ${h}`, true, () => (extras.xhost = removeItem(extras.xhost, h)));
     for (const a of splitList(fields.app)) chip(`app:${a}`, a, `Program/tag ${a}`, false, () => (fields.app = removeFromList(fields.app, a, appKey)));
@@ -508,6 +648,8 @@
     order = f.order;
     fields = { app: f.app, host: f.host, exclude: f.exclude };
     extras = f.extras;
+    dtype = s.type === TRAP ? TRAP : SYSLOG;
+    tf = dtype === SYSLOG ? {} : savedTypeFilters(s.query);
     savedCur = s;
     savedNote = '';
     savedEtag = '';
@@ -542,9 +684,8 @@
     if (f.cs) p.set('cs', '1');
     scopeToQuery(f.scope, p);
     rangeToQuery(f.range, p);
-    sevToQuery(f.sev, p);
-    fieldsToQuery({ app: f.app, host: f.host, exclude: f.exclude }, p);
-    extrasToQuery(f.extras, p);
+    const t = s.type === TRAP ? TRAP : SYSLOG;
+    typeQuery(p, t, f.sev, { app: f.app, host: f.host, exclude: f.exclude }, f.extras, t === SYSLOG ? {} : savedTypeFilters(s.query));
     if (f.order === 'asc') p.set('order', 'asc');
     p.set('saved', s.id);
     return `${location.origin}${location.pathname}${location.search}#/events?${p.toString()}`;
@@ -555,7 +696,7 @@
     ref: string;
     before: number;
     after: number;
-    lines: SearchResult[];
+    lines: AnyResult[];
     hit: number;
     atStart: boolean;
     atEnd: boolean;
@@ -638,12 +779,24 @@
     <div class="flex items-start gap-3">
       <div class="min-w-0 grow">
         <h1 id="ev-title" class="m-0 text-xl font-bold tracking-tight">Events</h1>
-        <p class="mt-1 mb-0 text-[13.5px] text-muted">Every stored message, including older compressed days. Leave the text empty to browse; filter by text, program/tag, host, device, time and severity, or click a value in Fields.</p>
+        {#if dtype === SYSLOG}
+          <p class="mt-1 mb-0 text-[13.5px] text-muted">Every stored message, including older compressed days. Leave the text empty to browse; filter by text, program/tag, host, device, time and severity, or click a value in Fields.</p>
+        {:else}
+          <p class="mt-1 mb-0 text-[13.5px] text-muted">Every stored SNMP trap and inform. Leave the text empty to browse; filter by text (it never matches the raw packet), device and time, or click a trap, version, status or community in Fields.</p>
+        {/if}
       </div>
+      {#if showTypes}
+        <div class="seg typesw" role="radiogroup" aria-label="Data type">
+          {#each schemas as t (t.type)}
+            <button type="button" role="radio" aria-checked={dtype === t.type} onclick={() => setType(t.type)}>{t.label}</button>
+          {/each}
+        </div>
+      {/if}
       <SavedMenu
+        type={dtype}
         current={savedCur}
         etag={savedEtag}
-        query={() => savedQueryOf(form())}
+        query={savedQuery}
         {changed}
         {linkOf}
         onopen={openSaved}
@@ -687,6 +840,7 @@
       <button type="submit" class="pill-btn px-5 py-2"><Icon name="search" size={15} />Search</button>
     </div>
     <div class="flex flex-wrap items-start gap-2">
+      {#if dtype === SYSLOG}
       <label class="fld">
         <span class="flab">Program/tag</span>
         <input
@@ -709,6 +863,7 @@
           title="Hostnames from the message header, comma-separated, any case"
         />
       </label>
+      {/if}
       <label class="fld grow">
         <span class="flab">Exclude</span>
         <input
@@ -733,7 +888,7 @@
       <!-- Last, so an open custom range gets its own line under the other controls. -->
       <TimeRange bind:value={range} error={rangeError} />
     </div>
-    <div class="sevbar"><SeverityChips bind:value={sev} label="Search severities" /></div>
+    {#if dtype === SYSLOG}<div class="sevbar"><SeverityChips bind:value={sev} label="Search severities" /></div>{/if}
   </form>
 
   <div class="evgrid">
@@ -761,13 +916,21 @@
         <span class="grow"></span>
         {#if status === 'running'}<button type="button" class="tail-btn" onclick={cancelAll}>Cancel</button>{/if}
         <button type="button" class="tail-btn" aria-pressed={prefs.wrap} onclick={() => (prefs.wrap = !prefs.wrap)}>Wrap</button>
-        <button type="button" class="tail-btn" aria-pressed={showRaw} onclick={() => (showRaw = !showRaw)} title="Show the PRI and syslog header too">Raw</button>
+        <button
+          type="button"
+          class="tail-btn"
+          aria-pressed={showRaw}
+          onclick={() => (showRaw = !showRaw)}
+          title={activeType === SYSLOG ? 'Show the PRI and syslog header too' : 'Show the stored record (every key, and the packet as base64)'}>Raw</button
+        >
         <button
           type="button"
           class="tail-btn"
           onclick={exportThese}
-          disabled={!active || !results.length}
-          title="Open Export with these devices, range, severities, text, program/tag, host, facility and exclude filters"
+          disabled={!active || !results.length || activeType !== SYSLOG}
+          title={activeType === SYSLOG
+            ? 'Open Export with these devices, range, severities, text, program/tag, host, facility and exclude filters'
+            : 'The Export page exports syslog only in this version; woodshed search --type trap exports traps from the command line'}
         >
           <Icon name="export" size={14} />Export these results
         </button>
@@ -808,8 +971,13 @@
       style:--tw="18ch"
       style:--hnw="{hnCh}ch"
       style:--apw="{apCh}ch"
+      style:--trw="{trCh}ch"
     >
-      {#if results.length}
+      {#if results.length && activeType !== SYSLOG}
+        <div class="logline colhead trap" aria-hidden="true">
+          <span class="c t">Time</span><span class="c h">Device</span><span class="c tr">Trap</span><span class="m">Varbinds</span>
+        </div>
+      {:else if results.length}
         <div class="logline colhead" aria-hidden="true">
           <span class="c t">Time</span><span class="c h">Device</span><span class="c hn">Host</span><span class="c ap">Program/tag</span><span class="c s">Level</span><span class="m">Message</span>
         </div>
@@ -824,12 +992,31 @@
         <p class="m-0 py-6 text-center font-sans text-log-dim">
           {status === 'cancelled'
             ? 'Cancelled before anything matched.'
-            : !active?.severities?.length
+            : activeType === SYSLOG && !active?.severities?.length
               ? 'No levels selected, so nothing matches. Pick some severities above.'
               : 'No matches in this range. Try a longer range, fewer filters, or other words.'}
         </p>
       {/if}
       {#each results as r (r.ref)}
+        {#if isTrap(r)}
+          <div
+            class="logline clickable trap"
+            role="button"
+            tabindex="0"
+            data-ref={r.ref}
+            title={r.raw}
+            aria-label="Show the decoded trap and the traps around it"
+            onclick={() => openContext(r.ref)}
+            oncontextmenu={(e) => { e.preventDefault(); openMenu(r.device_id, e.clientX, e.clientY); }}
+            onkeydown={(e) => rowKey(e, r.ref)}
+          >
+            <span class="c t">{stamp(r.received, prefs.utc)}</span><span class="c h">{deviceName(r.device_id)}</span><span
+              class="c tr"
+              class:bad={isFailure(r.fields.status)}
+              title={r.fields.trap_oid || statusLabel(r.fields.status)}>{trapTitle(r.fields)}</span
+            ><span class="m"><LogText text={trapText(r)} re={hl} raw={showRaw} /></span>
+          </div>
+        {:else}
         <div
           class="logline clickable"
           role="button"
@@ -857,6 +1044,7 @@
             >{:else}<span class="c ap none">–</span>{/if}<span class="c s {sevClass(r.severity)}">{sevLabel(r.severity)}</span
           ><span class="m"><LogText text={text(r)} re={hl} raw={showRaw} /></span>
         </div>
+        {/if}
       {/each}
       {#if results.length && cursor}
         <div class="py-3 text-center font-sans">
@@ -878,13 +1066,51 @@
   <div class="overlay" role="presentation" onclick={() => (ctx = null)}></div>
   <div class="ctx log-panel" role="dialog" aria-modal="true" aria-label="Lines around the result">
     <div class="bar flex flex-wrap items-center gap-2 px-[18px] py-3 font-sans text-[13px]">
-      <b class="text-white">Context</b>
+      <b class="text-white">{ctxHit && isTrap(ctxHit) ? 'Trap' : 'Context'}</b>
       {#if ctxHit}<span class="text-log-dim">{deviceName(ctxHit.device_id)} · {stamp(ctxHit.received, prefs.utc)} · {ctx.before} before, {ctx.after} after</span>{/if}
       <span class="grow"></span>
       <button type="button" class="tail-btn" aria-pressed={prefs.wrap} onclick={() => (prefs.wrap = !prefs.wrap)}>Wrap</button>
       <button type="button" class="tail-btn" onclick={() => (ctx = null)} aria-label="Close (Esc)"><Icon name="x" size={14} /></button>
     </div>
-    <div bind:this={ctxBox} class="logview min-h-0 grow overflow-auto px-[18px] py-2" class:nowrap={!prefs.wrap} style:--hostw="{hostCh}ch" style:--tw="18ch">
+      {#if ctxHit && isTrap(ctxHit)}
+      {@const tr = ctxHit.fields}
+      <section class="decoded font-sans mx-[18px] mt-3" aria-label="The decoded trap">
+        <h3 class="dh">
+          {trapTitle(tr)}
+          <span class="sub">{pduLabel(tr)} from {deviceName(ctxHit.device_id)}{tr.cred ? ` · ${tr.cred.startsWith('#') ? 'community' : 'user'} ${tr.cred}` : ''}</span>
+        </h3>
+        <dl class="dkv">
+          {#if tr.trap_oid}<dt>Trap OID</dt><dd class="font-mono">{tr.trap_oid}{tr.trap_name ? ` (${tr.trap_name})` : ''}</dd>{/if}
+          <dt>Status</dt>
+          <dd class:bad={isFailure(tr.status)}>{statusLabel(tr.status)}{tr.error ? `: ${tr.error}` : ''}</dd>
+          {#if tr.uptime !== null}<dt>Device uptime</dt><dd>{ticks(tr.uptime)} <span class="text-log-dim">({tr.uptime} ticks)</span></dd>{/if}
+          {#if tr.enterprise}<dt>Enterprise</dt><dd class="font-mono">{tr.enterprise}</dd>{/if}
+          {#if tr.generic !== null}<dt>Generic / specific</dt><dd>{tr.generic} / {tr.specific}</dd>{/if}
+          {#if tr.dup}<dt>Retransmitted</dt><dd>yes: the same inform arrived again within 60 s, so it's stored again</dd>{/if}
+        </dl>
+        {#if tr.varbinds.length}
+          <table class="vbt">
+            <thead><tr><th scope="col">Name</th><th scope="col">OID</th><th scope="col">Type</th><th scope="col">Value</th></tr></thead>
+            <tbody>
+              {#each tr.varbinds as v, k (k)}
+                <tr>
+                  <td class="font-mono">{v.name || '–'}</td>
+                  <td class="font-mono text-log-dim">{v.oid}</td>
+                  <td class="text-log-dim">{v.type}</td>
+                  <td class="font-mono">{v.value}{#if v.value_name}<span class="text-log-dim"> ({v.value_name})</span>{/if}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="m-0 mt-2 text-[13px] text-log-dim">
+            {isFailure(tr.status) ? 'No varbinds: only the parts readable without the keys are stored for a failed or broken packet.' : 'No varbinds.'}
+          </p>
+        {/if}
+        <p class="m-0 mt-2 text-[12.5px] text-log-dim">Names come from the MIBs loaded now. Below: this device's traps around it.</p>
+      </section>
+    {/if}
+    <div bind:this={ctxBox} class="logview min-h-0 grow overflow-auto px-[18px] py-2" class:nowrap={!prefs.wrap} style:--hostw="{hostCh}ch" style:--tw="18ch" style:--trw="{trCh}ch">
       {#if ctx.error}<p class="font-sans text-[var(--sev-err)]" role="alert">{ctx.error}</p>{/if}
       <div class="py-1 text-center font-sans">
         <button
@@ -898,11 +1124,19 @@
       </div>
       {#if ctx.loading && !ctx.lines.length}<p class="font-sans text-log-dim">Loading…</p>{/if}
       {#each ctx.lines as l, i (l.ref)}
+        {#if isTrap(l)}
+          <div class="logline trap" class:hit={i === ctx.hit} title={l.raw}>
+            <span class="c t">{stamp(l.received, prefs.utc)}</span><span class="c h">{deviceName(l.device_id)}</span><span class="c tr" class:bad={isFailure(l.fields.status)}
+              >{trapTitle(l.fields)}</span
+            ><span class="m"><LogText text={trapText(l)} re={i === ctx.hit ? hl : null} raw={showRaw} /></span>
+          </div>
+        {:else}
         <div class="logline" class:hit={i === ctx.hit} title={tip(l.raw)}>
           <span class="c t">{stamp(l.received, prefs.utc)}</span><span class="c h">{deviceName(l.device_id)}</span><span class="c s {sevClass(l.severity)}"
             >{sevLabel(l.severity)}</span
           ><span class="m"><LogText text={text(l)} re={i === ctx.hit ? hl : null} raw={showRaw} /></span>
         </div>
+        {/if}
       {/each}
       <div class="py-1 text-center font-sans">
         <button
@@ -938,6 +1172,79 @@
     .evgrid > :global(.fp) {
       order: 2;
     }
+  }
+  .typesw {
+    align-self: center;
+  }
+  .typesw button {
+    white-space: nowrap;
+  }
+  /* Trap rows: time, device, trap name (or OID), then the varbinds, with the same hanging indent as syslog rows. */
+  :global(.logview .logline.trap) {
+    --msgx: calc(var(--tw, 12ch) + var(--hostw, 12ch) + var(--trw, 20ch) + 3.6ch);
+  }
+  :global(.logline > .c.tr) {
+    width: var(--trw, 20ch);
+    color: var(--log-fg);
+    font-weight: 600;
+  }
+  .bad {
+    color: var(--sev-err) !important;
+  }
+  .decoded {
+    flex: none;
+    max-height: 45%;
+    overflow: auto;
+    margin-bottom: 6px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--log-fg);
+    font-size: 13.5px;
+  }
+  .dh {
+    margin: 0 0 8px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .dh .sub {
+    margin-left: 8px;
+    font-weight: 400;
+    font-size: 12.5px;
+    color: var(--log-dim);
+  }
+  .dkv {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 2px 14px;
+    margin: 0 0 8px;
+  }
+  .dkv dt {
+    color: var(--log-dim);
+  }
+  .dkv dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .vbt {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .vbt th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--log-dim);
+    padding: 3px 10px 3px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .vbt td {
+    padding: 3px 10px 3px 0;
+    vertical-align: top;
+    overflow-wrap: anywhere;
   }
   .savedline {
     display: flex;

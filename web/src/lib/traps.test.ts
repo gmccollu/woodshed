@@ -22,6 +22,8 @@ import {
   typeToQuery,
   userErrors,
   varbindLine,
+  typeFiltersFromQuery,
+  savedTypeFilters,
 } from './traps.ts';
 import type { FieldDescriptor, TrapFields } from './api';
 
@@ -119,4 +121,10 @@ test('v3 user form checks', () => {
   assert.ok(needsKeyExt('aes-256') && !needsKeyExt('aes-128'));
   assert.deepEqual(parseEngineIds('80000000050102030405, 0x8000000005aa\n'), ['80000000050102030405', '0x8000000005aa']);
   assert.ok(isCommunityHash('#3f9a1c07') && !isCommunityHash('public'));
+});
+
+test('a trap link: every key the page does not own is a trap filter', () => {
+  const q = new URLSearchParams('type=trap&q=x&dev=10.1.0.1&r=24h&trap_oid=linkDown,linkUp&status=auth_failed&exclude_cred=');
+  assert.deepEqual(typeFiltersFromQuery(q), { status: ['auth_failed'], trap_oid: ['linkDown', 'linkUp'] });
+  assert.deepEqual(savedTypeFilters({ q: 'x', severities: [], devices: ['a'], trap_oid: ['linkDown'], status: [] }), { trap_oid: ['linkDown'] });
 });

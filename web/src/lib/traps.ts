@@ -240,3 +240,31 @@ export function parseEngineIds(s: string): string[] {
 
 /** A community as /api/settings shows it: "#" and 8 hex digits of its SHA-256 (the community itself is never shown). */
 export const isCommunityHash = (c: string) => /^#[0-9a-f]{8}$/i.test(c);
+
+/** The Events page's own URL keys (text, mode, devices, range, syslog filters, order, saved search, type). */
+const PAGE_KEYS = new Set(['q', 're', 'syn', 'cs', 'dev', 'group', 'ug', 'r', 'from', 'to', 'sev', 'app', 'host', 'ex', 'fac', 'xdev', 'xapp', 'xhost', 'order', 'saved', 'type']);
+
+/**
+ * A non-syslog type's filters from the page URL: every key the page doesn't use itself is one
+ * of the type's parameters (so the page needs no list of them, and a link works before the
+ * schema has loaded).
+ */
+export function typeFiltersFromQuery(q: URLSearchParams): TypeFilters {
+  const out: TypeFilters = {};
+  for (const [k, v] of q) if (!PAGE_KEYS.has(k)) out[k] = split(v);
+  return cleanFilters(out);
+}
+
+/** A saved query's keys that every type shares or syslog owns (docs/api.md → Saved searches). */
+const SAVED_KEYS = new Set(['q', 'syntax', 'regex', 'case', 'exclude', 'devices', 'group', 'ungrouped', 'exclude_devices', 'severities', 'facilities',
+  'app', 'exclude_app', 'host', 'exclude_host', 'order', 'range']);
+
+/** A non-syslog saved query's own filters: its list-valued keys that aren't shared or syslog's. */
+export function savedTypeFilters(q: SavedQuery): TypeFilters {
+  const out: TypeFilters = {};
+  for (const [k, v] of Object.entries(q)) if (!SAVED_KEYS.has(k) && Array.isArray(v)) out[k] = v.map(String);
+  return cleanFilters(out);
+}
+
+/** The syslog-only keys of a saved query, which a trap search must not send (the server refuses them). */
+export const SYSLOG_SAVED_KEYS = ['severities', 'facilities', 'app', 'exclude_app', 'host', 'exclude_host'] as const;

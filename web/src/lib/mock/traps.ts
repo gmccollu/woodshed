@@ -224,6 +224,8 @@ export function trapAt(i: number): StoredTrap {
       f = { ...base, status: 'malformed', error: 'BER: length 812 runs past the end of the datagram (at byte 41)', uptime: null };
   }
   if (f.version === '1') id = '';
+  // The API names OIDs from the current MIB set (the stored line keeps the names known at receipt).
+  f.trap_name = f.trap_oid ? oidName(f.trap_oid) : '';
   return { i, ms, ip: d.ip, fields: f, raw: recordLine(f, id, fakeRaw(r, 80 + Math.floor(r() * 120))) };
 }
 
