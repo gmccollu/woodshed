@@ -38,6 +38,13 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   it). Communities are kept in the SNMP credentials store, write-only, and appear in poll records only as a hash
   prefix; replies are accepted only from the polled address and port.
 
+### Performance
+- Polling 500 devices with 64 interfaces each every 60 s (v2c) took 0.07 of a core and 129 MiB of memory for the
+  whole server, every cycle on time; with syslog at 10,000 msg/s beside it, 0.26 of a core, and 600,000 of 600,000
+  messages stored. 100 devices every 30 s with v3 authPriv (SHA-256, AES-128): 0.03 of a core (0.24 with the syslog
+  run, again with nothing lost). Measured in-process on a 14-core Apple M4 Pro with the test agents in another
+  process (`TestPollLoad`); the reference-spec (4 vCPU) runner and lab numbers will replace these before release.
+
 ## [1.2.0] - unreleased
 
 ### Added

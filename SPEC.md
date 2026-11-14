@@ -2341,6 +2341,11 @@ Simple and fast: every view reads the headline rollups or one device's poll file
   at 30 s, from many test agents on loopback addresses, with v2c and v3 authPriv: every cycle completes on time, the
   poller's CPU stays under half a core on the reference spec (4 cores), memory under 200 MiB, and syslog's 10,000
   msg/s bench beside it still loses nothing. The numbers go into the release notes like the syslog and trap benches.
+  **First measurement (build, 2026-11-15**, `TestPollLoad`, agents in a child process, a 14-core Apple M4 Pro, not
+  the reference spec): 500 × 64 at 60 s v2c, 0.071 cores and 129 MiB RSS for the whole server over 3 min, 1,500 of
+  1,500 cycles, no failure or overrun; with 10,000 msg/s of syslog beside it for 1 min, 0.26 cores, 156 MiB, 600,000
+  of 600,000 stored. 100 × 64 at 30 s v3 authPriv (SHA-256, AES-128): 0.031 cores, 56 MiB; 0.24 cores and 74 MiB with
+  the syslog run, nothing lost.
 
 ### 12.9 Compatibility
 - **Config:** a 1.2 `woodshed.toml` loads unchanged. A new `[poll]` section takes its defaults (interval 60 s,
