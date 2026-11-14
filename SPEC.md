@@ -1761,6 +1761,51 @@ Everything below is **decided (coordinator, 2026-11-14, owner-delegated)**:
 27. The community allowlist is kept in the credentials store, not the TOML, and shown only as hash prefixes
     (§11.2.1).
 
+**Decided (build, 2026-11-14), `woodshed search` (§11.4, step (c)):**
+1. `index.db` is opened `mode=ro` while its `-wal` and `-shm` exist (a writer has it open), and `immutable=1` when
+   they don't. A `mode=ro` open creates both files when they're missing (measured on the pure-Go SQLite build), which
+   would break "creates nothing" with the service stopped; without them no writer has the index open, since the last
+   connection to close removes them. If a service starts mid-search, that search may miss index rows written after it
+   began. This narrows §11.4's "never `immutable`". The schema must match this build's: a read-only open can't migrate
+   (exit 4 with the reason).
+2. The query and filters go through the API's own parser (`api.ParseSearch`) and the server's query builder
+   (`server.SearchQuery`), so they can't drift from `/api/search`. Each flag is first checked on its own, so the
+   message names the flag (`--severities: "9" is not a severity …`, `--field severity: …`); query errors are prefixed
+   `QUERY:` or `--exclude:` and keep the API's character positions.
+3. `--field`/`--not-field` keys come from `search.Schema()` for the `--type`; a field with an exclude parameter
+   uses it, a closed field (severity, facility) is excluded by sending the rest of its domain (within any values
+   asked for; nothing left is `none`). `--type` accepts exactly the schema's types, so (d) adds `trap` without a new
+   flag; anything else is exit 2 naming the known types.
+4. `--devices`, `--exclude-devices` and `--field device=` take device IDs or addresses; an address is turned into
+   its device ID (`2001:db8::5` → `2001_db8__5`), which is what a person has in hand.
+5. Time: `--from` alone ends now, `--to` alone starts 24 h before it (the API's defaults); `--last` can't be combined
+   with either. `--utc` reads the local forms as UTC, as for `bundle --at`. The parser is shared with (e).
+6. `--context N` (0–500) reads each match's own file only, so a group stops at a part or day boundary. Groups merge
+   like `grep -C` when they touch or overlap (no `--`, and a match inside another's context is still marked). Matches
+   of different devices interleave in time; each group is printed whole before the next device's, so a line can
+   appear in two groups of one file when another device's match fell between them. In the text forms matches start
+   with `> ` and context lines with two spaces, so columns line up. With `--order desc` a group reads newest first,
+   like the rest of the output. JSON has no `--`; with `--context` every object has `"context"`.
+7. `--context` with `--order desc` over a compressed day is slow when matches are far apart: gzip reads only
+   forwards, so each restart (one per 4 MiB window) decompresses from the start of the day. Ascending reads each file
+   once. The docs steer people to the default order.
+8. `--count` prints the number (`{"count":N}` with `--json`) and can't be combined with `--raw` or `--context`;
+   `--json` and `--raw` are alternatives. `--count` with no match prints `0` and exits 1, like `grep -c`.
+9. The summary line on standard error is `N matches, M MiB read from F files in Ts`, plus `; K files skipped (deleted
+   or unreadable during the search)` and ` (interrupted)` when they apply; with `--json` it's one object:
+   `{"matches","scanned_bytes","scanned_files","gone_files","elapsed_ms","interrupted"}`.
+10. Exit 2 also covers errors that aren't the user's (a write error, an unreadable index row), as for grep; a
+    symlinked or hard-linked `index.db` is refused with exit 3.
+11. The data folder is `--data`, else `--config`'s, else `woodshed-data` next to the binary when it holds an
+    `index.db` (a portable copy), else the installed config's, else the OS default. The config is read with
+    `config.Read`, which never creates one.
+12. The access check opens the folder, `logs/` and `index.db`; a refusal names whichever failed, its owner and mode,
+    and the command line actually typed (`sudo woodshed search --data /var/lib/woodshed link`) rather than `…`. The
+    service account in the hint is the folder's owner when that isn't root, else the default (`woodshed`,
+    `_woodshed` on macOS).
+13. Output is buffered and flushed every 200 ms while the search runs, so a match shows at once even when the next
+    is far away; Ctrl-C flushes what was found and prints the summary.
+
 ### 11.9 Questions settled (1.2), decided (coordinator, 2026-11-14, owner-delegated)
 1. No IANA Private Enterprise Number for now; the engine ID keeps the placeholder (§11.2). Revisit if the project
    ever publishes a MIB.

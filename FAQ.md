@@ -9,6 +9,7 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 - [What does the installer change in the firewall?](#what-does-the-installer-change-in-the-firewall)
 - [Windows or macOS warns me about the download](#windows-or-macos-warns-me-about-the-download)
 - [Where are the logs?](#where-are-the-logs)
+- [Can I search the logs without the UI?](#can-i-search-the-logs-without-the-ui)
 - [How much disk does it use, and how long does it keep logs?](#how-much-disk-does-it-use-and-how-long-does-it-keep-logs)
 - [Can I open the UI from another computer?](#can-i-open-the-ui-from-another-computer)
 - [I forgot the UI password](#i-forgot-the-ui-password)
@@ -105,6 +106,22 @@ arrived. Any text tool can read them; `.log.gz` files open with any unzip tool. 
 Woodshed's own log (start-up errors and the like): Windows Event Viewer → Windows Logs → Application, source
 `Woodshed`; macOS `/Library/Logs/Woodshed/woodshed.log`; Linux `journalctl -u woodshed`; portable mode prints to its
 window.
+
+## Can I search the logs without the UI?
+
+Yes: `woodshed search` searches them from a terminal, with the same filters as Events, on Windows, macOS and Linux.
+It runs natively on each (on Windows in an ordinary administrator prompt, no WSL or Unix tools needed), reads the
+compressed days without unpacking them, and streams its matches, so a multi-gigabyte day is no harder than a small
+one: there's no huge text file to open in an editor that can't cope with it. It never writes to the data folder, so
+you can run it while the service is running.
+
+```
+woodshed search --last 1h "link down"
+woodshed search --devices 192.0.2.10 --context 5 --regex "deny (tcp|udp)" > around-the-denies.txt
+```
+
+Run it as an administrator (or with `sudo` on macOS and Linux), like opening the log folder. See
+[Searching from the command line](docs/user-guide.md#searching-from-the-command-line).
 
 ## How much disk does it use, and how long does it keep logs?
 

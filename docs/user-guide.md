@@ -195,6 +195,43 @@ so you can bookmark a view or send the link to someone. Links to the old **Searc
 From the Dashboard, **Open in Events** on the live tail opens Events with the same devices, severities and text,
 over the last hour.
 
+### Searching from the command line
+
+`woodshed search` runs the same search from a terminal, on every OS, with the UI off, in LAN mode, or with the
+service stopped. It reads the data folder directly (compressed days included) and never writes to it, so it's safe
+beside the running service. It needs the rights to read that folder: `sudo` (or the service account, `sudo -u
+woodshed`; `_woodshed` on macOS) on macOS and Linux, an administrator prompt on Windows. A portable copy searches the
+`woodshed-data` folder next to it.
+
+```
+sudo woodshed search "link down"                          # the last 24 hours, oldest first
+sudo woodshed search --last 1h --devices 192.0.2.10 --severities 0,1,2,3
+sudo woodshed search --terms 'deny AND NOT 203.0.113.7' --app '%FW-*' --context 3
+sudo woodshed search --from "2026-11-14 08:00" --to "2026-11-14 09:00" --json > morning.ndjson
+sudo woodshed search --field host=edge-fw-01 --not-field severity=7 --count
+```
+
+- **What to find:** the text (`QUERY`) means what it means in Events: plain text by default, `--terms` for Terms,
+  `--regex` for Regex, `--case` to match case, `--exclude TEXT` to leave lines out.
+- **Filters:** `--devices`, `--group`, `--ungrouped`, `--exclude-devices`, `--severities`, `--facilities`, `--app`,
+  `--host` and their `--exclude-` forms, exactly as in Events. `--field KEY=V1,V2` and `--not-field KEY=V1,V2` take
+  any field Events lists (device, severity, facility, host, app). Devices are given by address (`192.0.2.10`,
+  `2001:db8::5`).
+- **Time:** `--last 15m|1h|24h|7d` (the default is 24 hours), or `--from` and `--to` as RFC 3339
+  (`2026-11-14T09:30:00Z`), your local time (`"2026-11-14 09:30"`, or UTC with `--utc`), `now`, or `-15m`.
+- **Order and amount:** oldest first, like a log file (`--order desc` for newest first); every match unless
+  `--limit N`. There's no time limit: Ctrl-C stops it and keeps what was printed.
+- **Output:** each match as its stored line (`<received> <device> <message>`, one line per match, safe to pipe into
+  grep); `--raw` prints only the message, as it arrived; `--json` prints one JSON object per line, like the API;
+  `--context N` adds N lines before and after each match from the same file, with `>` before each match and `--`
+  between groups; `--count` prints only the number. A summary, `N matches, M MiB read from F files in Ts`, goes to
+  standard error, so standard output holds only matches.
+- **Exit status:** 0 when something matched, 1 when nothing did, 2 for a mistake in the command (the message names
+  the flag, or the character position in the query), 3 when the data folder can't be read, 4 when there's no data
+  folder or index, 130 after Ctrl-C.
+
+Run `woodshed search --help` for every flag.
+
 ## 6. Export logs for support
 
 To send logs to someone (a colleague, a vendor's support team):
