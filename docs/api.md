@@ -955,3 +955,133 @@ is on (or a v3 user is set, or a trap was received), an `snmp` object gives `ena
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.
+
+## 1.3 (planned)
+
+Not in 1.2 builds: nothing in this section is served yet. It's the 1.3 contract (SPEC §12). As before, routes here
+sit in a `###` heading or after a label, never at the start of a line in the usual "`GET /api/...`" form, so
+`routes_test.go` doesn't request them; when one ships, move it into its section above in the usual form. Everything is
+additive (SPEC §12.9).
+
+### Poll targets
+
+**List:** `GET /api/poll/targets` → every target, sorted by device then address:
+```json
+[{"id": "pt_5c1e9a2b", "address": "10.1.0.1", "port": 161, "device_id": "10.1.0.1", "enabled": true,
+  "version": "3", "community_set": false, "v3_user": "monitor",
+  "interval_s": 60, "timeout_ms": 2000, "retries": 1,
+  "presets": ["system", "system-info", "interfaces"], "interfaces": "all", "max_interfaces": 64,
+  "custom": [{"oid": "1.3.6.1.4.1.32473.1.2.0", "kind": "scalar", "label": "queue depth", "max_rows": 0}],
+  "state": {"status": "ok", "last_attempt": "2026-11-15T10:00:00Z", "last_ok": "2026-11-15T10:00:00Z",
+            "failing_since": null, "backoff_s": 0, "error": "", "rtt_ms": 4,
+            "engine_id": "80001f8880a1b2c3d4", "sys_name": "edge-fw-01", "sys_descr": "…",
+            "hc_counters": true, "host_resources": true, "interfaces_polled": 24, "interfaces_total": 26}}]
+```
+- `version`: `"1"`, `"2c"` or `"3"`. `community_set` says whether a v1/v2c community is stored; the community itself
+  is never returned. `v3_user` names a user from `/api/snmp/users`.
+- `interfaces`: `"all"` (up to `max_interfaces`) or a list of `ifName`s and indexes (`["eth1", "eth2", 7]`).
+- `custom[].kind`: `"scalar"` or `"walk"`; `max_rows` (walks only) 1–1,024, default 128. At most 32 entries.
+- Fields left out of a body take the Settings defaults (`poll` in `/api/settings`).
+- `state.status`: `ok`, `failing` (no answer or an error for 1–2 cycles), `backing_off`, `disabled`, or `pending` (not
+  polled yet). `error` is the last failure's text, without secrets.
+
+**Add:** `POST /api/poll/targets` body `{"address": "10.1.0.1", "version": "2c", "community": "…", …}` → `201` with the
+target. `device_id` defaults to the address; a new address becomes a device on its first answer.
+
+**Change:** `PUT /api/poll/targets/{id}` (the same body) → `200`. A missing `community` keeps the stored one; `""`
+with `version` `"1"` or `"2c"` is a `400`. If-Match with the target's `ETag`, as for saved searches.
+
+**Delete:** `DELETE /api/poll/targets/{id}` → `204`. The device's poll files stay until retention deletes them.
+
+- Limits: at most 500 targets (`poll.max_targets`); one target per address and port. `address` is an IP address
+  (no names: nothing is looked up). `port` 1–65535.
+- Validation errors: `400 {"errors": {"address": "…", "custom[2].oid": "…"}}`. A `v3_user` that doesn't exist is a
+  `400` on `v3_user`.
+
+**Test poll:** `POST /api/poll/test` body: a target as for **Add** (not saved), or `{"id": "pt_…"}` →
+```json
+{"ok": false, "exit": "partial",
+ "steps": [{"step": "discovery", "ok": true, "detail": "engine 80001f8880a1b2c3d4, boots 7", "rtt_ms": 3},
+           {"step": "system", "ok": true, "detail": "edge-fw-01, up 12 d 3 h", "rtt_ms": 4},
+           {"step": "host_resources", "ok": false, "detail": "not available on this device (noSuchObject)", "rtt_ms": 4},
+           {"step": "interfaces", "ok": true, "detail": "26 interfaces, 64-bit counters; 24 would be polled", "rtt_ms": 9}]}
+```
+`exit` is `ok`, `no_answer`, `auth` or `partial`, the CLI's exit codes by name (SPEC §12.7). At most one test per
+target at a time, and 10 a minute in all (`429` beyond).
+
+### Poll data for graphs
+
+**Series:** `GET /api/poll/series?device=10.1.0.1&from=…&to=…&bucket=60&series=in_bps,out_bps,cpu,if.eth3.in_bps` →
+```json
+{"device_id": "10.1.0.1", "bucket_seconds": 60, "source": "files",       // "files" | "rollup"
+ "series": [{"key": "in_bps", "label": "In (all interfaces)", "unit": "bit/s",
+             "points": [{"start": "2026-11-15T10:00:00Z", "avg": 81234567, "max": 90123456, "count": 1}]}],
+ "markers": [{"time": "2026-11-15T10:04:00.410Z", "kind": "restart", "reboot": "1",
+              "detail": "sysUpTime and hrSystemUptime reset"}],
+ "partial": false, "next_cursor": ""}
+```
+- Series keys: `in_bps`, `out_bps` (summed over interfaces), `max_if_in_bps`, `max_if_out_bps`, `errors_d`,
+  `discards_d`, `cpu`, `mem_used_pct`, `uptime_s`, `if.<ifName or index>.<in_bps|out_bps|in_err_d|out_err_d|in_disc_d|out_disc_d|oper>`,
+  and `oid.<oid>[.<row>]`. At most 16 series per request. Unknown keys are a `400`.
+- `bucket` as for the summary (SPEC §10.1.2), default from the range, so strips line up with the histogram.
+- `source` is `rollup` when every requested series is a headline series and the bucket is at least an hour; otherwise
+  the poll files are read with the search budget (`partial` and `next_cursor` as for the summary). A point with
+  `count: 0` is "not measured", drawn as a gap.
+- `markers` are the restarts and reboots in the range, and with any `if.` series, that interface's oper changes.
+
+**Timeline strips:** `GET /api/poll/timeline?devices=a,b&group=…&from=…&to=…&bucket=…` → for the selected devices
+that are polled (at most 4, the busiest by peak traffic, then `more`), the strips SPEC §12.5 describes, in the series
+shape above, plus every selected device's markers: `{"devices": [{"device_id", "series": [...]}], "markers":
+[{"device_id", "time", "kind", "reboot", "detail"}], "more": 2}`.
+
+**Device panel:** `GET /api/poll/device/{id}?from=…&to=…` →
+```json
+{"device_id": "10.1.0.1", "target_id": "pt_5c1e9a2b", "address": "10.1.0.1",
+ "system": {"sys_name": "edge-fw-01", "sys_descr": "…", "uptime_s": 1048512, "last_restart": "2026-11-15T10:04:00.410Z",
+            "cpu": {"now": 12, "peak": 91, "peak_at": "2026-11-15T09:30:00Z"},
+            "mem_used_pct": {"now": 40, "peak": 72, "peak_at": "2026-11-15T09:31:00Z"}},
+ "interfaces": [{"index": 3, "name": "eth3", "alias": "uplink", "oper": "up", "speed_mbps": 1000,
+                 "in_bps": 81234567, "out_bps": 3456789, "peak_in_bps": 812345678, "peak_out_bps": 95123456,
+                 "in_err_d": 12, "out_err_d": 0, "in_disc_d": 340, "out_disc_d": 0, "oper_changes": 2}],
+ "charted": ["eth1", "eth3", "eth2", "eth7"],
+ "interfaces_left_out": 2}
+```
+`charted` is the 4 busiest interfaces in the range, the default chart set. The interface list is sorted by peak
+traffic, highest first.
+
+### Poll lines in search
+
+`type=poll` is accepted by `/api/search`, `/api/search/summary`, saved searches, exports and `woodshed search`.
+- Schema fields: `device`, `kind` (domain `sys`, `if`, `oid`, `status`, `restart`, `info`), `if`, `oper` (domain
+  `up`, `down`, `testing`, `unknown`, `dormant`, `notPresent`, `lowerLayerDown`), `status` (domain `ok`, `timeout`,
+  `unreachable`, `auth_failed`, `unknown_user`, `unknown_engine`, `not_in_time`, `decrypt_failed`, `error`,
+  `overrun`), `reboot` (domain `1`, `0`, `?`).
+- Filters: `kinds`, `ifs` / `exclude_ifs`, `oper`, `poll_status`, `reboot`. Syslog's and the trap type's filters with
+  `type=poll` are a `400`, and the reverse.
+- Results: `{"received", "device_id", "type": "poll", "ref", "raw": <the stored line>, "fields": {"kind", "cycle",
+  "if", "oper", "status", "reboot", "values": {"in_bps": "81234567", …}}}`.
+
+### Exports and bundles
+- `types` may include `"poll"`. The zip gets `poll/<device-id>/system.csv`, `interfaces.csv` and `oids.csv` with the
+  columns of SPEC §12.6 (a file only when it has rows), each in the manifest with its SHA-256;
+  `"folders"` gains `"poll": "poll"`.
+- A bundle's manifest `summary` entries gain `"poll": {"cycles", "answered", "interval_s", "uptime_end_s",
+  "peak_in_bps", "peak_in_if", "peak_out_bps", "peak_out_if", "cpu_peak", "mem_peak_pct", "errors_in_d",
+  "errors_out_d", "discards_in_d", "discards_out_d", "oper_changes": [{"if", "down", "up"}]}`, and `reboots[].source`
+  may be `"poll"` (with `"detail"`) or list both sources when a poll restart and a coldStart trap are within 2 min.
+
+### Settings, status and banners
+- `/api/settings` gains `"poll": {"interval_s": 60, "timeout_ms": 2000, "retries": 1, "concurrency": 32,
+  "max_interfaces": 64, "max_targets": 500, "presets": ["system", "system-info", "interfaces"]}`. Ranges:
+  `interval_s` 30–600, `timeout_ms` 200–10,000, `retries` 0–5, `concurrency` 1–256, `max_interfaces` 1–1,024,
+  `max_targets` 1–5,000.
+- **Polling state:** `GET /api/poll` → `{"targets": 12, "answering": 11, "failing": 1, "backing_off": 0, "last_cycle":
+  "…", "hour": {"cycles": 720, "failures": {"timeout": 3}, "overruns": 0, "unmatched": 0}}`, for Settings and
+  `woodshed status`.
+- `/api/devices` entries gain `"polled": true|false` and, when polled, `"poll_status"` (the target's `state.status`).
+- Banners: `poll_unreachable` (warn, action `""`): polled devices that haven't answered for 10 min, named in the text.
+  `poll_overrun` (warn, action `""`): cycles skipped in the last hour because polling couldn't keep up; the text
+  suggests a longer interval or a higher `poll.concurrency`.
+
+**CLI** (not HTTP): `woodshed poll test <address> …`, `woodshed search --type poll`, and the `woodshed status`
+Polling row, as in SPEC §12.7.

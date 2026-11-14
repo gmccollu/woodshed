@@ -45,6 +45,7 @@ the owner can still overrule them. Everything else is a proposal and can change.
 | SNMP traps (1.2) | UDP 162, off by default; v1, v2c, v3 USM (MD5, SHA-1, SHA-2; DES, AES-128/192/256); informs answered once stored; communities stored as a hash prefix and masked in the raw PDU; identity by source IP; v3 credentials in DPAPI on Windows, a 0600 file on macOS and Linux (§11.2) **decided (coordinator, 2026-11-14, owner-delegated)** |
 | Incident bundle and CLI search (1.2) | The bundle is an export (`kind: "bundle"`) with per-type folders, syslog kept in `logs/`; `woodshed search` and `woodshed bundle` read the data folder directly and read-only (§11.3, §11.4) **decided (coordinator, 2026-11-14, owner-delegated)** |
 | UDP queue (1.2) | A bounded queue per UDP socket (100,000 messages / 64 MiB), drops counted as `queue_full`; readers never touch the disk (§11.5) **decided (coordinator, 2026-11-14, owner-delegated)** |
+| SNMP poller (1.3) | A third data type `poll` (text lines in `logs/<device>/poll/`), rates computed at write time with raw counters kept; restarts and reboots from sysUpTime, hrSystemUptime and engineBoots; targets configured per device with credentials in the 1.2 store; graphs on the Events timeline and a device page panel; three CSVs per device in bundles (§12) **decided (coordinator, 2026-11-15, owner-delegated)** |
 | First run | Zero-config: listens immediately, and the UI opens on a welcome page **(decided)** |
 | Port 514 in use | The listener fails with a clear error; the UI still starts and explains the clash **(decided)** |
 | UI port | 8514 on localhost (§5) **(decided)** |
@@ -360,6 +361,7 @@ All of it is designed in §11 **(owner, 2026-11-14: all of these in 1.2, with th
   soak on Windows lost ~20 per million UDP in bursts near the top of the hour; the cause wasn't found in Woodshed.
 
 ### 1.3
+Designed in §12.
 - **SNMP poller ("OID watcher")**, moved up from 2.0 (owner, 2026-11-13). It collects evidence, so it's small and
   fixed:
   - It polls a small fixed set every 30–60 s: sysUpTime; IF-MIB in/out octets (the HC counters), errors and
@@ -372,8 +374,9 @@ All of it is designed in §11 **(owner, 2026-11-14: all of these in 1.2, with th
 - Security:
   - It polls only addresses the user configured.
   - v2c communities and v3 auth/priv keys are encrypted at rest with the OS key store where there is one (DPAPI on
-    Windows, the the 0600 service-account file on macOS (§11.9)), and otherwise kept in a file only the service account can read. 1.2's trap
-    receiver settles how on each OS (§11.2.6): macOS uses the file, because the Keychain needs cgo.
+    Windows, the 0600 service-account file on macOS (§11.9)), and otherwise kept in a file only the service account
+    can read. 1.2's trap receiver settles how on each OS (§11.2.6): macOS uses the file, because the Keychain needs
+    cgo.
   - SECURITY.md's outbound rule gains "SNMP polls to devices you configure".
 - Out of scope: discovery, topology, polling hundreds of OIDs, threshold dashboards, a MIB browser.
 - It shares the SNMP library and the v3 credential handling with the 1.2 trap receiver, which is why it comes after
@@ -591,7 +594,7 @@ breaking the API.
   `400 type: unknown data type "x"`. A saved search's `query` is validated by the rules of its type. The first step
   in 1.2 is a second entry in the schema's list.
 - 1.3's poll graphs aren't a searchable type: they sit on the histogram's time axis, for the same window and with
-  the same bucket table.
+  the same bucket table. (Superseded by §12.3: poll lines are a searchable type; the graphs sit on the axis as described.)
 
 ### 10.2 Opt-in update check
 
@@ -1504,7 +1507,7 @@ logs/<device>/<day>.log        syslog (the folder name 1.0 exports use)
 traps/<device>/<day>.log       traps, the stored record lines
 ```
 - Syslog stays in `logs/`, as in every 1.0 and 1.1 export, so scripts that read exports keep working; each other
-  type has its own folder (`traps/` in 1.2; `polls/` in 1.3, `flows/` in 2.0). The manifest lists each folder's type.
+  type has its own folder (`traps/` in 1.2; `poll/` in 1.3 (§12.6), `flows/` in 2.0). The manifest lists each folder's type.
   Plain exports use the same layout from 1.2 (`types` defaults to `["syslog"]` there, §11.7).
 - The README's summary, per device (plain text, aligned, times in UTC with the local offset in the header):
   ```
@@ -2053,7 +2056,341 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
    (b) the UDP queue; (c) `woodshed search`. Then (d) the data-type framework plus trap integration, on top of
    (a) and (b). Then (e) the incident bundle, on top of (d).
 
-## 12. Open questions
+## 12. 1.3 design (draft, 2026-11-15)
+
+The SNMP poller ("OID watcher") from §9's 1.3 entry **(owner, 2026-11-13)**: a small fixed set of OIDs polled every
+30–60 s from devices the user configures, kept as evidence beside their syslog and traps, graphed on the Events
+timeline, with reboots marked. It reuses 1.2's data-type framework (§11.1), its SNMP code (`internal/snmp`) and its
+credentials store (§11.2.6). Owner decisions are marked **(owner)**; the calls made here are **decided (coordinator,
+2026-11-15, owner-delegated)** and listed in §12.10. The API contract is in `docs/api.md` → "1.3 (planned)".
+
+**Scope (owner, §9):** sysUpTime; IF-MIB HC in/out octets, errors and discards, plus ifOperStatus; HOST-RESOURCES
+CPU and memory where the device supports it; per-device custom OIDs; vendor-neutral presets; poll data in the export.
+**Out of scope:** discovery, topology, polling hundreds of OIDs, thresholds and dashboards, a MIB browser. A "test
+poll" asks a device only for what its configured poll would.
+
+### 12.1 What is polled
+
+**Presets** (only IETF MIBs, so they're vendor-neutral):
+
+| Preset | OIDs | Every |
+|---|---|---|
+| `system` | `sysUpTime.0`; `hrSystemUptime.0` where supported; `hrProcessorLoad` (every processor row, averaged); `hrStorageTable` rows of type `hrStorageRam` (used and size × allocation units) | interval |
+| `interfaces` | per interface: `ifHCInOctets`, `ifHCOutOctets`, `ifInErrors`, `ifOutErrors`, `ifInDiscards`, `ifOutDiscards`, `ifOperStatus`, `ifCounterDiscontinuityTime` | interval |
+| | `ifName`, `ifDescr`, `ifAlias`, `ifHighSpeed` (names and speed) | hourly, and after a discontinuity |
+| `system-info` | `sysName.0`, `sysDescr.0`, `sysObjectID.0` (shown on the device page) | hourly |
+
+- An agent without `ifXTable` (no HC counters, or SNMP v1, which has no Counter64) gets the 32-bit `ifInOctets` and
+  `ifOutOctets` instead, and the device page says so ("32-bit counters: rates above about 115 Mb/s at a 5-minute
+  interval can be wrong").
+- An OID the agent doesn't have (`noSuchObject`, `noSuchName` in v1) turns that part off for the device until the
+  next hourly refresh; the device page says "CPU and memory: not available on this device".
+- **Interfaces:** every interface by default, up to `max_interfaces` (64 by default, at most 1,024), in `ifIndex`
+  order; or a list of `ifName`s or indexes. More than the cap: the first 64 are polled and the device page says how
+  many were left out.
+- **Custom OIDs** (per device, at most 32 entries): a **scalar** (one `Get`) or a **walk** (a table column or a small
+  subtree with `GetBulk`/`GetNext`, at most `max_rows` rows, 128 by default, at most 1,024; a longer walk stops at the
+  cap and says so). Each has an optional label. Counters become rates; gauges and integers are kept as values;
+  strings are kept but not graphed.
+
+**Defaults:** a 60 s interval (30 s to 10 min), a 2 s timeout, 1 retry, presets `system`, `system-info` and
+`interfaces`. Settings → Polling holds these defaults; each device can override the interval, presets, interfaces and
+custom OIDs.
+
+### 12.2 Protocol
+
+`internal/snmp` gains the requester side; the poller itself is a new package, `internal/poller`.
+- **PDUs:** `GetRequest`, `GetNextRequest` and `GetBulkRequest` out; `Response` and `Report` in. v1 uses `Get` and
+  `GetNext` only (it has no `GetBulk`). **The poller never sends `SetRequest`**, or any PDU other than those three, and
+  a test checks that `internal/poller` can't build one.
+- **v1 and v2c** with a per-device community; **v3 USM as the non-authoritative side**, with every auth and priv
+  protocol 1.2 supports (§11.2.2):
+  - Engine discovery (RFC 3414 §4): the first request goes with an empty engine ID; the agent's Report gives its
+    engine ID, boots and time; the next request is authenticated and synchronizes the time window. The engine ID,
+    boots and time offset are cached per target (and kept in the index), so a normal cycle needs no discovery.
+  - A `usmStatsUnknownEngineIDs` or `usmStatsNotInTimeWindows` Report later starts discovery again once, then retries
+    the request. A higher `engineBoots` than cached marks an agent restart (§12.2.2).
+  - Keys are localized to the agent's engine ID, from the user's passphrases or from keys stored for that engine
+    (§12.4).
+- **Requests:** at most 32 varbinds per `Get`; `GetBulk` with max-repetitions 25 for walks and interface columns. A
+  `tooBig` error halves the request and tries again. Request IDs (and v3 msgIDs) are random 31-bit values; a
+  response must come from the address and port polled and match an outstanding request ID, or it's dropped and
+  counted (`unmatched`). Agents that reply from another address need fixing on the agent side; the test poll says
+  so when it sees one.
+- **One UDP socket** (an ephemeral port on the wildcard address) for every poll, so polling opens no listening port
+  of its own and no firewall rule is needed: outbound UDP and its replies pass stateful host firewalls by default.
+- **Timeouts and retries:** each request waits `timeout` (2 s), then retries `retries` times (1). A cycle that gets no
+  answer is a failed cycle.
+- **Concurrency:** at most 32 devices are polled at once (`poll.concurrency`, 1–256), one request in flight per
+  device. Each device's cycle starts at its own offset within the interval (a hash of its ID), so cycles don't
+  bunch. A cycle that hasn't finished when the next is due skips that next one, counted as an `overrun`.
+- **Unreachable devices back off:** after 3 failed cycles in a row the interval doubles, up to 10 min, and returns to
+  normal on the first answer. Each failed cycle is recorded (§12.3), so "unreachable 10:02–10:09" is evidence too.
+- **Pauses:** when the disk guard pauses writing, the poller stops polling (nothing could be stored) and resumes with
+  it.
+
+#### 12.2.1 Rates
+- Rates are computed **when the sample is written**, from the previous sample of the same series, and the raw
+  counter is stored beside them. Why write time: the owner's §9 entry says "stored as rates", graphs and the bundle
+  read rates without recomputing, and the delta needs the previous sample, which the poller holds in memory. Why keep
+  the raw counter too: it's the evidence; any reader can recompute or check a rate from it.
+- The time base is the interval between the two responses' received times (monotonic clock), not the agent's uptime
+  ticks, which some agents update coarsely.
+- Octets become bits per second; errors and discards become a delta per cycle and per second.
+- **Counter32 wrap:** a lower value is a wrap (adding 2³²) only when sysUpTime moved forward, there's no
+  discontinuity, and the resulting rate is plausible: at most 1.1 × `ifHighSpeed` when it's known, otherwise at most
+  2³² per interval. Otherwise it's a discontinuity.
+- **Counter64:** a lower value is always a discontinuity (a real wrap would take years).
+- **Discontinuities** give no rate for that series in that cycle (`disc=1`; a gap in the graph, not a spike):
+  `ifCounterDiscontinuityTime` changed, the interface's `ifIndex` now has another name, or the agent restarted.
+
+#### 12.2.2 Restarts and reboots
+- `sysUpTime` is the **agent's** uptime. A lower `sysUpTime` than the last sample (other than its 497-day wrap: from
+  within an hour of 2³² ticks to a small value, about an interval after the last one) is an **agent restart**. A higher
+  v3 `engineBoots` is too.
+- It's a **reboot** when `hrSystemUptime` (where supported) also went down. Without HOST-RESOURCES, the marker says
+  "restart (the device may have rebooted)": it can't tell an agent restart from a reboot.
+- Either one writes a marker (`kind=restart` with `reboot=1|0|?`, §12.3), shows on the Events timeline and the device
+  page, and goes into the bundle's README. A coldStart or warmStart trap within 2 min of a poll restart is the same
+  event: the README shows one line naming both sources.
+
+### 12.3 Storage
+
+**`poll` is a third data type** in the 1.2 framework (§11.1): its files are `logs/<device>/poll/<day>.log`, with the
+same naming, parts, gzip, checkpoints and line envelope as syslog and traps. Why text lines rather than a compact
+binary series format:
+- Every part of 1.2 works on them unchanged: rotation, compression, crash repair, the index, `reindex`, retention and
+  the disk guard, export, the bundle, context, and `woodshed search`.
+- gzip shrinks them well, because each line repeats its keys: a device with 24 interfaces at 60 s writes about
+  7 MB a day uncompressed and about 0.7 MB a day compressed (a measured number replaces this estimate after the first
+  bench).
+- A columnar store would be smaller, but it would be a second storage engine, with its own crash safety, retention and
+  rebuild, for data that's tiny next to syslog. The 2.0 flow store may still need one; polls don't.
+
+**One line per cycle per part:**
+```
+2026-11-15T10:00:00.120Z 10.1.0.1 kind=sys cycle=1042 uptime=104512345 hr_uptime=104513000 cpu=12 mem_used=3221225472 mem_total=8589934592 rtt_ms=4
+2026-11-15T10:00:00.131Z 10.1.0.1 kind=if cycle=1042 if=3 name="eth3" oper=up speed_mbps=1000 in_octets=987654321012 out_octets=123456789012 in_bps=81234567 out_bps=3456789 in_err=12 out_err=0 in_err_d=0 out_err_d=0 in_disc=340 out_disc=0 in_disc_d=0 out_disc_d=0
+2026-11-15T10:00:00.140Z 10.1.0.1 kind=oid cycle=1042 oid=1.3.6.1.4.1.32473.1.2.0 label="queue depth" type=g32 value=17
+2026-11-15T10:01:00.118Z 10.1.0.1 kind=status cycle=1043 status=timeout detail="no answer after 1 retry"
+2026-11-15T10:04:00.410Z 10.1.0.1 kind=restart cycle=1046 reboot=1 uptime=1532 prev_uptime=104518345 source=sysUpTime,hrSystemUptime
+```
+- **Keys:** `kind` (`sys`, `if`, `oid`, `status`, `restart`, `info` for the hourly names and `sysDescr`), `cycle` (a
+  per-device counter, so a cycle's lines group), then the kind's keys, in a fixed order. Raw counters (`in_octets`,
+  `in_err`, …) are always written; rate keys (`in_bps`, `in_err_d`, …) only when there's a valid previous sample;
+  `disc=1` marks a discontinuity. Strings are quoted and escaped as in trap records; the line envelope escapes CR and
+  LF.
+- `kind=status` records every failed cycle: `timeout`, `unreachable` (an ICMP error), `auth_failed`, `unknown_user`,
+  `unknown_engine`, `not_in_time`, `decrypt_failed`, `error` (an SNMP error status in the response, named), and
+  `overrun`. While backing off, there's one line per attempt, not per missed interval.
+- **Device identity:** a poll target has an `address` (where requests go) and a `device_id` (which device folder its
+  data goes into), defaulting to the address. That's the one place a device isn't its packet's source IP: the
+  administrator configured the target, so it's trusted, and a device that sends syslog from one address and is polled
+  on its management address keeps one folder. The device page shows the polled address.
+
+**Index:**
+- `files.type = 'poll'`; `type_stats` counts poll lines per device like any type.
+- New table `poll_targets` (the target's settings and its cached engine ID, boots and time offset, but never a
+  secret). It's user data like device names and saved searches, so `reindex` keeps it.
+- New table `poll_hourly` (device, series, hour, min, max, sum, count) for a few **headline series** per device:
+  total in and out bits/s over its interfaces, the highest single-interface in and out, error and discard deltas
+  summed over interfaces, CPU and memory used. It's written as samples arrive, serves graphs with buckets of an hour
+  or more without opening files, and is derived data: `reindex` rebuilds it from the poll files.
+- Restart markers are found by reading the poll files' `kind=restart` lines in the range (they're rare, and the
+  checkpoints find the range fast).
+
+**Retention and fair share:** poll files count toward each device's bytes and its share exactly as syslog and traps
+do (§11.1): the same cap, age limit, low-disk guard and oldest-first order across a device's types.
+
+**Searchable as lines:** `type=poll` works in `/api/search`, the summary and `woodshed search`, because it's a data
+type: `woodshed search --type poll --field kind=restart --last 7d` lists restarts, and `q` matches the line
+(`oper=down`). Events doesn't offer a Polls tab; polls are shown as graphs (§12.5) and in the device page. This
+supersedes §10.1.6's note that poll graphs "aren't a searchable type": the graphs aren't, the lines are.
+- Fields (schema): device, `kind`, `if` (interface name), `oper`, `status`, `reboot`. Filters: `kinds`, `ifs` /
+  `exclude_ifs`, `oper`, `poll_status`, `reboot`. Syslog's and trap's filters with `type=poll` are a 400.
+
+### 12.4 Credentials
+- The same store as 1.2's v3 users (§11.2.6: DPAPI on Windows, a 0600 service-account file on macOS and Linux).
+  Each target has either a **v1/v2c community** (kept in the store's protected blob, keyed by the target, shown only
+  as `#<hash8>`) or a **v3 user** chosen from the same users table the trap receiver uses.
+- A v3 user whose keys are stored only localized (`engine_ids` set, §11.2.6) can poll only agents with those engine
+  IDs; the test poll says so and names the agent's engine ID to add.
+- Communities and keys are never in a log line, the events log, an API response, an export or a bundle, and never
+  on a command line. A poll line names the target's credential only as `cred=#<hash8>` or the user name, and only on
+  `kind=status` lines (to diagnose a wrong one).
+
+**SECURITY.md**, "What counts", the outbound item becomes (applied in the PR that ships the poller):
+> - Woodshed making any outbound network connection other than:
+>   - the opt-in update check: one HTTPS `GET` of `https://gmccollu.github.io/woodshed/releases.json` a day, made
+>     only after an administrator turns it on. A check while it's off or still asking, a request that sends more than
+>     that (a query string, a cookie, an identifier, the version), a connection anywhere else, or an update banner
+>     that links outside this repository's releases all count;
+>   - SNMP polls to devices you configure: SNMP `Get`, `GetNext` and `GetBulk` requests (and SNMPv3 engine
+>     discovery) sent only to the addresses and ports an administrator added under polling, for the OIDs configured
+>     there, at the configured interval, plus test polls an administrator starts. A request to any other address, a
+>     `Set` or any other PDU, a request before a target was configured, or a community or key sent to a device other
+>     than the one it was configured for all count.
+- **FAQ.md**, "Does Woodshed connect to the internet?" gains: "From 1.3, if you add devices under **Polling**,
+  Woodshed also sends SNMP requests to those devices, and only to them. With no polled devices, it sends none."
+- **README.md**, Features: "Optional SNMP polling of the devices you choose (uptime, interface traffic and errors, CPU
+  and memory), graphed beside their logs, with reboots marked."
+- **CONTRIBUTING.md**, the rule becomes "No outbound connections, except the update check and SNMP polls", naming
+  `internal/poller` beside `internal/updatecheck`.
+- **The client-network allowlist test** (`internal/updatecheck/allowlist_test.go`) gains `"internal/poller": "SNMP
+  polls to the devices the user configured"`, and §10.2's runtime test `TestOnlyUpdateCheckDials` is amended: with
+  no poll targets nothing else dials; with targets, the only other packets go to the targets' address and port.
+
+### 12.5 UI
+Simple and fast: every view reads the headline rollups or one device's poll files for the window.
+- **Devices page → Polling:** a "Polled" column and filter. **Add polling** on an existing device (its address
+  prefilled) or **Add by address** for one Woodshed hasn't heard from (it becomes a device on its first answer).
+  The form: address and port (161), device (for a different polled address), version, community or v3 user,
+  interval, presets, interfaces (all, up to the cap, or a list), custom OIDs. **Test poll** runs the configured poll
+  once, without saving, and shows each step (§12.7). Saving starts polling within one interval.
+- **Device page panel** (a new "Polling" panel on a device's page), for the selected range:
+  - uptime (with the last restart), sysName and sysDescr, the polled address and the last cycle's time and round
+    trip;
+  - **5 small charts, 13 lines by default:** CPU (1), memory (1), total in/out bits/s (2), the 4 busiest interfaces
+    by peak traffic in the range, in and out (8), and errors plus discards summed (1);
+  - the **interface table:** every polled interface with name, alias, oper status, speed, current and peak in/out
+    rates, and error and discard deltas in the range; sortable; clicking a row adds it to the charts (at most 8
+    interfaces charted at once);
+  - restart and oper-status-change markers on every chart.
+- **Events timeline:** under the histogram, poll strips on the same time axis and bucket edges. With one device
+  selected: total in/out bits/s, CPU, and errors (3 strips). With several: one strip of total in/out bits/s per
+  device, at most 4 (the busiest), with "and N more" linking to the Devices page. Restart markers for every selected
+  device are vertical lines across the histogram and the strips; hovering names the device and the source. Strips
+  show only when a selected device is polled.
+- **Settings → Polling:** the defaults (interval, timeout, retries, presets, max interfaces), concurrency, and the
+  last hour's totals (cycles, failures by status, overruns).
+- **Banners:** `poll_unreachable` (warn) while a polled device hasn't answered for 10 min ("2 polled devices aren't
+  answering: …"); `poll_overrun` (warn) when cycles were skipped in the last hour because polling couldn't keep up.
+
+### 12.6 Bundle and export
+- A `poll/` folder per device in the zip (the type's folder, as `traps/` is for traps), three CSV files with a
+  header row, UTF-8, comma-separated, RFC 4180 quoting, times in RFC 3339 UTC:
+  - `poll/<device>/system.csv`: `time,cycle,uptime_s,hr_uptime_s,cpu_pct,mem_used_bytes,mem_total_bytes,rtt_ms,status,detail`
+  - `poll/<device>/interfaces.csv`: `time,cycle,if_index,if_name,if_alias,oper,speed_mbps,in_octets,out_octets,in_bps,out_bps,in_errors,out_errors,in_errors_delta,out_errors_delta,in_discards,out_discards,in_discards_delta,out_discards_delta,discontinuity`
+  - `poll/<device>/oids.csv`: `time,cycle,oid,label,row,type,value,rate`
+  - Restart markers are rows in `system.csv` with `status=restart` and `detail` naming the sources.
+  - Empty cells mean "not measured" (no previous sample, a discontinuity, not supported), never zero.
+- Every CSV is in the manifest with its SHA-256, and the README says what each column means.
+- **README summary per device** gains a Polls line and merges reboots:
+  ```
+      Polls        40 of 40 cycles answered (60 s); uptime 12 d 3 h at the end of the window
+                   peak in 812 Mb/s (eth1, 09:31), peak out 95 Mb/s (eth1, 09:31); CPU peak 91 % (09:30), memory peak 72 %
+                   errors +12 in (eth3), +0 out; discards +340 in (eth3); eth3 down 09:30:58 to 09:31:40
+      Reboots      1: 09:30:58 (poll: sysUpTime and hrSystemUptime reset; coldStart trap)
+  ```
+- Plain exports take `types: ["poll"]` the same way, with the `poll` filters.
+
+### 12.7 CLI
+- **`woodshed poll test <address>`** `[--port 161] [--version 1|2c|3] [--community-file F] [--v3-user NAME --auth …
+  --auth-pass-file F --priv … --priv-pass-file F --key-ext draft|alt] [--preset system,interfaces] [--oid OID]…
+  [--walk OID]… [--timeout 2s] [--retries 1] [--json]`
+  - A standalone diagnostic like `woodshed send`: it doesn't read the credentials store (which on Windows only the
+    service account can decrypt) or talk to the service. Secrets come from files or `WOODSHED_SNMP_COMMUNITY` /
+    `_AUTH_PASS` / `_PRIV_PASS`, never the command line.
+  - It prints each step: v3 discovery (engine ID, boots, time), `sysName`, `sysDescr`, `sysUpTime`, whether HC
+    counters and HOST-RESOURCES answer, how many interfaces it would poll, each custom OID's value, and round-trip
+    times; then what's missing and why.
+  - Exit codes: `0` everything answered; `1` no answer; `2` usage; `3` authentication or privacy error; `4` answered
+    but some OIDs aren't supported.
+  - The UI's **Test poll** runs the same steps in the service, with the stored credentials.
+- **`woodshed search --type poll`** works (§12.3), with `--field kind=…` and the rest.
+- **`woodshed status`** gains a Polling row: `Polling   12 devices: 11 answering, 1 not answering since 09:02
+  (10.1.0.9); last cycle 4 s ago`.
+- No `woodshed poll add`: targets are managed in the UI and API, like v3 users, because their credentials go into
+  the service's store.
+
+### 12.8 Testing plan
+- **Unit and fuzz:** encoding of `GetRequest`, `GetNextRequest` and `GetBulkRequest` (v1, v2c, v3) checked byte for
+  byte against captured packets; decoding of `Response` and `Report` with every value type and error status; the
+  requester side of USM (discovery, time sync, re-discovery, localization per engine); request-ID matching.
+  New fuzz targets: `FuzzResponse` (any datagram as a response to an outstanding request: no panic, bounded memory,
+  never a match it shouldn't be), `FuzzPollRecord` (format and re-parse a poll line), `FuzzRates` (any sequence of
+  counter values and uptimes: rates never negative, never above the plausibility bound, every drop explained by a
+  wrap or a discontinuity).
+- **An in-repo test agent**, `internal/snmp/agenttest`: a tiny responder for tests, with a programmable view (scalars,
+  `ifTable`/`ifXTable`, HOST-RESOURCES rows), counters that advance at a set rate, and hooks to inject a Counter32
+  wrap, a Counter64 drop, a discontinuity time change, an agent restart, a reboot, a sysUpTime wrap, `tooBig`,
+  `noSuchObject`, wrong-source replies, slowness and silence. It's authoritative for v3 with every auth and priv
+  protocol. Tests start it on loopback; it never ships in the product binary.
+- **End to end** (the real binary): the test agent plus syslog and traps from `woodshed send`; a poll target added
+  through the API; poll lines on disk; the device page's data, the timeline strips' series and restart markers from
+  the API; `woodshed search --type poll`; a bundle with `poll/` CSVs whose rows match the lines and whose README
+  merges a poll restart with a coldStart trap.
+- **Counter and reboot cases** (the test agent, a fake clock): Counter32 wrap with a plausible rate (counted as a
+  wrap), with an implausible one (a discontinuity), Counter64 drop, `ifCounterDiscontinuityTime` change, an
+  interface renamed under the same index, agent restart (restart marker, `reboot=?`), reboot with HOST-RESOURCES
+  (`reboot=1`), the 497-day sysUpTime wrap (no marker), and engineBoots going up.
+- **Interop (CI, Linux job only):** the distribution's net-snmp `snmpd` as the polled agent, on a high port on
+  loopback, with a temporary config; v1, v2c, and v3 for noAuthNoPriv, each auth with noPriv, each priv with
+  SHA-256, and MD5 with DES (DES skipped if that build lacks it, as in §11.6); discovery, an `snmpd` restart (restart
+  marker, `engineBoots` up), real interface counters with traffic on loopback, and HOST-RESOURCES CPU and memory.
+  Secrets in the temporary config, never on a command line.
+- **Lab:** `snmpd` on our Linux lab VMs, polled from another of our VMs (Ubuntu with the deb, AlmaLinux with the rpm),
+  for v2c and v3 authPriv, through a real network and the hosts' firewalls, during the 24 h soak, with one VM rebooted
+  mid-run (a `reboot=1` marker, and the coldStart trap merged in the README). Windows has no SNMP agent by default
+  (its own SNMP service is an optional, deprecated feature), so on Windows the lab tests the **poller**: a Windows
+  Woodshed polling the Linux VMs' `snmpd`, and the test agent on loopback. Windows as a polled agent isn't tested.
+  macOS likewise polls the Linux agents and the test agent.
+- **Install smoke tests:** no new port or firewall rule; with no targets, the no-dial runtime test passes on every OS;
+  with a target pointing at the test agent, the only packets go to it.
+- **Load:** 500 devices × 64 interfaces (8 interface columns each, plus `system`) at a 60 s interval, and 100 devices
+  at 30 s, from many test agents on loopback addresses, with v2c and v3 authPriv: every cycle completes on time, the
+  poller's CPU stays under half a core on the reference spec (4 cores), memory under 200 MiB, and syslog's 10,000
+  msg/s bench beside it still loses nothing. The numbers go into the release notes like the syslog and trap benches.
+
+### 12.9 Compatibility
+- **Config:** a 1.2 `woodshed.toml` loads unchanged. A new `[poll]` section takes its defaults (interval 60 s,
+  timeout 2 s, retries 1, concurrency 32, `max_interfaces` 64, presets `system`, `system-info`, `interfaces`). With
+  no targets configured, nothing is polled and nothing is sent.
+- **Data:** syslog and trap files are unchanged. The index migrates once (`poll_targets`, `poll_hourly`). Poll files
+  appear only under `logs/<device>/poll/`. The credentials file gains poll communities in its protected blob; a 1.2
+  file loads unchanged.
+- **API:** additive: `type=poll` is a new value, new routes, new banner kinds and new fields on devices. Every 1.2
+  request means what it meant.
+- **Downgrade** as before (§11.7): not supported; a 1.2 `reindex` ignores the `poll/` folders, and 1.2 never sends a
+  poll.
+
+### 12.10 Decisions for 1.3
+**Owner (2026-11-13, §9):** the poller's scope and out-of-scope list, "stored as rates", graphs on the Events
+timeline, reboot detection from uptime drops, poll data in the export, polls only to configured addresses, the
+credentials handling of 1.2, and SECURITY.md's "SNMP polls to devices you configure".
+
+Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
+1. `poll` is a third data type with text lines in `logs/<device>/poll/`, not a compact binary store (§12.3).
+2. Rates are computed at write time, and the raw counters are stored beside them (§12.2.1).
+3. The time base is the responses' received times, not the agent's uptime (§12.2.1).
+4. Counter32 wraps are accepted only when the rate is plausible; Counter64 drops are always discontinuities
+   (§12.2.1).
+5. A sysUpTime drop is an agent restart; it's a reboot only when `hrSystemUptime` dropped too, otherwise "may have
+   rebooted" (§12.2.2).
+6. A poll target has an address and a device ID, so a device polled on another address keeps one folder (§12.3).
+7. Headline rollups (`poll_hourly`) for long-range graphs; per-interface long ranges read the files (§12.3).
+8. Poll lines are searchable through the API and CLI, but Events has no Polls tab (§12.3).
+9. Defaults: a 60 s interval (30 s–10 min), 2 s timeout, 1 retry, 32 devices at once, 64 interfaces per device, 32
+   custom OIDs, 128 rows per walk, at most 500 targets, addresses only (no name lookups) (§12.1, §12.2).
+10. Back off after 3 failed cycles, doubling up to 10 min (§12.2).
+11. Responses only from the polled address and port; replies from another address are dropped (§12.2).
+12. The device page charts 13 lines in 5 charts by default, at most 8 interfaces at once; the timeline shows at most
+    4 devices' strips (§12.5).
+13. The bundle's `poll/` holds three CSVs per device, with empty cells for "not measured" (§12.6).
+14. `woodshed poll test` is standalone with secrets from files or the environment; there's no `woodshed poll add`
+    (§12.7).
+15. Windows is tested as a poller, not as a polled agent (§12.8).
+
+### 12.11 Open questions (1.3)
+1. Should polling also store `ifInUcastPkts`-style packet counters (packets per second help diagnose small-packet
+   floods), or is that "hundreds of OIDs" creep? Today they'd be a custom OID walk.
+2. Should an `oper` change (an interface going down) also be a timeline marker on the Events histogram, or only on the
+   device page?
+3. A sensible default for `max_interfaces` on large switches: 64 polls the first 64 by index, which may not be the
+   uplinks. Prefer interfaces that are up, or ask the user to pick when there are more than the cap?
+4. The 0.7 MB/day estimate per 24-interface device is a guess; confirm with the first bench before publishing it.
+
+## 13. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
    github.com" in §2 (see the reply of 2026-11-10).
 2. Retention fairness: decided 2026-11-11 (fair shares, §3.4). An optional per-device cap or minimum
