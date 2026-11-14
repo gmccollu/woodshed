@@ -317,6 +317,42 @@ RSA (2048 bits or more) or ECDSA key. Woodshed re-reads the files on every Setti
 fingerprint and expiry, and warns before they expire; there's no CA download (get the CA from whoever issued the
 certificate).
 
+## SNMP traps: firewall
+
+The SNMP trap receiver (UDP 162) is off until you turn it on in **Settings → SNMP traps**, or with `woodshed snmp on`
+as an administrator. A 1.1 upgrade leaves it off. How to point devices at it, and the v3 users and communities, are in
+the [user guide](user-guide.md#receiving-snmp-traps). The commands, all as an administrator (`sudo` on Linux and
+macOS); like `woodshed tls`, they edit the config and restart a running service:
+
+```sh
+woodshed snmp on [--port 162]   # turn the receiver on (and open the firewall, below)
+woodshed snmp off               # turn it off and undo the firewall change; users and stored traps are kept
+woodshed snmp status            # the listener, the engine ID, the last 24 h counts and the senders with failures
+```
+
+v3 users and the v1/v2c community list are set only in Settings (or the API), never on a command line, where a
+passphrase would show in the process list.
+
+Port 162 needs the same privileges as 514, which the service has. On macOS, a specific address below 1024 is refused;
+the wildcard (`0.0.0.0` or `::`) works. If another trap service already holds 162 (`snmptrapd` on Linux, the
+**SNMP Trap** service on Windows), the listener banner names it: stop that service or pick another port.
+
+**The firewall, per OS** (as for TLS):
+- **Windows:** the MSI and `woodshed install` add the rule **Woodshed SNMP traps (UDP 162)** (inbound UDP for
+  woodshed.exe, every profile), turned off. `woodshed snmp on` turns it on (on `listeners.snmp.port`), and
+  `woodshed snmp off` turns it off. Upgrades and repairs keep its state, and uninstalling removes it. Turning the
+  receiver on in Settings doesn't touch the rule: while it's off, missing or on another port, a banner gives the
+  command to run in an administrator prompt.
+- **macOS:** the application firewall allows or blocks the program, not ports: nothing to do.
+- **Linux:** the packages add nothing. `woodshed snmp on` runs `ufw allow 162/udp` when ufw is active, or
+  `firewall-cmd --permanent --add-port=162/udp` and a reload when firewalld is running, and records what it added in
+  `snmp-firewall.json` in the data folder; `woodshed snmp off` removes only that. With neither active it changes
+  nothing and prints the commands; allow inbound UDP 162 yourself.
+
+**Files:** Woodshed's own v3 engine ID and boot counter are in `snmp-engine.json`, and the v3 users and communities
+in `snmp-users.json` (mode 0600, the service's account) or, on Windows, `snmp-users.dat` (encrypted for the
+service's account with DPAPI), both in the data folder. MIB files go in the `mibs` folder there.
+
 ## Headless setup (no browser on the machine)
 
 On a server or container you reach only over SSH, the UI's first-run steps (a password, then LAN mode) are also
@@ -504,6 +540,7 @@ Or with icacls, which gives the same DACL (`M` is 0x1301bf) but leaves the owner
 | File | What it is |
 |---|---|
 | `logs/<device>/<day>.log`, `.log.gz` | the received messages; plain text, one line each |
+| `logs/<device>/traps/<day>.log`, `.log.gz` | the received SNMP traps, one decoded trap a line (since 1.2). A 1.1 `woodshed reindex` ignores these folders |
 | `index.db` (+ `-wal`, `-shm`) | the SQLite index; `woodshed reindex` rebuilds it from the logs. Stop the service and run it as the service's user: `sudo -u woodshed woodshed reindex` (Linux), `sudo -u _woodshed woodshed reindex` (macOS), an administrator prompt on Windows. As root it refuses, so a link planted in the folder can't steer root |
 | `woodshed.toml` | the config (Linux: `/etc/woodshed/woodshed.toml` instead) |
 | `woodshed.lock` | locked while a Woodshed process uses the folder, so two servers (or a server and `reindex`) never share it. The lock is the OS's and goes away with the process, even after a crash; the file itself stays and holds the last PID |
@@ -513,6 +550,10 @@ Or with icacls, which gives the same DACL (`M` is 0x1301bf) but leaves the owner
 | `tls-ca.pem`, `tls-ca-key.pem`, `tls-cert.pem`, `tls-key.pem` | syslog over TLS: Woodshed's CA, and the server certificate (then the CA: the chain it sends) with their keys (mode 0600). Made the first time TLS is turned on, and only changed by Renew or Replace CA |
 | `tls-firewall.json` | Linux: what `woodshed tls on` added to ufw or firewalld, so `tls off` removes only that |
 | `tls-renew-request.json` | left by `woodshed tls renew` until the service carries it out at its next start |
+| `snmp-engine.json` | Woodshed's own SNMP v3 engine ID and boot counter (mode 0600), made at the first start |
+| `snmp-users.json` (`snmp-users.dat` on Windows) | the SNMP v3 users and the v1/v2c communities: the names and protocols, and every secret in one protected part (mode 0600; DPAPI on Windows) |
+| `snmp-firewall.json` | Linux: what `woodshed snmp on` added to ufw or firewalld, so `snmp off` removes only that |
+| `mibs/` | MIB files for trap names (created at start; Reload MIBs in Settings reads them again) |
 | `exports/` | export zips, deleted after 24 hours |
 
 ## Checking that it works

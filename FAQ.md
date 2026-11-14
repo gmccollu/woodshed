@@ -7,6 +7,7 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 - [Why port 514, and why UDP?](#why-port-514-and-why-udp)
 - [Devices can't reach Woodshed](#devices-cant-reach-woodshed)
 - [What does the installer change in the firewall?](#what-does-the-installer-change-in-the-firewall)
+- [Does Woodshed receive SNMP traps?](#does-woodshed-receive-snmp-traps)
 - [Windows or macOS warns me about the download](#windows-or-macos-warns-me-about-the-download)
 - [Where are the logs?](#where-are-the-logs)
 - [Can I search the logs without the UI?](#can-i-search-the-logs-without-the-ui)
@@ -74,6 +75,34 @@ shows a red banner saying which program has the port. Stop that program, or move
 - **Linux:** nothing (see the commands above).
 - **Portable mode:** nothing is installed. On Windows, the first run asks whether to allow Woodshed through the
   firewall; choose **Allow**.
+- **TLS and SNMP traps** (both off by default): on Windows the installer also adds **Woodshed syslog (TLS 6514)** and
+  **Woodshed SNMP traps (UDP 162)**, turned off; `woodshed tls on` and `woodshed snmp on` turn them on. On Linux those
+  commands open the port in ufw or firewalld when one is active. See
+  [the install guide](docs/install.md#snmp-traps-firewall).
+
+## Does Woodshed receive SNMP traps?
+
+Yes, since 1.2, when you turn it on in **Settings → SNMP traps** (UDP 162): SNMPv1, v2c and v3, traps and informs.
+See [Receiving SNMP traps](docs/user-guide.md#receiving-snmp-traps).
+
+- **Why are traps in their own folder?** Each device's traps go in `logs/<device>/traps/`, in files named like the
+  syslog ones. The syslog files stay exactly as they always were, so grep, scripts and older exports see no change,
+  and a syslog search never reads trap bytes (or the reverse). Retention and the disk guard still count both
+  together, per device.
+- **Is the community stored?** No. A community is often a device's read or write password, and these lines end up in
+  exports. Woodshed stores `#` and the first 8 hex digits of its SHA-256 (enough to tell communities apart and to
+  filter on), and in the copy of the packet the community's bytes are replaced by `*`. The community list you set in
+  Settings is kept with the v3 credentials, never in the config file.
+- **Where are the v3 passphrases?** In the data folder, never in the config file, a log, an export or an API answer.
+  On Windows they're encrypted for the service's account (DPAPI, `snmp-users.dat`); a copy on another machine can't
+  decrypt them, and Settings asks for them again. On macOS and Linux they're in `snmp-users.json`, readable only by
+  the service's account (macOS's Keychain needs a login session a background service doesn't have). If you list a
+  user's engine IDs, only keys made for those engines are kept and the passphrases are discarded.
+- **Does it compile MIBs?** No. Copy MIB files into the `mibs` folder and Woodshed reads the names and named values
+  it needs from them; OIDs are always stored as numbers, so nothing is lost without them.
+- **Does it answer informs?** Yes, once the inform is stored, and only to senders it accepts, at most 100 replies a
+  second per sender. The only other packets it sends are the v3 Reports a device asks for to learn Woodshed's engine
+ID, as answers on the same socket; it never starts a connection to a device.
 
 ## Windows or macOS warns me about the download
 
