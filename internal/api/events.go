@@ -1,6 +1,8 @@
 package api
 
 import (
+	"github.com/gmccollu/woodshed/internal/datatype"
+
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,12 +21,32 @@ import (
 
 const errTermsRegex = "Terms and regex can't be combined: pick one."
 
-// parseType reads type= ("" is syslog, the only type in 1.1).
+// parseType reads type= ("" is syslog, the 1.1 meaning; SPEC §11.7).
 func parseType(t string) (string, error) {
-	if t == "" || t == "syslog" {
-		return "syslog", nil
+	if t == "" {
+		return datatype.Syslog, nil
+	}
+	if datatype.Get(t) != nil {
+		return t, nil
 	}
 	return "", fmt.Errorf("type: unknown data type %q.", t)
+}
+
+// parseTypeFilter refuses another type's filter parameters for typ, and reads
+// the trap type's own (nil for syslog, whose filters 1.1's code reads).
+func parseTypeFilter(typ string, get func(string) string) (*datatype.TrapFilter, error) {
+	dt := datatype.Get(typ)
+	if err := datatype.CheckParams(dt, func(p string) bool { return strings.TrimSpace(get(p)) != "" }); err != nil {
+		return nil, err
+	}
+	if typ != datatype.Trap {
+		return nil, nil
+	}
+	tf, err := datatype.ParseTrapFilter(get)
+	if err != nil || tf.Empty() {
+		return nil, err
+	}
+	return tf, nil
 }
 
 // parseSyntax reads syntax=: false for text (the default), true for terms.
@@ -370,6 +392,8 @@ type SavedQuery struct {
 	ExcludeHost    []string   `json:"exclude_host"`
 	Order          string     `json:"order"` // "desc" | "asc"
 	Range          SavedRange `json:"range"`
+	// The trap type's filters (1.2), as lists; absent for syslog.
+	TrapLists
 }
 
 func (q *SavedQuery) normalize() {
@@ -387,9 +411,25 @@ func (q *SavedQuery) normalize() {
 	}
 }
 
-// Filter returns the query as a SearchRequest (the range left unresolved: a
-// Last range is resolved by the caller).
-func (q SavedQuery) Filter() SearchRequest {
+// Filter returns the query as a syslog SearchRequest (the range left
+// unresolved: a Last range is resolved by the caller).
+func (q SavedQuery) Filter() SearchRequest { return q.FilterOf(datatype.Syslog) }
+
+// FilterOf is Filter for a saved search of type typ: the trap lists become
+// the trap filter (already validated by readSaved).
+func (q SavedQuery) FilterOf(typ string) SearchRequest {
+	r := q.filter()
+	if typ == "" {
+		typ = datatype.Syslog
+	}
+	r.Type = typ
+	if typ == datatype.Trap {
+		r.Trap, _ = q.TrapLists.Filter()
+	}
+	return r
+}
+
+func (q SavedQuery) filter() SearchRequest {
 	return SearchRequest{Type: "syslog", Q: q.Q, Terms: q.Syntax == "terms", Regex: q.Regex, Case: q.Case, Exclude: q.Exclude,
 		Devices: q.Devices, Group: q.Group, Ungrouped: q.Ungrouped, ExcludeDevices: q.ExcludeDevices, Severities: q.Severities,
 		Facilities: q.Facilities, App: q.App, ExcludeApp: q.ExcludeApp, Host: q.Host, ExcludeHost: q.ExcludeHost,
@@ -482,6 +522,7 @@ type savedQueryBody struct {
 	ExcludeHost    []string        `json:"exclude_host"`
 	Order          string          `json:"order"`
 	Range          json.RawMessage `json:"range"`
+	TrapLists
 }
 
 // readSaved decodes and checks a create or update body. It writes the error
@@ -565,6 +606,36 @@ func readSaved(w http.ResponseWriter, r *http.Request) (SavedSearchInput, bool) 
 	}
 	if len(qb.Range) > 0 && string(qb.Range) != "null" {
 		readRange(qb.Range, &q.Range, errs)
+	}
+	// Each type takes its own filters (SPEC §11.2.5): another type's are an
+	// error on the key, and the trap lists are checked like the parameters.
+	if in.Type != "" && errs["type"] == "" {
+		syslogSet := map[string]bool{"severities": len(q.Severities.Values) > 0 || q.Severities.None,
+			"facilities": len(q.Facilities.Values) > 0 || q.Facilities.None, "app": len(q.App) > 0, "host": len(q.Host) > 0,
+			"exclude_app": len(q.ExcludeApp) > 0, "exclude_host": len(q.ExcludeHost) > 0}
+		get := func(p string) string {
+			if syslogSet[p] {
+				return "set"
+			}
+			return qb.TrapLists.get(p)
+		}
+		if err := datatype.CheckParams(datatype.Get(in.Type), func(p string) bool { return get(p) != "" }); err != nil {
+			var pe *datatype.ParamError
+			if errors.As(err, &pe) {
+				errs["query."+pe.Param] = err.Error()
+			}
+		} else if in.Type == datatype.Trap {
+			if _, err := qb.TrapLists.Filter(); err != nil {
+				var pe *datatype.ParamError
+				if errors.As(err, &pe) {
+					errs["query."+pe.Param] = err.Error()
+				} else {
+					errs["query"] = err.Error()
+				}
+			} else {
+				q.TrapLists = qb.TrapLists
+			}
+		}
 	}
 	if len(errs) > 0 {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "Some fields need fixing.", Errors: errs})

@@ -67,7 +67,8 @@ func requestError(err error) error {
 func toAPILines(ls []search.Line) []api.SearchLine {
 	out := make([]api.SearchLine, len(ls))
 	for i, l := range ls {
-		out[i] = api.SearchLine{Received: l.Received, DeviceID: l.DeviceID, Severity: l.Severity, Raw: l.Raw, Ref: l.Ref, App: l.App, Host: l.Host}
+		out[i] = api.SearchLine{Received: l.Received, DeviceID: l.DeviceID, Severity: l.Severity, Raw: l.Raw, Ref: l.Ref, App: l.App, Host: l.Host,
+			Type: l.Type}
 	}
 	return out
 }
@@ -106,7 +107,7 @@ func fromFacilitySet(set search.FacilitySet) api.Facilities {
 func searchFilter(r api.SearchRequest) search.Filter {
 	return search.Filter{Q: r.Q, Regex: r.Regex, Terms: r.Terms, Case: r.Case, Severities: toSeveritySet(r.Severities),
 		Facilities: toFacilitySet(r.Facilities), From: r.From, To: r.To, Apps: r.App, Hosts: r.Host, ExcludeApps: r.ExcludeApp,
-		ExcludeHosts: r.ExcludeHost, Exclude: r.Exclude}
+		ExcludeHosts: r.ExcludeHost, Exclude: r.Exclude, Type: r.Type, Trap: r.Trap}
 }
 
 // SearchQuery is the engine query of a /api/search request. `woodshed search`

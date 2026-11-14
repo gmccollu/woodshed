@@ -72,7 +72,7 @@ func TestEventsV2InProcess(t *testing.T) {
 		t.Errorf("index histogram %+v", idx.Histogram)
 	}
 	var schema struct{ Types []api.SearchType }
-	if r.do(t, "GET", "/api/search/schema", nil, &schema); len(schema.Types) != 1 || len(schema.Types[0].Fields) != 5 ||
+	if r.do(t, "GET", "/api/search/schema", nil, &schema); len(schema.Types) != 2 || len(schema.Types[0].Fields) != 5 ||
 		len(schema.Types[0].Fields[2].Domain) != 25 {
 		t.Errorf("schema %+v", schema)
 	}

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gmccollu/woodshed/internal/datatype"
 )
 
 // ---- types (docs/api.md "Severity filters", "Search", "Exports") ----
@@ -138,6 +140,9 @@ type SearchRequest struct {
 	ExcludeDevices []string
 	ExcludeApp     []string
 	ExcludeHost    []string
+	// 1.2: the trap type's filter (Type "trap"; nil: none). Syslog's filters
+	// above stay empty for traps, and the trap filter nil for syslog.
+	Trap *datatype.TrapFilter
 }
 
 // SearchLine is one search result or context line.
@@ -145,16 +150,37 @@ type SearchLine struct {
 	Received time.Time
 	DeviceID string
 	Severity int    // 0-7, or Unknown
-	Raw      []byte // as received
+	Raw      []byte // as received (a trap: the record)
 	Ref      string
 	App      string // parsed program/tag, "" when none
 	Host     string // parsed header hostname, "" when none
+	// Type is "" or "syslog" for the 1.1 shape; "trap" adds the decoded
+	// fields (docs/api.md, "Search results for type=trap").
+	Type string
+	Trap *datatype.TrapResult
 }
 
 // MarshalJSON gives the docs/api.md shape: received with millisecond
 // precision (like the log files), severity null when unknown, raw as a string
-// (bytes that aren't valid UTF-8 become U+FFFD).
+// (bytes that aren't valid UTF-8 become U+FFFD). A trap line has its own
+// shape: type, ref, raw (the record) and fields.
 func (l SearchLine) MarshalJSON() ([]byte, error) {
+	if l.Type != "" && l.Type != datatype.Syslog {
+		f := l.Trap
+		if f == nil {
+			r := datatype.Result(l.Raw)
+			f = &r
+		}
+		return json.Marshal(struct {
+			Received string               `json:"received"`
+			DeviceID string               `json:"device_id"`
+			Type     string               `json:"type"`
+			Ref      string               `json:"ref"`
+			Raw      string               `json:"raw"`
+			Fields   *datatype.TrapResult `json:"fields"`
+		}{l.Received.UTC().Format("2006-01-02T15:04:05.000Z07:00"), l.DeviceID, l.Type, l.Ref,
+			string(bytes.ToValidUTF8(l.Raw, []byte("�"))), f})
+	}
 	var sev any
 	if l.Severity >= 0 && l.Severity <= 7 {
 		sev = l.Severity
@@ -210,6 +236,10 @@ type ExportRequest struct {
 	ExcludeDevices []string
 	ExcludeApp     []string
 	ExcludeHost    []string
+	// 1.2: the data types in the zip (["syslog"] by default, so a 1.1 body
+	// builds the 1.1 zip) and, with one type, its filter (Trap for traps).
+	Types []string
+	Trap  *datatype.TrapFilter
 }
 
 // ExportEstimate is the body of POST /api/exports/estimate.
@@ -237,6 +267,72 @@ type ExportFilters struct {
 	ExcludeDevices []string   `json:"exclude_devices"`
 	ExcludeApp     []string   `json:"exclude_app"`
 	ExcludeHost    []string   `json:"exclude_host"`
+	// 1.2.
+	Kind  string     `json:"kind"`
+	Types []string   `json:"types"`
+	Trap  *TrapLists `json:"trap,omitempty"`
+}
+
+// TrapLists is a trap filter as JSON lists (saved searches, export bodies
+// and their echo): the parameters of docs/api.md "Trap filters".
+type TrapLists struct {
+	SNMPVersions      []string `json:"snmp_versions,omitempty"`
+	PDUs              []string `json:"pdus,omitempty"`
+	TrapOID           []string `json:"trap_oid,omitempty"`
+	ExcludeTrapOID    []string `json:"exclude_trap_oid,omitempty"`
+	Enterprise        []string `json:"enterprise,omitempty"`
+	ExcludeEnterprise []string `json:"exclude_enterprise,omitempty"`
+	Generic           []string `json:"generic,omitempty"`
+	Specific          []string `json:"specific,omitempty"`
+	ExcludeSpecific   []string `json:"exclude_specific,omitempty"`
+	Cred              []string `json:"cred,omitempty"`
+	ExcludeCred       []string `json:"exclude_cred,omitempty"`
+	Status            []string `json:"status,omitempty"`
+}
+
+// get is the lists as query parameters, for datatype.ParseTrapFilter.
+func (t *TrapLists) get(p string) string {
+	if t == nil {
+		return ""
+	}
+	m := map[string][]string{"snmp_versions": t.SNMPVersions, "pdus": t.PDUs, "trap_oid": t.TrapOID,
+		"exclude_trap_oid": t.ExcludeTrapOID, "enterprise": t.Enterprise, "exclude_enterprise": t.ExcludeEnterprise,
+		"generic": t.Generic, "specific": t.Specific, "exclude_specific": t.ExcludeSpecific, "cred": t.Cred,
+		"exclude_cred": t.ExcludeCred, "status": t.Status}
+	return strings.Join(m[p], ",")
+}
+
+// TrapListsOf is a trap filter's JSON lists (nil for none).
+func TrapListsOf(f *datatype.TrapFilter) *TrapLists {
+	if f == nil {
+		return nil
+	}
+	gen := f.Generic
+	sets := func(s []string) []string {
+		if f.Nothing && len(s) == 0 {
+			return nil
+		}
+		return s
+	}
+	t := &TrapLists{SNMPVersions: sets(f.Versions), PDUs: sets(f.PDUs), TrapOID: f.TrapOID, ExcludeTrapOID: f.ExcludeTrapOID,
+		Enterprise: f.Enterprise, ExcludeEnterprise: f.ExcludeEnterprise, Generic: sets(gen), Specific: f.Specific,
+		ExcludeSpecific: f.ExcludeSpecific, Cred: f.Cred, ExcludeCred: f.ExcludeCred, Status: sets(f.Status)}
+	if f.Nothing && len(t.Status) == 0 && len(t.SNMPVersions) == 0 && len(t.PDUs) == 0 && len(t.Generic) == 0 {
+		t.Status = []string{"none"}
+	}
+	return t
+}
+
+// Filter parses the lists like the query parameters.
+func (t *TrapLists) Filter() (*datatype.TrapFilter, error) {
+	if t == nil {
+		return nil, nil
+	}
+	f, err := datatype.ParseTrapFilter(t.get)
+	if err != nil || f.Empty() {
+		return nil, err
+	}
+	return f, nil
 }
 
 // ExportInfo is one export in GET /api/exports.
@@ -263,6 +359,12 @@ func (e *ExportInfo) normalize() {
 	e.Filters.ExcludeHost = nonNil(e.Filters.ExcludeHost)
 	if e.Filters.Type == "" {
 		e.Filters.Type = "syslog"
+	}
+	if e.Filters.Kind == "" {
+		e.Filters.Kind = "export"
+	}
+	if len(e.Filters.Types) == 0 {
+		e.Filters.Types = []string{e.Filters.Type}
 	}
 	if e.Filters.Syntax == "" {
 		e.Filters.Syntax = "text"
@@ -421,7 +523,8 @@ func parseFilters11(v url.Values, r *SearchRequest) error {
 		return err
 	}
 	r.ExcludeDevices, r.ExcludeApp, r.ExcludeHost = splitList(v.Get("exclude_devices")), splitList(v.Get("exclude_app")), splitList(v.Get("exclude_host"))
-	return nil
+	r.Trap, err = parseTypeFilter(r.Type, v.Get)
+	return err
 }
 
 // requestOrBackendError answers a Backend error: 400 for a RequestError, 404
@@ -507,6 +610,11 @@ type exportBody struct {
 	ExcludeDevices []string   `json:"exclude_devices"`
 	ExcludeApp     []string   `json:"exclude_app"`
 	ExcludeHost    []string   `json:"exclude_host"`
+	// 1.2 (docs/api.md "Exports and the incident bundle"): the data types,
+	// the kind, and the trap filters as lists.
+	Types []string `json:"types"`
+	Kind  string   `json:"kind"`
+	TrapLists
 }
 
 func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (ExportRequest, bool) {
@@ -534,6 +642,52 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 	var err error
 	if req.Type, err = parseType(b.Type); err != nil {
 		return bad(err.Error())
+	}
+	switch b.Kind {
+	case "", "export":
+	case "bundle":
+		return bad("kind: the incident bundle isn't in this build yet.")
+	default:
+		return bad(fmt.Sprintf("kind must be \"export\" or \"bundle\", not %q.", b.Kind))
+	}
+	if req.Types, err = parseTypes(b.Types, b.Type); err != nil {
+		return bad(err.Error())
+	}
+	if len(req.Types) == 1 {
+		req.Type = req.Types[0]
+	}
+	syslogFilters := len(b.Severities.Values) > 0 || b.Severities.None || len(b.Facilities.Values) > 0 || b.Facilities.None ||
+		len(req.App) > 0 || len(req.Host) > 0 || len(req.ExcludeApp) > 0 || len(req.ExcludeHost) > 0
+	tl := b.TrapLists
+	trapFilters := tl.get("snmp_versions")+tl.get("pdus")+tl.get("trap_oid")+tl.get("exclude_trap_oid")+tl.get("enterprise")+
+		tl.get("exclude_enterprise")+tl.get("generic")+tl.get("specific")+tl.get("exclude_specific")+tl.get("cred")+
+		tl.get("exclude_cred")+tl.get("status") != ""
+	if len(req.Types) > 1 && (syslogFilters || trapFilters || req.Q != "" || req.Exclude != "") {
+		return bad("types: Filters apply to one data type; pick one, or leave the filters out.")
+	}
+	if len(req.Types) == 1 {
+		get := func(p string) string {
+			switch p {
+			case "severities", "facilities":
+				if syslogFilters && (p == "severities" && (len(b.Severities.Values) > 0 || b.Severities.None) ||
+					p == "facilities" && (len(b.Facilities.Values) > 0 || b.Facilities.None)) {
+					return "set"
+				}
+				return ""
+			case "app":
+				return strings.Join(req.App, ",")
+			case "host":
+				return strings.Join(req.Host, ",")
+			case "exclude_app":
+				return strings.Join(req.ExcludeApp, ",")
+			case "exclude_host":
+				return strings.Join(req.ExcludeHost, ",")
+			}
+			return tl.get(p)
+		}
+		if req.Trap, err = parseTypeFilter(req.Type, get); err != nil {
+			return bad(err.Error())
+		}
 	}
 	if req.Terms, err = parseSyntax(b.Syntax); err != nil {
 		return bad(err.Error() + ".")
@@ -565,6 +719,39 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 		return bad("Pick at least one device (devices, group, ungrouped or all_devices).")
 	}
 	return req, true
+}
+
+// parseTypes reads an export's types (and 1.1's type): none means the 1.1
+// zip, syslog only.
+func parseTypes(types []string, typ string) ([]string, error) {
+	if len(types) == 0 {
+		if typ == "" {
+			typ = datatype.Syslog
+		}
+		return []string{typ}, nil
+	}
+	var out []string
+	for _, t := range types {
+		if datatype.Get(t) == nil || t == "" {
+			return nil, fmt.Errorf("types: unknown data type %q.", t)
+		}
+		if !slicesContains(out, t) {
+			out = append(out, t)
+		}
+	}
+	if typ != "" && !(len(out) == 1 && out[0] == typ) {
+		return nil, errors.New(`types: "type" and "types" disagree; send one.`)
+	}
+	return out, nil
+}
+
+func slicesContains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) postExport(w http.ResponseWriter, r *http.Request) {

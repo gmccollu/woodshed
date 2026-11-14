@@ -25,7 +25,11 @@ func TestParseSearch11(t *testing.T) {
 		t.Errorf("none %+v", r.Facilities)
 	}
 	for bad, msg := range map[string]string{
-		"type=trap":               `type: unknown data type "trap".`,
+		"type=flow":               `type: unknown data type "flow".`,
+		"type=trap&severities=3":  `severities: not a filter for SNMP traps.`,
+		"trap_oid=linkDown":       `trap_oid: not a filter for syslog.`,
+		"type=trap&pdus=get":      `pdus: "get" is not one of v1trap, trap, inform, unexpected (or none on its own).`,
+		"type=trap&trap_oid=nope": `trap_oid: "nope" is not a name in the loaded MIBs.`,
 		"syntax=lucene":           `syntax must be text or terms`,
 		"syntax=terms&regex=true": errTermsRegex,
 		"facilities=24":           `facilities: "24"`,
@@ -114,7 +118,7 @@ func TestSavedSearchRoutes(t *testing.T) {
 	if q["range"].(map[string]any)["last"] != "1h" || len(list[0]["missing_devices"].([]any)) != 1 || q["order"] != "desc" {
 		t.Errorf("%s", r.body)
 	}
-	wantError(t, do(t, c, "GET", srv.url("/api/saved-searches?type=trap"), ""), 400, "unknown data type")
+	wantError(t, do(t, c, "GET", srv.url("/api/saved-searches?type=flow"), ""), 400, "unknown data type")
 
 	// Create: 201 with an ETag, defaults filled in.
 	r = do(t, c, "POST", srv.url("/api/saved-searches"), `{"name": "  Auth failures ", "query": {"q": "fail", "syntax": "terms",
@@ -223,7 +227,7 @@ func TestExportBody11(t *testing.T) {
 		!slices.Equal(req.ExcludeApp, []string{"kernel"}) || !slices.Equal(req.ExcludeHost, []string{"lab-01"}) {
 		t.Errorf("%+v", req)
 	}
-	for _, bad := range []string{`"type": "trap"`, `"syntax": "x"`, `"syntax": "terms", "regex": true`, `"facilities": [30]`} {
+	for _, bad := range []string{`"type": "flow"`, `"syntax": "x"`, `"syntax": "terms", "regex": true`, `"facilities": [30]`} {
 		wantError(t, do(t, c, "POST", srv.url("/api/exports"), `{`+base+`, `+bad+`}`), 400, "")
 	}
 }

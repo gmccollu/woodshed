@@ -41,7 +41,11 @@ func (b *backend) Summary(ctx context.Context, r api.SummaryRequest) (api.Summar
 	if err != nil {
 		return api.SummaryPage{}, requestError(err)
 	}
-	out := api.SummaryPage{Type: "syslog", From: s.From, To: s.To, Matched: s.Matched, CountedFrom: s.CountedFrom,
+	typ := r.Type
+	if typ == "" {
+		typ = search.TypeSyslog
+	}
+	out := api.SummaryPage{Type: typ, From: s.From, To: s.To, Matched: s.Matched, CountedFrom: s.CountedFrom,
 		NextCursor: s.NextCursor, Partial: s.Partial, ScannedBytes: s.ScannedBytes, ScannedFiles: s.ScannedFiles,
 		ElapsedMS: s.Elapsed.Milliseconds()}
 	if h := s.Histogram; h != nil {
@@ -128,7 +132,7 @@ func (b *backend) SavedSearch(ctx context.Context, id string) (api.SavedSearch, 
 // checkSaved validates a saved query like /api/search: the text and exclude
 // (regular expression or terms) each against its own key.
 func (b *backend) checkSaved(in api.SavedSearchInput) error {
-	f := searchFilter(in.Query.Filter())
+	f := searchFilter(in.Query.FilterOf(in.Type))
 	errs := map[string]string{}
 	if err := b.search.CheckFilter(search.Filter{Q: f.Q, Regex: f.Regex, Terms: f.Terms, Case: f.Case, From: f.From, To: f.To}); err != nil {
 		var qe *search.QueryError
