@@ -109,12 +109,19 @@ func searchFilter(r api.SearchRequest) search.Filter {
 		ExcludeHosts: r.ExcludeHost, Exclude: r.Exclude}
 }
 
-func (b *backend) Search(ctx context.Context, r api.SearchRequest) (api.SearchPage, error) {
-	p, err := b.search.Search(ctx, search.Query{
+// SearchQuery is the engine query of a /api/search request. `woodshed search`
+// builds its query through it too, so the command line and the API mean the
+// same thing by every filter (SPEC §11.4).
+func SearchQuery(r api.SearchRequest) search.Query {
+	return search.Query{
 		Filter:  searchFilter(r),
 		Devices: r.Devices, Group: r.Group, Ungrouped: r.Ungrouped, ExcludeDevices: r.ExcludeDevices, Asc: r.Asc, Limit: r.Limit,
 		Cursor: r.Cursor,
-	})
+	}
+}
+
+func (b *backend) Search(ctx context.Context, r api.SearchRequest) (api.SearchPage, error) {
+	p, err := b.search.Search(ctx, SearchQuery(r))
 	if err != nil {
 		return api.SearchPage{}, requestError(err)
 	}
