@@ -4,6 +4,14 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [1.2.0] - unreleased
+
+### Added
+- `woodshed send` can send SNMP traps and informs for testing (`--proto trap`): SNMPv1, v2c and v3 at every
+  security level, with MD5, SHA-1 or SHA-2 authentication and DES or AES-128/192/256 privacy. Informs wait for each
+  answer and report round-trip times and timeouts. Communities and passphrases are read from a file or an
+  environment variable, never from the command line. It's the test tool for the SNMP trap receiver coming in 1.2.
+
 ## [1.1.0] - 2026-11-14
 
 ### Added
