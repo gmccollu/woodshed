@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -169,46 +168,9 @@ func IsReboot(trapOID string) (string, bool) {
 	return "", false
 }
 
-// Summary counts the records by trap name (or OID), most first, and says how
-// many were reboots (coldStart, warmStart).
-func (t trapType) Summary(recs [][]byte) []string {
-	by := map[string]int64{}
-	var reboots int64
-	for _, rec := range recs {
-		r, err := snmp.ParseRecordHeader(rec)
-		if err != nil {
-			continue
-		}
-		k := r.Trap
-		if k == "" {
-			k = "(" + r.Status + ")"
-		} else {
-			if _, ok := IsReboot(k); ok {
-				reboots++
-			}
-			k = t.ValueLabel(FieldTrapOID, k)
-		}
-		by[k]++
-	}
-	keys := make([]string, 0, len(by))
-	for k := range by {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if by[keys[i]] != by[keys[j]] {
-			return by[keys[i]] > by[keys[j]]
-		}
-		return keys[i] < keys[j]
-	})
-	var out []string
-	for _, k := range keys {
-		out = append(out, fmt.Sprintf("%s: %d", k, by[k]))
-	}
-	if reboots > 0 {
-		out = append(out, fmt.Sprintf("reboots (coldStart, warmStart): %d", reboots))
-	}
-	return out
-}
+// NewSummary counts the records by trap name (or OID), most first, and
+// finds the reboots (coldStart, warmStart).
+func (t trapType) NewSummary() Summary { return &trapSummary{t: t} }
 
 // ---- the filter ----
 

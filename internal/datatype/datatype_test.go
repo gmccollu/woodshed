@@ -1,7 +1,9 @@
 package datatype
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -215,17 +217,53 @@ func TestTrapResult(t *testing.T) {
 }
 
 func TestSummaries(t *testing.T) {
-	recs := [][]byte{
+	t1 := time.Date(2026, 11, 14, 9, 30, 58, 0, time.UTC)
+	ts := Get(Trap).NewSummary()
+	for i, rec := range [][]byte{
 		v2cRecord(t, "public", snmp.PDUTrap, 1, "1.3.6.1.6.3.1.1.5.3"),
 		v2cRecord(t, "public", snmp.PDUTrap, 2, "1.3.6.1.6.3.1.1.5.3"),
-		v1Record(t, "public", "1.3.6.1.4.1.32473.1", 0, 0),
+		v1Record(t, "public", "1.3.6.1.4.1.32473.1", 0, 0), // coldStart
+		v2cRecord(t, "public", snmp.PDUInform, 3, "1.3.6.1.6.3.1.1.5.2"),
+		[]byte("status=malformed error=x"),
+	} {
+		ts.Add(rec, t1.Add(time.Duration(i)*time.Second))
 	}
-	got := strings.Join(Get(Trap).Summary(recs), "; ")
-	if got != "linkDown: 2; coldStart: 1; reboots (coldStart, warmStart): 1" {
-		t.Fatalf("trap summary %q", got)
+	if got := strings.Join(ts.README(5, "A", "B"), "|"); got != "5: linkDown 2, coldStart 1, warmStart 1, (malformed) 1; first A, last B" {
+		t.Fatalf("trap README %q", got)
 	}
-	got = strings.Join(Get(Syslog).Summary([][]byte{[]byte("<11>x"), []byte("<11>y"), []byte("none")}), "; ")
-	if got != "err: 2; unknown: 1" {
-		t.Fatalf("syslog summary %q", got)
+	if rb := ts.Reboots(); len(rb) != 2 || rb[0].Source != "coldStart trap" || !rb[0].Time.Equal(t1.Add(2*time.Second)) ||
+		rb[1].Source != "warmStart inform" {
+		t.Fatalf("reboots %+v", rb)
+	}
+	if b, _ := json.Marshal(ts.Counts()); string(b) != `{"linkDown":2,"coldStart":1,"warmStart":1,"(malformed)":1}` || ts.Key() != "by_trap" {
+		t.Fatalf("trap counts %s", b)
+	}
+	var back Counts
+	if err := json.Unmarshal([]byte(`{"b":2,"a":1}`), &back); err != nil || len(back) != 2 || back[0] != (Count{"b", 2}) {
+		t.Fatalf("unmarshal %+v %v", back, err)
+	}
+
+	ss := Get(Syslog).NewSummary()
+	for _, r := range []string{"<11>x", "<11>y", "none", "<14>z"} {
+		ss.Add([]byte(r), t1)
+	}
+	if got := strings.Join(ss.README(1234, "A", "B"), "|"); got !=
+		"1,234 messages, first A, last B|err 2, info 1, unknown 1 (none of emerg, alert, crit, warning, notice, debug)" {
+		t.Fatalf("syslog README %q", got)
+	}
+	if b, _ := json.Marshal(ss.Counts()); string(b) != `{"emerg":0,"alert":0,"crit":0,"err":2,"warning":0,"notice":0,"info":1,"debug":0,"unknown":1}` {
+		t.Fatalf("syslog counts %s", b)
+	}
+	for n, want := range map[int64]string{0: "0", 999: "999", 1000: "1,000", 1234567: "1,234,567", -1500: "-1,500"} {
+		if got := Thousands(n); got != want {
+			t.Errorf("Thousands(%d) = %q", n, got)
+		}
+	}
+	many := Get(Trap).NewSummary()
+	for i := 0; i < 12; i++ {
+		many.Add(v2cRecord(t, "public", snmp.PDUTrap, int64(i), fmt.Sprintf("1.3.6.1.4.1.32473.1.0.%d", i)), t1)
+	}
+	if got := many.README(12, "A", "B")[0]; !strings.HasSuffix(got, ", and 2 more (2); first A, last B") {
+		t.Fatalf("many %q", got)
 	}
 }

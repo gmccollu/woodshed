@@ -1847,6 +1847,249 @@ const SHOTS = [
     check: `document.body.innerText.includes('ups-01') && [...document.querySelectorAll('a.tcount')].length >= 4
       && [...document.querySelectorAll('a.tcount')].some((a) => a.getAttribute('href').includes('type=trap&dev=10.1.0.40'))`,
   }),
+  // ----- Incident bundle (1.2, SPEC §11.3): an export of everything around a moment -----
+  ...both({
+    name: 'bundle-around-this-line',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 3000,
+    act: `document.querySelector('.logline.clickable').click();`,
+    after: 1200,
+    check: `!!__btn('Bundle around this') && !!document.querySelector('[role=dialog] .logline.hit')`,
+  }),
+  {
+    name: 'bundle-line-menu-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 3000,
+    act: `const l = document.querySelector('.logline.clickable'); const r = l.getBoundingClientRect();
+      l.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: r.left + 320, clientY: r.top + 8 })); await __tick();`,
+    after: 300,
+    check: `[...document.querySelectorAll('[role=menuitem]')].some((b) => /^Bundle around this \\(\\d\\d:\\d\\d:\\d\\d\\)$/.test(b.textContent.trim()))
+      && [...document.querySelectorAll('[role=menuitem]')].some((b) => b.textContent.startsWith('Block this sender'))`,
+  },
+  {
+    name: 'bundle-line-opens-preview-and-back',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h&q=deny',
+    wait: 3000,
+    act: `document.querySelector('.logline.clickable').click(); await new Promise((r) => setTimeout(r, 1200));
+      __btn('Bundle around this').click(); await new Promise((r) => setTimeout(r, 3500));
+      const p = new URLSearchParams(location.hash.split('?')[1]);
+      window.__b = { at: p.get('bundle'), bb: p.get('bb'), ba: p.get('ba'), q: p.get('q'), preview: !!document.querySelector('[data-bundle-preview]'),
+        rows: document.querySelectorAll('.logline.clickable').length, open: !!document.querySelector('[role=dialog]') };
+      history.back();`,
+    after: 2500,
+    report: `JSON.stringify({ b: window.__b, hash: location.hash })`,
+    check: `Date.now() - Date.parse(window.__b.at) < 3700e3 && window.__b.bb === '30m' && window.__b.ba === '10m' && window.__b.q === null
+      && window.__b.preview && window.__b.rows > 20 && !window.__b.open
+      && location.hash.includes('q=deny') && !location.hash.includes('bundle=') && !document.querySelector('[data-bundle-preview]')`,
+  },
+  ...both({
+    name: 'bundle-preview',
+    url: '/?mock_panel=0#/events',
+    wait: 1500,
+    act: `const at = new Date(Math.floor((Date.now() - 2 * 3600e3) / 60000) * 60000).toISOString().replace('.000Z', 'Z');
+      location.hash = '#/events?bundle=' + at + '&bb=30m&ba=10m';`,
+    after: 3500,
+    report: `JSON.stringify({ rows: document.querySelectorAll('[aria-label="Devices in the bundle"] li').length, est: document.querySelector('[data-bundle-estimate]')?.innerText, body: window.__woodshedMock.lastExportBody })`,
+    check: `!!document.querySelector('[data-bundle-preview]') && document.querySelectorAll('[aria-label="Devices in the bundle"] li').length >= 8
+      && /Up to [\\d,]+ lines from [\\d,]+ files?/.test(document.querySelector('[data-bundle-estimate]').innerText)
+      && document.querySelector('[data-bundle-preview]').innerText.includes('Bundle around') && /Window .+ → .+ · 40 min/.test(document.querySelector('[data-bundle-preview]').innerText)
+      && /\\d+ syslog/.test(document.querySelector('[aria-label="Devices in the bundle"]').innerText)
+      && !!document.querySelector('.hist .mark') && document.querySelectorAll('.logline.clickable').length > 50
+      && JSON.parse(window.__woodshedMock.lastExportBody).active_devices === true`,
+    maxh: 2200,
+  }),
+  {
+    name: 'bundle-preview-uncheck-device',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events',
+    wait: 1500,
+    act: `const at = new Date(Math.floor((Date.now() - 2 * 3600e3) / 60000) * 60000).toISOString().replace('.000Z', 'Z');
+      location.hash = '#/events?bundle=' + at + '&bb=30m&ba=10m'; await new Promise((r) => setTimeout(r, 3500));
+      [...document.querySelectorAll('[aria-label="Devices in the bundle"] label')].find((l) => l.textContent.includes('edge-fw-02')).querySelector('input').click();`,
+    after: 3000,
+    report: `JSON.stringify({ body: window.__woodshedMock.lastExportBody, hash: location.hash })`,
+    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody); const p = new URLSearchParams(location.hash.split('?')[1]);
+      return !b.active_devices && b.devices.length > 3 && !b.devices.includes('10.1.0.2') && p.get('bdev').split(',').length === b.devices.length
+        && document.querySelectorAll('.logline.clickable').length > 0
+        && [...document.querySelectorAll('.logline.clickable .c.h')].every((c) => c.textContent !== 'edge-fw-02'); })()`,
+  },
+  {
+    name: 'bundle-preview-drag-narrows-and-back',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events',
+    wait: 1500,
+    act: `window.__at = new Date(Math.floor((Date.now() - 2 * 3600e3) / 60000) * 60000).toISOString().replace('.000Z', 'Z');
+      location.hash = '#/events?bundle=' + window.__at + '&bb=30m&ba=10m'; await new Promise((r) => setTimeout(r, 3500));
+      const h = document.querySelector('.hist'); const r = h.getBoundingClientRect(); const n = document.querySelectorAll('.hist .bar').length;
+      const x = (i) => r.left + (i + 0.5) * r.width / n;
+      const ev = (t, i) => h.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x(i), clientY: r.top + 30, pointerId: 1, button: 0 }));
+      ev('pointerdown', 5); ev('pointermove', 10); ev('pointermove', 14); ev('pointerup', 14);
+      await new Promise((res) => setTimeout(res, 2500));
+      const p = new URLSearchParams(location.hash.split('?')[1]);
+      window.__n = { n, bb: p.get('bb'), ba: p.get('ba'), at: p.get('bundle'), from: p.get('from') };
+      history.back();`,
+    after: 2500,
+    report: `JSON.stringify({ n: window.__n, hash: location.hash })`,
+    check: `window.__n.n === 40 && window.__n.bb === '10m' && window.__n.ba === '0s' && Date.parse(window.__n.at) === Date.parse(window.__at) - 15 * 60e3
+      && window.__n.from === null && new URLSearchParams(location.hash.split('?')[1]).get('bb') === '30m'`,
+  },
+  {
+    name: 'bundle-histogram-point-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 3000,
+    act: `__btn('Bundle around a moment').click(); await __tick();
+      const h = document.querySelector('.hist'); const r = h.getBoundingClientRect();
+      h.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: r.left + r.width * 0.6, clientY: r.top + 30, pointerId: 1 }));`,
+    after: 300,
+    check: `!!document.querySelector('.hist .cursor') && /^Bundle around \\d\\d:\\d\\d$/.test(document.querySelector('.hist .clabel').textContent.trim()) && !!__btn('Cancel')`,
+    clip: '.histwrap',
+  },
+  {
+    name: 'bundle-histogram-point-opens-preview',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 3000,
+    act: `__btn('Bundle around a moment').click(); await __tick();
+      const h = document.querySelector('.hist'); const r = h.getBoundingClientRect();
+      const opts = { bubbles: true, clientX: r.left + r.width * 0.5, clientY: r.top + 30, pointerId: 1, button: 0 };
+      h.dispatchEvent(new PointerEvent('pointermove', opts)); await __tick(); window.__label = document.querySelector('.hist .clabel').textContent.trim();
+      h.dispatchEvent(new PointerEvent('pointerdown', opts)); h.dispatchEvent(new PointerEvent('pointerup', opts));`,
+    after: 3500,
+    report: `JSON.stringify({ label: window.__label, hash: location.hash })`,
+    check: `(() => { const at = new URLSearchParams(location.hash.split('?')[1]).get('bundle'); const d = new Date(at);
+      return !!document.querySelector('[data-bundle-preview]') && d.getSeconds() === 0 && Date.now() - d.getTime() < 3700e3
+        && window.__label.endsWith(String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')); })()`,
+  },
+  {
+    name: 'bundle-future-moment-refused',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events',
+    wait: 1500,
+    act: `location.hash = '#/events?bundle=' + new Date(Date.now() + 3600e3).toISOString() + '&bb=30m&ba=10m';`,
+    after: 2500,
+    check: `document.querySelector('[data-bundle-preview]').innerText.includes('in the future') && __btn('Build the bundle').disabled
+      && document.querySelector('.res-body').innerText.includes('in the future')`,
+  },
+  {
+    name: 'bundle-no-active-device',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_firstrun=1&mock_firstmsg=0#/events',
+    wait: 1500,
+    act: `location.hash = '#/events?bundle=' + new Date(Date.now() - 3600e3).toISOString().slice(0, 17) + '00Z&bb=15m&ba=5m';`,
+    after: 2500,
+    report: `document.querySelector('[data-bundle-estimate]')?.innerText`,
+    check: `/^No device stored anything between \\S+ and \\S+\\.$/.test(document.querySelector('[data-bundle-estimate]').innerText.trim())
+      && document.body.innerText.includes('No device stored anything in this window.')`,
+  },
+  {
+    name: 'bundle-build-goes-to-list',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_export_secs=2#/events',
+    wait: 1500,
+    act: `const at = new Date(Math.floor((Date.now() - 2 * 3600e3) / 60000) * 60000).toISOString().replace('.000Z', 'Z');
+      location.hash = '#/events?bundle=' + at + '&bb=1h&ba=15m&btypes=trap'; await new Promise((r) => setTimeout(r, 3500));
+      window.__type = document.querySelector('[role=radiogroup][aria-label="Data type"] [aria-checked=true]')?.textContent.trim();
+      window.__rows = document.querySelectorAll('.logline.trap.clickable').length;
+      __btn('Build the bundle').click(); await __tick(); window.__body = JSON.parse(window.__woodshedMock.lastExportBody);`,
+    after: 4500,
+    report: `JSON.stringify({ type: window.__type, rows: window.__rows, hash: location.hash, body: window.__body, first: document.querySelector('li[data-id]')?.innerText })`,
+    check: `location.hash === '#/export' && window.__type === 'SNMP traps' && window.__rows > 3
+      && (() => { const b = window.__body; return b.kind === 'bundle' && b.before === '1h' && b.after === '15m' && b.types.join() === 'trap'; })()
+      && document.querySelector('li[data-id]').innerText.includes('1 h before, 15 min after') && document.querySelector('li[data-id]').innerText.includes('SNMP traps')
+      && document.querySelector('li[data-id]').dataset.state === 'ready'`,
+  },
+  ...both({
+    name: 'bundle-export-around',
+    url: '/?mock_panel=0#/export',
+    wait: 1500,
+    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click();`,
+    after: 2000,
+    check: `document.body.innerText.includes('15 min / 5 min') && document.body.innerText.includes('24 h / 1 h') && !!__btn('Custom')
+      && /Up to [\\d,]+ lines/.test(document.querySelector('[data-bundle-estimate]').innerText) && !!__btn('Preview in Events')
+      && document.body.innerText.includes("What's in the bundle") && document.body.innerText.includes('cut at now')
+      && document.body.innerText.includes('Bundle around') && !!document.querySelector('li .badge.kind')`,
+  }),
+  {
+    name: 'bundle-export-custom-sides',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/export',
+    wait: 1500,
+    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
+      __btn('Custom').click(); await __tick();
+      const ins = document.querySelectorAll('input.dur'); __set(ins[0], '2 h'); __set(ins[1], '0');`,
+    after: 1500,
+    report: `window.__woodshedMock.lastExportBody`,
+    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody); return b.kind === 'bundle' && b.before === '2h' && b.after === '0s' && b.active_devices === true
+      && !('from' in b) && !('to' in b); })() && document.body.innerText.includes('Window ') && !document.body.innerText.includes('cut at now')`,
+  },
+  {
+    name: 'bundle-export-utc-moment',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/export',
+    wait: 1500,
+    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
+      [...document.querySelectorAll('[aria-label="Type the time in"] button')].find((b) => b.textContent === 'UTC').click(); await __tick();
+      window.__day = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
+      const set = (el, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v); el.dispatchEvent(new Event('change', { bubbles: true })); };
+      set(document.querySelector('input[type=date]'), window.__day); await __tick();
+      set(document.querySelector('input[type=time]'), '10:00:00'); await new Promise((r) => setTimeout(r, 1200));
+      window.__utcBody = JSON.parse(window.__woodshedMock.lastExportBody);
+      [...document.querySelectorAll('[aria-label="Type the time in"] button')].find((b) => b.textContent === 'Local').click(); await __tick();`,
+    after: 1200,
+    report: `JSON.stringify({ day: window.__day, utc: window.__utcBody, local: document.querySelector('input[type=time]').value, body: window.__woodshedMock.lastExportBody })`,
+    check: `window.__utcBody.at === window.__day + 'T10:00:00Z' && JSON.parse(window.__woodshedMock.lastExportBody).at === window.__day + 'T10:00:00Z'
+      && document.querySelector('input[type=time]').value.slice(0, 5) === new Date(window.__day + 'T10:00:00Z').toTimeString().slice(0, 5)`,
+  },
+  {
+    name: 'bundle-export-preview-in-events',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/export',
+    wait: 1500,
+    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
+      __btn('4 h / 1 h').click(); await new Promise((r) => setTimeout(r, 800)); __btn('Preview in Events').click();`,
+    after: 3500,
+    check: `location.hash.startsWith('#/events?') && new URLSearchParams(location.hash.split('?')[1]).get('bb') === '4h'
+      && !!document.querySelector('[data-bundle-preview]') && document.querySelectorAll('.logline.clickable').length > 0`,
+  },
+  {
+    name: 'bundle-trap-export-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=trap&r=24h&trap_oid=linkDown',
+    wait: 3000,
+    act: `if (__btn('Export these results').disabled) throw new Error('trap export disabled'); __btn('Export these results').click();`,
+    after: 2500,
+    report: `JSON.stringify({ hash: location.hash, body: window.__woodshedMock.lastExportBody })`,
+    check: `location.hash.startsWith('#/export?') && document.querySelector('[aria-label="Data types"] [aria-checked=true]')?.textContent.trim() === 'SNMP traps'
+      && (() => { const b = JSON.parse(window.__woodshedMock.lastExportBody); return b.types.join() === 'trap' && b.trap_oid.join() === 'linkDown' && !('severities' in b); })()
+      && !document.querySelector('#exapp') && !document.querySelector('.sevbar') && /Up to [\\d,]+ lines/.test(document.body.innerText)
+      && document.body.innerText.includes('trap oid: linkDown')`,
+  },
+  {
+    name: 'bundle-trap-export-both-types',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_export_secs=2#/export',
+    wait: 1500,
+    act: `__set(document.querySelector('#exq'), 'deny'); await __tick(); __btn('Both').click(); await new Promise((r) => setTimeout(r, 1200));
+      if (/Filters apply|Up to/.test(document.body.innerText) === false) throw new Error('no estimate'); __btn('Build the zip').click();`,
+    after: 4000,
+    report: `JSON.stringify({ body: window.__woodshedMock.lastExportBody, first: document.querySelector('li[data-id]')?.innerText })`,
+    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody); return b.types.join() === 'syslog,trap' && !('q' in b) && b.all_devices === true; })()
+      && !document.querySelector('#exq') && document.querySelector('li[data-id]').innerText.includes('Syslog and SNMP traps')`,
+  },
 ].filter((s) => s.name.includes(only));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

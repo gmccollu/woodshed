@@ -1,0 +1,58 @@
+Incident bundle around 2026-11-14 00:05:00 UTC (30 min before, 10 min after)
+Window: 2026-11-13 23:35:00 to 2026-11-14 00:15:00 UTC (local time UTC-05:00)
+Devices: 2, every device that sent anything in the window. Types: syslog, SNMP traps.
+Communities in traps are shown as a hash prefix and masked in raw=, by design.
+
+edge-fw-01 (192.0.2.1), group HQ
+  Syslog       112 messages, first 2026-11-13 23:35:00.014, last 2026-11-14 00:14:40.014
+               crit 22, err 22, warning 22, notice 23, info 23 (none of emerg, alert, debug, unknown)
+  SNMP traps   3: linkDown 1, linkUp 1, coldStart 1; first 2026-11-13 23:50:00.000, last 2026-11-13 23:50:58.250
+  Reboots      1: 2026-11-13 23:50:58.250 (coldStart trap)
+  Gaps         2026-11-13 23:40:00 to 2026-11-13 23:42:30  Woodshed wasn't running
+  Losses       dropped 4, truncated 0 (<loss note>)
+
+192.0.2.2
+  Syslog       76 messages, first 2026-11-13 23:35:05.014, last 2026-11-14 00:14:35.014
+               err 1, notice 65, unknown 10 (none of emerg, alert, crit, warning, info, debug)
+  SNMP traps   none
+  Reboots      none (no coldStart or warmStart trap)
+  Gaps         2026-11-13 23:40:00 to 2026-11-13 23:42:30  Woodshed wasn't running
+  Losses       dropped 0, truncated 1 (<loss note>)
+
+logs/<device>/<YYYY-MM-DD>.log
+    The messages Woodshed received from each device on that day (UTC), oldest
+    first, one message per line, exactly as Woodshed stores them:
+        <received time, UTC> <sender IP> <message>
+    In <message>, a carriage return is written \r, a line feed \n and a
+    backslash \\, so a message never spans lines; every other byte is as
+    received. To get the messages back with their own line breaks:
+        perl -pe 's/\\(\\|r|n)/$1 eq "r" ? "\r" : $1 eq "n" ? "\n" : "\\"/ge' <file>
+    <device> is the sender's IP address (":" written as "_" for IPv6).
+
+traps/<device>/<YYYY-MM-DD>.log
+    The SNMP traps and informs Woodshed received from each device on that day
+    (UTC), in the same envelope as the logs: <received time> <sender IP>
+    <record>. A record is the decoded trap: v=, pdu=, cred=, status=, the
+    trap OID, one vb= per varbind (OIDs numeric, with names known when it was
+    received), and raw= last, the whole datagram in base64. A v1/v2c community
+    is never stored: cred= is "#" and the first 8 hex digits of its SHA-256,
+    and in raw= the community's bytes are replaced by as many "*" bytes (the
+    lengths are unchanged, so the datagram still decodes). A v3 message is
+    kept exactly; its secrets are never in the packet.
+
+manifest.json
+    What was exported: the request (devices with their names and groups, the
+    range and any filters), each log file's line count and SHA-256, and "gaps":
+    periods in the range when Woodshed wasn't running or a listener was down,
+    so "the device sent nothing" can be told apart from "Woodshed wasn't
+    listening". "gaps_note" says how the gaps are worked out.
+    A bundle's manifest also has "at", "before", "after" and "summary": the
+    numbers above, per device, as JSON ("summary_note" says where they come
+    from).
+
+woodshed-events.log
+    Woodshed's own events in the range: starts and stops, listener bind errors,
+    file rotations and deletions, dropped messages, paused writes.
+
+To check a file: sha256sum logs/<device>/<day>.log (or on Windows:
+certutil -hashfile <file> SHA256) and compare with manifest.json.

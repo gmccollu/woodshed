@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/index"
 )
 
@@ -19,8 +20,15 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 	now := b.now()
 	minute := now.UTC().Truncate(time.Minute)
 	k := b.blocker()
+	var active map[string][]string
+	if !q.ActiveFrom.IsZero() {
+		var err error
+		if active, err = b.search.Active(ctx, datatype.Names(), q.ActiveFrom, q.ActiveTo); err != nil {
+			return api.DevicePage{}, err
+		}
+	}
 	if (q.Sort == "" || q.Sort == "rate") && q.Q == "" {
-		page, err := b.devicesByLiveRate(ctx, q, now, k)
+		page, err := b.devicesByLiveRate(ctx, q, now, k, active)
 		k.mark(page.Devices)
 		b.markTLS(page.Devices)
 		b.markTypes(ctx, page.Devices)
@@ -40,6 +48,23 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 		} else {
 			iq.NotIDs = bl
 		}
+	}
+	if active != nil {
+		var keep map[string]bool
+		if iq.OnlyIDs != nil {
+			keep = make(map[string]bool, len(iq.OnlyIDs))
+			for _, id := range iq.OnlyIDs {
+				keep[id] = true
+			}
+		}
+		only := []string{} // not nil: no active device is an empty page
+		for id := range active {
+			if keep == nil || keep[id] {
+				only = append(only, id)
+			}
+		}
+		slices.Sort(only)
+		iq.OnlyIDs = only
 	}
 	page, err := b.idx.QueryDevices(ctx, iq)
 	if err != nil {
@@ -87,7 +112,7 @@ func (b *backend) Groups(ctx context.Context) ([]api.Group, error) {
 // shown) and filters by the group and hidden caches the live tail keeps, then
 // reads only the page's rows. A search (q) needs names, so it goes through
 // QueryDevices.
-func (b *backend) devicesByLiveRate(ctx context.Context, q api.DeviceQuery, now time.Time, k blocker) (api.DevicePage, error) {
+func (b *backend) devicesByLiveRate(ctx context.Context, q api.DeviceQuery, now time.Time, k blocker, active map[string][]string) (api.DevicePage, error) {
 	ids, err := b.idx.DeviceIDs(ctx)
 	if err != nil {
 		return api.DevicePage{}, err
@@ -102,6 +127,7 @@ func (b *backend) devicesByLiveRate(ctx context.Context, q api.DeviceQuery, now 
 		case q.Hidden == "only" && !h, q.Hidden == "exclude" && h:
 		case q.Group != "" && g != q.Group, q.Ungrouped && g != "":
 		case q.Blocked == "only" && !k.blocked(id), q.Blocked == "exclude" && k.blocked(id):
+		case active != nil && len(active[id]) == 0:
 		default:
 			match = append(match, id)
 		}

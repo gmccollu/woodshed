@@ -146,6 +146,13 @@ lines (records), from the index.
 
 Hidden devices are included, with `"hidden": true`.
 
+**Active devices** (since 1.2, the incident bundle's preview): `active_from` and `active_to` (RFC 3339, both or
+neither, `active_from` before `active_to`) keep only the devices with a stored record of any type received in
+`[active_from, active_to)`; they combine with the other parameters (`hidden=exclude` gives the devices a bundle with
+`active_devices` picks), and `total` counts the active devices that match. It's exact: a device counts when a record
+in the range is on disk now (from the index's file rows and checkpoints, then reading the range where those can't
+tell), not from the per-minute stats. A missing partner, a bad time or an empty range is a `400`.
+
 `GET /api/groups` → `[{"name": "HQ", "devices": 12}]`, sorted by name, with the number of non-hidden devices in each
 (ungrouped devices aren't listed).
 
@@ -306,9 +313,65 @@ backslash; any other backslash is itself. At most 32 words and phrases, 8 levels
   `specific`), with the names and meaning of search's: `"snmp_versions": ["2c"]`, `"pdus": ["inform"]`,
   `"trap_oid": ["linkDown"]`, `"generic": [0, 6]`,
   `"specific": ["17"]`, `"cred": ["#3f9a1c07"]`, `"status": ["ok"]` and the `exclude_` forms.
-- `kind` (since 1.2): `"export"` (the default). `"bundle"` (the incident bundle, below in "1.2 (planned)") isn't in
-  this build: a `400` "kind: the incident bundle isn't in this build yet."
+- `kind` (since 1.2): `"export"` (the default) or `"bundle"`, the incident bundle (below). `at`, `before`, `after`
+  and `active_devices` on a plain export are a `400`.
 - One export builds at a time; a second `POST` while one is building is queued.
+
+### The incident bundle
+
+<!-- The examples here are fenced as js, not json: routes_test.go pairs each json block with the GET route above it. -->
+
+Since 1.2 (SPEC §11.3): every record around a moment, from the devices that sent anything then, with a summary per
+device. It's an export (`kind: "bundle"`): the queue, the estimate, the download ticket, the 24 h expiry, the
+manifest, the gaps and the events log are the export's.
+```js
+{"kind": "bundle", "at": "2026-11-14T09:42:00Z", "before": "30m", "after": "10m",
+ "active_devices": true, "devices": [], "group": "", "ungrouped": false, "types": []}
+```
+- `at` (RFC 3339) is required and can't be in the future. `before` and `after` are durations (`ms`, `s`, `m`, `h`
+  and `d` units, combined as in `1h30m`; `0s` to `7d` each, at least one non-zero; `30m` and `10m` when left out).
+  The window is `[at − before, at + after)`, cut at now: a bundle "around now" ends when it's requested.
+- Devices, exactly one of: `"active_devices": true` (every non-hidden device with a stored record of any of the
+  bundle's types in the window, as `GET /api/devices?active_from&active_to` finds them), `devices` (those devices,
+  hidden or silent ones too), `group` or `ungrouped` (their non-hidden devices).
+- `types`: `[]` (or left out) means every type with data in the window from those devices; or a list (`["syslog"]`,
+  `["trap"]`). `type` (1.1) is the same as a one-entry `types`.
+- No filters: a bundle is everything around the moment. `from`, `to`, `all_devices`, `exclude_devices`, and any
+  filter (`q`, `exclude`, `regex`, `case`, `syntax` other than `"text"`, `severities`, `facilities`, `app`, `host`,
+  their `exclude_` forms, the trap filters) are a `400` naming the field.
+- No device stored anything in the window (with `active_devices`): a `400` "No device stored anything between
+  <from> and <to>." (naming the types when `types` was given). Named devices that sent nothing still get a bundle,
+  with "none" in their summary.
+- Response: `202 {"id": "exp_..."}`. `POST /api/exports/estimate` takes the same body.
+- In `GET /api/exports`, a bundle's `from` and `to` are its window and its `filters` add `"at"`, `"before"`,
+  `"after"` (written as `"30m"`, `"1h15m"`, `"7d"`, `"0s"`) and `"active_devices"`; `kind` is `"bundle"` and
+  `types` the types it was built with (`[]` when nothing was stored). A plain export's entry has none of the four.
+- The download is named `woodshed-bundle-<host>-<at, UTC as YYYYmmddTHHMMSSZ>.zip`, as `woodshed bundle` names it.
+
+The zip is an export's (below), with each type in its folder, and:
+- `README.txt` leads with the summary (SPEC §11.3): the moment and the window in UTC with the local offset, how the
+  devices were picked, then per device its counts by type (syslog by severity, traps by name), first and last
+  received, reboots (coldStart and warmStart traps), the gaps, and Woodshed's own drop and truncation counts in the
+  window. Times carry the date when the window spans more than one UTC day.
+- `manifest.json` has `"kind": "bundle"`, `"at"`, `"before"`, `"after"`, `"summary"` and `"summary_note"`, and
+  `request.filters.active_devices` when that picked the devices. `summary` is the README's numbers per device:
+  ```js
+  [{"device_id": "10.1.0.1", "ip": "10.1.0.1", "name": "edge-fw-01", "group": "HQ",
+    "types": {"syslog": {"lines": 12408, "first": "2026-11-14T09:12:00.014Z", "last": "2026-11-14T09:51:59.88Z",
+                         "by_severity": {"emerg": 0, "alert": 0, "crit": 2, "err": 41, "warning": 310, "notice": 1022,
+                                         "info": 11033, "debug": 0, "unknown": 0}},
+              "trap": {"lines": 7, "first": "2026-11-14T09:30:11Z", "last": "2026-11-14T09:31:02Z",
+                       "by_trap": {"linkDown": 3, "linkUp": 3, "coldStart": 1}}},
+    "reboots": [{"time": "2026-11-14T09:30:58Z", "source": "coldStart trap"}],
+    "gaps": [], "dropped": 0, "truncated": 0}]
+  ```
+  `first` and `last` are `null` for a type the device sent none of. `by_severity` always has all nine; `by_trap` is
+  the trap names (from the MIB set, else the OID; `(malformed)` and the like for a record without one), most first.
+  `gaps` are the bundle's (the same for every device). `dropped` and `truncated` sum the stats buckets that start in
+  the window (per minute, per hour past 24 h), so a bucket that straddles an edge counts whole.
+
+**CLI** (not HTTP): `woodshed bundle --at <time>` builds the same zip from the data folder, without the service
+(SPEC §11.3, the user guide's "Incident bundles").
 
 `POST /api/exports/estimate` (same body) → `{"lines": 123456, "bytes": 45678901, "files": 12}`: an upper bound
 from the index, without scanning, so the UI can show the size before building.
@@ -892,40 +955,3 @@ is on (or a v3 user is set, or a trap was received), an `snmp` object gives `ena
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.
-
-## 1.2 (planned)
-
-Not served yet: the incident bundle (SPEC §11.3, step (e) of the 1.2 build). Everything else 1.2 adds is in the
-sections above. As in 1.1's planned section, routes here sit in a `###` heading or after a label, never at the start
-of a line in the usual "`GET /api/...`" form, so `routes_test.go` doesn't request them; when one ships, move it into
-its section above in the usual form. Everything is additive: every 1.1 request keeps its meaning (SPEC §11.7).
-
-### The incident bundle
-
-**Changed:** `POST /api/exports` (and `POST /api/exports/estimate`) take `kind: "bundle"`. Today that's a `400`
-("kind: the incident bundle isn't in this build yet.").
-
-**Bundle body:**
-```json
-{"kind": "bundle", "at": "2026-11-14T09:42:00Z", "before": "30m", "after": "10m",
- "active_devices": true, "devices": [], "group": "", "ungrouped": false, "types": []}
-```
-- `at` (RFC 3339) is required. `before` and `after` are durations (`0s` to `7d`, at least one non-zero); the window is
-  `[at − before, at + after)`, cut at now. `from`/`to` aren't accepted with `kind: "bundle"` (`400`).
-- Devices: `active_devices: true` (every non-hidden device with a stored record of any type in the window), or
-  `devices`, `group` or `ungrouped` as for exports. At least one must select a device.
-- `types`: empty means every type with data in the window.
-- No filters: any of them with `kind: "bundle"` is a `400` naming it.
-- Response: `202 {"id": "exp_..."}`, as for exports. The export list, download, ticket, delete and 24 h expiry are the
-  same; each entry's `filters` has `kind: "bundle"`, `types`, `at`, `before` and `after`.
-
-**Zip:** as for exports (`logs/`, `traps/`, `manifest.json` with `kind`, `types` and `folders`), and:
-- `manifest.json` gains `"at"`, `"before"`, `"after"` and `"summary"` (the README's numbers per device, as JSON:
-  `{"device_id", "name", "group", "types": {"syslog": {"lines", "first", "last", "by_severity"}, "trap": {"lines",
-  "first", "last", "by_trap"}}, "reboots": [{"time", "source"}], "gaps": [...], "dropped", "truncated"}`).
-- `README.txt`: the per-device summary of SPEC §11.3.
-
-**Active devices:** `GET /api/devices` gains `active_from` and `active_to` (RFC 3339, both or neither): only devices
-with a stored record of any type in `[active_from, active_to)`.
-
-**CLI** (not HTTP): `woodshed bundle`, as in SPEC §11.3.

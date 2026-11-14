@@ -18,13 +18,19 @@ interface Toast {
 
 export const blockUi = $state<{
   confirm: Target | null;
-  menu: { x: number; y: number; target: Target; blocked: boolean } | null;
+  menu: { x: number; y: number; target: Target; blocked: boolean; extra: MenuItem[] } | null;
   toast: Toast | null;
   busy: boolean;
   error: string;
   /** Bumped after every change, so lists reload. */
   version: number;
 }>({ confirm: null, menu: null, toast: null, busy: false, error: '', version: 0 });
+
+/** A page's own item in the menu, above the block item (Events: "Bundle around this"). */
+export interface MenuItem {
+  label: string;
+  run: () => void;
+}
 
 export const targetLabel = (t: Target) => (t.name ? `${t.ip} (${t.name})` : t.ip);
 
@@ -52,10 +58,10 @@ export function askBlock(id: string): void {
   blockUi.confirm = targetOf(id);
 }
 
-/** Opens the small menu for a device at the pointer (right-click or the "⋯" button). */
-export function openMenu(id: string, x: number, y: number): void {
+/** Opens the small menu for a device at the pointer (right-click or the "⋯" button), with a page's own items first. */
+export function openMenu(id: string, x: number, y: number, extra: MenuItem[] = []): void {
   const d = knownDevice(id);
-  blockUi.menu = { x, y, target: targetOf(id), blocked: !!d?.blocked };
+  blockUi.menu = { x, y, target: targetOf(id), blocked: !!d?.blocked, extra };
 }
 
 async function setBlocked(t: Target, blocked: boolean): Promise<Device> {

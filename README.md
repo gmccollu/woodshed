@@ -99,6 +99,9 @@ As of 1.1.0 (details in the [CHANGELOG](CHANGELOG.md)):
   devices page to rename, group or hide senders; settings that apply without a restart; light and dark modes.
 - `woodshed search` searches the stored logs (and traps, `--type trap`) from a terminal with the same filters as
   Events, compressed days included, on every OS (natively on Windows, no WSL). It only reads, so it's safe beside the running service.
+- Incident bundles: pick a moment ("Bundle around this" on an Events line, the histogram, Export, or
+  `woodshed bundle --at`) and get one zip with every record around it from every device that sent anything, a
+  per-device summary (counts by severity and by trap, reboots, gaps when Woodshed wasn't running, drops) and checksums.
 - The UI listens on `127.0.0.1:8514` only by default. LAN mode serves HTTPS with a password.
 - No telemetry. The only outbound connection is an optional daily update check, off until you turn it on: it
   fetches one public file (`https://gmccollu.github.io/woodshed/releases.json`), sends nothing about your
@@ -169,6 +172,8 @@ everything to disk first.
 | `woodshed set-password [--stdin]` | Set the UI password from the shell, for servers without a browser (run as administrator) |
 | `woodshed lan-mode on\|off [--port N]` | Turn LAN mode on or off from the shell; prints the addresses and the certificate's SHA-256 (run as administrator) |
 | `woodshed reset-password` | Forgot the UI password: remove it and turn LAN mode off (run as administrator) |
+| `woodshed search` | Search the stored logs (and traps) from a terminal, with the Events filters |
+| `woodshed bundle --at TIME` | Build an incident bundle (every record around a moment, with a summary) from the data folder |
 | `woodshed send` | Send numbered test messages to any syslog server |
 | `woodshed bench` | Measure sustained throughput on a temporary in-process server |
 | `woodshed version` | Print the version |

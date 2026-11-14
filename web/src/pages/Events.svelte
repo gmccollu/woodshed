@@ -27,6 +27,7 @@
     TRAP,
     cleanFilters,
     excludeValue,
+    filtersToQuery,
     includeValue,
     isFailure,
     pduLabel,
@@ -86,6 +87,20 @@
   import LogText from '../components/LogText.svelte';
   import { openMenu } from '../lib/block.svelte';
   import { tip } from '../lib/logtext';
+  import {
+    bundleFromQuery,
+    bundleTitle,
+    bundleToQuery,
+    bundleWindow,
+    narrowTo,
+    newBundle,
+    uncheckDevice,
+    type BundleForm,
+  } from '../lib/bundle';
+  import BundleBuild from '../components/BundleBuild.svelte';
+  import BundleDevices from '../components/BundleDevices.svelte';
+  import BundleTypes from '../components/BundleTypes.svelte';
+  import BundleWindow from '../components/BundleWindow.svelte';
 
   const PAGE = 500;
   const HOST_MAX = 28;
@@ -109,6 +124,31 @@
   let dtype = $state<string>(SYSLOG);
   /** A non-syslog type's own filters, by parameter name (trap_oid, status, …). */
   let tf = $state<TypeFilters>({});
+
+  // ----- the incident bundle's preview (SPEC §11.3): Events over its window and devices -----
+  /** The bundle being previewed (bundle=<at>&bb&ba&bdev|bgroup|bug&btypes in the URL), or null. */
+  let bundle = $state<BundleForm | null>(null);
+  /** The bundle the last search ran with, so editing it searches again (once) and a run doesn't. */
+  let bundleKey = '';
+  let bundleTimer = 0;
+  /** The active devices the preview lists (for "leave this device out" from the field panel). */
+  let bundleListed = $state<string[]>([]);
+  const bundleWin = $derived.by(() => {
+    if (!bundle) return null;
+    const w = bundleWindow(bundle.at, bundle.before, bundle.after);
+    return typeof w === 'string' ? null : w;
+  });
+  const bundleError = $derived.by(() => {
+    if (!bundle) return '';
+    const w = bundleWindow(bundle.at, bundle.before, bundle.after);
+    if (typeof w === 'string') return w;
+    return bundle.scope.mode === 'devices' && !bundle.scope.devices.length ? 'Check at least one device.' : '';
+  });
+  /** Filters narrow only what the preview shows; the bundle holds every line in the window. */
+  const filtersOn = $derived(
+    !!(q || fields.app || fields.host || fields.exclude || extras.fac.length || Object.keys(cleanFilters(tf)).length) ||
+      (dtype === SYSLOG && sev.length !== ALL_SEVS.length),
+  );
 
   // ----- the saved search the form was opened from (SPEC §10.1.4) -----
   let savedCur = $state<SavedSearch | null>(null);
@@ -164,6 +204,8 @@
   let schemas = $state<DataType[]>([]);
   /** The field panel's fields: the schema of the type being searched. */
   const schema = $derived(schemas.find((t) => t.type === dtype) ?? (dtype === SYSLOG ? (schemas.find((t) => t.default) ?? null) : null));
+  /** The types the device list counts: the bundle's, or every type the server has. */
+  const countTypes = $derived(bundle?.types.length ? schemas.filter((t) => bundle!.types.includes(t.type)) : schemas);
   let summary = $state.raw<SummaryResponse | null>(null);
   let sumStatus = $state<'idle' | 'running' | 'paused' | 'done' | 'error'>('idle');
   let sumError = $state('');
@@ -205,8 +247,12 @@
     if (q) p.set('q', q);
     modeToQuery(mode, p);
     if (cs) p.set('cs', '1');
-    scopeToQuery(scope, p);
-    rangeToQuery(range, p);
+    // The bundle preview's window and devices are the bundle's.
+    if (bundle) bundleToQuery($state.snapshot(bundle) as BundleForm, p);
+    else {
+      scopeToQuery(scope, p);
+      rangeToQuery(range, p);
+    }
     typeQuery(p, dtype, sev, fields, extras, tf);
     if (order === 'asc') p.set('order', 'asc');
     if (savedCur) p.set('saved', savedCur.id);
@@ -240,6 +286,15 @@
     order = p.get('order') === 'asc' ? 'asc' : 'desc';
     dtype = typeFromQuery(p);
     tf = dtype === SYSLOG ? {} : typeFiltersFromQuery(p);
+    bundle = bundleFromQuery(p);
+    if (bundle) {
+      scope = $state.snapshot(bundle.scope) as Scope;
+      // A bundle of one type opens on that type unless the link names one.
+      if (bundle.types.length === 1 && !p.has('type') && typeFromQuery(new URLSearchParams({ type: bundle.types[0] })) === bundle.types[0]) {
+        dtype = bundle.types[0];
+        tf = {};
+      }
+    }
     const id = p.get('saved') ?? '';
     if (!id) {
       savedCur = null;
@@ -302,6 +357,25 @@
     cancel();
     cancelSummary();
     qError = exError = rangeError = error = sumError = '';
+    if (bundle) {
+      // The preview searches the bundle's window (cut at now) and its devices.
+      bundleKey = JSON.stringify($state.snapshot(bundle));
+      const w = bundleWindow(bundle.at, bundle.before, bundle.after);
+      if (typeof w === 'string' || bundleError) {
+        rangeError = typeof w === 'string' ? w : "No devices are checked, so there's nothing to show. Check some in the bundle's device list.";
+        status = 'error';
+        active = null;
+        results = [];
+        cursor = '';
+        summary = null;
+        sumStatus = 'idle';
+        lastRun = toQuery();
+        setQuery(lastRun);
+        return;
+      }
+      range = { preset: 'custom', from: w.from, to: w.to };
+      scope = $state.snapshot(bundle.scope) as Scope;
+    }
     const { from, to } = resolveRange(range);
     if (!from || !to || !(Date.parse(from) < Date.parse(to))) {
       rangeError = '"From" must be before "To".';
@@ -497,6 +571,14 @@
 
   function pick(f: FieldDescriptor, value: string, exclude: boolean) {
     const param = exclude && f.exclude_param ? f.exclude_param : f.param;
+    if (bundle && (param === 'devices' || param === 'exclude_devices')) {
+      // In the bundle preview a device click narrows the bundle: only it, or every listed device but it.
+      bundle.scope =
+        param === 'devices'
+          ? { mode: 'devices', group: '', devices: bundle.scope.mode === 'devices' ? addItem(bundle.scope.devices, value) : [value] }
+          : uncheckDevice(bundle.scope, bundleListed, value);
+      return; // the bundle's effect searches again
+    }
     if (dtype !== SYSLOG && f.param !== 'devices') {
       // Another type's own field, by the schema alone: a closed field sends its selected values (or the
       // complement to leave one out); an open one adds the value to its parameter or to its exclude form.
@@ -587,7 +669,8 @@
     const label = (k: string, v: string) => desc(k)?.domain?.find((d) => d.value === v)?.label ?? v;
     const chip = (key: string, text: string, title: string, excluded: boolean, remove: () => void) =>
       out.push({ key, text, title, excluded, remove: () => (remove(), run()) });
-    if (scope.mode === 'devices')
+    // The bundle preview lists its devices itself.
+    if (scope.mode === 'devices' && !bundle)
       for (const d of scope.devices)
         chip(`dev:${d}`, deviceName(d), `Device ${d}`, false, () => {
           const rest = removeItem(scope.devices, d);
@@ -635,6 +718,65 @@
     range = { preset: 'custom', from, to };
     go('events', toQuery());
   }
+
+  // ----- the incident bundle -----
+
+  /**
+   * "Bundle around this" (a line, or a point on the histogram): the preview, around that moment, of
+   * the devices the search covered (every device: every one active in the window), every type. The
+   * filters are cleared, since the bundle holds everything in the window; the type and order stay.
+   * A new history entry, so Back returns to the search.
+   */
+  function startBundle(at: string) {
+    const sc = $state.snapshot(activeScope) as Scope;
+    q = '';
+    mode = 'text';
+    cs = false;
+    sev = [...ALL_SEVS];
+    fields = noFields();
+    extras = noExtras();
+    tf = {};
+    savedCur = null;
+    savedEtag = '';
+    ctx = null;
+    bundle = newBundle(at, sc.mode === 'devices' && !sc.devices.length ? allScope() : sc);
+    bundleKey = JSON.stringify($state.snapshot(bundle));
+    go('events', toQuery());
+  }
+
+  /** A change the page makes to the bundle (the histogram): searched at once, or as a new history entry. */
+  function applyBundle(next: BundleForm, push: boolean) {
+    bundle = next;
+    if (!push) return run();
+    bundleKey = JSON.stringify($state.snapshot(bundle));
+    go('events', toQuery());
+  }
+  /** A drag in the preview narrows the window; the moment stays inside it. */
+  const narrowBundle = (from: string, to: string) => bundle && applyBundle({ ...($state.snapshot(bundle) as BundleForm), ...narrowTo(bundle.at, from, to) }, true);
+  const moveMoment = (at: string) => bundle && applyBundle({ ...($state.snapshot(bundle) as BundleForm), at }, true);
+
+  /** Leaving the preview keeps its window and devices as the search's. */
+  function closeBundle() {
+    const w = bundleWin;
+    bundle = null;
+    bundleKey = '';
+    if (w) range = { preset: 'custom', from: w.from, to: w.to };
+    go('events', toQuery());
+  }
+
+  // Edits in the preview (the window, devices, types) search again after a short pause; a bundle of one
+  // type the page isn't showing switches to it.
+  $effect(() => {
+    const k = bundle ? JSON.stringify(bundle) : '';
+    if (!bundle || k === bundleKey) return;
+    clearTimeout(bundleTimer);
+    bundleTimer = window.setTimeout(() => {
+      if (!bundle || JSON.stringify($state.snapshot(bundle)) === bundleKey) return;
+      const only = bundle.types.length === 1 ? bundle.types[0] : '';
+      if (only && only !== dtype && schemas.some((t) => t.type === only)) setType(only);
+      else run();
+    }, 400);
+  });
 
   // ----- saved searches -----
   function openSaved(s: SavedSearch) {
@@ -749,6 +891,18 @@
     scopeToQuery(activeScope, p); // "all devices" stays all (no dev= list)
     p.set('from', active.from!);
     p.set('to', active.to!);
+    if (activeType !== SYSLOG) {
+      // Another type (traps): its text, exclude and own filters; syslog's don't apply.
+      typeToQuery(activeType, p);
+      if (active.q) p.set('q', active.q);
+      modeToQuery(activeMode, p);
+      if (active.case) p.set('cs', '1');
+      fieldsToQuery({ app: '', host: '', exclude: active.exclude ?? '' }, p);
+      extrasToQuery({ ...noExtras(), xdev: activeExtras.xdev }, p);
+      filtersToQuery(activeTf, p);
+      go('export', p.toString());
+      return;
+    }
     sevToQuery(active.severities ?? [...ALL_SEVS], p);
     if (active.q) p.set('q', active.q);
     modeToQuery(activeMode, p);
@@ -756,6 +910,12 @@
     fieldsToQuery({ app: (active.app ?? []).join(','), host: (active.host ?? []).join(','), exclude: active.exclude ?? '' }, p);
     extrasToQuery(activeExtras, p);
     go('export', p.toString());
+  }
+
+  /** Right-click on a line: "Bundle around this", then the device's own items. */
+  function lineMenu(e: MouseEvent, r: AnyResult) {
+    e.preventDefault();
+    openMenu(r.device_id, e.clientX, e.clientY, [{ label: `Bundle around this (${stamp(r.received, prefs.utc).slice(6, 14)})`, run: () => startBundle(r.received) }]);
   }
 
   function rowKey(e: KeyboardEvent, ref: string) {
@@ -775,6 +935,32 @@
 </script>
 
 <div class="space-y-4">
+  {#if bundle}
+    <section class="card space-y-3" aria-labelledby="bu-title" data-bundle-preview>
+      <div class="flex items-start gap-3">
+        <div class="min-w-0 grow">
+          <h2 id="bu-title" class="m-0 text-[17px] font-bold tracking-tight">{bundleTitle(bundle.at, bundle.before, bundle.after, prefs.utc)}</h2>
+          <p class="mt-1 mb-0 text-[13.5px] text-muted">
+            An incident bundle: everything the checked devices stored in the window, one folder per type, with a summary per
+            device and the gaps. Look through it below, narrow the window or the devices, then build it.
+            {#if filtersOn}<b>The filters below change only what you see here; the bundle holds every line in the window.</b>{/if}
+          </p>
+        </div>
+        <button type="button" class="ghost-btn" onclick={closeBundle} title="Back to a plain search of this window">Close</button>
+      </div>
+      <div class="bgrid">
+        <div class="space-y-3">
+          <BundleWindow bind:value={bundle} idp="ev-bw" />
+          <div class="bline">
+            <span class="blab">Types</span>
+            <BundleTypes bind:value={bundle.types} types={schemas} />
+          </div>
+          <BundleBuild form={bundle} formError={bundleError} />
+        </div>
+        <BundleDevices bind:value={bundle} win={bundleWin} types={countTypes} bind:listed={bundleListed} />
+      </div>
+    </section>
+  {/if}
   <form class="card space-y-3" onsubmit={run} role="search" aria-labelledby="ev-title">
     <div class="flex items-start gap-3">
       <div class="min-w-0 grow">
@@ -880,13 +1066,17 @@
       </label>
     </div>
     <div class="flex flex-wrap items-center gap-3">
-      <DevicePicker bind:value={scope} />
+      {#if !bundle}<DevicePicker bind:value={scope} />{/if}
       <div class="seg" role="radiogroup" aria-label="Order">
         <button type="button" role="radio" aria-checked={order === 'desc'} onclick={() => (order = 'desc')}>Newest first</button>
         <button type="button" role="radio" aria-checked={order === 'asc'} onclick={() => (order = 'asc')}>Oldest first</button>
       </div>
       <!-- Last, so an open custom range gets its own line under the other controls. -->
-      <TimeRange bind:value={range} error={rangeError} />
+      {#if bundle}
+        <span class="text-[13px] text-muted">The time range and the devices are the bundle's, above.</span>
+      {:else}
+        <TimeRange bind:value={range} error={rangeError} />
+      {/if}
     </div>
     {#if dtype === SYSLOG}<div class="sevbar"><SeverityChips bind:value={sev} label="Search severities" /></div>{/if}
   </form>
@@ -927,10 +1117,10 @@
           type="button"
           class="tail-btn"
           onclick={exportThese}
-          disabled={!active || !results.length || activeType !== SYSLOG}
+          disabled={!active || !results.length}
           title={activeType === SYSLOG
             ? 'Open Export with these devices, range, severities, text, program/tag, host, facility and exclude filters'
-            : 'The Export page exports syslog only in this version; woodshed search --type trap exports traps from the command line'}
+            : 'Open Export with these devices, range, text, exclude and trap filters'}
         >
           <Icon name="export" size={14} />Export these results
         </button>
@@ -939,7 +1129,7 @@
         <span class="text-log-dim" aria-live="polite">
           {#if status === 'idle'}Leave the text empty to browse every stored message, or type to filter.
           {:else if active}
-            {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {scopeLabel(activeScope)} · {stamp(
+            {num(results.length)} line{results.length === 1 ? '' : 's'}{cursor ? '+' : ''} · {bundle && activeScope.mode === 'all' ? 'Every active device' : scopeLabel(activeScope)} · {stamp(
               active.from!,
               prefs.utc,
             )} → {stamp(active.to!, prefs.utc)}{prefs.utc ? ' UTC' : ''}
@@ -960,7 +1150,12 @@
         to={active.to!}
         utc={prefs.utc}
         busy={sumStatus === 'running'}
-        onselect={zoom}
+        onselect={bundle ? narrowBundle : zoom}
+        onpoint={bundle ? moveMoment : startBundle}
+        pointLabel={bundle ? 'Move the moment' : 'Bundle around a moment'}
+        cursorText={bundle ? 'Move it to' : 'Bundle around'}
+        mark={bundle?.at ?? null}
+        hint={bundle ? 'Drag across the bars to narrow the window; Back undoes it.' : undefined}
       />
     {/if}
 
@@ -984,6 +1179,8 @@
       {/if}
       {#if error}
         <p class="m-0 py-6 text-center font-sans text-[var(--sev-err)]" role="alert">{error}</p>
+      {:else if bundle && rangeError}
+        <p class="m-0 py-6 text-center font-sans text-log-dim">{rangeError}</p>
       {:else if qError || exError}
         <p class="m-0 py-6 text-center font-sans text-log-dim">{mode === 'terms' ? 'Fix the terms above and search again.' : 'Fix the regular expression above and search again.'}</p>
       {:else if status === 'running' && !results.length}
@@ -1007,7 +1204,7 @@
             title={r.raw}
             aria-label="Show the decoded trap and the traps around it"
             onclick={() => openContext(r.ref)}
-            oncontextmenu={(e) => { e.preventDefault(); openMenu(r.device_id, e.clientX, e.clientY); }}
+            oncontextmenu={(e) => lineMenu(e, r)}
             onkeydown={(e) => rowKey(e, r.ref)}
           >
             <span class="c t">{stamp(r.received, prefs.utc)}</span><span class="c h">{deviceName(r.device_id)}</span><span
@@ -1025,7 +1222,7 @@
           title={tip(r.raw)}
           aria-label="Show the lines around this one"
           onclick={() => openContext(r.ref)}
-          oncontextmenu={(e) => { e.preventDefault(); openMenu(r.device_id, e.clientX, e.clientY); }}
+          oncontextmenu={(e) => lineMenu(e, r)}
           onkeydown={(e) => rowKey(e, r.ref)}
         >
           <span class="c t">{stamp(r.received, prefs.utc)}</span><span class="c h">{deviceName(r.device_id)}</span
@@ -1069,6 +1266,16 @@
       <b class="text-white">{ctxHit && isTrap(ctxHit) ? 'Trap' : 'Context'}</b>
       {#if ctxHit}<span class="text-log-dim">{deviceName(ctxHit.device_id)} · {stamp(ctxHit.received, prefs.utc)} · {ctx.before} before, {ctx.after} after</span>{/if}
       <span class="grow"></span>
+      {#if ctxHit}
+        {@const hit = ctxHit}
+        <button
+          type="button"
+          class="tail-btn"
+          onclick={() => startBundle(hit.received)}
+          title="Everything every device stored around this moment, in one zip: preview it first">
+          <Icon name="export" size={14} />Bundle around this
+        </button>
+      {/if}
       <button type="button" class="tail-btn" aria-pressed={prefs.wrap} onclick={() => (prefs.wrap = !prefs.wrap)}>Wrap</button>
       <button type="button" class="tail-btn" onclick={() => (ctx = null)} aria-label="Close (Esc)"><Icon name="x" size={14} /></button>
     </div>
@@ -1153,6 +1360,27 @@
 {/if}
 
 <style>
+  .bgrid {
+    display: grid;
+    gap: 16px 28px;
+    align-items: start;
+  }
+  @media (min-width: 1100px) {
+    .bgrid {
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    }
+  }
+  .bline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+  }
+  .blab {
+    width: 104px;
+    font-size: 13px;
+    font-weight: 600;
+  }
   .evgrid {
     display: grid;
     gap: 16px;

@@ -1180,7 +1180,7 @@ left room:
 (§11.2), the incident bundle (§11.3), command-line search (§11.4) and UDP receive off the write path (§11.5). The
 testing plan (§11.6) and compatibility rules (§11.7) are part of the contract. Owner decisions are marked **(owner)**
 or **(decided)**; the calls made here are **decided (coordinator, 2026-11-14, owner-delegated)** and are listed in
-§11.8 so the owner can overrule any of them. The API contract is in `docs/api.md` → "1.2 (planned)".
+§11.8 so the owner can overrule any of them. The API contract is in `docs/api.md`, in the section of each route.
 
 ### 11.1 Pluggable data types
 
@@ -1972,6 +1972,74 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
     messages/s are the lab's (§11.6).
 56. `counts_24h.received` counts every datagram the SNMP listener read, refused communities and discovery probes
     included; `by_status` counts the stored ones.
+
+**Decided (build, 2026-11-15), the incident bundle (§11.3, step e)**, for the owner to overrule:
+57. **The window.** `at` later than now is a `400`; the end is cut at now; a window left empty by the cut (`at` now,
+    `before` 0s) is a `400`. Left out, `before` and `after` are the CLI's 30m and 10m. Spans take `ms`, `s`, `m`, `h`
+    and `d` (combined, decimals allowed, rounded to the millisecond) and are echoed in the shortest form (`1h30m`,
+    `7d`, `0s`). Times are milliseconds, as stored: the window's edges are rounded up to the millisecond, like a
+    search's.
+58. **The devices.** `active_devices`, `devices`, `group` and `ungrouped` are alternatives (exactly one). `all_devices`
+    and `exclude_devices` are a `400` naming them, as is each filter sent with a non-default value (`"syntax":
+    "text"` or `"regex": false` are accepted, being no filter). Named devices are bundled even when silent (their
+    README lines say "none") and when hidden; a group or the ungrouped are their non-hidden devices, as for exports.
+    `type` (1.1) is a one-entry `types`.
+59. **Active devices are exact, from the files, not the stats** (search.Active): a file whose first or last received
+    time is in the window, or a checkpoint received in it, proves a stored record; otherwise one read of the window,
+    stopping at the first record. Minute buckets match the window's edges only roughly, and the stats outlive the
+    files retention deletes. With `types` given, "active" means a record of those types. `GET
+    /api/devices?active_from&active_to` is the same test over every type, combined with the other parameters
+    (hidden devices too unless `hidden=exclude`), on both of its paths (by live rate and in SQL).
+60. **Types are resolved when the bundle is created**: with none named, the types (registry order) with a record from
+    the bundle's devices in the window; the entry keeps them, so the build and the echo agree. Nothing stored leaves
+    `types` empty.
+61. **Nothing in the window.** With `active_devices` and no active device, the API answers `400` "No device stored
+    anything between … and …." (naming the types when given) and the CLI exits 1. Named devices that sent nothing
+    still get a zip from the API (the README says so, with the gaps: evidence too); the CLI exits 1 and writes no zip
+    (the estimate is 0, or the build wrote no record and the file is removed), per §11.3's "1 means the window held
+    nothing".
+62. **The summary.** Counted while the records stream into the zip (each type's `datatype.Summary`, replacing step
+    (d)'s in-memory `Type.Summary`). Syslog's `by_severity` always has all nine values (emerg … debug, unknown);
+    `by_trap` names traps from the current MIB set (else the OID), most first, ties in order of arrival, and counts a
+    record without a trap OID by its status (`(auth_failed)`, `(malformed)`). README lists 10 trap names, then "and N
+    more (M)"; manifest.json has them all. A summary entry also has `ip`, beyond §11.3's list.
+63. **Reboots** are coldStart and warmStart traps and informs whatever their status (a `not_in_time` trap's digest
+    verified, #28, and a reboot is exactly when boots and time jump); a retransmitted inform (`dup=1`) isn't a second
+    reboot. README lists 5, then "and N more". Without traps in the bundle the line says "not known (no SNMP traps in
+    this bundle)".
+64. **Gaps and losses per device.** Each device's gaps are the bundle's (the same list for all: the events log has
+    no per-device listener, and a device can send over several). Drops and truncations are the device's stats (every
+    type) for the buckets that start in the window, per minute (per hour past 24 h), as `/api/stats` counts them, so
+    a bucket straddling an edge counts whole; `summary_note` says so. The losses line names the kernel's drops as
+    not visible (Windows, macOS) or not per device (Linux).
+65. **README times** are UTC: records' first, last and reboots always with milliseconds, other times with them when
+    they have any, and with the date when the window spans more than one UTC day. The header's local offset is the
+    building machine's at `at` (the service's for the API). The README has no export ID, so the CLI's and the API's
+    are the same bytes; their zips differ only in manifest.json's `id` and `exported_at` and the entries' times.
+66. **The download** of a bundle is named `woodshed-bundle-<host>-<at>.zip`, like the CLI's default `--out`; the
+    host name keeps `A–Z a–z 0–9 . -` and turns anything else into `_`.
+67. **`woodshed bundle`:** `--active` is the default made explicit, alternative to `--devices`, `--group` and
+    `--ungrouped` (two of them: exit 2). An `--out` inside the data folder is exit 2 (the data folder is never
+    written to). The zip is created exclusively with mode 0644 less the umask (it's meant to be handed on); an
+    interrupted or failed build removes it. It prints the absolute path, the size and SHA-256, the window with the
+    record count, a line per device (`syslog N, SNMP traps N, reboots N, dropped N, truncated N`) and the gaps'
+    count. It loads the data folder's MIBs as `woodshed search --type trap` does, and warns, as search does, when a
+    service started writing during an immutable read.
+68. The events log says "Incident bundle exp_… queued" for a bundle, "Export …" for an export.
+
+69. **The UI** (web/, step e): **Bundle around this** is a button in a line's context view and an item in its
+    right-click menu, for syslog and trap lines; the moment is the line's received time to the millisecond, the
+    search's devices carry over ("all devices" becomes `active_devices`), and the text and field filters are dropped
+    (a bundle has none). "A point on the histogram" is a **Bundle around a moment** mode on the histogram: the next
+    click picks the time under the pointer (rounded down to the minute, to the second for buckets under a minute),
+    Enter picks a bar's start, Esc cancels; dragging to zoom is unchanged outside the mode. The presets add the API's
+    default, 30 min / 10 min, as a fifth, and a new bundle starts on it. The preview is Events in a bundle mode: a
+    card with the window, types, estimate and **Build the bundle**, the active devices with per-type counts (from the
+    summary's device field), the histogram (a drag narrows the window, a line marks the moment) and the fields panel;
+    unticking a device turns `active_devices` into an explicit `devices` list, and filters typed there change only
+    what's shown. Export's **Around a time** starts at now (so its window shows "cut at now") and offers **Preview in
+    Events**. Local or UTC input reuses the app-wide preference; requests are always UTC. Export's types are Syslog,
+    SNMP traps or Both; Both hides the filters, as the API refuses them with two types.
 
 ### 11.9 Questions settled (1.2), decided (coordinator, 2026-11-14, owner-delegated)
 1. No IANA Private Enterprise Number for now; the engine ID keeps the placeholder (§11.2). Revisit if the project

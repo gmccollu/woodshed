@@ -1,0 +1,216 @@
+{
+  "after": "10m",
+  "at": "2026-11-14T00:05:00Z",
+  "before": "30m",
+  "events": 6,
+  "events_file": "woodshed-events.log",
+  "exported_at": "\u003cexported_at\u003e",
+  "files": [
+    {
+      "bytes": 5628,
+      "day": "2026-11-13",
+      "device_id": "192.0.2.1",
+      "first": "2026-11-13T23:35:00.014Z",
+      "last": "2026-11-13T23:59:40.014Z",
+      "lines": 67,
+      "path": "logs/192.0.2.1/2026-11-13.log",
+      "sha256": "e9303686aff6421ea005592a440fbb933160249988dc68fc108a49a9821861d3"
+    },
+    {
+      "bytes": 3780,
+      "day": "2026-11-14",
+      "device_id": "192.0.2.1",
+      "first": "2026-11-14T00:00:00.014Z",
+      "last": "2026-11-14T00:14:40.014Z",
+      "lines": 45,
+      "path": "logs/192.0.2.1/2026-11-14.log",
+      "sha256": "c7cab5122118e4a83dc5ff54b1a0ad8491ccab859df8d3ba7bfe9e7f02dbedd6"
+    },
+    {
+      "bytes": 2836,
+      "day": "2026-11-13",
+      "device_id": "192.0.2.2",
+      "first": "2026-11-13T23:35:05.014Z",
+      "last": "2026-11-13T23:59:35.014Z",
+      "lines": 46,
+      "path": "logs/192.0.2.2/2026-11-13.log",
+      "sha256": "a31fc71af910bfc23ac594a746fbd39dec5ee9431a5593cac09d675dda593c30"
+    },
+    {
+      "bytes": 1868,
+      "day": "2026-11-14",
+      "device_id": "192.0.2.2",
+      "first": "2026-11-14T00:00:05.014Z",
+      "last": "2026-11-14T00:14:35.014Z",
+      "lines": 30,
+      "path": "logs/192.0.2.2/2026-11-14.log",
+      "sha256": "62c647208587319a6c46697f34082a01257e34a440e9c76ecc52ac37a82e7d70"
+    },
+    {
+      "bytes": 968,
+      "day": "2026-11-13",
+      "device_id": "192.0.2.1",
+      "first": "2026-11-13T23:50:00Z",
+      "last": "2026-11-13T23:50:58.25Z",
+      "lines": 3,
+      "path": "traps/192.0.2.1/2026-11-13.log",
+      "sha256": "a66651a2c1175cf58698feb23edf27a071ba94416fdcd01a586984062bdf49ff"
+    }
+  ],
+  "folders": {
+    "logs": "syslog",
+    "traps": "trap"
+  },
+  "format": "woodshed-export/1",
+  "gaps": [
+    {
+      "detail": "Woodshed wasn't running",
+      "from": "2026-11-13T23:40:00Z",
+      "kind": "not_running",
+      "proto": "",
+      "to": "2026-11-13T23:42:30Z"
+    }
+  ],
+  "gaps_note": "Gaps come from Woodshed's own event log. not_running: from the service's stop event (or, after a crash, the last message or event recorded before the next start; the start of such a gap is approximate) to the next start event, and before the first start on record. listener_down: from a bind error to that listener's next start. listener_stopped: from a listener stop while the service kept running (a settings change) to its next start. Gaps shorter than 1 s are left out. A device that simply sent nothing is not a gap.",
+  "id": "\u003cid\u003e",
+  "kind": "bundle",
+  "lines": 191,
+  "request": {
+    "devices": [
+      {
+        "group": "HQ",
+        "id": "192.0.2.1",
+        "ip": "192.0.2.1",
+        "name": "edge-fw-01"
+      },
+      {
+        "group": "",
+        "id": "192.0.2.2",
+        "ip": "192.0.2.2",
+        "name": ""
+      }
+    ],
+    "filters": {
+      "active_devices": true,
+      "app": [],
+      "case": false,
+      "devices": [],
+      "exclude": "",
+      "exclude_app": [],
+      "exclude_devices": [],
+      "exclude_host": [],
+      "facilities": [],
+      "group": "",
+      "host": [],
+      "q": "",
+      "regex": false,
+      "severities": [],
+      "syntax": "text",
+      "type": "syslog",
+      "ungrouped": false
+    },
+    "from": "2026-11-13T23:35:00Z",
+    "to": "2026-11-14T00:15:00Z"
+  },
+  "summary": [
+    {
+      "device_id": "192.0.2.1",
+      "dropped": 4,
+      "gaps": [
+        {
+          "detail": "Woodshed wasn't running",
+          "from": "2026-11-13T23:40:00Z",
+          "kind": "not_running",
+          "proto": "",
+          "to": "2026-11-13T23:42:30Z"
+        }
+      ],
+      "group": "HQ",
+      "ip": "192.0.2.1",
+      "name": "edge-fw-01",
+      "reboots": [
+        {
+          "source": "coldStart trap",
+          "time": "2026-11-13T23:50:58.25Z"
+        }
+      ],
+      "truncated": 0,
+      "types": {
+        "syslog": {
+          "by_severity": {
+            "alert": 0,
+            "crit": 22,
+            "debug": 0,
+            "emerg": 0,
+            "err": 22,
+            "info": 23,
+            "notice": 23,
+            "unknown": 0,
+            "warning": 22
+          },
+          "first": "2026-11-13T23:35:00.014Z",
+          "last": "2026-11-14T00:14:40.014Z",
+          "lines": 112
+        },
+        "trap": {
+          "by_trap": {
+            "coldStart": 1,
+            "linkDown": 1,
+            "linkUp": 1
+          },
+          "first": "2026-11-13T23:50:00Z",
+          "last": "2026-11-13T23:50:58.25Z",
+          "lines": 3
+        }
+      }
+    },
+    {
+      "device_id": "192.0.2.2",
+      "dropped": 0,
+      "gaps": [
+        {
+          "detail": "Woodshed wasn't running",
+          "from": "2026-11-13T23:40:00Z",
+          "kind": "not_running",
+          "proto": "",
+          "to": "2026-11-13T23:42:30Z"
+        }
+      ],
+      "group": "",
+      "ip": "192.0.2.2",
+      "name": "",
+      "reboots": [],
+      "truncated": 1,
+      "types": {
+        "syslog": {
+          "by_severity": {
+            "alert": 0,
+            "crit": 0,
+            "debug": 0,
+            "emerg": 0,
+            "err": 1,
+            "info": 0,
+            "notice": 65,
+            "unknown": 10,
+            "warning": 0
+          },
+          "first": "2026-11-13T23:35:05.014Z",
+          "last": "2026-11-14T00:14:35.014Z",
+          "lines": 76
+        },
+        "trap": {
+          "by_trap": {},
+          "first": null,
+          "last": null,
+          "lines": 0
+        }
+      }
+    }
+  ],
+  "summary_note": "Per device: lines, first and last are the records in this zip, by type; by_severity and by_trap count them. reboots come from coldStart and warmStart traps (a retransmitted inform isn't counted again). gaps are the bundle's (see gaps_note), the same for every device. dropped and truncated are Woodshed's own counts from its statistics, per minute (per hour past 24 hours), for the buckets that start inside the window, so a bucket that straddles an edge counts whole.",
+  "types": [
+    "syslog",
+    "trap"
+  ],
+  "woodshed_version": "1.2.3"
+}

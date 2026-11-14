@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/datatype"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 // ---- types (docs/api.md "Severity filters", "Search", "Exports") ----
@@ -240,6 +241,13 @@ type ExportRequest struct {
 	// builds the 1.1 zip) and, with one type, its filter (Trap for traps).
 	Types []string
 	Trap  *datatype.TrapFilter
+	// 1.2: the incident bundle (Kind "bundle"): the moment, the spans around
+	// it and the devices active in the window (docs/api.md "Exports"). From
+	// and To are left zero; the backend works the window out, cut at now.
+	Kind          string // "" or "export", "bundle"
+	At            time.Time
+	Before, After time.Duration
+	ActiveDevices bool
 }
 
 // ExportEstimate is the body of POST /api/exports/estimate.
@@ -271,6 +279,12 @@ type ExportFilters struct {
 	Kind  string     `json:"kind"`
 	Types []string   `json:"types"`
 	Trap  *TrapLists `json:"trap,omitempty"`
+	// A bundle's moment and spans ("30m"), and whether its devices are the
+	// active ones; omitted for exports.
+	At            *time.Time `json:"at,omitempty"`
+	Before        string     `json:"before,omitempty"`
+	After         string     `json:"after,omitempty"`
+	ActiveDevices bool       `json:"active_devices,omitempty"`
 }
 
 // TrapLists is a trap filter as JSON lists (saved searches, export bodies
@@ -379,6 +393,8 @@ type ExportInfo struct {
 	ReadyAt   *time.Time    `json:"ready_at"`
 	ExpiresAt *time.Time    `json:"expires_at"`
 	Filters   ExportFilters `json:"filters"`
+	// Filename is the download's name ("" for woodshed-<from>-<to>.zip).
+	Filename string `json:"-"`
 }
 
 func (e *ExportInfo) normalize() {
@@ -392,8 +408,13 @@ func (e *ExportInfo) normalize() {
 	if e.Filters.Kind == "" {
 		e.Filters.Kind = "export"
 	}
-	if len(e.Filters.Types) == 0 {
+	if e.Filters.Types == nil && e.Filters.Kind != "bundle" {
 		e.Filters.Types = []string{e.Filters.Type}
+	}
+	e.Filters.Types = nonNil(e.Filters.Types)
+	if e.Filters.At != nil {
+		t := e.Filters.At.UTC()
+		e.Filters.At = &t
 	}
 	if e.Filters.Syntax == "" {
 		e.Filters.Syntax = "text"
@@ -644,6 +665,11 @@ type exportBody struct {
 	Types []string `json:"types"`
 	Kind  string   `json:"kind"`
 	TrapLists
+	// The incident bundle (kind "bundle").
+	At            string `json:"at"`
+	Before        string `json:"before"`
+	After         string `json:"after"`
+	ActiveDevices bool   `json:"active_devices"`
 }
 
 func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (ExportRequest, bool) {
@@ -674,8 +700,14 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 	}
 	switch b.Kind {
 	case "", "export":
+		if b.At != "" || b.Before != "" || b.After != "" || b.ActiveDevices {
+			return bad(`at, before, after and active_devices are for kind "bundle".`)
+		}
 	case "bundle":
-		return bad("kind: the incident bundle isn't in this build yet.")
+		if msg := readBundle(&b, &req); msg != "" {
+			return bad(msg)
+		}
+		return req, true
 	default:
 		return bad(fmt.Sprintf("kind must be \"export\" or \"bundle\", not %q.", b.Kind))
 	}
@@ -748,6 +780,70 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 		return bad("Pick at least one device (devices, group, ungrouped or all_devices).")
 	}
 	return req, true
+}
+
+// readBundle reads a bundle body (kind "bundle", docs/api.md "Exports") into
+// req, or returns the 400's message. A bundle takes no filters, each named
+// when sent, and no from or to: its window is at, before and after.
+func readBundle(b *exportBody, req *ExportRequest) string {
+	req.Kind = "bundle"
+	tl := b.TrapLists
+	for _, x := range []struct {
+		name string
+		set  bool
+	}{
+		{"from", b.From != ""}, {"to", b.To != ""},
+		{"all_devices", b.AllDevices}, {"exclude_devices", len(req.ExcludeDevices) > 0},
+		{"q", b.Q != ""}, {"exclude", b.Exclude != ""}, {"regex", b.Regex}, {"case", b.Case},
+		{"syntax", b.Syntax != "" && b.Syntax != "text"},
+		{"severities", len(b.Severities.Values) > 0 || b.Severities.None}, {"facilities", len(b.Facilities.Values) > 0 || b.Facilities.None},
+		{"app", len(req.App) > 0}, {"host", len(req.Host) > 0}, {"exclude_app", len(req.ExcludeApp) > 0},
+		{"exclude_host", len(req.ExcludeHost) > 0},
+	} {
+		if !x.set {
+			continue
+		}
+		switch x.name {
+		case "from", "to":
+			return x.name + `: a bundle's window is at, before and after; leave "from" and "to" out.`
+		case "all_devices", "exclude_devices":
+			return x.name + ": a bundle takes active_devices (every device that stored anything in the window), devices, group or ungrouped."
+		}
+		return x.name + ": a bundle takes no filters: it's everything around the moment. Filter with a plain export instead."
+	}
+	for _, p := range datatype.Get(datatype.Trap).FilterParams() {
+		if tl.get(p) != "" {
+			return p + ": a bundle takes no filters: it's everything around the moment. Filter with a plain export instead."
+		}
+	}
+	if b.At == "" {
+		return "at is required: the moment the bundle is around (RFC 3339)."
+	}
+	at, err := time.Parse(time.RFC3339Nano, b.At)
+	if err != nil {
+		return fmt.Sprintf("at must be an RFC 3339 time, not %q.", b.At)
+	}
+	req.At = at.UTC()
+	req.Before, req.After = 30*time.Minute, 10*time.Minute // the CLI's defaults
+	for _, x := range []struct {
+		name, v string
+		d       *time.Duration
+	}{{"before", b.Before, &req.Before}, {"after", b.After, &req.After}} {
+		if x.v == "" {
+			continue
+		}
+		if *x.d, err = model.ParseSpan(x.v); err != nil {
+			return x.name + ": " + err.Error() + "."
+		}
+	}
+	req.ActiveDevices = b.ActiveDevices
+	if len(b.Types) > 0 || b.Type != "" {
+		if req.Types, err = parseTypes(b.Types, b.Type); err != nil {
+			return err.Error()
+		}
+	}
+	req.Type = ""
+	return ""
 }
 
 // parseTypes reads an export's types (and 1.1's type): none means the 1.1
@@ -882,7 +978,10 @@ func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer dl.File.Close()
-	name := fmt.Sprintf("woodshed-%s-%s.zip", info.From.UTC().Format("20060102T150405Z"), info.To.UTC().Format("20060102T150405Z"))
+	name := info.Filename
+	if name == "" {
+		name = fmt.Sprintf("woodshed-%s-%s.zip", info.From.UTC().Format("20060102T150405Z"), info.To.UTC().Format("20060102T150405Z"))
+	}
 	h := w.Header()
 	h.Set("Content-Type", "application/zip")
 	h.Set("Content-Disposition", `attachment; filename="`+name+`"`)

@@ -82,9 +82,9 @@ type Type interface {
 	FieldValues(rec []byte, sc *Scratch, emit func(key, value string))
 	// ValueLabel is a field value's label in the field panel.
 	ValueLabel(key, value string) string
-	// Summary returns the lines a bundle README shows for one device's
-	// records of the type.
-	Summary(recs [][]byte) []string
+	// NewSummary starts a bundle's summary of one device's records of the
+	// type (summary.go).
+	NewSummary() Summary
 }
 
 // FieldDevice is every type's first field.

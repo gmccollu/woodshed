@@ -363,6 +363,31 @@ export interface ExportRequest {
   exclude_devices?: string[];
   exclude_app?: string[];
   exclude_host?: string[];
+  /** 1.2: the data types in the zip; the server's default is ["syslog"]. Filters apply only to an export of one type. */
+  types?: string[];
+  /** 1.2, with types ["trap"]: the trap filters by parameter name (trap_oid, status, …), sent as top-level JSON lists. */
+  trap?: Record<string, string[]>;
+  kind?: 'export';
+}
+
+/**
+ * 1.2: the incident bundle (SPEC §11.3): everything stored in [at − before, at + after), cut at
+ * now. Exactly one device choice; no filters, and no from/to.
+ */
+export interface BundleRequest {
+  kind: 'bundle';
+  /** RFC 3339, not in the future. */
+  at: string;
+  /** Durations, 0s–7d each, at least one non-zero ("30m", "1h30m"). */
+  before: string;
+  after: string;
+  /** Every non-hidden device with a stored record of any type in the window. */
+  active_devices?: boolean;
+  devices?: string[];
+  group?: string;
+  ungrouped?: boolean;
+  /** [] = every type with data in the window. */
+  types: string[];
 }
 
 export interface ExportFilters {
@@ -382,6 +407,18 @@ export interface ExportFilters {
   exclude_devices?: string[];
   exclude_app?: string[];
   exclude_host?: string[];
+  /** 1.2: "export" or "bundle"; older servers omit it. */
+  kind?: 'export' | 'bundle';
+  /** 1.2: the data types, resolved ("syslog", "trap"). */
+  types?: string[];
+  /** 1.2, an export of traps with trap filters: the lists given (MIB names resolved). */
+  trap?: Record<string, string[]>;
+  /** 1.2, a bundle: the moment and the sides in canonical form ("30m", "1h15m", "0s"). from/to are the window. */
+  at?: string;
+  before?: string;
+  after?: string;
+  /** 1.2, a bundle: the devices were "every device active in the window". */
+  active_devices?: boolean;
 }
 
 export interface ExportEstimate {
@@ -828,6 +865,9 @@ export interface DeviceQuery {
   hidden?: 'include' | 'only' | 'exclude';
   /** The server takes this like hidden (default include); not in docs/api.md yet, see the report. */
   blocked?: 'include' | 'only' | 'exclude';
+  /** 1.2, both or neither (RFC 3339): only devices with a stored record of any type in [active_from, active_to). */
+  active_from?: string;
+  active_to?: string;
 }
 
 export interface DevicePage {
@@ -1099,11 +1139,24 @@ function exportBody(r: ExportRequest): ExportRequest {
   if (r.exclude_devices?.length) b.exclude_devices = r.exclude_devices;
   if (r.exclude_app?.length) b.exclude_app = r.exclude_app;
   if (r.exclude_host?.length) b.exclude_host = r.exclude_host;
+  // 1.2: a syslog-only export leaves types out, so its body is exactly the 1.1 one.
+  if (r.types?.length && !(r.types.length === 1 && r.types[0] === 'syslog')) b.types = [...r.types];
   return b;
 }
-export const createExport = (r: ExportRequest) => request<{ id: string }>('POST', '/api/exports', exportBody(r));
+
+/** The body as sent: exportBody's fields, plus the trap filters as top-level lists (docs/api.md → Exports). */
+function exportJson(r: ExportRequest): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...exportBody(r) };
+  for (const [k, v] of Object.entries(r.trap ?? {})) if (v.length) out[k] = [...v];
+  return out;
+}
+export const createExport = (r: ExportRequest) => request<{ id: string }>('POST', '/api/exports', exportJson(r));
 export const estimateExport = (r: ExportRequest, signal?: AbortSignal) =>
-  request<ExportEstimate>('POST', '/api/exports/estimate', exportBody(r), signal);
+  request<ExportEstimate>('POST', '/api/exports/estimate', exportJson(r), signal);
+/** 1.2: the incident bundle is an export with kind "bundle"; same queue, list, download and expiry. */
+export const createBundle = (b: BundleRequest) => request<{ id: string }>('POST', '/api/exports', b);
+export const estimateBundle = (b: BundleRequest, signal?: AbortSignal) =>
+  request<ExportEstimate>('POST', '/api/exports/estimate', b, signal);
 export const listExports = () => request<ExportInfo[]>('GET', '/api/exports');
 export const deleteExport = (id: string) => request<void>('DELETE', `/api/exports/${encodeURIComponent(id)}`);
 export const exportDownloadUrl = (id: string) => `/api/exports/${encodeURIComponent(id)}/download`;

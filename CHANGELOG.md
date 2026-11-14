@@ -58,6 +58,20 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   security level, with MD5, SHA-1 or SHA-2 authentication and DES or AES-128/192/256 privacy. Informs wait for each
   answer and report round-trip times and timeouts. Communities and passphrases are read from a file or an
   environment variable, never from the command line.
+- Incident bundles: pick a moment and get every record Woodshed stored around it, syslog and SNMP traps, from every
+  device that sent anything then (or chosen devices, a group), in one zip. Start one with **Bundle around this** on
+  an Events line, a point on the histogram, or **Export → Around a time** (windows of 15 min before / 5 after, 30 min / 10 min,
+  1 h / 15 min, 4 h / 1 h, 24 h / 1 h, or your own; the time in local time or UTC). A preview shows the window in
+  Events, the devices and the size first. The README opens with a summary per device: counts by severity and by trap,
+  first and last, reboots (coldStart and warmStart traps), gaps when Woodshed or a listener was down, and Woodshed's
+  own drops and truncations; `manifest.json` has the same numbers as JSON. See
+  [docs/user-guide.md](docs/user-guide.md#incident-bundles).
+- `woodshed bundle --at <time>` builds the same zip from the data folder, with the service running or stopped: the
+  access rules of `woodshed search`, read-only, never overwriting a file. It prints the zip's path, size and SHA-256
+  and a line per device, so a remote colleague can be asked for one command and one zip.
+- **Export** can export SNMP traps, or both types, from the UI.
+- API: `kind: "bundle"` on `POST /api/exports` and `/api/exports/estimate` (`at`, `before`, `after`,
+  `active_devices`); `active_from` and `active_to` on `GET /api/devices` ([docs/api.md](docs/api.md#the-incident-bundle)).
 
 ### Changed
 - The index migrates once at the first start (each file's data type, the traps' own counters). Syslog files, their

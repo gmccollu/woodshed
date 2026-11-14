@@ -8,8 +8,10 @@
     downloadsViaTransport,
     exportDownloadUrl,
     exportTicket,
+    getSchema,
     listExports,
     transportDownload,
+    type DataType,
     type ExportEstimate,
     type ExportInfo,
     type ExportRequest,
@@ -24,6 +26,12 @@
   import { extrasFromQuery, facKeys, hasExtras, modeFromQuery, noExtras, type Extras, type Mode } from '../lib/events';
   import { deviceName, groupSize, live, ungroupedCount } from '../lib/status.svelte';
   import { SEVERITIES } from '../lib/severity';
+  import { SYSLOG, TRAP, typeFiltersFromQuery, typeFromQuery, type TypeFilters } from '../lib/traps';
+  import { bundleFromQuery, bundleTitle, bundleToQuery, bundleWindow, isBundle, newBundle, rfc3339, typesText, type BundleForm } from '../lib/bundle';
+  import { go } from '../lib/router.svelte';
+  import BundleBuild from '../components/BundleBuild.svelte';
+  import BundleTypes from '../components/BundleTypes.svelte';
+  import BundleWindow from '../components/BundleWindow.svelte';
   import DevicePicker from '../components/DevicePicker.svelte';
   import ModeSwitch from '../components/ModeSwitch.svelte';
   import Icon from '../components/Icon.svelte';
@@ -43,11 +51,48 @@
   /** Facility and the exclude forms of device, program/tag and host: set only from Events' field panel. */
   let extras = $state<Extras>(noExtras());
   let fromSearch = $state(false);
+  /** 1.2: the data types of a plain export (SPEC §11.7): syslog, SNMP traps, or both (then without filters). */
+  let xtype = $state<'syslog' | 'trap' | 'both'>('syslog');
+  /** The trap filters, from Events' "Export these results" on traps (by parameter name). */
+  let trapF = $state<TypeFilters>({});
+
+  // ----- the two ways to export: a time range, or around a moment (the incident bundle, SPEC §11.3) -----
+  let tab = $state<'range' | 'around'>('range');
+  let bform = $state<BundleForm>(newBundle(rfc3339(Math.floor(Date.now() / 60_000) * 60_000)));
+  const bError = $derived.by(() => {
+    const w = bundleWindow(bform.at, bform.before, bform.after);
+    if (typeof w === 'string') return w;
+    if (bform.scope.mode === 'devices' && !bform.scope.devices.length) return 'Pick at least one device, or every device active in the window.';
+    return '';
+  });
+  /** The preview: Events over the bundle's window and devices, with its own Build the bundle. */
+  function preview() {
+    const p = new URLSearchParams();
+    bundleToQuery($state.snapshot(bform) as BundleForm, p);
+    if (bform.types.length === 1 && bform.types[0] !== SYSLOG) p.set('type', bform.types[0]);
+    go('events', p.toString());
+  }
+
+  let schemas = $state<DataType[]>([]);
+  getSchema()
+    .then((s) => (schemas = s.types))
+    .catch(() => {});
+  const hasTraps = $derived(schemas.some((t) => t.type === TRAP));
 
   $effect(() => {
     const s = router.query;
     if (!s) return;
     const p = new URLSearchParams(s);
+    const b = bundleFromQuery(p);
+    if (b) {
+      tab = 'around';
+      bform = b;
+      return;
+    }
+    tab = 'range';
+    const t = typeFromQuery(p);
+    xtype = t === TRAP ? 'trap' : 'syslog';
+    trapF = t === TRAP ? typeFiltersFromQuery(p) : {};
     scope = scopeFromQuery(p);
     range = rangeFromQuery(p);
     sev = sevFromQuery(p);
@@ -70,7 +115,7 @@
           : ungroupedCount(),
   );
   const formError = $derived(
-    count === 0 ? 'Pick at least one device.' : !sev.length ? 'Pick at least one severity, or All.' : '',
+    count === 0 ? 'Pick at least one device.' : xtype === 'syslog' && !sev.length ? 'Pick at least one severity, or All.' : '',
   );
 
 
@@ -85,6 +130,22 @@
           : scope.mode === 'all'
             ? { all_devices: true }
             : { devices: scope.devices };
+    // Both types: every line in range (filters apply to one type). Traps: the text, exclude and trap filters.
+    if (xtype === 'both') return { ...who, from, to, types: [SYSLOG, TRAP], exclude_devices: extras.xdev };
+    if (xtype === 'trap')
+      return {
+        ...who,
+        from,
+        to,
+        types: [TRAP],
+        q: q.trim(),
+        regex: mode === 'regex',
+        syntax: mode === 'terms' ? 'terms' : 'text',
+        case: cs,
+        exclude: fields.exclude,
+        exclude_devices: extras.xdev,
+        trap: $state.snapshot(trapF),
+      };
     return {
       ...who,
       from,
@@ -109,9 +170,9 @@
   let estError = $state('');
   let estBusy = $state(false);
   $effect(() => {
-    const key = JSON.stringify({ scope, range, sev, q, mode, cs, fields, extras, e: formError });
+    const key = JSON.stringify({ scope, range, sev, q, mode, cs, fields, extras, xtype, trapF, tab, e: formError });
     void key;
-    if (formError) {
+    if (formError || tab !== 'range') {
       est = null;
       return;
     }
@@ -254,6 +315,15 @@
     const f = e.filters;
     if (!f) return '';
     const bits: string[] = [];
+    if (isBundle(f)) {
+      // A bundle: its devices and types (it has no filters).
+      bits.push(f.active_devices ? 'every active device' : f.group ? `group ${f.group}` : f.ungrouped ? 'ungrouped devices' : 'devices chosen');
+      bits.push(typesText(f.types));
+      return bits.join(' · ');
+    }
+    const ty = f.types ?? (f.type ? [f.type] : [SYSLOG]);
+    if (ty.length !== 1 || ty[0] !== SYSLOG) bits.push(typesText(ty).replace(/^s/, 'S'));
+    for (const [k, v] of Object.entries(f.trap ?? {})) if (v.length) bits.push(`${k.replace(/_/g, ' ')}: ${v.join(', ')}`);
     if (e.devices.length && f.group) bits.push(`Group: ${f.group}`);
     if (e.devices.length && f.ungrouped) bits.push('Ungrouped devices');
     if (f.severities?.length) bits.push(f.severities.map((k) => (k === 'unknown' ? 'unknown' : SEVERITIES[k].short)).join(', '));
@@ -281,18 +351,54 @@
     if (e.xhost.length) bits.push(`not host: ${e.xhost.join(', ')}`);
     return bits.join(' · ');
   }
+  /** "trap oid: linkDown · status: auth_failed · not device: edge-fw-02": the trap filters in words. */
+  function trapText(f: TypeFilters, xdev: string[]): string {
+    const bits = Object.entries(f).filter(([, v]) => v.length).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v.join(', ')}`);
+    if (xdev.length) bits.push(`not device: ${xdev.map(deviceName).join(', ')}`);
+    return bits.join(' · ');
+  }
   const STATE: Record<string, string> = { queued: 'Queued', building: 'Building', ready: 'Ready', failed: 'Failed', expired: 'Expired' };
 </script>
 
 <div class="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
   <div class="space-y-4">
     <section class="card space-y-4" aria-labelledby="ex-title">
-      <div>
-        <h1 id="ex-title" class="m-0 text-xl font-bold tracking-tight">Export logs</h1>
-        <p class="mt-1 mb-0 text-[13.5px] text-muted">
-          {fromSearch ? 'Filled in from Events. Check it, then build.' : 'Build a zip of the raw logs to send to someone else.'}
-        </p>
+      <div class="flex flex-wrap items-start gap-3">
+        <div class="min-w-0 grow">
+          <h1 id="ex-title" class="m-0 text-xl font-bold tracking-tight">Export logs</h1>
+          <p class="mt-1 mb-0 text-[13.5px] text-muted">
+            {tab === 'around'
+              ? 'An incident bundle: everything every device stored around a moment, to send to someone else.'
+              : fromSearch
+                ? 'Filled in from Events. Check it, then build.'
+                : 'Build a zip of the raw logs to send to someone else.'}
+          </p>
+        </div>
+        <div class="seg" role="tablist" aria-label="What to export">
+          <button type="button" role="tab" aria-selected={tab === 'range'} onclick={() => (tab = 'range')}>Time range</button>
+          <button type="button" role="tab" aria-selected={tab === 'around'} onclick={() => (tab = 'around')}>Around a time</button>
+        </div>
       </div>
+
+      {#if tab === 'around'}
+        <div class="row top" style:--blab="150px">
+          <div class="min-w-0 grow"><BundleWindow bind:value={bform} idp="ex-bw" /></div>
+        </div>
+        <div class="row">
+          <span class="lbl">Devices</span>
+          <DevicePicker bind:value={bform.scope} allLabel="Every device active in the window" />
+          {#if bform.scope.mode === 'all'}<span class="text-[13px] text-muted">The ones that stored anything in the window; hidden devices only when chosen.</span>{/if}
+        </div>
+        <div class="row">
+          <span class="lbl">Types</span>
+          <BundleTypes bind:value={bform.types} types={schemas.length ? schemas : [{ type: SYSLOG, label: 'Syslog', default: true, fields: [] }]} />
+        </div>
+        <BundleBuild form={bform} formError={bError}>
+          <button type="button" class="ghost-btn px-4 py-2" onclick={preview} disabled={!!bError} title="See the window in Events: the histogram, the fields and each device's counts, then build from there">
+            Preview in Events
+          </button>
+        </BundleBuild>
+      {:else}
 
       <div class="row">
         <span class="lbl">Devices</span>
@@ -303,10 +409,27 @@
         <span class="lbl">Time range</span>
         <div class="min-w-0 grow"><TimeRange bind:value={range} /></div>
       </div>
+      {#if hasTraps || xtype !== 'syslog'}
+        <div class="row">
+          <span class="lbl">Data</span>
+          <div class="seg" role="radiogroup" aria-label="Data types">
+            <button type="button" role="radio" aria-checked={xtype === 'syslog'} onclick={() => (xtype = 'syslog')}>Syslog</button>
+            <button type="button" role="radio" aria-checked={xtype === 'trap'} onclick={() => (xtype = 'trap')}>SNMP traps</button>
+            <button type="button" role="radio" aria-checked={xtype === 'both'} onclick={() => (xtype = 'both')}>Both</button>
+          </div>
+        </div>
+      {/if}
+      {#if xtype === 'both'}
+        <p class="m-0 text-[13.5px] text-muted">
+          Both types: every line and trap in the range, in <span class="font-mono">logs/</span> and <span class="font-mono">traps/</span>. Filters apply to one data type, so pick one to filter.
+        </p>
+      {:else}
+      {#if xtype === 'syslog'}
       <div class="row">
         <span class="lbl">Severities</span>
         <div class="sevbar"><SeverityChips bind:value={sev} label="Export severities" /></div>
       </div>
+      {/if}
       <div class="row">
         <label class="lbl" for="exq">Only lines matching</label>
         <input
@@ -319,6 +442,7 @@
         <ModeSwitch bind:value={mode} />
         <button type="button" class="toggle" aria-pressed={cs} onclick={() => (cs = !cs)} title="Match upper and lower case exactly">Aa Case</button>
       </div>
+      {#if xtype === 'syslog'}
       <div class="row">
         <label class="lbl" for="exapp">Program/tag</label>
         <input
@@ -333,6 +457,7 @@
         <label class="lbl" for="exhost">Host</label>
         <input id="exhost" class="field w-auto min-w-0 grow basis-40 font-mono" bind:value={fields.host} placeholder="Optional, e.g. web-01" spellcheck="false" />
       </div>
+      {/if}
       <div class="row">
         <label class="lbl" for="exex">Exclude</label>
         <input
@@ -344,12 +469,20 @@
         />
       </div>
 
-      {#if hasExtras(extras)}
+      {#if xtype === 'syslog' && hasExtras(extras)}
         <div class="row">
           <span class="lbl">Also</span>
           <span class="min-w-0 grow text-[13.5px]">{extrasText(extras)}</span>
           <button type="button" class="ghost-btn" onclick={() => (extras = noExtras())} title="Drop these filters from the export">Clear</button>
         </div>
+      {/if}
+      {#if xtype === 'trap' && (Object.keys(trapF).length || extras.xdev.length)}
+        <div class="row">
+          <span class="lbl">Also</span>
+          <span class="min-w-0 grow font-mono text-[13px]">{trapText(trapF, extras.xdev)}</span>
+          <button type="button" class="ghost-btn" onclick={() => ((trapF = {}), (extras = noExtras()))} title="Drop these filters from the export">Clear</button>
+        </div>
+      {/if}
       {/if}
 
       <div class="estimate" aria-live="polite">
@@ -372,8 +505,20 @@
         {#if buildError}<span class="text-[13.5px] font-medium text-bad-fg" role="alert">{buildError}</span>{/if}
         <span class="text-[13px] text-muted">One export builds at a time; others wait in the queue.</span>
       </div>
+      {/if}
     </section>
 
+    {#if tab === 'around'}
+    <section class="card">
+      <h2 class="m-0 mb-2 text-[16px] font-bold">What's in the bundle</h2>
+      <ul class="m-0 list-disc space-y-1.5 pl-5 text-[14px] leading-relaxed">
+        <li><b>Everything in the window</b>, from every device you picked: syslog in <span class="font-mono">logs/</span>, SNMP traps in <span class="font-mono">traps/</span>, one file per device per day. No filters: filtering is what a time-range export is for.</li>
+        <li><b>A summary per device</b> in <span class="font-mono">README.txt</span>: how many messages of each severity, the traps by name, reboots, gaps and losses.</li>
+        <li><b>A manifest</b> with the moment, the window, the devices and a SHA-256 checksum for every file, and <b>Woodshed's own events</b> for the window.</li>
+        <li>A window that would end after now ends now. Preview it in Events to see the histogram, the fields and each device's counts first.</li>
+      </ul>
+    </section>
+    {:else}
     <section class="card">
       <h2 class="m-0 mb-2 text-[16px] font-bold">What's in the zip</h2>
       <ul class="m-0 list-disc space-y-1.5 pl-5 text-[14px] leading-relaxed">
@@ -383,6 +528,7 @@
         <li><b>Woodshed's own events</b> for the range (restarts, rotations, deletions, drops), so "the device sent nothing" can be told apart from "Woodshed wasn't listening".</li>
       </ul>
     </section>
+    {/if}
   </div>
 
   <section class="card self-start" aria-labelledby="ex-list">
@@ -401,10 +547,22 @@
               <div class="min-w-0 grow">
                 <div class="flex min-w-0 items-center gap-2">
                   <span class="shrink-0 badge {e.state}">{STATE[e.state] ?? e.state}</span>
-                  <b class="min-w-0 truncate text-[14px]" title={e.devices.map(deviceName).join(', ')}>{names(e)}</b>
-                  {#if more(e.devices)}<span class="shrink-0 text-[13px] text-muted">{more(e.devices)}</span>{/if}
+                  {#if isBundle(e.filters)}
+                    <span class="shrink-0 badge kind" title="An incident bundle: everything around a moment">Bundle</span>
+                    <b class="min-w-0 text-[14px] leading-snug" title={bundleTitle(e.filters.at ?? e.from, e.filters.before ?? '', e.filters.after ?? '', prefs.utc, now)}
+                      >{bundleTitle(e.filters.at ?? e.from, e.filters.before ?? '', e.filters.after ?? '', prefs.utc, now)}</b
+                    >
+                  {:else}
+                    <b class="min-w-0 truncate text-[14px]" title={e.devices.map(deviceName).join(', ')}>{names(e)}</b>
+                    {#if more(e.devices)}<span class="shrink-0 text-[13px] text-muted">{more(e.devices)}</span>{/if}
+                  {/if}
                 </div>
-                {#if filterText(e)}<div class="mt-1 truncate font-mono text-[12px]" title={filterText(e)}>{filterText(e)}</div>{/if}
+                {#if isBundle(e.filters)}
+                  <div class="mt-1 truncate text-[13px]" title={e.devices.map(deviceName).join(', ')}>
+                    {e.devices.length ? `${num(e.devices.length)} device${e.devices.length === 1 ? '' : 's'}: ${names(e)}${more(e.devices) ? ` ${more(e.devices)}` : ''}` : names(e)}
+                  </div>
+                {/if}
+                {#if filterText(e)}<div class="mt-1 font-mono text-[12px]" class:truncate={!isBundle(e.filters)} title={filterText(e)}>{filterText(e)}</div>{/if}
                 <div class="mt-1 text-[12.5px] text-muted">
                   {stamp(e.from, prefs.utc).slice(0, 11)} → {stamp(e.to, prefs.utc).slice(0, 11)}{prefs.utc ? ' UTC' : ''} · created {ago(e.created, now)}
                 </div>
@@ -521,6 +679,35 @@
   }
   .badge.expired {
     color: var(--muted);
+  }
+  .badge.kind {
+    color: var(--fg);
+    background: var(--glass);
+  }
+  .seg {
+    display: inline-flex;
+    flex-wrap: wrap;
+    background: var(--glass);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px;
+  }
+  .seg button {
+    height: 28px;
+    border: 0;
+    background: transparent;
+    color: var(--fg);
+    padding: 0 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .seg button[aria-checked='true'],
+  .seg button[aria-selected='true'] {
+    background: var(--chip);
+    font-weight: 600;
+    box-shadow: var(--shadow-chip);
   }
   .bar {
     height: 8px;

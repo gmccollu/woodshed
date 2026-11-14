@@ -3,6 +3,7 @@ package datatype
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gmccollu/woodshed/internal/snmp"
 )
@@ -19,7 +20,9 @@ func FuzzTrapType(f *testing.F) {
 		ty := Get(Trap)
 		ty.Text(rec)
 		ty.FieldValues(rec, &Scratch{}, func(k, v string) { ty.ValueLabel(k, v) })
-		ty.Summary([][]byte{rec})
+		sum := ty.NewSummary()
+		sum.Add(rec, time.Time{})
+		sum.README(1, "a", "b")
 		_ = Result(rec)
 		flt, err := ParseTrapFilter(func(p string) string {
 			if p == param {
