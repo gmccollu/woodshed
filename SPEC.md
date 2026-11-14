@@ -41,6 +41,10 @@ the owner can still overrule them. Everything else is a proposal and can change.
 | Update check details (1.1) | `updates.check` = ask / on / off, `ask` on fresh installs, upgrades and portable; the URL is the existing Pages file `releases.json`; User-Agent `Woodshed` with no version; no query, cookies or conditional headers; proxy from the environment; no redirects; only `internal/updatecheck` may dial (§10.2) **decided (coordinator, 2026-11-13, owner-delegated)** |
 | TLS syslog (1.1) | Off by default, one Settings switch, TCP 6514 by default (port configurable) **(decided, 2026-11-13)**. TLS 1.2 and 1.3 (1.0/1.1 only behind `allow_legacy_tls`); no SNI, ALPN or client certificate needed; Woodshed's own RSA-2048 CA and leaf (until 2037-12-31, the leaf 10 y at most), changed only on an explicit renew; the same framing and limits as TCP; the MSI ships its firewall rule disabled, and `woodshed tls on` enables it (§10.3); the details are **decided (coordinator, 2026-11-13, owner-delegated)** |
 | Events v2 (1.1) | Field panel and histogram over the same files and index. Field counts are exact over a stated span (newest first), never sampled. The histogram comes from the stats and checkpoints when the query is unfiltered, from the same scan otherwise. Boolean terms only with `syntax=terms`, so 1.0 links keep their meaning. Saved searches live in `index.db`. Every endpoint takes `type` (only `syslog` in 1.1) (§10.1) **decided (coordinator, 2026-11-13, owner-delegated)** |
+| Data types (1.2) | Traps get their own files in `logs/<device>/traps/`, same naming and line envelope; syslog's files are unchanged; one retention and disk guard over every type (§11.1) **decided (coordinator, 2026-11-14, owner-delegated)** |
+| SNMP traps (1.2) | UDP 162, off by default; v1, v2c, v3 USM (MD5, SHA-1, SHA-2; DES, AES-128/192/256); informs answered once stored; communities stored as a hash prefix and masked in the raw PDU; identity by source IP; v3 credentials in DPAPI on Windows, a 0600 file on macOS and Linux (§11.2) **decided (coordinator, 2026-11-14, owner-delegated)** |
+| Incident bundle and CLI search (1.2) | The bundle is an export (`kind: "bundle"`) with per-type folders, syslog kept in `logs/`; `woodshed search` and `woodshed bundle` read the data folder directly and read-only (§11.3, §11.4) **decided (coordinator, 2026-11-14, owner-delegated)** |
+| UDP queue (1.2) | A bounded queue per UDP socket (100,000 messages / 64 MiB), drops counted as `queue_full`; readers never touch the disk (§11.5) **decided (coordinator, 2026-11-14, owner-delegated)** |
 | First run | Zero-config: listens immediately, and the UI opens on a welcome page **(decided)** |
 | Port 514 in use | The listener fails with a clear error; the UI still starts and explains the clash **(decided)** |
 | UI port | 8514 on localhost (§5) **(decided)** |
@@ -325,12 +329,15 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
   (RFC 5425, TCP 6514), designed in §10.
 
 ### 1.2
+All of it is designed in §11 **(owner, 2026-11-14: all of these in 1.2, with thorough testing)**.
 - **Pluggable data types:** generalise the pipeline (listener → per-device store → index → search → export) so
   each data type adds its own listener, record format, UI tab and export section, with syslog as the first.
   Devices stay keyed by source IP across types. Events v2 already takes a `type` (§10.1.6).
 - **SNMP trap receiver** (UDP 162; v1, v2c, and v3 with user-configured credentials stored like the UI password).
   Traps are stored decoded as text lines, with varbinds and the raw PDU, in the same per-device, per-day files. No
-  MIB compiler in the first version; numeric OIDs, plus an optional folder of MIB files for names.
+  MIB compiler in the first version; numeric OIDs, plus an optional folder of MIB files for names. §11 refines two
+  points: traps get their own per-device, per-day files in a `traps/` folder inside each device's folder (§11.1), and
+  v3 secrets are encrypted rather than hashed, because the receiver has to use them (§11.2.6).
 - **Incident bundle** (owner, 2026-11-14): pick a moment, get the evidence around it.
   - Started from Events ("Bundle around this" on a line, or a point on the histogram), from Export ("Around a time")
     and from the CLI: `woodshed bundle --at <time> --before 30m --after 10m [--devices …|--group …] [--out file.zip]`,
@@ -347,6 +354,10 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
   the same engine as Events (compressed days included, only the files that cover the range). Native on every OS, for
   headless boxes, scripts and remote sessions; it reads the data folder directly (it needs the same rights as
   `reindex`), so it works with the UI off or in LAN mode.
+- **UDP receive off the write path:** today the UDP reader writes each message itself, so a slow disk (fsync,
+  rotation) backs up into the OS socket buffer, where loss isn't counted on Windows or macOS. Hand messages to a
+  bounded queue and count drops when it's full, so every loss Woodshed causes shows in `dropped_24h`. A 2026-11-12 lab
+  soak on Windows lost ~20 per million UDP in bursts near the top of the hour; the cause wasn't found in Woodshed.
 
 ### 1.3
 - **SNMP poller ("OID watcher")**, moved up from 2.0 (owner, 2026-11-13). It collects evidence, so it's small and
@@ -361,17 +372,14 @@ product or a SIEM. Each new data type has to fit that rule (decided 2026-11-11).
 - Security:
   - It polls only addresses the user configured.
   - v2c communities and v3 auth/priv keys are encrypted at rest with the OS key store where there is one (DPAPI on
-    Windows, the Keychain on macOS), and otherwise kept in a file only the service account can read.
+    Windows, the Keychain on macOS), and otherwise kept in a file only the service account can read. 1.2's trap
+    receiver settles how on each OS (§11.2.6): macOS uses the file, because the Keychain needs cgo.
   - SECURITY.md's outbound rule gains "SNMP polls to devices you configure".
 - Out of scope: discovery, topology, polling hundreds of OIDs, threshold dashboards, a MIB browser.
 - It shares the SNMP library and the v3 credential handling with the 1.2 trap receiver, which is why it comes after
   it.
 
 ### Later 1.x (not yet ordered)
-- **UDP receive off the write path:** today the UDP reader writes each message itself, so a slow disk (fsync,
-  rotation) backs up into the OS socket buffer, where loss isn't counted on Windows or macOS. Hand messages to a
-  bounded queue and count drops when it's full, so every loss Woodshed causes shows in `dropped_24h`. A 2026-11-12 lab
-  soak on Windows lost ~20 per million UDP in bursts near the top of the hour; the cause wasn't found in Woodshed.
 - Alerts: device quiet, error-rate spike, disk filling, drops (email and webhook). Simple thresholds only.
 - Device identity by hostname as an option, for relayed traffic.
 - Forwarding to another collector; RELP.
@@ -1166,7 +1174,604 @@ left room:
   `sudo`, apt/dpkg and dnf/rpm to the deb's and rpm's. Where it doesn't, that installer documents pre-seeding the
   TOML instead.
 
-## 11. Open questions
+## 11. 1.2 design (draft, 2026-11-14)
+
+1.2 has five parts, all in scope **(owner, 2026-11-14)**: pluggable data types (§11.1), the SNMP trap receiver
+(§11.2), the incident bundle (§11.3), command-line search (§11.4) and UDP receive off the write path (§11.5). The
+testing plan (§11.6) and compatibility rules (§11.7) are part of the contract. Owner decisions are marked **(owner)**
+or **(decided)**; the calls made here are **decided (coordinator, 2026-11-14, owner-delegated)** and are listed in
+§11.8 so the owner can overrule any of them. The API contract is in `docs/api.md` → "1.2 (planned)".
+
+### 11.1 Pluggable data types
+
+§10.1.6 sketched the seams; this section fixes them. A **data type** is a named kind of record (`syslog`, `trap`;
+later `poll`, `flow`) that shares the pipeline and brings its own parts.
+
+**Shared by every type:**
+- device identity (the source IP, `model.DeviceID`), the devices table, names, groups, hidden and blocked flags;
+- the sender admission rules: allowlist, blocklist, `max_devices` and the new-sender buckets (§2), applied per
+  device whatever the type;
+- the store's per-device writers: buffering, flush and fsync timing, rotation at the part size or midnight UTC,
+  gzip, checkpoints, crash repair;
+- the line envelope `<received UTC, RFC 3339 ms> <sender IP> <record>`, one record per line, CR, LF and backslash
+  escaped (§3.3). Syslog's record is the raw message; other types define theirs;
+- the index's files and checkpoints tables, retention and the low-disk guard (below);
+- the search engine (merge, budget, cursor, partial), Events v2's summary and histogram, saved searches, context,
+  export and the incident bundle;
+- the events log and the export's gaps.
+
+**What a type implements** (an interface in a new `internal/datatype` package; syslog becomes its first
+implementation, with no change to its behaviour):
+
+| Part | What it does | Syslog | Trap |
+|---|---|---|---|
+| `Name()`, `Label()` | the `type` value and its UI label | `syslog`, "Syslog" | `trap`, "SNMP traps" |
+| `Dir()` | its folder inside the device folder | `""` (the device folder itself) | `"traps"` |
+| Listener | produces records for the store | UDP, TCP, TLS 514/6514 | UDP 162 (§11.2) |
+| `Fields()` | the schema's field descriptors (§10.1.1) | device, severity, facility, host, app | §11.2.5 |
+| `ParseFilter(params)` | its own filter parameters; anything else is a 400 | 1.1's parameters | §11.2.5 |
+| `Match(record, filter)` | does a stored record pass the filter | 1.1's `check` | §11.2.5 |
+| `FieldValues(record)` | the values the field panel counts | PRI, header | the record's keys |
+| `Text(record)` | the part `q` matches | the raw message | the record without `raw=…` |
+| `Result(record)` | the API result object | 1.1's shape, unchanged | §11.2.4 |
+| `Summary(records)` | the bundle README's lines for a device | counts by severity | counts by trap name, reboots |
+
+**Where traps live: their own files, in a `traps/` folder inside each device's folder:**
+```
+logs/10.1.0.1/2026-11-14.log            syslog, unchanged
+logs/10.1.0.1/traps/2026-11-14.log      traps, same naming, parts and .gz as syslog
+logs/10.1.0.1/traps/2026-11-13.log.gz
+```
+Why not one file per device per day with a type marker on each line:
+- **Syslog stays byte-for-byte compatible.** Syslog files hold only syslog lines, exactly as 1.0 and 1.1 wrote
+  them, so grep, editors, existing exports and scripts see no change. A marker would change every line or mix trap
+  lines into syslog files.
+- **Search speed.** A syslog search never reads trap bytes and a trap search never reads syslog bytes; the
+  checkpoints of each file cover one type, so time seeks stay exact. Mixed files would make every scan read and skip
+  the other type and would break the escaped-bytes prefilter's assumption that every line is one kind of record.
+- **Reindex** walks `logs/<dev>/` for syslog and `logs/<dev>/<dir>/` for each registered type, with the same file-name
+  parser; the folder says the type, so no line has to be read to know it. A folder no registered type claims is
+  ignored (and logged once).
+- **Retention** deletes whole files, so a type's files can go without rewriting another type's data.
+- **Export and the bundle** map a type's folder straight to the zip's folder for that type.
+- Inside the device folder, not a parallel `traps/<dev>/` tree, because the device is the unit: forgetting a device,
+  its folder's permissions, and someone browsing "everything from this device" all stay one folder. Device IDs are
+  addresses, so no device can be named `traps`.
+- 1.1's `logfile.List` already skips subfolders inside a device folder, so a 1.1 `reindex` over a 1.2 data folder
+  ignores traps rather than misreading them (§11.7).
+
+**Index changes** (one migration, §11.7):
+- `files` gains `type TEXT NOT NULL DEFAULT 'syslog'`; every 1.1 row reads as syslog.
+- New tables `type_stats` and `type_stats_hourly` (device, type, minute or hour, msgs, bytes, truncated, dropped) for
+  every type except syslog, which keeps its 1.1 `stats` tables untouched. The Events index histogram (§10.1.2) reads
+  the table for the query's type.
+- Device totals (`total_msgs`, `last_heard`, `first_seen`) and the Dashboard's rates count every type, so a device
+  that sends only traps is online, not offline.
+
+**Retention and the disk guard cover every type with the same fair-share rules (§3.4):**
+- The size cap, age limit and low-disk reserve apply to all of a device's files together, whatever their type.
+- A device's share is its average bytes a day over 7 days summed over its types; "new" means first seen in the last
+  24 h, whatever type it sent.
+- Within a device, "oldest file first" means by `first_received` across its types, so the oldest evidence goes first
+  whatever kind it is.
+- The protected last min(retention days, 2) calendar days cover every type's files.
+- Storage history records each deletion's type.
+
+**Other parts per type:**
+- The live tail and the Dashboard's live view stay syslog-only in 1.2. Device tiles count all types.
+- `/api/context` reads the ref's own file, so context stays within one type.
+- The export zip gets one folder per type (§11.3).
+
+### 11.2 SNMP trap receiver
+
+**Owner:** UDP 162 (configurable); v1, v2c and v3 with user-configured credentials; stored decoded as text lines
+with varbinds and the raw PDU; numeric OIDs plus an optional folder of MIB files for names; no MIB compiler
+(§9). **Off by default**, decided (coordinator, 2026-11-14, owner-delegated), as for TLS: a 1.1 upgrade opens no new
+port.
+
+#### 11.2.1 Settings and config
+```toml
+[listeners.snmp]
+enabled = false        # Settings → Listeners → "SNMP traps"
+addr = "0.0.0.0"
+port = 162             # traps and informs; any free port
+answer_informs = true  # reply to InformRequests (§11.2.3)
+mib_dir = ""           # MIB files for names; "" means <data>/mibs
+engine_id = ""         # Woodshed's own v3 engine ID, hex; "" means the generated one (§11.2.3)
+```
+- The listener shows in `/api/status.listeners` as `proto: "snmp"`, with the usual `listener_bind` banner and Retry.
+  Port 162 is often held by an OS trap service; the banner names the holder as for 514.
+- Port 162 is below 1024: the same privileges and the same macOS rule as 514 (a specific address below 1024 is
+  refused on macOS; the wildcard works).
+- v3 users aren't in the TOML or in `/api/settings`: they're managed through `/api/snmp/users` and kept in the
+  credentials store (§11.2.6), so no secret ever sits in the config file or in a settings response.
+- The optional v1/v2c community list (accept only these; empty accepts any) is a set of secrets too: it's edited in
+  Settings (`listeners.snmp.communities` in `/api/settings`, shown only as hash prefixes) and kept in the same
+  credentials store, not in the TOML.
+
+#### 11.2.2 What it accepts
+- **PDUs:** v1 Trap-PDU; v2c and v3 SNMPv2-Trap-PDU and InformRequest-PDU. Any other PDU type (Get, Set, Response,
+  Report, GetBulk) is counted (`unexpected_pdu`) and stored as `status=unexpected_pdu`, never answered.
+- **Size:** up to 65,507 bytes, any UDP datagram; v3 Reports advertise `msgMaxSize` 65,507. A trap is never truncated.
+- **Communities (v1/v2c):** any, unless `communities` is set; then a trap with another community is refused before
+  storage, counted in `/api/rejected` with reason `community`, and not stored (an explicit filter, like the
+  allowlist).
+- **v3 security:** USM (RFC 3414) with
+  - auth: HMAC-MD5-96, HMAC-SHA-96, and HMAC-SHA-224, -256, -384 and -512 (RFC 7860);
+  - priv: DES-CBC (RFC 3414), AES-128-CFB (RFC 3826), and AES-192-CFB and AES-256-CFB. Two incompatible
+    key-extension methods for AES-192/256 are in use (the one in the AES-USM draft, and a different one some
+    devices implement); each user picks one (`key_ext`: `"draft"` (default) or `"alt"`);
+  - levels noAuthNoPriv, authNoPriv and authPriv; a user accepts its own configured level and above, never below.
+  - MD5, SHA-1 and DES are weak but common on older gear. Settings labels them "weak"; they aren't refused.
+- **Sender limits:** traps pass the same allowlist, blocklist, `max_devices` and new-sender buckets as syslog, in
+  the UDP reader (§11.5). There's no separate trap rate limit: a trap flood is a UDP flood, with the same answer.
+- **Malformed packets** (BER that doesn't decode, a wrong version, a truncated header) are counted and **kept**:
+  stored as `status=malformed error="…"` with the raw bytes, because a device sending broken traps is evidence.
+- **v3 failures are kept too**, with their status: `unknown_user`, `unknown_engine` (an inform to the wrong engine
+  ID), `not_in_time` (outside the 150 s window), `auth_failed` (wrong digest), `decrypt_failed` (the decrypted bytes
+  don't decode) and `level` (below the user's level). A failure stores only the parts that are readable without the
+  keys (user name, engine ID, security level and the raw bytes), never decrypted guesses. Each failure is also
+  counted per sender in `GET /api/snmp/failures`, like TLS handshake failures, so "the device sends but nothing
+  shows" is diagnosable.
+
+#### 11.2.3 Informs and engine IDs
+**Woodshed answers informs (`answer_informs = true`).** An unanswered inform is retransmitted (so it's stored several
+times) and the device logs the receiver as failing, sometimes raising an alarm of its own. A Response is what the
+protocol requires, and it is the answer to an inbound request on the same socket, not an outbound connection
+Woodshed starts (SECURITY.md is unchanged).
+- The reply goes only to a sender that passed admission (allowlist, blocklist, device limits), and only after the
+  inform is in the store's write buffer: it's sent by the queue's drainer (§11.5), so a full queue drops the inform
+  unanswered and the sender's retry is the backpressure. An inform is never acknowledged and then lost by Woodshed.
+- Replies are rate-limited (100 a second per source address, 1,000 a second in all; the excess are dropped and
+  counted) so a spoofed source can't use Woodshed to reflect traffic at someone. The Response is no larger than the
+  inform, so there's no amplification.
+- A retransmitted inform (the same source, engine and request ID within 60 s) is answered again and stored again,
+  marked `dup=1`, so nothing is lost and the count is still honest.
+- `answer_informs = false` stores informs without answering.
+
+**v3 engine IDs:**
+- For traps the sender is authoritative: its engine ID is in each message, and a user's keys are localized to it.
+- For informs Woodshed is authoritative. Its engine ID is generated at first start in the RFC 3411 format
+  "administratively assigned octets" (`80000000` + `05` + 8 random bytes; the enterprise number 0 is a placeholder
+  until the project registers its own, §11.9) and kept in `<data>/snmp-engine.json` with `engineBoots`, which goes up
+  by one at every start; `engineTime` counts from the start. `engine_id` overrides it for senders configured with a
+  fixed receiver engine ID.
+- Discovery (RFC 3414 §4): a request with an empty engine ID gets a Report (`usmStatsUnknownEngineIDs`) with
+  Woodshed's engine ID, boots and time; one outside the time window gets `usmStatsNotInTimeWindows`. Reports go only
+  to admitted senders and count against the reply rate limits. Settings shows the engine ID so it can be configured on
+  devices.
+- Key localization costs a 1 MiB hash per user and engine ID. Localized keys are cached (10,000 entries, least
+  recently used out), and at most 20 new localizations run a second, so spoofed engine IDs can't burn the CPU.
+
+#### 11.2.4 The stored record
+One line per trap, in `logs/<dev>/traps/<day>.log`, inside the usual envelope:
+```
+2026-11-14T09:30:58.112Z 10.1.0.1 v=2c pdu=trap id=4711 cred=#3f9a1c07 status=ok uptime=8641234 trap=1.3.6.1.6.3.1.1.5.3(linkDown) vb=1.3.6.1.2.1.2.2.1.1.3(ifIndex.3):int:3 vb=1.3.6.1.2.1.2.2.1.7.3(ifAdminStatus.3):int:1(up) vb=1.3.6.1.2.1.2.2.1.8.3(ifOperStatus.3):int:2(down) raw=MIGTAgEBBAZ…
+```
+- **Keys, in this order** (absent keys are left out): `v` (`1`, `2c`, `3`); `pdu` (`v1trap`, `trap`, `inform`, or
+  the unexpected type); `id` (request ID; none for v1); `dup=1` for a retransmitted inform; `cred` (below); for v3
+  `level` (`noAuthNoPriv`, `authNoPriv`, `authPriv`), `engine` (hex) and `ctx`/`ctx_engine` when set; `status`;
+  `error="…"` when the status isn't ok; for v1 `enterprise`, `agent`, `generic`, `specific`; `uptime` (TimeTicks);
+  `trap` (the snmpTrapOID; for v1 the RFC 3584 translation, so v1 and v2c traps of the same kind compare); then one
+  `vb=` per varbind, in PDU order, without the two the header already shows (sysUpTime.0 and snmpTrapOID.0); `raw=`
+  last.
+- **Varbinds:** `vb=<oid>(<name>):<type>:<value>`. Types: `int`, `str` (printable UTF-8, quoted, with `"` and `\`
+  escaped), `hex` (any other octets), `oid`, `ip`, `c32`, `g32`, `ticks`, `c64`, `opaque` (hex), `null`,
+  `nosuchobject`, `nosuchinstance`, `endofmibview`. An `int` with a named value from a MIB adds it: `int:2(down)`.
+- **Names:** OIDs are always stored numerically. When the MIB set loaded at receipt names an OID (or its longest
+  named prefix, plus the index: `ifOperStatus.3`), the name is added in parentheses. Names known only to MIBs added
+  later aren't written into older lines; the UI names every OID from the current MIB set when it shows a trap.
+- **`cred`:** v3 shows the user name (`cred=monitor`). v1 and v2c show `#` and the first 8 hex digits of the
+  community's SHA-256, never the community itself: a community is often also the device's read (or write) password,
+  and these lines go into exports and bundles that leave the machine. The prefix is enough to tell communities apart
+  and to filter on.
+- **`raw=`** is the whole datagram, base64 (standard alphabet, no line breaks), for evidence, **except** that for
+  v1/v2c the community's octets are replaced by as many `*` bytes before encoding, for the same reason. The
+  replacement is the only change, it's documented here and in the export README, and the BER lengths are untouched,
+  so the PDU still decodes. A v3 message is kept exactly: its secrets are never in the packet.
+- `q` and the field values read the record without `raw=…`, so a search never matches base64.
+- A record can be several times its datagram (hex, names); lines up to 1 MiB are accepted, which bounds any 65,507-byte
+  datagram.
+
+**The API result** for `type=trap` (syslog results keep their 1.1 shape):
+`{"received", "device_id", "type": "trap", "ref", "raw": <the record line>, "fields": {"version", "pdu", "trap_oid",
+"trap_name", "enterprise", "generic", "specific", "cred", "status", "uptime", "varbinds": [{"oid", "name", "type",
+"value"}]}}`, with names from the current MIB set.
+
+**MIB folder:** `mib_dir` holds MIB files (`*.mib`, `*.my`, `*.txt`), read at start and on **Reload MIBs**.
+- Woodshed reads only what naming needs: `OBJECT IDENTIFIER` assignments, `OBJECT-TYPE`, `NOTIFICATION-TYPE`,
+  `TRAP-TYPE`, `MODULE-IDENTITY`, `OBJECT-IDENTITY`, `IMPORTS`, and `INTEGER { name(n), … }` enumerations, including
+  those of `TEXTUAL-CONVENTION`s in the same set. It isn't a MIB compiler: no type checking, no tables, no syntax
+  beyond that.
+- A small built-in set needs no files: the standard notifications (coldStart, warmStart, linkDown, linkUp,
+  authenticationFailure), sysUpTime, snmpTrapOID, snmpTrapEnterprise and the IF-MIB interface columns.
+- Limits: 2,000 files, 64 MiB in all, 1,000,000 names. A file that doesn't parse is skipped with its error (file,
+  line, message) listed in Settings; the rest still load. A missing import is a warning, not an error.
+
+**Device identity is the source IP.** A v1 trap's `agent-addr` is shown (`agent=`) but never used for identity:
+- it's self-reported and often wrong (multi-homed devices, NAT, `0.0.0.0`, a loopback or management address), and
+  nothing verifies it;
+- using it would let any sender write into another device's folder just by putting that address in the packet;
+- the source IP is what syslog uses, so a device's traps and its syslog land in the same device folder.
+Relayed traps (from a trap forwarder) are the same open item as relayed syslog: "Device identity by hostname as an
+option" (§9, later 1.x).
+
+#### 11.2.5 Events and Settings
+- **Events:** a type switch, **Syslog | SNMP traps** (`type=trap` in the URL). It shows when the SNMP listener is
+  on or trap files exist. Results show time, device, trap name (or OID), and the varbinds in one line; a click opens
+  the decoded trap (every varbind with names) and the context view.
+- **Fields** (from `GET /api/search/schema`, so the client hard-codes none of them):
+
+  | Key | Label | Filter (include / exclude) | Domain |
+  |---|---|---|---|
+  | `device` | Device | `devices` / `exclude_devices` | |
+  | `version` | Version | `snmp_versions` | `1`, `2c`, `3` |
+  | `pdu` | PDU | `pdus` | `v1trap`, `trap`, `inform`, `unexpected` |
+  | `trap_oid` | Trap | `trap_oid` / `exclude_trap_oid` | |
+  | `enterprise` | Enterprise (v1) | `enterprise` / `exclude_enterprise` | |
+  | `generic` | Generic trap (v1) | `generic` | `0`–`6` (coldStart … enterpriseSpecific) |
+  | `specific` | Specific trap (v1) | `specific` / `exclude_specific` | |
+  | `cred` | Community or user | `cred` / `exclude_cred` | |
+  | `status` | Status | `status` | `ok`, `malformed`, `unexpected_pdu`, `unknown_user`, `unknown_engine`, `not_in_time`, `auth_failed`, `decrypt_failed`, `level` |
+
+  `trap_oid`, `enterprise` and `exclude_*` OID values match exactly, or as a prefix with a trailing `.*`
+  (`1.3.6.1.4.1.99999.*`). A MIB name works too (`linkDown`), resolved against the current MIB set; an unknown name
+  is a 400.
+- Syslog-only filters (`severities`, `min_severity`, `facilities`, `app`, `host` and their excludes) with
+  `type=trap` are a 400 (`severities: not a filter for SNMP traps.`), and trap filters with `type=syslog` likewise.
+  `q`, `syntax`, `regex`, `case`, `exclude`, the device selection and the range work as for syslog.
+- **Settings → SNMP traps:** the switch (and the firewall hint, §11.2.7), port, answer informs, communities, the v3
+  users table (add, edit, delete; passphrases are write-only and show only "set"), the engine ID (copyable, with
+  boots and time), the MIB folder (path, counts, errors, **Reload MIBs**), and the last 24 h: received, by status,
+  informs answered, replies rate-limited, and the senders with failures (a link to the failures list).
+
+#### 11.2.6 Credentials at rest
+**Owner:** encrypted with the OS key store where available (DPAPI, Keychain), otherwise a file only the service
+account can read.
+- **What's stored:** each v3 user's name, auth and priv protocols, `key_ext`, level and secrets. When a user lists the
+  sender engine IDs it applies to (`engine_ids`), only the keys localized to those engines are kept and the
+  passphrases are discarded, so a leak can't reveal a passphrase reused elsewhere. Without `engine_ids`, the
+  passphrases are kept, because every new engine ID needs them. Informs use keys localized to Woodshed's own engine ID.
+  The v1/v2c community list (§11.2.1) is kept in the same file.
+- **Windows:** the users file `<data>\snmp-users.dat` holds a DPAPI blob (`CryptProtectData`, user scope, of the
+  account the server runs as: `NT SERVICE\Woodshed` for the service, the logged-in user in portable mode), through
+  `golang.org/x/sys/windows`, so no cgo. The file's ACL is the data folder's (service account and Administrators).
+  Moving the data folder to another machine or account makes it unreadable: Settings then says the v3 users need
+  their passphrases again, and keeps their names and protocols.
+- **macOS: a file, not the Keychain**, decided (coordinator, 2026-11-14, owner-delegated). Woodshed is built without
+  cgo, and the Keychain API needs it; the `security` command-line tool would put each secret on a command line,
+  visible in the process list; and the daemon's `_woodshed` account has no login keychain to unlock. A separate
+  keychain file would need its own password stored next to it, which protects nothing more than the file. So macOS
+  uses `<data>/snmp-users.json`, mode 0600, owned by `_woodshed`, in the 0750 data folder.
+- **Linux:** there's no OS key store for system services (the Secret Service belongs to desktop sessions; kernel
+  keyrings don't survive a restart). `<data>/snmp-users.json`, mode 0600, owned by `woodshed`. `systemd-creds`
+  (host- or TPM-bound encryption) needs root to create, so it's a possible later option, not 1.2.
+- On every OS the file is written atomically; secrets are never logged, never in the events log, never in an API
+  response (`GET /api/snmp/users` says only `auth_set` / `priv_set`), never in exports, and never accepted on a
+  command line.
+- v3 users are managed in Settings (`/api/snmp/users`), not by a CLI command: an admin CLI can't encrypt for the
+  service account's DPAPI scope, and taking passphrases on argv is ruled out.
+
+#### 11.2.7 Firewalls and installers
+The same pattern as TLS (§10.3.6, and the 1.1 build's decisions):
+- **Windows:** the MSI's custom action creates "Woodshed SNMP traps (UDP 162)" for `woodshed.exe`, **disabled**, when
+  it's missing, and leaves its state alone on upgrade; `woodshed install` does the same. `woodshed snmp on` (as an
+  administrator) turns the listener on and enables the rule on `listeners.snmp.port`; `woodshed snmp off` turns both
+  off. The UI switch works without it and shows the warn banner `snmp_firewall` with the command while the rule is
+  disabled, missing or on another port.
+- **macOS:** the application firewall is per program; nothing to do.
+- **Linux:** the packages add nothing. `woodshed snmp on` (as root) runs `ufw allow 162/udp` when ufw is active, or
+  `firewall-cmd --permanent --add-port=162/udp` and a reload when firewalld runs, recording what it added;
+  `woodshed snmp off` removes only that. Settings shows the commands otherwise. No banner.
+- `woodshed snmp on|off|status` follow `woodshed tls`: administrator rights, config edit, restart of a running
+  service. `status` prints the listener, the engine ID, the last 24 h counts and the senders with failures.
+
+### 11.3 Incident bundle
+
+**Owner (§9):** pick a moment and get the evidence around it, from Events, Export or the CLI; window presets; chosen
+devices, a group, or every device active in the window; a preview before building; one folder per type, the
+manifest, and a README summary per device.
+
+**It's an export, not a new resource**, decided (coordinator, 2026-11-14, owner-delegated): `POST /api/exports` with
+`"kind": "bundle"`. An export already has the queue, the size estimate, the download ticket, the 24 h expiry, the
+manifest with SHA-256s, the gaps and the events log, and a bundle is a window plus a device selection, which is what
+an export takes. One list of zips in the UI, one set of tests for the zip writer. A separate `/api/bundles` would
+copy all of it.
+
+**The request:**
+- `at` (RFC 3339), `before` and `after` (durations, `0s`–`7d` each, at least one non-zero). The window is
+  `[at − before, at + after)`, and must end no later than now (a bundle "around now" is cut at now).
+- Presets in the UI: 15 min before / 5 after, 1 h / 15 min, 4 h / 1 h, 24 h / 1 h, or custom; the time entered in
+  local time or UTC (a toggle; the request is always UTC).
+- Devices: `devices`, `group`, `ungrouped`, or `"active_devices": true`: every non-hidden device with at least one
+  stored record of any type in the window (from the stats, then the files; hidden devices only when named).
+- `types`: default every type with data in the window; or a list (`["syslog"]`).
+- No text or field filters: a bundle is everything around the moment. Filtering is what a plain export is for.
+
+**The zip:**
+```
+README.txt                     the summary below
+manifest.json                  kind "bundle", at/before/after, devices, types, per-file lines and SHA-256, gaps
+woodshed-events.log            Woodshed's own events in the window
+logs/<device>/<day>.log        syslog (the folder name 1.0 exports use)
+traps/<device>/<day>.log       traps, the stored record lines
+```
+- Syslog stays in `logs/`, as in every 1.0 and 1.1 export, so scripts that read exports keep working; each other
+  type has its own folder (`traps/` in 1.2; `polls/` in 1.3, `flows/` in 2.0). The manifest lists each folder's type.
+  Plain exports use the same layout from 1.2 (`types` defaults to `["syslog"]` there, §11.7).
+- The README's summary, per device (plain text, aligned, times in UTC with the local offset in the header):
+  ```
+  Incident bundle around 2026-11-14 09:42:00 UTC (30 min before, 10 min after)
+  Window: 2026-11-14 09:12:00 to 09:52:00 UTC (local time UTC-05:00)
+  Devices: 3, every device that sent anything in the window. Types: syslog, SNMP traps.
+  Communities in traps are shown as a hash prefix and masked in raw=, by design.
+
+  edge-fw-01 (10.1.0.1), group HQ
+    Syslog       12,408 messages, first 09:12:00.014, last 09:51:59.880
+                 crit 2, err 41, warning 310, notice 1,022, info 11,033 (none of emerg, alert, debug, unknown)
+    SNMP traps   7: linkDown 3, linkUp 3, coldStart 1; first 09:30:11, last 09:31:02
+    Reboots      1: 09:30:58 (coldStart trap)
+    Gaps         none (Woodshed and its listeners were up the whole window)
+    Losses       dropped 0, truncated 0 (Woodshed's own counts; kernel UDP drops aren't visible on this OS)
+  ```
+  "Reboots" in 1.2 come from coldStart and warmStart traps; 1.3 adds uptime drops from polls. Gaps and losses come
+  from the events log and the stats, as for exports.
+- **The preview** (Events, before **Build the bundle**) calls only existing or listed routes:
+  `GET /api/devices?active_from=…&active_to=…` for the active devices, `GET /api/search/summary` per type for the
+  histogram and field panel over the window, and `POST /api/exports/estimate` with the bundle body for the size.
+  Narrowing the window or the devices there changes the bundle request.
+- **Entry points:** "Bundle around this" on an Events line (its received time), a point on the histogram, Export's
+  "Around a time" tab, and the CLI below.
+
+**`woodshed bundle`** builds the same zip without the service, reading the data folder directly (the access rules of
+`woodshed search`, §11.4):
+```
+woodshed bundle --at <time> [--before 30m] [--after 10m] [--devices a,b | --group G | --ungrouped] [--types syslog,trap]
+                [--out FILE.zip] [--utc] [--config FILE | --data DIR]
+```
+- `--at`: RFC 3339; `YYYY-MM-DD HH:MM[:SS]` in local time (UTC with `--utc`); `now`; or `-15m` (relative to now).
+- Defaults: `--before 30m --after 10m`; every active device; every type; `--out woodshed-bundle-<hostname>-<at,
+  UTC, YYYYmmddTHHMMSSZ>.zip` in the current folder. An existing file is never overwritten (exit 2).
+- It prints the path, the size, the SHA-256 and the per-device line of the summary, so a remote helper can ask for
+  "one command and one zip". Exit codes as for `woodshed search`, except that 1 means the window held nothing.
+
+### 11.4 Command-line search
+
+**Owner (§9):** `woodshed search` prints matching lines with the Events engine, compressed days included, reading the
+data folder directly, on every OS, with the UI off or in LAN mode.
+
+```
+woodshed search [QUERY] [--terms | --regex] [--case] [--exclude TEXT]
+                [--type syslog|trap] [--from T --to T | --last DUR]
+                [--devices a,b | --group G | --ungrouped] [--exclude-devices a,b]
+                [--severities 0,3,unknown] [--facilities 4,16] [--app LIST] [--exclude-app LIST]
+                [--host LIST] [--exclude-host LIST] [--field KEY=V1,V2 ...] [--not-field KEY=V1,V2 ...]
+                [--order asc|desc] [--limit N] [--context N] [--count] [--json | --raw]
+                [--config FILE | --data DIR]
+```
+- **Query and filters** mean exactly what the `/api/search` parameters mean (§10.1, §11.2.5). `--field` and
+  `--not-field` take any field key from the type's schema (`--field trap_oid=linkDown`, `--not-field cred=#3f9a1c07`),
+  so a new type needs no new flags; `--app`, `--host` and their excludes are shortcuts for syslog's.
+- **Time:** `--last 24h` by default (the API's default range); `--from`/`--to` as for `--at` in `woodshed bundle`.
+- **Order:** `asc` by default, oldest first like a log file (Events defaults to newest first, a screen of recent
+  lines; a pipe wants chronological order). `--limit` 0 (the default) means every match.
+- **No time budget:** the CLI runs to the end of the range; Ctrl-C stops it (exit 130). It reads the files in the
+  merge order, so output starts at once.
+- **Output:**
+  - default: one stored line per match, `<received> <device> <record>` exactly as in the file (escaped, so one line
+    per match, safe to grep);
+  - `--raw`: only the record, unescaped (a syslog message with embedded newlines prints them);
+  - `--json`: one JSON object per line (NDJSON), the `/api/search` result shape plus `"type"` and `"device_name"`;
+  - `--context N`: N stored lines before and after each match, from the same file, like `grep -C`: `--` between
+    groups, and matches marked with `>` in the text forms (`"context": true` on context lines in JSON);
+  - `--count`: only the number of matches;
+  - at the end, on standard error: `N matches, M MiB read from F files in Ts` (with `--json`, the same as one JSON
+    object), so standard output holds only matches.
+- **Exit codes:** `0` at least one match; `1` no match; `2` a usage or query error (the message names the flag or the
+  character position, as the API does); `3` access denied; `4` no data folder or index found; `130` interrupted.
+- **Access:** it reads the data folder directly, so it needs the rights `reindex` needs to read: root (or
+  Administrator), or the service account (`sudo -u woodshed woodshed search …`; `_woodshed` on macOS). Anyone else
+  gets exit 3 and a message naming the folder, its owner and both ways in:
+  `Can't read /var/lib/woodshed (owner woodshed, mode 0750). Run it as root (sudo woodshed search …) or as the
+  service account (sudo -u woodshed woodshed search …).` On Windows: "Run it in an administrator prompt."
+  Unlike `reindex`, it may run as root on a folder the service account owns, because it never writes there.
+- **Read-only, safe beside the running service:**
+  - `index.db` is opened read-only (`mode=ro`), never `immutable` (the writer keeps changing it); WAL lets it read
+    while the service writes;
+  - log files are opened with the shared-delete opener, so rotation, compression and retention carry on; a file that
+    disappears mid-search is skipped and counted in the summary line;
+  - the active file is read up to its last complete line;
+  - it creates, changes and re-owns nothing in the data folder (a test checks this as root, §11.6);
+  - it never talks to the service, so it works with the UI off, in LAN mode, or with the service stopped.
+- `--config`/`--data` find the data folder; by default it's the installed service's, as for `woodshed status`, or
+  `woodshed-data` next to the binary for a portable copy.
+
+### 11.5 UDP receive off the write path
+
+**Why:** today each UDP reader calls the store itself, so anything that slows a write (an fsync, a rotation, a gzip
+pass competing for the disk, the hourly stats roll-up) stalls the reader, and datagrams pile up in the OS socket
+buffer. When that overflows they're lost in the kernel, and on Windows and macOS that loss is invisible to Woodshed.
+A 2026-11-12 lab soak on Windows lost about 20 messages per million over UDP, in bursts near the top of the hour, and
+no cause was found in Woodshed. With a queue, a stall caused by Woodshed either disappears (the queue absorbs it) or
+shows up as a counted drop, and the queue's high-water mark shows whether stalls cluster at the top of the hour. If
+loss continues while the queue never fills, it's outside Woodshed, and that's now provable.
+
+**Design:**
+- Each UDP socket (syslog's and the trap listener's) gets a bounded FIFO queue and one drainer goroutine. The reader
+  only reads a datagram, stamps the received time, applies the allowlist and blocklist, and enqueues; it never calls
+  the store, parses, or touches the disk.
+- The queue is bounded by messages and by bytes, whichever fills first: `listeners.udp_queue_messages` (default
+  100,000, 1,000–2,000,000) and `listeners.udp_queue_bytes` (default 64 MiB, 1 MiB–1 GiB), file-only settings like
+  the other listener tuning. 100,000 is 10 s at the 10,000 msg/s target, longer than any stall measured so far.
+- The drainer parses, applies the device limits and calls the store, in arrival order, so each device's lines stay in
+  received order. It also sends trap Responses (§11.2.3) after the store accepts the inform.
+- **When the queue is full** the datagram is dropped at once, counted as dropped for its sender's device (the stats'
+  `dropped` column, so it's in `dropped_24h` and the export's losses) with reason `queue_full`, and recorded in the
+  events log at most once a minute with the count.
+- **Visible:**
+  - `/api/stats` gains `udp_queue`: per listener, capacity (messages and bytes), current depth, the 24 h high-water
+    mark, and `dropped_24h`; and `dropped_by_reason` (`paused`, `write_error`, `refused`, `queue_full`) beside the
+    existing `dropped_24h`, which still counts them all.
+  - Banner `udp_queue_full` (warn) while there were queue drops in the last hour: "123 UDP messages were dropped in the
+    last hour because writing to disk fell behind (the queue holds 100,000). Check the disk, or raise
+    `listeners.udp_queue_messages`."
+  - The About page shows the high-water mark per hour for the last 24 h, so a top-of-the-hour pattern is visible.
+- TCP and TLS keep writing directly from their connection goroutines: TCP's flow control already pushes back on the
+  sender, and nothing is lost.
+- Shutdown drains the queue to the store before the final flush, so a clean stop loses nothing that was read.
+
+### 11.6 Testing plan
+
+Every item lands with these tests; CI runs them on Linux, Windows and macOS unless noted.
+
+**SNMP decoding (unit and fuzz):**
+- BER: every universal and SNMP application type, long and indefinite-length forms (indefinite is refused, as BER
+  for SNMP requires), lengths past the buffer, nesting limits, integers of every width and sign, OIDs with large
+  sub-identifiers.
+- PDUs: v1 Trap-PDU (with each generic type), v2c Trap and Inform, v3 with every security level; RFC 3584's v1-to-v2
+  trap OID translation.
+- USM: the RFC 3414 Appendix A password-to-key and localization vectors (MD5, SHA-1), RFC 7860's SHA-2 vectors,
+  HMAC truncation lengths, the time window, discovery Reports, and both AES-192/256 key-extension methods against
+  vectors captured from the interop runs.
+- The record format: each value type, escaping, names from MIBs, the community hash and its masking in `raw=`, and a
+  round trip: format → parse the fields back → the same values.
+- The MIB reader: the built-in set, enumerations, imports across files, broken files reported with line numbers.
+- **Fuzz targets** (`go test -fuzz`, run in CI for a fixed time like the syslog parser's): `FuzzBER`,
+  `FuzzMessage` (any datagram through the full decode, no panic, bounded memory, a malformed result rather than an
+  error path that drops it), `FuzzUSM` (v3 with fixed keys through auth and decrypt), `FuzzRecord` (format and
+  re-parse), and `FuzzMIB`.
+
+**Interoperability (CI, Linux job only):** the distribution's net-snmp command-line tools, installed in CI only and
+never a dependency, send to a real `woodshed run`:
+- `snmptrap -v 1` and `-v 2c`, `snmpinform -v 2c` (the reply must arrive: `snmpinform` exits 0);
+- `-v 3` traps and informs for every combination: noAuthNoPriv; authNoPriv with each of MD5, SHA, SHA-224, SHA-256,
+  SHA-384, SHA-512; authPriv with each auth and each of DES, AES-128, and AES-192 and AES-256 with each
+  key-extension method (where the tools offer both). That's 1 + 6 + 36 combinations, each as a trap and as an
+  inform.
+- Secrets go in a temporary `snmp.conf` (the tools' default-passphrase settings), not on the command line.
+- A wrong passphrase, an unknown user and an out-of-window time each give the expected status in the stored record and
+  in `/api/snmp/failures`.
+- If the distribution's build lacks DES (some disable it), those cases are skipped there and covered by
+  `woodshed send --proto trap` below.
+
+**`woodshed send --proto trap`** (the lab generator, so lab hosts need no other software):
+- `--snmp-version 1|2c|3`, `--inform` (waits for the Response and reports round-trip times and timeouts),
+  `--community-file F`, `--user NAME`, `--auth md5|sha|sha-224|sha-256|sha-384|sha-512`, `--priv
+  des|aes-128|aes-192|aes-256`, `--key-ext draft|alt`, `--trap-oid OID`, `--varbinds N`, `--engine-id HEX`, plus the
+  usual `--count`, `--rate`, `--duration`, `--host`, `--port` (default 162).
+- Passphrases and communities come from files or `WOODSHED_SNMP_COMMUNITY` / `_AUTH_PASS` / `_PRIV_PASS`, never
+  from the command line.
+- Each trap carries the run ID and sequence number in a varbind, so the lab can count exactly-once delivery as it does
+  for syslog. `woodshed bench --proto trap` measures throughput in-process.
+
+**End to end** (the real binary): syslog over UDP, TCP and TLS plus traps v1, v2c, v3 and informs from `woodshed send`,
+then: Events search and summary for both types, CLI search for both, a bundle around the coldStart, and the unzipped
+bundle checked: every file's SHA-256 matches the manifest, the README counts match what was sent, `traps/` holds the
+traps, the reboot line names the coldStart, and a v2c community appears nowhere in the zip.
+
+**Install smoke tests** (each OS, the existing job): the SNMP listener stays off after install and after a 1.1→1.2
+upgrade; on Windows the 162 rule exists and is disabled, `woodshed snmp on` enables it and a trap from another process
+arrives, `off` disables it, and an upgrade keeps the rule's state; on Linux with ufw active, `snmp on` then `off`
+leaves the rules as they were; on macOS a trap arrives on the wildcard as `_woodshed`.
+
+**Load and soak:**
+- Targets on the reference spec (4 cores, 8 GB, SSD): **2,000 traps/s** v2c with 10 varbinds, and **1,000/s** v3
+  authPriv (SHA-256, AES-128), sustained 10 min with 0 loss, while syslog runs at 5,000 msg/s; informs at 500/s with
+  every Response within 50 ms (p99). Recorded in the release notes like the syslog bench.
+- The UDP queue: a fake slow disk (writes stalled for 3 s every minute) at 10,000 msg/s loses nothing with the
+  default queue, and with a 1,000-message queue loses exactly what `queue_full` counts (sent − stored = counted).
+- Soak: 24 h on the lab VMs at 3,000 syslog msg/s plus 200 traps/s (mixed v1, v2c, v3 and informs), crossing midnight
+  UTC, with a forced low-disk pause and a service restart. Pass: every message and trap stored exactly once or
+  counted as dropped, every inform answered once per transmission, RSS flat, and the queue's high-water mark recorded
+  per hour (the Windows top-of-hour check).
+
+**Bundle and CLI search against stored data:** a fixture data folder with plain and `.gz` days, size-split parts,
+both types, a hidden and a forgotten device, and a gap in the events log:
+- `woodshed search` golden outputs for each format (text, `--raw`, `--json`, `--context`, `--count`), each exit
+  code, `--order` both ways, ranges crossing `.gz` days and parts, and identical results to `/api/search` for the same
+  query;
+- beside a running writer that rotates, compresses and deletes files: no error, no duplicates, every line from
+  before the search started found;
+- as root on a folder the service account owns: afterwards no new file, no changed mode or owner in the data folder;
+  as another user: exit 3 and the message;
+- `woodshed bundle` and the API bundle over the fixture produce zips with the same file list and SHA-256s, and the
+  README summary matches the fixture's counts, gaps and reboots.
+
+### 11.7 Versioning and compatibility
+- **Config:** a 1.1 `woodshed.toml` loads unchanged. New keys take their defaults: `[listeners.snmp]` off, the UDP
+  queue limits. Nothing turns on by itself.
+- **Data:** syslog files are unchanged in format and place. The index migrates once on start (`files.type`, the
+  `type_stats` tables); the migration is append-only like every earlier one. Traps go only into the new `traps/`
+  folders.
+- **Downgrade** isn't supported: 1.1 refuses an index with a newer schema, as every version does. To go back, stop
+  1.2, move `index.db` aside and run 1.1's `woodshed reindex`; it rebuilds the syslog index and ignores the `traps/`
+  folders (1.1's file listing skips subfolders), which stay on disk.
+- **API:** additive only. Every 1.1 request means what it meant: `type` defaults to `syslog`; syslog results keep
+  their shape; a 1.1 export body (no `types`, no `kind`) builds the 1.1 zip, syslog in `logs/`; new fields in
+  `/api/stats`, `/api/status` and `/api/devices` are additions; new banner kinds and listener `proto` values are
+  additions that 1.1 UIs ignore. Saved searches without `type` are syslog.
+- **URLs:** Events links without `type` open syslog; `#/events?type=trap…` is new.
+- **CLI:** every 1.1 command and flag keeps its meaning; `woodshed send` still defaults to UDP syslog.
+
+### 11.8 Decisions for 1.2
+
+**Owner (2026-11-14):** everything in §9's 1.2 list, plus UDP receive off the write path, is in 1.2, with thorough
+testing; the incident bundle and command-line search as described in §9; traps on UDP 162 with v1, v2c and v3,
+stored as decoded text lines with the raw PDU, numeric OIDs and an optional MIB folder, no MIB compiler; credentials
+encrypted with the OS key store where available, otherwise a service-account-only file.
+
+Everything below is **decided (coordinator, 2026-11-14, owner-delegated)**:
+1. Types are implemented through one interface in `internal/datatype`; syslog is its first implementation, unchanged
+   (§11.1).
+2. Traps live in their own files in `logs/<device>/traps/`, not in the syslog files with a marker, and not in a
+   parallel top-level tree (§11.1).
+3. Non-syslog types get new `type_stats` tables; syslog's 1.1 stats tables stay untouched (§11.1).
+4. Retention treats all of a device's types as one: shares from the summed bytes, oldest file first across types
+   (§11.1).
+5. The live tail stays syslog-only in 1.2; device tiles count every type (§11.1).
+6. The SNMP listener is off by default (§11.2).
+7. Woodshed's own BER, PDU and USM code, not a third-party SNMP library: the receive path needs decoding, USM and
+   two reply types; a small codec is lenient where a library rejects, keeps the raw bytes, is fuzzed with the
+   rest, and adds no dependency. The 1.3 poller reuses it (§11.2).
+8. Informs are answered by default, only to admitted senders, only once stored, rate-limited; retransmits are stored
+   and marked `dup=1` (§11.2.3).
+9. The engine ID uses the RFC 3411 "administratively assigned" format with enterprise number 0 until the project has
+   its own (§11.2.3).
+10. v3 failures and malformed packets are stored with a status; community refusals aren't (§11.2.2).
+11. AES-192/256 offer both key-extension methods per user, defaulting to the draft's (§11.2.2).
+12. MD5, SHA-1 and DES are allowed and labelled weak (§11.2.2).
+13. Communities are stored as a SHA-256 prefix, and masked with `*` in `raw=`; v3 messages are kept exactly
+    (§11.2.4).
+14. OIDs are stored numerically with the names known at receipt; the UI names from the current MIB set (§11.2.4).
+15. The MIB reader takes names, notifications and integer enumerations only (§11.2.4).
+16. A v1 trap's agent-addr is shown, never used for identity (§11.2.4).
+17. Syslog-only filters with `type=trap` (and the reverse) are a 400 (§11.2.5).
+18. macOS keeps v3 credentials in a 0600 file, not the Keychain: no cgo, no secrets on a command line, and a daemon
+    has no login keychain (§11.2.6).
+19. With known engine IDs, only localized keys are kept and passphrases are discarded (§11.2.6).
+20. v3 users are managed only in Settings and the API, never by CLI flags (§11.2.6).
+21. The bundle is an export (`kind: "bundle"`), not a new `/api/bundles` resource; it takes no text or field
+    filters (§11.3).
+22. Syslog stays in the zip's `logs/` folder for compatibility; other types get their own folders (§11.3).
+23. 1.2's reboot detection in bundles comes from coldStart and warmStart traps (§11.3).
+24. CLI search defaults: `--last 24h`, oldest first, no limit, no time budget, grep-style exit codes (§11.4).
+25. CLI search may run as root on the service account's folder, because it never writes (§11.4).
+26. The UDP queue: per socket, 100,000 messages or 64 MiB by default, dropped and counted when full; TCP and TLS stay
+    direct (§11.5).
+27. The community allowlist is kept in the credentials store, not the TOML, and shown only as hash prefixes
+    (§11.2.1).
+
+### 11.9 Open questions (1.2)
+1. Register an IANA Private Enterprise Number for the project, so the engine ID (and any future MIB) has a proper
+   prefix?
+2. macOS Keychain: accept the 0600 file (§11.2.6), or allow a cgo build for macOS only to use the Keychain? The 1.3
+   roadmap line says "Keychain on macOS".
+3. Should the live tail show traps (a type switch on the Dashboard), or stay syslog-only until a later release?
+4. Should a trap-only sender count against `max_devices` exactly like a syslog sender (it does in this design), or
+   should SNMP have its own cap?
+5. The load targets (2,000 v2c / 1,000 v3 traps a second) are estimates; adjust after the first bench.
+
+## 12. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
    github.com" in §2 (see the reply of 2026-11-10).
 2. Retention fairness: decided 2026-11-11 (fair shares, §3.4). An optional per-device cap or minimum

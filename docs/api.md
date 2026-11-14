@@ -649,3 +649,200 @@ listeners start. `ui.error` and `ui.cert_fingerprint` are omitted when empty. On
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.
+
+## 1.2 (planned)
+
+Not in 1.1 builds: nothing in this section is served yet. It's the 1.2 contract (SPEC §11). As in 1.1's planned
+section, routes here sit in a `###` heading or after a label, never at the start of a line in the usual
+"`GET /api/...`" form, so `routes_test.go` doesn't request them; when one ships, move it into its section above in the
+usual form. Everything is additive: every 1.1 request keeps its meaning (SPEC §11.7).
+
+### Data types: `type=trap`
+
+`type` (search, summary, saved searches, the CLI) gains the value `trap`. Without `type`, everything is syslog as in
+1.1.
+
+**Schema:** `GET /api/search/schema`'s `types` list gains a second entry:
+```json
+{"type": "trap", "label": "SNMP traps", "default": false,
+ "fields": [
+   {"key": "device",     "label": "Device",            "param": "devices",       "exclude_param": "exclude_devices",    "domain": null},
+   {"key": "version",    "label": "Version",           "param": "snmp_versions", "exclude_param": "",
+    "domain": [{"value": "1", "label": "v1"}, {"value": "2c", "label": "v2c"}, {"value": "3", "label": "v3"}]},
+   {"key": "pdu",        "label": "PDU",               "param": "pdus",          "exclude_param": "",
+    "domain": [{"value": "v1trap", "label": "v1 trap"}, {"value": "trap", "label": "trap"}, {"value": "inform", "label": "inform"},
+               {"value": "unexpected", "label": "other PDU"}]},
+   {"key": "trap_oid",   "label": "Trap",              "param": "trap_oid",      "exclude_param": "exclude_trap_oid",   "domain": null},
+   {"key": "enterprise", "label": "Enterprise (v1)",   "param": "enterprise",    "exclude_param": "exclude_enterprise", "domain": null},
+   {"key": "generic",    "label": "Generic trap (v1)", "param": "generic",       "exclude_param": "",
+    "domain": [{"value": "0", "label": "coldStart"}, {"value": "1", "label": "warmStart"}, {"value": "2", "label": "linkDown"},
+               {"value": "3", "label": "linkUp"}, {"value": "4", "label": "authenticationFailure"},
+               {"value": "5", "label": "egpNeighborLoss"}, {"value": "6", "label": "enterpriseSpecific"}]},
+   {"key": "specific",   "label": "Specific trap (v1)", "param": "specific",     "exclude_param": "exclude_specific",   "domain": null},
+   {"key": "cred",       "label": "Community or user", "param": "cred",          "exclude_param": "exclude_cred",       "domain": null},
+   {"key": "status",     "label": "Status",            "param": "status",        "exclude_param": "",
+    "domain": [{"value": "ok", "label": "ok"}, {"value": "malformed", "label": "malformed"}, {"value": "auth_failed", "label": "wrong auth"}]}   // and the rest, below
+ ]}
+```
+- `status`'s domain: `ok`, `malformed`, `unexpected_pdu`, `unknown_user`, `unknown_engine`, `not_in_time`,
+  `auth_failed`, `decrypt_failed`, `level`.
+- In the field panel, a `trap_oid` value's `label` is its MIB name when the current MIB set has one.
+
+**Trap filters** (only with `type=trap`; with `type=syslog` each is a `400` "`<name>: not a filter for syslog.`"):
+- `snmp_versions=1,2c,3`, `pdus=v1trap,trap,inform,unexpected`, `generic=0,6`, `status=ok,auth_failed`: sets, like
+  `severities` (empty means all, `none` means nothing).
+- `trap_oid`, `enterprise` and their `exclude_` forms: comma-separated OIDs, each exact or a prefix written with a
+  trailing `.*` (`1.3.6.1.4.1.99999.*`), or a MIB name (`linkDown`) resolved with the current MIB set; an unknown
+  name is a `400`.
+- `specific`, `exclude_specific`: comma-separated integers.
+- `cred`, `exclude_cred`: comma-separated community hashes (`#3f9a1c07`) or v3 user names, exact, ignoring case.
+- `q`, `syntax`, `regex`, `case` and `exclude` match the record text without its `raw=` part. The device selection
+  and the range work as for syslog.
+- Syslog's filters (`severities`, `min_severity`, `facilities`, `app`, `host`, `exclude_app`, `exclude_host`) with
+  `type=trap` are a `400`, for example `{"error": "severities: not a filter for SNMP traps."}`.
+
+**Search results** for `type=trap` (syslog results keep the 1.1 shape):
+```json
+{"received": "2026-11-14T09:30:58.112Z", "device_id": "10.1.0.1", "type": "trap", "ref": "opaque",
+ "raw": "v=2c pdu=trap id=4711 cred=#3f9a1c07 status=ok uptime=8641234 trap=1.3.6.1.6.3.1.1.5.3(linkDown) vb=… raw=MIGTAgEB…",
+ "fields": {"version": "2c", "pdu": "trap", "trap_oid": "1.3.6.1.6.3.1.1.5.3", "trap_name": "linkDown",
+            "enterprise": "", "generic": null, "specific": null, "cred": "#3f9a1c07", "status": "ok", "error": "",
+            "uptime": 8641234, "dup": false,
+            "varbinds": [{"oid": "1.3.6.1.2.1.2.2.1.8.3", "name": "ifOperStatus.3", "type": "int", "value": "2", "value_name": "down"}]}}
+```
+- `raw` is the stored record (SPEC §11.2.4), unescaped. `fields` is decoded from it, with names from the current MIB
+  set (so a name can appear here that the stored line lacks).
+- `generic` and `specific` are integers for v1 traps, `null` otherwise. `value` is always a string.
+- `/api/context` returns trap lines in this shape for a trap `ref`.
+
+**Summary and histogram:** `/api/search/summary` with `type=trap` uses the trap fields above and the `type_stats`
+tables for the index histogram; its response shape is unchanged.
+
+**Saved searches:** `type` may be `trap`; `query` then takes the trap filters (lists as JSON lists) and refuses
+syslog's, with dotted error keys as before (`query.severities`).
+
+### Exports and the incident bundle
+
+**Changed:** `POST /api/exports` (and `POST /api/exports/estimate`) gain:
+- `types`: a list of data types, `["syslog"]` by default (so a 1.1 body builds exactly the 1.1 zip). Filters
+  (`q`, `severities`, …, or the trap filters) are allowed only when `types` has one entry; otherwise a `400` on
+  `types`: "Filters apply to one data type; pick one, or leave the filters out."
+- `kind`: `"export"` (the default) or `"bundle"`.
+
+**Bundle body:**
+```json
+{"kind": "bundle", "at": "2026-11-14T09:42:00Z", "before": "30m", "after": "10m",
+ "active_devices": true, "devices": [], "group": "", "ungrouped": false, "types": []}
+```
+- `at` (RFC 3339) is required. `before` and `after` are durations (`0s` to `7d`, at least one non-zero); the window is
+  `[at − before, at + after)`, cut at now. `from`/`to` aren't accepted with `kind: "bundle"` (`400`).
+- Devices: `active_devices: true` (every non-hidden device with a stored record of any type in the window), or
+  `devices`, `group` or `ungrouped` as for exports. At least one must select a device.
+- `types`: empty means every type with data in the window.
+- No filters: any of them with `kind: "bundle"` is a `400` naming it.
+- Response: `202 {"id": "exp_..."}`, as for exports. The export list, download, ticket, delete and 24 h expiry are the
+  same; each entry's `filters` gains `kind`, `types`, and for a bundle `at`, `before` and `after`.
+
+**Zip layout (every export from 1.2):**
+- `logs/<device-id>/<YYYY-MM-DD>.log`: syslog, exactly as in 1.0 and 1.1.
+- `traps/<device-id>/<YYYY-MM-DD>.log`: trap record lines as stored (escaped like syslog lines).
+- `manifest.json` gains `"kind"`, `"types"` and `"folders": {"logs": "syslog", "traps": "trap"}`, and for a bundle
+  `"at"`, `"before"`, `"after"` and `"summary"` (the README's numbers per device, as JSON:
+  `{"device_id", "name", "group", "types": {"syslog": {"lines", "first", "last", "by_severity"}, "trap": {"lines",
+  "first", "last", "by_trap"}}, "reboots": [{"time", "source"}], "gaps": [...], "dropped", "truncated"}`).
+- `README.txt`: for a bundle, the per-device summary of SPEC §11.3; for every zip with traps, a line saying that
+  communities are shown as a hash prefix and masked with `*` in `raw=`.
+
+**Active devices:** `GET /api/devices` gains `active_from` and `active_to` (RFC 3339, both or neither): only devices
+with a stored record of any type in `[active_from, active_to)`. Each device also gains `types`: the data types it has
+on disk (`["syslog", "trap"]`).
+
+### SNMP trap listener
+
+**Settings:** `/api/settings` gains `listeners.snmp`:
+```json
+{"enabled": false, "addr": "0.0.0.0", "port": 162, "answer_informs": true, "communities": [], "mib_dir": "", "engine_id": ""}
+```
+- `port` 1–65535, not shared with another UDP listener on an overlapping address.
+- `communities` holds at most 100 strings of 1–255 bytes. They're secrets, so they're kept in the SNMP credentials
+  file (SPEC §11.2.6), not in the TOML. `GET` returns each as `"#<hash8>"`; a `PUT` that sends a `"#…"` value back
+  keeps the community it stands for, and a plain string adds a new one, so the settings round trip never carries a
+  stored secret. `mib_dir` is an absolute path or
+  `""`. `engine_id` is `""` or 5–32 bytes as hex (10–64 hex digits), validated against RFC 3411's rules.
+- `/api/status.listeners` gains `{"proto": "snmp", "addr": "0.0.0.0", "port": 162, "ok": true, "error": ""}` while
+  it's enabled.
+
+### SNMP state: `GET /api/snmp`
+```json
+{"enabled": true, "port": 162,
+ "engine": {"id": "8000000005a1b2c3d4e5f60718", "boots": 12, "time": 86400},
+ "counts_24h": {"received": 15230, "informs_answered": 212, "replies_rate_limited": 0, "discovery_reports": 3,
+                "by_status": {"ok": 15201, "malformed": 4, "auth_failed": 25}},
+ "mibs": {"dir": "/var/lib/woodshed/mibs", "files": 41, "names": 18234, "loaded_at": "2026-11-14T08:00:03Z",
+          "errors": [{"file": "EXAMPLE-MIB.my", "line": 212, "message": "unexpected token \"SEQUENCE\""}]},
+ "firewall": {"state": "disabled", "command": "woodshed snmp on"}}   // state: "ok" | "missing" | "disabled" | "wrong_port" | "unknown"
+```
+- `by_status` lists only statuses with a count. `firewall` is as for TLS: always `"unknown"` off Windows.
+
+**Reload MIBs:** `POST /api/snmp/mibs/reload` → `200` with the `mibs` object above. MIBs load only at start and here.
+
+**Failures:** `GET /api/snmp/failures` → senders whose v3 traps failed, or whose packets were malformed, in the last
+24 h, most first, at most 200:
+```json
+[{"ip": "198.51.100.7", "count_24h": 25, "last_seen": "2026-11-14T09:10:00Z", "status": "auth_failed",
+  "detail": "user monitor: wrong digest (sha-256)", "device_id": "198.51.100.7"}]
+```
+`detail` names the user, engine or decoding error, never key material. At most 10,000 addresses are tracked.
+
+### SNMP v3 users
+
+**List:** `GET /api/snmp/users` →
+```json
+[{"name": "monitor", "level": "authPriv", "auth": "sha-256", "priv": "aes-128", "key_ext": "draft",
+  "engine_ids": [], "auth_set": true, "priv_set": true, "stored": "passphrase", "readable": true}]
+```
+- `auth`: `none`, `md5`, `sha`, `sha-224`, `sha-256`, `sha-384`, `sha-512`. `priv`: `none`, `des`, `aes-128`,
+  `aes-192`, `aes-256`. `key_ext` (AES-192/256 only): `draft` or `alt`. `level` follows from them.
+- `stored`: `"passphrase"`, or `"localized"` when `engine_ids` is set and only the localized keys are kept.
+- `readable` is false when the credentials file can't be decrypted here (Windows, after the data folder moved to
+  another machine or account); the user then needs its passphrases again.
+
+**Add:** `POST /api/snmp/users` body `{"name": "monitor", "auth": "sha-256", "auth_pass": "…", "priv": "aes-128",
+"priv_pass": "…", "key_ext": "draft", "engine_ids": []}` → `201` with the user (without secrets).
+
+**Change:** `PUT /api/snmp/users/{name}` (the same body) → `200`. A missing or empty `auth_pass` / `priv_pass` keeps
+the stored one, unless the protocol changes (then it's required).
+
+**Delete:** `DELETE /api/snmp/users/{name}` → `204`, `404` if unknown.
+
+- Names are 1–32 bytes, unique (exact match, as USM compares them). Passphrases are 8–256 bytes. `engine_ids` holds
+  at most 32 hex engine IDs. At most 100 users.
+- Validation errors: `400 {"errors": {"auth_pass": "…", "engine_ids[1]": "…"}}`. A duplicate name: `409`.
+- Secrets are never returned, logged or exported. The routes need a session like every other `/api/` route.
+
+### UDP queue and drops
+
+`/api/stats` gains:
+```json
+{"dropped_by_reason": {"paused": 0, "write_error": 0, "refused": 0, "queue_full": 0},
+ "udp_queue": [{"listener": "udp", "port": 514, "capacity_messages": 100000, "capacity_bytes": 67108864,
+                "depth": 12, "high_water_24h": 3210, "dropped_24h": 0,
+                "high_water_by_hour": [120, 3210, 88]}]}   // oldest first, the last 24 hours
+```
+- `dropped_24h` still counts every drop, `queue_full` included.
+- `udp_queue` has one entry per UDP listener (syslog's, and `"snmp"` while the trap listener is on).
+- File-only settings (not in `/api/settings`): `listeners.udp_queue_messages` (default 100,000, 1,000–2,000,000) and
+  `listeners.udp_queue_bytes` (default 67,108,864, 1 MiB–1 GiB), for every UDP listener.
+
+### Banners (1.2)
+- `udp_queue_full` (warn, action `""`): there were queue drops in the last hour; the text gives the count and the
+  setting to raise.
+- `snmp_firewall` (warn, action `""`): Windows only, while the SNMP listener is on and its firewall rule is disabled,
+  missing or on another port; the text gives `woodshed snmp on`.
+- `snmp_credentials` (warn, action `""`): v3 users whose credentials can't be decrypted here (`readable: false`).
+- `snmp_mibs` (info, action `""`): files in the MIB folder failed to load; Settings lists them.
+
+`/api/rejected` gains the reason `community` (v1/v2c traps refused by `listeners.snmp.communities`).
+
+**CLI** (not HTTP): `woodshed search`, `woodshed bundle` and `woodshed snmp on|off|status`, and `woodshed send
+--proto trap`, as in SPEC §11.2.7, §11.3, §11.4 and §11.6.
