@@ -215,3 +215,47 @@ func TestFailuresAndCounts(t *testing.T) {
 		t.Fatalf("stored %q", stored)
 	}
 }
+
+// Poll communities live in the same protected blob, by target ID, and a 1.2
+// file (without them) loads unchanged (SPEC §12.4, §12.9).
+func TestPollCommunities(t *testing.T) {
+	dir := t.TempDir()
+	c, err := openCreds(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.pollCommunity("pt_1") != nil {
+		t.Error("a community before any was set")
+	}
+	if err := c.setPollCommunity("pt_1", []byte("poll-secret-test")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, CredFileName()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" && bytes.Contains(b, []byte("poll-secret-test")) {
+		t.Error("the community is in the clear in the DPAPI file")
+	}
+	c2, err := openCreds(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(c2.pollCommunity("pt_1")) != "poll-secret-test" {
+		t.Errorf("reloaded %q", c2.pollCommunity("pt_1"))
+	}
+	if err := c2.setPollCommunity("pt_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if c2.pollCommunity("pt_1") != nil {
+		t.Error("not removed")
+	}
+	// A 1.2 file: no poll_communities key.
+	old := `{"version":1,"users":[],"secrets":""}`
+	if err := os.WriteFile(filepath.Join(dir, CredFileName()), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openCreds(dir); err != nil {
+		t.Errorf("1.2 file: %v", err)
+	}
+}
