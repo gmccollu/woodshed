@@ -908,8 +908,9 @@ with `version` `"1"` or `"2c"` is a `400`. If-Match with the target's `ETag`, as
 **Delete:** `DELETE /api/poll/targets/{id}` → `204`. The device's poll files stay until retention deletes them.
 
 - Limits: at most 500 targets (`poll.max_targets`; `409` beyond); one target per address and port (`409`, with
-  `errors.address`). `address` is an IP address
-  (no names: nothing is looked up). `port` 1–65535.
+  `errors.address`); one target per device (a second with the same `device_id` is a `400` on `device_id`, so a
+  device's poll files hold one target's cycles). `address` is an IP address (no names: nothing is looked up), and so
+  is `device_id` (a device ID). `port` 1–65535.
 - Validation errors: `400 {"errors": {"address": "…", "custom[2].oid": "…"}}`. A `v3_user` that doesn't exist is a
   `400` on `v3_user`.
 

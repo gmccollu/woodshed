@@ -580,6 +580,14 @@ func (b *backend) pollBanners() []api.Banner {
 	return out
 }
 
+// pollCredsChanged makes the poller read the v3 users again (one was added,
+// changed or deleted in Settings → SNMP traps).
+func (b *backend) pollCredsChanged() {
+	if b.poll != nil {
+		b.poll.p.CredsChanged()
+	}
+}
+
 // applyPollSettings applies a settings save's [poll] changes.
 func (b *backend) applyPollSettings(cur, next config.Poll) {
 	if b.poll != nil && !reflect.DeepEqual(cur, next) && cur.Concurrency != next.Concurrency {
