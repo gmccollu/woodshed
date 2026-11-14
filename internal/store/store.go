@@ -221,8 +221,18 @@ type Store struct {
 	stop       chan struct{}
 	wg         sync.WaitGroup
 	compressCh chan struct{}
-	ctx        context.Context
-	cancel     context.CancelFunc
+	// The compressor runs on a low-priority OS thread (compressLoop), which a
+	// busy machine may not schedule for seconds: macOS's background band, nice
+	// 19 with the idle I/O class on Linux, background mode on Windows. So Close
+	// doesn't wait for it (beyond compressorStopWait). compGate is held while it
+	// changes files, the catalog or the index queue, and it changes nothing once
+	// the store's context is cancelled, so nothing changes after Close; compDone
+	// closes when it has exited. tmpTag makes its temp files this Store's own.
+	compGate sync.Mutex
+	compDone chan struct{}
+	tmpTag   string
+	ctx      context.Context
+	cancel   context.CancelFunc
 
 	closeMu   sync.Mutex
 	closeCond *sync.Cond
@@ -241,6 +251,9 @@ type Store struct {
 
 	// testHookGzip, if set, is called with the temp gzip path before verification.
 	testHookGzip func(path string)
+	// testHookLowerPrio, if set, runs where the compressor lowers its thread's
+	// priority (tests stall it, as a starved thread would be).
+	testHookLowerPrio func()
 }
 
 // watchClock records a warning event when a message's received time is more
@@ -321,6 +334,8 @@ func Open(opts Options) (*Store, error) {
 		dropErrs:   map[string]string{},
 		stop:       make(chan struct{}),
 		compressCh: make(chan struct{}, 1),
+		compDone:   make(chan struct{}),
+		tmpTag:     randomTag(),
 		syncPath:   syncPath,
 		devSet:     map[streamKey]*device{},
 		addrRes:    map[netip.Addr]int{},
@@ -354,7 +369,7 @@ func Open(opts Options) (*Store, error) {
 		}
 	}
 	if !opts.Manual {
-		s.wg.Add(3)
+		s.wg.Add(2)
 		go s.flushLoop()
 		go s.syncLoop()
 		go s.compressLoop()
@@ -823,6 +838,7 @@ func (s *Store) Close() error {
 	close(s.stop)
 	s.cancel()
 	s.wg.Wait()
+	s.stopCompressor()
 	s.stopClosers()
 	var first error
 	keep := func(err error) {

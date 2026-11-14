@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -32,20 +34,73 @@ func (s *Store) kickCompress() {
 // compressLoop is the background gzip worker. It runs on its own OS thread at the
 // lowest CPU (and, where the OS allows, I/O) priority. The thread stays locked, so
 // it exits with the goroutine and the lowered priority never leaks to other work.
+//
+// The priority is lowered at the first file to compress, so a store with
+// nothing to compress never has a low-priority thread at all. Close doesn't
+// wait for this goroutine past compressorStopWait (see Store.compGate).
 func (s *Store) compressLoop() {
-	defer s.wg.Done()
+	defer close(s.compDone)
 	runtime.LockOSThread()
-	if err := lowerThreadPriority(); err != nil {
-		s.log.Debug("store: couldn't lower the compressor's priority", "err", err)
-	}
+	lowered := false
 	for {
 		select {
 		case <-s.stop:
 			return
 		case <-s.compressCh:
+			if !lowered && s.hasCompressWork(s.clock()) {
+				lowered = true
+				if s.testHookLowerPrio != nil {
+					s.testHookLowerPrio()
+				}
+				if err := lowerThreadPriority(); err != nil {
+					s.log.Debug("store: couldn't lower the compressor's priority", "err", err)
+				}
+			}
 			s.compressPending(s.ctx)
 		}
 	}
+}
+
+// compressorStopWait is how long Close waits for the compressor to exit. A
+// starved low-priority thread may take longer; it then changes nothing (the
+// context is cancelled and compGate is taken), and its temp file is its own
+// (tmpTag) and is deleted at the next Open if it's left.
+const compressorStopWait = time.Second
+
+// stopCompressor ends the compressor's changes: after it returns, no file is
+// renamed or deleted and no catalog or index change is queued by it. It waits
+// for the goroutine to exit for at most compressorStopWait.
+func (s *Store) stopCompressor() {
+	s.compGate.Lock() // a commit in progress finishes; later ones see the cancelled context
+	s.compGate.Unlock()
+	if s.opts.Manual {
+		return
+	}
+	t := time.NewTimer(compressorStopWait)
+	defer t.Stop()
+	select {
+	case <-s.compDone:
+	case <-t.C:
+		s.log.Debug("store: the compressor's thread hasn't been scheduled to stop yet; not waiting for it")
+	}
+}
+
+// randomTag is a short random hex string.
+func randomTag() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// commit runs f, a change to files, the catalog or the index queue, unless the
+// store is closing (ctx cancelled).
+func (s *Store) commit(ctx context.Context, f func() error) error {
+	s.compGate.Lock()
+	defer s.compGate.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return f()
 }
 
 func (s *Store) hasCompressWork(now time.Time) bool {
@@ -112,25 +167,32 @@ func (s *Store) compressOne(ctx context.Context, e *catEntry) error {
 	if _, err := os.Stat(dst); err == nil {
 		// A .gz of this name already exists (the clock went back, or files were copied
 		// in). Never overwrite it: move the source to a fresh part number first.
-		nn := logfile.Name{Day: name.Day, Part: nextPart(dir, name.Day)}
-		nsrc := filepath.Join(dir, nn.String())
-		if err := os.Rename(src, nsrc); err != nil {
+		if err := s.commit(ctx, func() error {
+			nn := logfile.Name{Day: name.Day, Part: nextPart(dir, name.Day)}
+			nsrc := filepath.Join(dir, nn.String())
+			if err := os.Rename(src, nsrc); err != nil {
+				return err
+			}
+			s.catMu.Lock()
+			oldRel := e.rel
+			delete(s.cat, oldRel)
+			e.name, e.abs, e.rel = nn, nsrc, s.rel(nsrc)
+			s.cat[e.rel] = e
+			row := e.row()
+			s.catMu.Unlock()
+			s.pushOps(index.FileOp{Kind: index.OpRename, OldPath: oldRel, File: row})
+			src, name = nsrc, nn
+			return nil
+		}); err != nil {
 			return err
 		}
-		s.catMu.Lock()
-		oldRel := e.rel
-		delete(s.cat, oldRel)
-		e.name, e.abs, e.rel = nn, nsrc, s.rel(nsrc)
-		s.cat[e.rel] = e
-		row := e.row()
-		s.catMu.Unlock()
-		s.pushOps(index.FileOp{Kind: index.OpRename, OldPath: oldRel, File: row})
-		src, name = nsrc, nn
-		gzName = nn
+		gzName = name
 		gzName.Compressed = true
 		dst = filepath.Join(dir, gzName.String())
 	}
-	tmp := dst + logfile.TempSuffix
+	// The temp file is this Store's own (tmpTag), so a compressor left running
+	// after Close never touches another Store's (a reopen in the same process).
+	tmp := dst + "." + s.tmpTag + logfile.TempSuffix
 	sum, n, err := gzipTo(ctx, src, tmp)
 	if err != nil {
 		os.Remove(tmp)
@@ -151,31 +213,37 @@ func (s *Store) compressOne(ctx context.Context, e *catEntry) error {
 		}
 		return err
 	}
-	if err := atomicfile.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	syncDir(dir)
-	st, err := os.Stat(dst)
-	if err != nil {
-		return err
-	}
-	s.catMu.Lock()
-	oldRel := e.rel
-	delete(s.cat, oldRel)
-	s.catBytes += st.Size() - e.size
-	e.name, e.abs, e.rel, e.size = gzName, dst, s.rel(dst), st.Size()
-	s.cat[e.rel] = e
-	row := e.row()
-	s.catMu.Unlock()
-	s.pushOps(index.FileOp{Kind: index.OpRename, OldPath: oldRel, File: row})
-	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		// For example a reader on Windows holding it without delete sharing.
+	err = s.commit(ctx, func() error {
+		if err := atomicfile.Rename(tmp, dst); err != nil {
+			os.Remove(tmp)
+			return err
+		}
+		syncDir(dir)
+		st, err := os.Stat(dst)
+		if err != nil {
+			return err
+		}
 		s.catMu.Lock()
-		s.orphans[src] = true
+		oldRel := e.rel
+		delete(s.cat, oldRel)
+		s.catBytes += st.Size() - e.size
+		e.name, e.abs, e.rel, e.size = gzName, dst, s.rel(dst), st.Size()
+		s.cat[e.rel] = e
+		row := e.row()
 		s.catMu.Unlock()
+		s.pushOps(index.FileOp{Kind: index.OpRename, OldPath: oldRel, File: row})
+		if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			// For example a reader on Windows holding it without delete sharing.
+			s.catMu.Lock()
+			s.orphans[src] = true
+			s.catMu.Unlock()
+		}
+		return nil
+	})
+	if err != nil && ctx.Err() != nil {
+		os.Remove(tmp) // closing: the original stays, and the next Open compresses it
 	}
-	return nil
+	return err
 }
 
 // gzipTo compresses src into dst (fsynced) and returns the SHA-256 and length of src.
