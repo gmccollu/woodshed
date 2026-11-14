@@ -160,10 +160,14 @@ func fileLines(t *testing.T, dir, rel string) (offs []int64, ls [][]byte) {
 func TestAroundMatchesTheFile(t *testing.T) {
 	for name, f := range map[string]*fixture{"small files": newFixture(t, 3, 400), "checkpointed files": newBigFixture(t)} {
 		all := Filter{Q: "seq=", From: f.day0, To: f.day0.Add(72 * time.Hour)}
-		for _, asc := range []bool{true, false} {
+		for mode := 0; mode < 3; mode++ { // asc, desc, desc without the whole-file cache
+			asc := mode == 0
 			for _, n := range []int{0, 1, 3, 40} {
 				hits, _ := f.each(Query{Filter: Filter{Q: "link", From: all.From, To: all.To}, Asc: asc})
 				a := f.eng.NewAround(bg, !asc)
+				if mode == 2 {
+					a.window, a.wholeCap = 32<<10, 0
+				}
 				cache := map[int64][2]any{}
 				for i, h := range hits {
 					if i%7 != 0 && n == 40 {
@@ -211,5 +215,45 @@ func TestAroundMatchesTheFile(t *testing.T) {
 				a.Close()
 			}
 		}
+	}
+}
+
+// Backwards over compressed files, Around decompresses each file once (and
+// without the whole-file cache it would decompress far more: the test can
+// tell the two apart).
+func TestAroundDescReadsCompressedFilesOnce(t *testing.T) {
+	f := newBigFixture(t)
+	q := Query{Filter: Filter{Q: "link", From: f.day0, To: f.day0.Add(72 * time.Hour)}}
+	hits, _ := f.each(q)
+	inflated := func(wholeCap int64) (got, gzBytes int64) {
+		f.eng.inflated.Store(0)
+		a := f.eng.NewAround(bg, true)
+		defer a.Close()
+		a.window, a.wholeCap = 32<<10, wholeCap // windows much smaller than the files
+		seen := map[int64]bool{}
+		for _, h := range hits {
+			row, err := f.idx.File(bg, h.FileID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.Compressed && !seen[row.ID] {
+				seen[row.ID] = true
+				gzBytes += row.RawSize
+			}
+			if _, _, err := a.Lines(h.FileID, h.Offset, 3, 3); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f.eng.inflated.Load(), gzBytes
+	}
+	got, gzBytes := inflated(aroundWholeCap)
+	if gzBytes == 0 {
+		t.Fatal("no compressed files in the fixture")
+	}
+	if got > gzBytes {
+		t.Fatalf("decompressed %d bytes for %d bytes of compressed files (%d hits)", got, gzBytes, len(hits))
+	}
+	if without, _ := inflated(0); without < 3*gzBytes {
+		t.Fatalf("without the cache only %d bytes for %d: the test doesn't exercise restarts", without, gzBytes)
 	}
 }

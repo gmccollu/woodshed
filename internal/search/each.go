@@ -132,10 +132,12 @@ func (e *Engine) Each(ctx context.Context, q Query, fn func(*Result) error) (Eac
 // devices interleaved by the merge don't make it start again each time:
 //
 //   - In file order (an asc search) each file is read forwards once.
-//   - Backwards (desc), a reader that has passed the line starts again at a
-//     checkpoint a window before it and keeps the window's lines, so the next
-//     results within it need no new reading. A compressed file has to be
-//     decompressed from its start for every such restart.
+//   - Backwards (desc), a compressed file is decompressed once and kept whole
+//     in memory, up to aroundWholeCap for all files together. A plain file (or
+//     a compressed one past the cap) starts again at a checkpoint a window
+//     before the line and keeps the window's lines, so the next results within
+//     it need no new reading; past the cap, each such restart decompresses
+//     from the start of the file.
 //
 // It is not safe for concurrent use.
 type Around struct {
@@ -145,6 +147,9 @@ type Around struct {
 	r     *run // matches every line
 	files []*aroundFile
 	tick  int64
+	whole int64 // bytes of the files kept whole
+
+	window, wholeCap int64 // aroundWindow and aroundWholeCap (tests change them)
 }
 
 // aroundFile is Around's reader of one file.
@@ -156,26 +161,36 @@ type aroundFile struct {
 	trimmed bool  // lines before ring[0] exist (dropped, or before the reader's start)
 	done    bool  // fw has returned every complete line
 	used    int64
+	whole   int64 // > 0: the whole file is in ring (its uncompressed size)
 }
 
 const (
 	aroundFiles  = 16      // readers kept
 	aroundWindow = 4 << 20 // desc: bytes of lines kept behind a restart's target
+	// aroundWholeCap bounds the compressed files a desc Around keeps whole.
+	aroundWholeCap = 256 << 20
 )
 
 // NewAround returns an Around for the results of a search in the given
 // order. Close it when done.
 func (e *Engine) NewAround(ctx context.Context, desc bool) *Around {
-	return &Around{e: e, ctx: ctx, desc: desc, r: &run{e: e, ctx: ctx, m: &matcher{kind: matchAll}, fromMs: -1 << 62,
+	return &Around{e: e, ctx: ctx, desc: desc, window: aroundWindow, wholeCap: aroundWholeCap, r: &run{e: e, ctx: ctx, m: &matcher{kind: matchAll}, fromMs: -1 << 62,
 		toMs: 1 << 62, files: map[int64]struct{}{}}}
 }
 
 // Close closes the open files.
 func (a *Around) Close() {
 	for _, f := range a.files {
-		f.close()
+		a.release(f)
 	}
 	a.files = nil
+}
+
+// release closes f and returns its memory to the whole-file budget.
+func (a *Around) release(f *aroundFile) {
+	a.whole -= f.whole
+	f.whole = 0
+	f.close()
 }
 
 func (f *aroundFile) close() {
@@ -212,7 +227,7 @@ func (a *Around) file(fileID int64) (*aroundFile, error) {
 				lru = i
 			}
 		}
-		a.files[lru].close()
+		a.release(a.files[lru])
 		a.files[lru] = f
 	} else {
 		a.files = append(a.files, f)
@@ -270,10 +285,13 @@ func (a *Around) Lines(fileID, off int64, before, after int) (pre, post []Result
 // last before lines (later targets come after them), for desc whatever is more
 // than the window behind the newest line.
 func (a *Around) trim(f *aroundFile, before int) {
+	if f.whole > 0 {
+		return
+	}
 	k := len(f.ring) - before
 	if a.desc {
 		k = 0
-		for k < len(f.ring)-before && f.lastOff()-f.ring[k].off > aroundWindow {
+		for k < len(f.ring)-before && f.lastOff()-f.ring[k].off > a.window {
 			k++
 		}
 	}
@@ -295,6 +313,9 @@ func (a *Around) result(f *aroundFile, h hit) Result {
 // before lines ahead of it by reading on: it has passed them (or dropped
 // them), or it reached the end of a file that may have grown since.
 func (f *aroundFile) mustRestart(off int64, before int) bool {
+	if f.whole > 0 {
+		return false // every line is in the ring
+	}
 	if f.fw == nil {
 		return true
 	}
@@ -320,13 +341,29 @@ func (f *aroundFile) lastOff() int64 {
 // restart positions the reader at a checkpoint with at least before lines
 // before off (or the start of the file); for desc, also a window before off.
 func (a *Around) restart(f *aroundFile, off int64, before int) error {
+	if size := f.fi.RawSize; a.desc && f.o.file.Compressed && size > 0 && a.whole+size <= a.wholeCap {
+		// gzip reads only forwards: decompress it once and keep it.
+		rd, err := f.o.reader(0)
+		if err != nil {
+			return err
+		}
+		f.fw, f.ring, f.trimmed, f.done = newFwd(rd, 0, a.e.block), nil, false, false
+		for !f.done {
+			if err := a.read(f); err != nil {
+				return err
+			}
+		}
+		f.whole = size
+		a.whole += size
+		return nil
+	}
 	cps := f.fi.cps
 	k := sort.Search(len(cps), func(i int) bool { return cps[i].Offset > off }) - 1
 	var start int64
 	if k >= 0 {
 		wantLine, wantOff := cps[k].Line-int64(before), off
 		if a.desc {
-			wantOff = off - aroundWindow/2
+			wantOff = off - a.window/2
 		}
 		for j := k; j >= 0; j-- {
 			if cps[j].Line <= wantLine && cps[j].Offset <= wantOff {

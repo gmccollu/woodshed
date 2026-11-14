@@ -1789,9 +1789,11 @@ Everything below is **decided (coordinator, 2026-11-14, owner-delegated)**:
    appear in two groups of one file when another device's match fell between them. In the text forms matches start
    with `> ` and context lines with two spaces, so columns line up. With `--order desc` a group reads newest first,
    like the rest of the output. JSON has no `--`; with `--context` every object has `"context"`.
-7. `--context` with `--order desc` over a compressed day is slow when matches are far apart: gzip reads only
-   forwards, so each restart (one per 4 MiB window) decompresses from the start of the day. Ascending reads each file
-   once. The docs steer people to the default order.
+7. `--context` with `--order desc` reads each compressed day once: gzip reads only forwards, so the day is
+   decompressed whole and kept in memory, up to 256 MiB of uncompressed days at a time (the 16 most recently used
+   files). Past that cap a day falls back to restarting a 4 MiB window back from the match, each restart
+   decompressing from the start of the day, which is slow for far-apart matches on huge days. Plain files and the
+   default ascending order read each file once either way.
 8. `--count` prints the number (`{"count":N}` with `--json`) and can't be combined with `--raw` or `--context`;
    `--json` and `--raw` are alternatives. `--count` with no match prints `0` and exits 1, like `grep -c`.
 9. The summary line on standard error is `N matches, M MiB read from F files in Ts`, plus `; K files skipped (deleted
