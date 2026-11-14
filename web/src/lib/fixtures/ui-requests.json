@@ -96,7 +96,7 @@
       "body": {
         "address": "127.0.0.1",
         "port": "{agent_v3_port}",
-        "device_id": "127.0.0.1",
+        "device_id": "127.0.0.2",
         "enabled": true,
         "version": "3",
         "interval_s": 30,

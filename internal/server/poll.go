@@ -213,6 +213,27 @@ func (b *backend) PollTarget(ctx context.Context, id string) (api.PollTarget, er
 
 func (b *backend) hasV3User(name string) bool { return b.snmp != nil && b.snmp.rcv.HasUser(name) }
 
+// deviceTaken refuses a second target for one device: each device's poll
+// files hold one target's cycles (SPEC §12.3; decided, build 2026-11-15).
+func (b *backend) deviceTaken(ctx context.Context, s poller.Settings, exceptID string) error {
+	rows, err := b.idx.PollTargets(ctx)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if r.ID != exceptID && r.Address == s.Address && r.Port == s.Port {
+			return api.ErrPollTargetExists
+		}
+	}
+	for _, r := range rows {
+		if r.DeviceID == s.DeviceID && r.ID != exceptID {
+			return &poller.ValidationError{Errors: map[string]string{"device_id": fmt.Sprintf(
+				"is already polled by another target (%s port %d); a device has one poll target", r.Address, r.Port)}}
+		}
+	}
+	return nil
+}
+
 func settingsJSON(s poller.Settings) (string, error) {
 	raw, err := json.Marshal(s)
 	return string(raw), err
@@ -222,6 +243,9 @@ func (b *backend) CreatePollTarget(ctx context.Context, in poller.Input) (api.Po
 	cfg := b.config()
 	s, community, err := poller.Resolve(in, nil, cfg.Poll, false, b.hasV3User)
 	if err != nil {
+		return api.PollTarget{}, err
+	}
+	if err := b.deviceTaken(ctx, s, ""); err != nil {
 		return api.PollTarget{}, err
 	}
 	raw, err := settingsJSON(s)
@@ -266,6 +290,9 @@ func (b *backend) UpdatePollTarget(ctx context.Context, id string, in poller.Inp
 	stored := b.snmp != nil && len(b.snmp.rcv.PollCommunity(id)) > 0
 	s, community, err := poller.Resolve(in, &ct.Settings, b.config().Poll, stored, b.hasV3User)
 	if err != nil {
+		return api.PollTarget{}, err
+	}
+	if err := b.deviceTaken(ctx, s, id); err != nil {
 		return api.PollTarget{}, err
 	}
 	raw, err := settingsJSON(s)

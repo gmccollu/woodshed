@@ -68,7 +68,7 @@ export function buildSteps(): Step[] {
   Object.assign(v2, { port: AGENT_PORT, version: '2c', community: 'fixture-community' });
   const v2body = pollTargetBody(v2, null);
   const v3 = newPollForm(null, defaults, '127.0.0.1', '127.0.0.1');
-  Object.assign(v3, { port: AGENT_V3_PORT, version: '3', v3User: 'monitor' });
+  Object.assign(v3, { port: AGENT_V3_PORT, version: '3', v3User: 'monitor', otherDevice: true, device: '127.0.0.2' });
   const v3body = pollTargetBody(v3, null);
 
   // Edit: every 60 s, one custom OID (sysUpTime.0) and one walk; the community is left empty (kept).

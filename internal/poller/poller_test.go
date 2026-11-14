@@ -667,3 +667,61 @@ func TestTargetAddedLater(t *testing.T) {
 	}
 	t.Fatalf("states %+v", p.States())
 }
+
+func TestTestPoll(t *testing.T) {
+	a, err := agenttest.Start(agenttest.Options{Community: testComm, Interfaces: twoIfs(), SysName: "edge-fw-01",
+		Extra: map[string]snmp.Value{"1.3.6.1.4.1.32473.1.2.0": {Kind: snmp.KindGauge32, Uint: 17}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	s := defaultSettings()
+	s.Port = int(a.Addr().Port())
+	s.Custom = []Custom{{OID: "1.3.6.1.4.1.32473.1.2.0", Kind: CustomScalar, Label: "queue depth"}, {OID: "1.3.6.1.4.1.32473.9", Kind: CustomWalk, MaxRows: 5}}
+	res := StandaloneTest(context.Background(), s, []byte(testComm), nil)
+	if res.Exit != ExitPartial || res.OK || len(res.Steps) != 5 {
+		t.Fatalf("%+v", res)
+	}
+	want := map[string]bool{"system": true, "host_resources": false, "interfaces": true, "oid 1.3.6.1.4.1.32473.1.2.0 (queue depth)": true,
+		"oid 1.3.6.1.4.1.32473.9": false}
+	for _, st := range res.Steps {
+		if ok, found := want[st.Step]; !found || ok != st.OK {
+			t.Errorf("step %+v", st)
+		}
+	}
+	if !strings.Contains(res.Steps[0].Detail, "edge-fw-01") || !strings.Contains(res.Steps[2].Detail, "2 interfaces, 64-bit counters; 2 would be polled") {
+		t.Errorf("details %+v", res.Steps)
+	}
+	if ExitCode(res.Exit) != 4 {
+		t.Error("exit code")
+	}
+	// No answer, and a wrong source.
+	res = StandaloneTest(context.Background(), s, []byte("wrong"), nil)
+	if res.Exit != ExitNoAnswer || ExitCode(res.Exit) != 1 {
+		t.Errorf("wrong community %+v", res)
+	}
+	a.SetWrongSource(true)
+	res = StandaloneTest(context.Background(), s, []byte(testComm), nil)
+	if res.Exit != ExitNoAnswer || res.Steps[len(res.Steps)-1].Step != "replies" {
+		t.Errorf("wrong source %+v", res)
+	}
+	// v3 with a wrong passphrase: auth.
+	u := snmp.User{Name: "monitor", Auth: snmp.AuthSHA1, AuthPass: []byte("maplesyrup-test"), Level: snmp.AuthNoPriv}
+	b, err := agenttest.Start(agenttest.Options{Users: []snmp.User{u}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	s3 := defaultSettings()
+	s3.Port, s3.Version, s3.V3User, s3.Presets = int(b.Addr().Port()), "3", "monitor", []string{config.PresetInterfaces}
+	res = StandaloneTest(context.Background(), s3, nil, &u)
+	if res.Exit != ExitOK || res.Steps[0].Step != "discovery" || !strings.Contains(res.Steps[0].Detail, "boots 1") {
+		t.Errorf("v3 %+v", res)
+	}
+	bad := u
+	bad.AuthPass = []byte("not-the-passphrase")
+	res = StandaloneTest(context.Background(), s3, nil, &bad)
+	if res.Exit != ExitAuth || ExitCode(res.Exit) != 3 {
+		t.Errorf("v3 wrong pass %+v", res)
+	}
+}

@@ -94,7 +94,7 @@ func StandaloneTest(ctx context.Context, s Settings, community []byte, user *snm
 	return runTest(ctx, sock, time.Now, s, community, user)
 }
 
-func runTest(ctx context.Context, sock *socket, now func() time.Time, s Settings, community []byte, user *snmp.User) TestResult {
+func runTest(ctx context.Context, sock *socket, now func() time.Time, s Settings, community []byte, user *snmp.User) (res TestResult) {
 	a, err := netip.ParseAddr(s.Address)
 	if err != nil {
 		return TestResult{Exit: ExitNoAnswer, Steps: []TestStep{{Step: "address", Detail: "not an IP address"}}}
@@ -111,7 +111,6 @@ func runTest(ctx context.Context, sock *socket, now func() time.Time, s Settings
 	cfg := snmp.SessionConfig{Version: s.version(), Community: community, User: user,
 		Timeout: time.Duration(s.TimeoutMS) * time.Millisecond, Retries: s.Retries, Now: now}
 	sess, err := snmp.NewSession(cfg, st.tr)
-	res := TestResult{}
 	if err != nil {
 		res.Exit = ExitAuth
 		res.Steps = append(res.Steps, TestStep{Step: "credentials", Detail: strings.TrimPrefix(err.Error(), "snmp: ")})
@@ -237,6 +236,9 @@ func runTest(ctx context.Context, sock *socket, now func() time.Time, s Settings
 				bits = "32-bit counters: rates above about 115 Mb/s at a 5-minute interval can be wrong"
 			}
 			d := fmt.Sprintf("%d interfaces, %s; %d would be polled", st.ifTotal, bits, len(ifs))
+			if st.ifTotal == 0 {
+				d = "no interfaces in ifTable"
+			}
 			if st.ifTotal > len(ifs) && s.Interfaces.All {
 				d += fmt.Sprintf(" (%d left out by max_interfaces %d)", st.ifTotal-len(ifs), s.MaxInterfaces)
 			}
