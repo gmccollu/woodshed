@@ -1960,11 +1960,18 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
     `listener/snmp`, so an export's gaps include SNMP listener downtime (proto `"snmp"`).
 53. The store logs once per start each folder inside a device folder that no data type claims.
 54. Exports take `types` (none is the 1.1 zip, syslog in `logs/`); filters apply only with one type; `kind: "bundle"`
-    is a `400` until step (e). The trap filters in an export body or a saved search are JSON lists of strings.
+    is a `400` until step (e). The trap filters in an export body or a saved search are JSON lists of strings (numbers
+    too, for `generic` and `specific`).
 55. `woodshed bench --proto trap` gives its own in-process receiver reply limits of twice the bench rate: §11.6's 500
     informs a second from one sender would otherwise hit §11.2.3's 100 a second per source. The load and soak targets
-    for informs need several senders (or this bench); the limits have their own tests. Measured on the build Mac:
-    TBD.
+    for informs need several senders (or this bench); the limits have their own tests. Measured on the build Mac
+    (Apple M4 Pro, macOS, loopback, 30 s each, every trap read back): 2,000 v2c traps/s with 10 varbinds, 60,000 of
+    60,000 stored once (queue high-water 6); 1,000 v3 authPriv (SHA-256, AES-128) traps/s, 30,000 of 30,000;
+    500 v3 authPriv informs/s, 15,000 of 15,000 stored and answered, Response p50 0.31 ms, p99 1.06 ms; and
+    10,000 v2c traps/s for 10 s, 100,000 of 100,000 (high-water 13). The 10-minute runs beside 5,000 syslog
+    messages/s are the lab's (§11.6).
+56. `counts_24h.received` counts every datagram the SNMP listener read, refused communities and discovery probes
+    included; `by_status` counts the stored ones.
 
 ### 11.9 Questions settled (1.2), decided (coordinator, 2026-11-14, owner-delegated)
 1. No IANA Private Enterprise Number for now; the engine ID keeps the placeholder (§11.2). Revisit if the project
