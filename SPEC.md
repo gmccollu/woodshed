@@ -1383,13 +1383,15 @@ One line per trap, in `logs/<dev>/traps/<day>.log`, inside the usual envelope:
 "trap_name", "enterprise", "generic", "specific", "cred", "status", "uptime", "varbinds": [{"oid", "name", "type",
 "value"}]}}`, with names from the current MIB set.
 
-**MIB folder:** `mib_dir` holds MIB files (`*.mib`, `*.my`, `*.txt`), read at start and on **Reload MIBs**.
+**MIB folder:** `mib_dir` holds MIB files (`*.mib`, `*.my`, `*.txt`), read at start, when `mib_dir` changes and on
+**Reload MIBs**.
 - Woodshed reads only what naming needs: `OBJECT IDENTIFIER` assignments, `OBJECT-TYPE`, `NOTIFICATION-TYPE`,
   `TRAP-TYPE`, `MODULE-IDENTITY`, `OBJECT-IDENTITY`, `IMPORTS`, and `INTEGER { name(n), … }` enumerations, including
   those of `TEXTUAL-CONVENTION`s in the same set. It isn't a MIB compiler: no type checking, no tables, no syntax
   beyond that.
 - A small built-in set needs no files: the standard notifications (coldStart, warmStart, linkDown, linkUp,
-  authenticationFailure), sysUpTime, snmpTrapOID, snmpTrapEnterprise and the IF-MIB interface columns.
+  authenticationFailure, egpNeighborLoss), sysUpTime, snmpTrapOID, snmpTrapEnterprise, the system group and the IF-MIB
+  interface columns (the modules are listed in §11.8, build 13).
 - Limits: 2,000 files, 64 MiB in all, 1,000,000 names. A file that doesn't parse is skipped with its error (file,
   line, message) listed in Settings; the rest still load. A missing import is a warning, not an error.
 
@@ -1918,6 +1920,51 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
     needs no test build. Measured on the build Mac (Apple M4 Pro, macOS, loopback), 10,000 msg/s for 130 s with a
     3 s stall every minute: the default queue lost 0 of 1,300,000 (high-water 30,000); a 1,000-message queue lost
     57,998, all counted as `queue_full` by the listener and the store alike (sent = stored + counted).
+
+**Decided (build, 2026-11-14), the data-type framework and the trap receiver (step d)**, for the owner to overrule:
+36. Syslog's filter parameters keep 1.1's parser (`api.ParseSearch` into `SearchRequest`'s fields), and the
+    framework's syslog filter (`datatype.SyslogFilter`) is built from those fields, so a syslog request means exactly
+    what it meant; the trap type parses its own (`datatype.ParseTrapFilter`). A type's filter has a cheap `Pre` and a
+    costly `Post`, so syslog keeps 1.1's check order (the PRI, then `q` and `exclude`, then the header parse).
+    `FieldValues`, `Text`, `ValueLabel` and `Summary` are the type's; the API result for traps is `datatype.Result`.
+37. The store keeps one write stream per device and type. The device cap and the new-sender buckets count
+    addresses, and an eviction at the cap takes every stream of the device.
+38. Totals, rates, drops, the flood check and the fair-share weights read `stats` and `type_stats` together; the index
+    histogram reads only the query type's table. Migration 5 → 6 also adds `deletions.type`, so the storage history
+    shows each deletion's type.
+39. A non-syslog cursor binds the type and its filter; a syslog cursor binds exactly what 1.1's did.
+40. MIB names: one current set for the process, set by the server at start and by Reload MIBs. Filters resolve names
+    against it when the request is parsed. `woodshed search` loads the data folder's MIB folder read-only (the
+    config's `mib_dir`, else `<data>/mibs`).
+41. The default MIB folder `<data>/mibs` is created at start; a `mib_dir` the user names that's missing is listed as
+    an error and never created.
+42. The credentials file has a public part (names, protocols, key extension, engine IDs, how keys are stored) and one
+    protected blob with every secret (passphrases, localized keys, communities), so the names and protocols survive a
+    blob that won't decrypt. Off Windows the blob sits inside the 0600 file as it is; on Windows it's DPAPI with an
+    application entropy and no UI.
+43. An engine-bound user also keeps keys localized to Woodshed's own engine ID, for informs. After an `engine_id`
+    override, informs from that user need its passphrases again.
+44. A v3 user can't be renamed: delete it and add the new name (a PUT with another `name` is a `400` on `name`).
+45. The community list is compared by SHA-256 in constant time. A refused trap is counted in `/api/rejected` (reason
+    `community`) and not stored.
+46. A discovery probe is admitted as a write would be (the device limits, `store.AdmitType`) before its Report; a
+    refusal isn't a drop.
+47. A retransmitted inform is the same source address, version, context engine ID and request ID within 60 s. At
+    most 200,000 are remembered; past that they're forgotten all at once, so the table never grows.
+48. `discovery_reports` counts every Report sent: a discovery probe, an unknown engine ID, a time-window miss.
+49. A trap the store refuses (writes paused, the device limits) isn't answered: the sender retries.
+50. A runtime `engine_id` change makes a new USM with the same boots and start; the senders' clocks are relearned.
+51. The failing-sender list and the reply limiter each track at most 10,000 addresses (least recently seen out;
+    past that, a new source gets no reply).
+52. The SNMP listener's datagrams count in the listeners' received total, and its events have the source
+    `listener/snmp`, so an export's gaps include SNMP listener downtime (proto `"snmp"`).
+53. The store logs once per start each folder inside a device folder that no data type claims.
+54. Exports take `types` (none is the 1.1 zip, syslog in `logs/`); filters apply only with one type; `kind: "bundle"`
+    is a `400` until step (e). The trap filters in an export body or a saved search are JSON lists of strings.
+55. `woodshed bench --proto trap` gives its own in-process receiver reply limits of twice the bench rate: §11.6's 500
+    informs a second from one sender would otherwise hit §11.2.3's 100 a second per source. The load and soak targets
+    for informs need several senders (or this bench); the limits have their own tests. Measured on the build Mac:
+    TBD.
 
 ### 11.9 Questions settled (1.2), decided (coordinator, 2026-11-14, owner-delegated)
 1. No IANA Private Enterprise Number for now; the engine ID keeps the placeholder (§11.2). Revisit if the project
