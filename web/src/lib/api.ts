@@ -6,8 +6,8 @@ import { SseParser, type SseEvent } from './sse';
 
 // ---------- Types (docs/api.md) ----------
 
-/** "tls" from 1.1: the TLS syslog listener (docs/api.md → TLS syslog listener). */
-export type Proto = 'udp' | 'tcp' | 'tls';
+/** "tls" from 1.1: the TLS syslog listener (docs/api.md → TLS syslog listener); "snmp" from 1.2: the SNMP trap receiver. */
+export type Proto = 'udp' | 'tcp' | 'tls' | 'snmp';
 
 export interface Listener {
   proto: Proto;
@@ -42,7 +42,10 @@ export type BannerKind =
   | 'tls_cert_expiring'
   | 'tls_cert_names'
   | 'tls_firewall'
-  | 'udp_queue_full';
+  | 'udp_queue_full'
+  | 'snmp_firewall'
+  | 'snmp_credentials'
+  | 'snmp_mibs';
 /** update_choice: Turn on / No thanks (PUT /api/updates); update_dismiss: hide this version (POST /api/updates/dismiss).
  *  tls_renew opens Settings → Syslog over TLS; it never renews by itself. */
 export type BannerAction = '' | 'retry_listeners' | 'update_choice' | 'update_dismiss' | 'tls_renew';
@@ -139,7 +142,7 @@ export interface RejectedSender {
   count_24h: number;
   last_seen: string;
   /** The latest refusal's reason: not on the allowlist, or over the TCP connections-per-source limit. */
-  reason: 'allowlist' | 'blocked' | 'per_source' | (string & {});
+  reason: 'allowlist' | 'blocked' | 'per_source' | 'community' | (string & {});
 }
 
 export type DeviceStatus = 'online' | 'quiet' | 'offline' | 'blocked';
@@ -162,6 +165,10 @@ export interface Device {
   blocked_by?: string;
   /** TLS syslog stats (1.1); null until the device has tried TLS. Older servers omit it. */
   tls?: DeviceTls | null;
+  /** 1.2: the data types the device has files of on disk ("syslog", "trap"). Older servers omit it. */
+  types?: string[];
+  /** 1.2: stored lines (records) per data type. total_msgs counts every type. */
+  lines_by_type?: Record<string, number>;
 }
 
 /** Why a TLS handshake failed (SPEC §10.3.4). Unknown future reasons are shown as given. */
@@ -247,6 +254,11 @@ export interface SearchParams {
   /** 1.1: leave out lines whose program/tag (or hostname) matches one of these, as app (host) matches. */
   exclude_app?: string[];
   exclude_host?: string[];
+  /**
+   * 1.2: another data type's own filter parameters (type=trap: snmp_versions, pdus, trap_oid, …), by
+   * parameter name as the schema gives them; each list is sent comma-separated, empty lists aren't sent.
+   */
+  filters?: Record<string, string[]>;
 }
 
 export type Syntax = 'text' | 'terms';
@@ -260,6 +272,55 @@ export interface SearchResult extends LogLine {
   /** The parsed header hostname ("" when the header has none). */
   host: string;
 }
+
+/** 1.2 (docs/api.md → Data types: type=trap): one varbind, with names from the current MIB set. */
+export interface TrapVarbind {
+  oid: string;
+  /** "ifOperStatus.3", or "" when the MIB set has no name for it. */
+  name: string;
+  /** int, str, hex, oid, ip, c32, g32, ticks, c64, opaque, null, nosuchobject, nosuchinstance, endofmibview. */
+  type: string;
+  /** Always a string. */
+  value: string;
+  /** An int's named value from a MIB ("down"), or an oid value's name; "" when none. */
+  value_name?: string;
+}
+
+/** A trap result's fields, decoded from the stored record. */
+export interface TrapFields {
+  version: '1' | '2c' | '3' | (string & {});
+  pdu: string;
+  trap_oid: string;
+  trap_name: string;
+  enterprise: string;
+  /** Integers for v1 traps, null otherwise. */
+  generic: number | null;
+  specific: number | null;
+  /** "#3f9a1c07" (a community's hash prefix) or a v3 user name. */
+  cred: string;
+  status: string;
+  error: string;
+  /** TimeTicks, or null when the trap had none. */
+  uptime: number | null;
+  /** A retransmitted inform. */
+  dup: boolean;
+  varbinds: TrapVarbind[];
+}
+
+/** One type=trap result; raw is the stored record (SPEC §11.2.4). */
+export interface TrapResult {
+  received: string;
+  device_id: string;
+  type: 'trap';
+  ref: string;
+  raw: string;
+  fields: TrapFields;
+}
+
+/** A result of any data type: syslog results have no `type`. */
+export type AnyResult = SearchResult | TrapResult;
+
+export const isTrap = (r: AnyResult): r is TrapResult => (r as TrapResult).type === 'trap';
 
 export interface SearchResponse {
   results: SearchResult[];
@@ -370,6 +431,8 @@ export interface Settings {
     tcp: ListenerSettings;
     /** Older servers omit it. */
     tls?: TlsListenerSettings;
+    /** 1.2: the SNMP trap receiver. Older servers omit it; a PUT without it keeps it. */
+    snmp?: SnmpListenerSettings;
     allowlist: string[];
     /** Senders refused at the listener (IPs or CIDRs); checked before the allowlist and wins. */
     blocklist: string[];
@@ -472,6 +535,96 @@ export interface TlsFailure {
 }
 
 export type DeletionReason = 'age' | 'cap' | 'low_disk';
+
+// ---------- SNMP traps (docs/api.md → SNMP trap listener, SNMP state, SNMP v3 users; 1.2) ----------
+
+/** listeners.snmp. communities are "#<hash8>" from the server; sending one back keeps it, a plain string adds one. */
+export interface SnmpListenerSettings extends ListenerSettings {
+  answer_informs: boolean;
+  communities: string[];
+  /** "" means the mibs folder in the data folder. */
+  mib_dir: string;
+  /** "" means the generated one. */
+  engine_id: string;
+}
+
+export interface SnmpMibError {
+  file: string;
+  line: number;
+  message: string;
+}
+
+export interface SnmpMibs {
+  dir: string;
+  files: number;
+  names: number;
+  loaded_at: string;
+  errors: SnmpMibError[];
+  warnings?: SnmpMibError[];
+}
+
+export interface SnmpState {
+  enabled: boolean;
+  port: number;
+  engine: { id: string; boots: number; time: number };
+  counts_24h: {
+    received: number;
+    informs_answered: number;
+    replies_rate_limited: number;
+    discovery_reports: number;
+    /** v3 clock relearns (SPEC §11.8 #28). */
+    time_resyncs?: number;
+    /** Only statuses with a count. */
+    by_status: Record<string, number>;
+  };
+  mibs: SnmpMibs;
+  /** As for TLS: always "unknown" off Windows. */
+  firewall: { state: TlsFirewallState | (string & {}); command: string };
+}
+
+export interface SnmpFailure {
+  ip: string;
+  count_24h: number;
+  last_seen: string;
+  /** The latest failure's status (auth_failed, malformed, …). */
+  status: string;
+  /** The user, engine or decoding error; never key material. */
+  detail: string;
+  device_id: string;
+  time_resyncs_24h?: number;
+}
+
+export type SnmpAuth = 'none' | 'md5' | 'sha' | 'sha-224' | 'sha-256' | 'sha-384' | 'sha-512';
+export type SnmpPriv = 'none' | 'des' | 'aes-128' | 'aes-192' | 'aes-256';
+export type SnmpKeyExt = 'draft' | 'alt';
+
+export interface SnmpUser {
+  name: string;
+  level: 'noAuthNoPriv' | 'authNoPriv' | 'authPriv' | (string & {});
+  auth: SnmpAuth | (string & {});
+  priv: SnmpPriv | (string & {});
+  key_ext: SnmpKeyExt | (string & {});
+  engine_ids: string[];
+  auth_set: boolean;
+  priv_set: boolean;
+  /** "localized" when engine_ids is set and only the localized keys are kept. */
+  stored: 'passphrase' | 'localized' | (string & {});
+  /** False when the credentials file can't be decrypted here: the user needs its passphrases again. */
+  readable: boolean;
+  /** The protocols Settings labels weak (md5, sha, des). */
+  weak?: string[];
+}
+
+/** POST /api/snmp/users and PUT /api/snmp/users/{name}. An empty passphrase keeps the stored one (unless the protocol changes). */
+export interface SnmpUserInput {
+  name: string;
+  auth: SnmpAuth;
+  auth_pass?: string;
+  priv: SnmpPriv;
+  priv_pass?: string;
+  key_ext: SnmpKeyExt;
+  engine_ids: string[];
+}
 
 export interface StorageHistoryEntry {
   time: string;
@@ -733,6 +886,7 @@ function newFilterParams(p: SearchParams): Record<string, string | string[] | un
     exclude_devices: p.exclude_devices,
     exclude_app: p.exclude_app,
     exclude_host: p.exclude_host,
+    ...Object.fromEntries(Object.entries(p.filters ?? {}).map(([k, v]) => [k, v.length ? v : undefined])),
   };
 }
 
@@ -877,6 +1031,8 @@ export interface SavedQuery {
   exclude_host?: string[];
   order?: 'desc' | 'asc';
   range?: SavedRange;
+  /** 1.2: a non-syslog type's own filters (type=trap: snmp_versions, trap_oid, status, …), as lists. */
+  [param: string]: unknown;
 }
 
 export interface SavedSearch {
@@ -1000,6 +1156,14 @@ export const getStorageEstimate = (retentionBytes: number, signal?: AbortSignal)
   request<StorageEstimate>('GET', `/api/storage/estimate${query({ retention_bytes: Math.round(retentionBytes) })}`, undefined, signal);
 
 export const getTls = () => request<TlsState>('GET', '/api/tls');
+export const getSnmp = () => request<SnmpState>('GET', '/api/snmp');
+export const reloadMibs = () => request<SnmpMibs>('POST', '/api/snmp/mibs/reload');
+export const getSnmpFailures = () => request<SnmpFailure[]>('GET', '/api/snmp/failures');
+export const getSnmpUsers = () => request<SnmpUser[]>('GET', '/api/snmp/users');
+export const createSnmpUser = (u: SnmpUserInput) => request<SnmpUser>('POST', '/api/snmp/users', u);
+export const updateSnmpUser = (name: string, u: SnmpUserInput) =>
+  request<SnmpUser>('PUT', `/api/snmp/users/${encodeURIComponent(name)}`, u);
+export const deleteSnmpUser = (name: string) => request<void>('DELETE', `/api/snmp/users/${encodeURIComponent(name)}`);
 /** new_ca: also replace the CA, so every device must import the new one. 409 with source "file". */
 export const renewTls = (newCa: boolean) => request<TlsState>('POST', '/api/tls/renew', { new_ca: newCa });
 export const getTlsFailures = () => request<TlsFailure[]>('GET', '/api/tls/failures');
