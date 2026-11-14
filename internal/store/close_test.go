@@ -179,7 +179,8 @@ func TestCloseDoesntWaitForAStarvedCompressor(t *testing.T) {
 	if gz, temps := gzCount(t, dir); gz != gzBefore || temps != 0 {
 		t.Fatalf("after Close: %d gz (was %d), %d temp files", gz, gzBefore, temps)
 	}
-	// The next Open compresses what's waiting.
+	// The next Open compresses what's waiting. Keep its compressor at normal priority too: the stall above was
+	// the hook, and a background-band thread on a busy runner may not be scheduled within the wait.
 	s2, err := Open(opts)
 	if err != nil {
 		t.Fatal(err)
