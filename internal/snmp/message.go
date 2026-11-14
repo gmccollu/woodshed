@@ -129,10 +129,17 @@ type Message struct {
 	ContextName     []byte
 
 	// PDU is the decoded PDU: for v1 and v2c, and for v3 only once USM accepted
-	// the message (a failure keeps only what's readable without the keys). For a
+	// the message (a failure keeps only what's readable without the keys; the
+	// exception is a TimeResync trap, authenticated and kept whole). For a
 	// malformed PDU it holds what decoded (the type and request ID) and no
 	// varbinds.
 	PDU *PDU
+
+	// TimeResync is set for an authenticated v3 trap outside the time window
+	// whose boots and time USM adopted (not in strict mode, USM.SetStrictTime):
+	// it's decoded in full with status not_in_time. The listener counts these
+	// per sender, so a replay shows as a burst.
+	TimeResync bool
 
 	// Discovery is set for a v3 discovery probe (an empty engine ID, reportable):
 	// it's answered with a Report and isn't a notification, so it isn't stored.

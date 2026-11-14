@@ -1278,6 +1278,7 @@ port = 162             # traps and informs; any free port
 answer_informs = true  # reply to InformRequests (§11.2.3)
 mib_dir = ""           # MIB files for names; "" means <data>/mibs
 engine_id = ""         # Woodshed's own v3 engine ID, hex; "" means the generated one (§11.2.3)
+v3_strict_time = false # true: RFC 3414's time window for traps as written, no relearning (§11.8 #28)
 ```
 - The listener shows in `/api/status.listeners` as `proto: "snmp"`, with the usual `listener_bind` banner and Retry.
   Port 162 is often held by an OS trap service; the banner names the holder as for 514.
@@ -1310,9 +1311,10 @@ engine_id = ""         # Woodshed's own v3 engine ID, hex; "" means the generate
 - **v3 failures are kept too**, with their status: `unknown_user`, `unknown_engine` (an inform to the wrong engine
   ID), `not_in_time` (outside the 150 s window), `auth_failed` (wrong digest), `decrypt_failed` (the decrypted bytes
   don't decode) and `level` (below the user's level). A failure stores only the parts that are readable without the
-  keys (user name, engine ID, security level and the raw bytes), never decrypted guesses. Each failure is also
-  counted per sender in `GET /api/snmp/failures`, like TLS handshake failures, so "the device sends but nothing
-  shows" is diagnosable.
+  keys (user name, engine ID, security level and the raw bytes), never decrypted guesses. The one exception is an
+  authenticated trap that fails only the time window: it's stored whole as `not_in_time` (§11.8 #28). Each failure
+  is also counted per sender in `GET /api/snmp/failures`, like TLS handshake failures, so "the device sends but
+  nothing shows" is diagnosable.
 
 #### 11.2.3 Informs and engine IDs
 **Woodshed answers informs (`answer_informs = true`).** An unanswered inform is retransmitted (so it's stored several
@@ -1763,6 +1765,14 @@ Everything below is **decided (coordinator, 2026-11-14, owner-delegated)**:
     direct (§11.5).
 27. The community allowlist is kept in the credentials store, not the TOML, and shown only as hash prefixes
     (§11.2.1).
+28. **Traps outside the time window are relearned, not lost** (2026-11-14, answering the build's flag on devices that
+    reboot without raising their boots). An authenticated v3 trap that fails only the timeliness check is still
+    decrypted (if priv) and stored with its full contents, with status `not_in_time`, so it's visible and never
+    silently trusted. The receiver then adopts that trap's boots and time as the sender engine's clock, so the
+    device's following traps are in time again. Only a message whose digest verified moves the clock; noAuthNoPriv
+    messages have no timeliness and never do. Each resync is counted per sender, so a replay shows as a burst.
+    `listeners.snmp.v3_strict_time = true` keeps RFC 3414's rule (the header only, no relearning). Informs are
+    unchanged: the authenticated Report already resyncs their senders.
 
 SNMP codec, **decided (build, 2026-11-14)**: the calls build step (a) (`internal/snmp`, `woodshed send --proto trap`,
 the interop job) made where §11.2 and §11.6 left room. Nothing here is user-facing yet.
@@ -1794,12 +1804,14 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
    inform (`snmp.MaxReplyGrowth`), or it isn't built. The not-in-time Report is authNoPriv with the user's key (RFC 3414
    §3.2 step 7a); the others are noAuthNoPriv. A Report's request ID is the request's when the PDU is plaintext, else 0.
 8. **Time window for traps:** RFC 3414 §3.2 step 7b per sender engine (10,000 engines kept, least recently used out),
-   updated only by authenticated messages; the first message from an engine is accepted. A device that reboots without
-   raising its boots (its time restarting) is `not_in_time` from then on, since its clock never catches up with the
-   one Woodshed last saw, until it raises its boots or its entry leaves the cache: stored with the status, so visible,
-   but the trap's contents are lost. The RFC requires it; an option to relax it for traps is open for the owner.
+   updated only by authenticated messages; the first message from an engine is accepted. Outside the window, #28
+   applies: the codec sets `Message.TimeResync`, keeps the status `not_in_time` and the full PDU, adopts the trap's
+   boots and time, and counts `Counters.TimeResyncs`; the listener (step d) counts them per sender.
+   `USM.SetStrictTime(true)` is `v3_strict_time`. A sender at the latched boots (2^31−1) stays out of the window
+   either way.
 9. **v3 failures show only the header**, even when the PDU is plaintext (noAuthNoPriv below the user's level, or
-   authNoPriv with a wrong digest): unauthenticated content in a record would look real.
+   authNoPriv with a wrong digest): unauthenticated content in a record would look real. A #28 trap is the
+   exception, because its digest verified.
 10. **Record details.** v3 `cred` (and `ctx`) is bare when it's letters, digits and `._-@+%:/` and doesn't start with
     `#` or `0x`; quoted when it's other printable text; `0x` and hex otherwise. `ctx_engine` is written only when it
     differs from `engine`. `agent=` is dotted, or `0x` and hex when it isn't 4 octets. `generic=` is the number alone.

@@ -451,7 +451,9 @@ func TestTimeliness(t *testing.T) {
 		}
 	}
 
-	// Traps (the sender authoritative): RFC 3414 §3.2 7b against the last seen clock.
+	// Traps (the sender authoritative): RFC 3414 §3.2 7b against the last seen
+	// clock, in strict mode (the default relearns: TestTimeResync).
+	u.SetStrictTime(true)
 	send := func(eid []byte, boots, tm int64, at time.Time) *Message {
 		return Decode(v3Msg(t, c, "alice", V3Header{MsgID: 1, EngineID: eid, EngineBoots: boots, EngineTime: tm}, trap), u, at)
 	}
@@ -567,5 +569,126 @@ func TestUserValidate(t *testing.T) {
 		if m := Decode(v3Msg(t, lc, "low", V3Header{MsgID: 1, EngineID: senderEngine, EngineBoots: 1, EngineTime: 1}, &PDU{Type: PDUTrap, Varbinds: header(1, testTrapOID)}), u, t0); m.Status != StatusOK {
 			t.Errorf("low user at %s: %v %q", lc.level(), m.Status, m.Err)
 		}
+	}
+}
+
+// TestTimeResync: outside strict mode, an authenticated trap that fails only
+// the time window is kept whole as not_in_time and resets the sender's clock;
+// unauthenticated messages never move it.
+func TestTimeResync(t *testing.T) {
+	c := combo{AuthSHA256, PrivAES128, 0}
+	vbs := func(tag string) *PDU {
+		return &PDU{Type: PDUTrap, RequestID: 1, Varbinds: append(header(1, testTrapOID), Varbind{OID: testEnterprise, Value: strVal(tag)})}
+	}
+	trap := func(eid []byte, boots, tm int64, tag string) []byte {
+		return v3Msg(t, c, "alice", V3Header{MsgID: 1, EngineID: eid, EngineBoots: boots, EngineTime: tm}, vbs(tag))
+	}
+	hasTag := func(m *Message, tag string) bool {
+		if m.PDU == nil {
+			return false
+		}
+		for _, vb := range m.PDU.Varbinds {
+			if string(vb.Value.Bytes) == tag {
+				return true
+			}
+		}
+		return false
+	}
+
+	// A device that reboots without raising its boots: one not_in_time with its
+	// contents, then in time again.
+	u := newTestUSM(t, c.user("alice"))
+	eid := mustHex(t, "80000000050000000000009999")
+	steps := []struct {
+		name        string
+		boots, time int64
+		at          time.Duration
+		want        Status
+		resync      bool
+	}{
+		{"first contact", 1, 100000, 0, StatusOK, false},
+		{"later", 1, 100100, 100 * time.Second, StatusOK, false},
+		{"rebooted, same boots, time from 3", 1, 3, 200 * time.Second, StatusNotInTime, true},
+		{"its next trap", 1, 13, 210 * time.Second, StatusOK, false},
+		{"and the next", 1, 20, 217 * time.Second, StatusOK, false},
+	}
+	for i, s := range steps {
+		tag := fmt.Sprintf("step %d", i)
+		m := Decode(trap(eid, s.boots, s.time, tag), u, t0.Add(s.at))
+		if m.Status != s.want || m.TimeResync != s.resync {
+			t.Fatalf("%s: %v %q resync %v", s.name, m.Status, m.Err, m.TimeResync)
+		}
+		if !hasTag(m, tag) || m.Reply != ReplyNone {
+			t.Errorf("%s: contents not kept (or a reply): %+v", s.name, m.PDU)
+		}
+		if s.resync {
+			rec, _ := ParseRecord(FormatRecord(nil, m, RecordOptions{}))
+			if rec.Status != "not_in_time" || len(rec.Varbinds) != 1 || rec.Varbinds[0].Value != tag || !strings.Contains(rec.Error, "reset") {
+				t.Errorf("%s: record %+v", s.name, rec)
+			}
+		}
+	}
+	if n := u.Counters().TimeResyncs; n != 1 {
+		t.Errorf("resyncs %d, want 1", n)
+	}
+
+	// Strict mode: RFC 3414 as written; the header only, and no relearning.
+	strict := newTestUSM(t, c.user("alice"))
+	strict.SetStrictTime(true)
+	for i, s := range steps {
+		m := Decode(trap(eid, s.boots, s.time, "x"), strict, t0.Add(s.at))
+		want := s.want
+		if i >= 2 {
+			want = StatusNotInTime // never back in time
+		}
+		if m.Status != want || m.TimeResync || (want != StatusOK && m.PDU != nil) {
+			t.Errorf("strict %s: %v resync %v pdu %v", s.name, m.Status, m.TimeResync, m.PDU != nil)
+		}
+	}
+	if n := strict.Counters().TimeResyncs; n != 0 {
+		t.Errorf("strict resyncs %d", n)
+	}
+
+	// A replayed older trap: stored not_in_time (whole) and counted; the
+	// device's next real trap is in time.
+	u = newTestUSM(t, c.user("alice"))
+	old := trap(eid, 5, 1000, "the original")
+	if m := Decode(old, u, t0); m.Status != StatusOK {
+		t.Fatal(m.Err)
+	}
+	if m := Decode(trap(eid, 5, 1100, "newer"), u, t0.Add(100*time.Second)); m.Status != StatusOK {
+		t.Fatal(m.Err)
+	}
+	m := Decode(old, u, t0.Add(300*time.Second))
+	if m.Status != StatusNotInTime || !m.TimeResync || !hasTag(m, "the original") {
+		t.Errorf("replay: %v %q resync %v", m.Status, m.Err, m.TimeResync)
+	}
+	if m := Decode(trap(eid, 5, 1301, "real again"), u, t0.Add(301*time.Second)); m.Status != StatusOK {
+		t.Errorf("after the replay: %v %q", m.Status, m.Err)
+	}
+	if n := u.Counters().TimeResyncs; n != 1 {
+		t.Errorf("replay resyncs %d", n)
+	}
+
+	// Never relearn from a failed digest, or from unauthenticated messages.
+	u = newTestUSM(t, c.user("alice"), User{Name: "anon", Level: NoAuthNoPriv})
+	if m := Decode(trap(eid, 5, 1000, "a"), u, t0); m.Status != StatusOK {
+		t.Fatal(m.Err)
+	}
+	forged := trap(eid, 1, 1, "forged")
+	forged[len(forged)-1] ^= 1
+	if m := Decode(forged, u, t0); m.Status != StatusAuthFailed || m.TimeResync {
+		t.Errorf("forged: %v resync %v", m.Status, m.TimeResync)
+	}
+	noauth := v3Msg(t, combo{}, "anon", V3Header{MsgID: 1, EngineID: eid, EngineBoots: 1, EngineTime: 1}, vbs("noauth"))
+	if m := Decode(noauth, u, t0); m.Status != StatusOK || m.TimeResync {
+		t.Errorf("noAuthNoPriv: %v resync %v", m.Status, m.TimeResync)
+	}
+	// The sender's legitimate next trap is in time and no resync was counted.
+	if m := Decode(trap(eid, 5, 1001, "b"), u, t0); m.Status != StatusOK || m.TimeResync {
+		t.Errorf("after the forgeries: %v %q", m.Status, m.Err)
+	}
+	if n := u.Counters().TimeResyncs; n != 0 {
+		t.Errorf("resyncs from failed messages: %d", n)
 	}
 }

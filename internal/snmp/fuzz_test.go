@@ -151,8 +151,12 @@ func FuzzMessage(f *testing.F) {
 		if m.Status == StatusOK && !m.Discovery && m.PDU == nil {
 			t.Fatalf("ok without a PDU")
 		}
-		if m.Status != StatusOK && m.Status != StatusMalformed && m.Status != StatusUnexpectedPDU && m.PDU != nil {
+		if m.Status != StatusOK && m.Status != StatusMalformed && m.Status != StatusUnexpectedPDU && m.PDU != nil &&
+			!(m.Status == StatusNotInTime && m.TimeResync) {
 			t.Fatalf("%v keeps a PDU", m.Status)
+		}
+		if m.TimeResync && (m.Version != V3 || m.Reportable || m.Level == NoAuthNoPriv) {
+			t.Fatalf("a time resync from a %v %v message (reportable %v)", m.Version, m.Level, m.Reportable)
 		}
 		// The record: bounded, parses back, and the community is masked.
 		rec := FormatRecord(nil, m, RecordOptions{Names: BuiltinMIBs(), Dup: dt&1 == 1})

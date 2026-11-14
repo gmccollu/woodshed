@@ -148,6 +148,10 @@ type Counters struct {
 	WrongDigests         uint64
 	DecryptionErrors     uint64
 	SlowLocalizeLimited  uint64 // receive-time key hashes refused by the rate limit
+	// TimeResyncs counts authenticated traps outside the window whose boots and
+	// time were adopted (not in strict mode); a burst of them is what a replay
+	// looks like.
+	TimeResyncs uint64
 }
 
 // USM is the User-based Security Model for the receiver: users, localized keys,
@@ -164,9 +168,10 @@ type USM struct {
 	bucket  tokenBucket
 
 	unsupportedSecLevels, notInTimeWindows, unknownUserNames,
-	unknownEngineIDs, wrongDigests, decryptionErrors, slowLimited atomic.Uint64
+	unknownEngineIDs, wrongDigests, decryptionErrors, slowLimited, timeResyncs atomic.Uint64
 
-	salt atomic.Uint64
+	strictTime atomic.Bool
+	salt       atomic.Uint64
 }
 
 // remoteTime is RFC 3414 §2.3's notion of a remote authoritative engine's
@@ -195,6 +200,18 @@ func NewUSM(e *Engine) *USM {
 	u.salt.Store(binary.BigEndian.Uint64(b[:]))
 	return u
 }
+
+// SetStrictTime turns RFC 3414's timeliness rule for traps on (true) or off
+// (false, the default; config listeners.snmp.v3_strict_time).
+//
+// Off: an authenticated trap that fails only the time window is still decrypted
+// and decoded, kept whole with status not_in_time (Message.TimeResync set), and
+// its boots and time are adopted as the sender's clock, so a device that
+// rebooted without raising its boots is in time again from its next trap.
+// On: such a trap keeps only its header and the sender's clock isn't changed,
+// so that device stays not_in_time until it raises its boots. Informs are the
+// same either way (the authenticated Report resyncs the sender).
+func (u *USM) SetStrictTime(strict bool) { u.strictTime.Store(strict) }
 
 // Engine returns the local engine.
 func (u *USM) Engine() *Engine { return u.engine }
@@ -251,6 +268,7 @@ func (u *USM) Counters() Counters {
 		WrongDigests:         u.wrongDigests.Load(),
 		DecryptionErrors:     u.decryptionErrors.Load(),
 		SlowLocalizeLimited:  u.slowLimited.Load(),
+		TimeResyncs:          u.timeResyncs.Load(),
 	}
 }
 
@@ -387,7 +405,18 @@ func (u *USM) process(m *Message, now time.Time) {
 				m.reportReqID, _ = peekRequestID(m.Raw[m.data.off:m.data.end()])
 			}
 		}
-		return
+		if !m.TimeResync {
+			return
+		}
+		// A trap that failed only the window (the sender's clock was adopted):
+		// decode it in full, and keep the not_in_time status.
+		u.timeResyncs.Add(1)
+		status, why := m.Status, m.Err
+		defer func() {
+			if m.Status == StatusOK {
+				m.Status, m.Err = status, why
+			}
+		}()
 	}
 	if m.Level == AuthNoPriv {
 		m.decodeScoped(m.Raw[m.data.off:m.data.end()], m.data.off, StatusMalformed, "")
@@ -408,6 +437,9 @@ func (u *USM) process(m *Message, now time.Time) {
 // timely is RFC 3414 §3.2 step 7: against the local clock when Woodshed is
 // authoritative (informs), against the sender's clock as last seen otherwise
 // (traps), updating that from this authenticated message. It sets the failure.
+// It's only called once the digest has verified, so only authenticated messages
+// ever move a sender's clock. Outside strict mode a trap outside the window
+// replaces the sender's clock with its own boots and time (m.TimeResync).
 func (u *USM) timely(m *Message, authoritative bool, now time.Time) bool {
 	if authoritative {
 		e := u.engine
@@ -445,6 +477,11 @@ func (u *USM) timely(m *Message, authoritative bool, now time.Time) bool {
 		m.fail(StatusNotInTime, "time %d, but the sender's clock is about %d (window %d s)", m.EngineTime, est, TimeWindow)
 	default:
 		return true
+	}
+	if !u.strictTime.Load() {
+		r.boots, r.time, r.updated = m.EngineBoots, m.EngineTime, now
+		m.TimeResync = true
+		m.Err += "; the sender's clock was reset to this trap's (a reboot without raising its boots, or a replay)"
 	}
 	return false
 }
