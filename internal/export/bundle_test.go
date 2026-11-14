@@ -512,7 +512,7 @@ func TestBundleRequests(t *testing.T) {
 	files, _ := readZip(t, m, in.ID)
 	readme := string(files["README.txt"])
 	for _, s := range []string{"Devices: 2, chosen by name. Types: syslog.\n", "192.0.2.200\n  Syslog       none\n",
-		"192.0.2.9, hidden\n  Syslog       1 message, first 2026-11-14 00:01:00.000", "Reboots      not known (no SNMP traps in this bundle)"} {
+		"192.0.2.9, hidden\n  Syslog       1 message, first 2026-11-14 00:01:00.000", "Reboots      not known (no SNMP traps or polls in this bundle)"} {
 		if !strings.Contains(readme, s) {
 			t.Errorf("README lacks %q:\n%s", s, readme)
 		}
