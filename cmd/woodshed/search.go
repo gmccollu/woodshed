@@ -207,6 +207,10 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	defer idx.Close()
+	// An immutable read doesn't see a writer that starts during the search:
+	// compare the index files afterwards and say so if one did.
+	indexPath := filepath.Join(dataDir, index.FileName)
+	before := index.StateOf(indexPath)
 
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn,
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
@@ -277,6 +281,9 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	writeSummary(stderr, f.json, out.matches, st, interrupted)
+	if idx.Immutable() && index.StateOf(indexPath) != before {
+		fmt.Fprintln(stderr, "warning: Woodshed started writing while this search ran; results may be incomplete. Run it again.")
+	}
 	switch {
 	case interrupted:
 		return exitInterrupted

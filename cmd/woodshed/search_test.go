@@ -733,3 +733,66 @@ func TestTimeArgs(t *testing.T) {
 		}
 	}
 }
+
+// writerStarts opens the index as a writer (and writes) on the first output
+// write: the service starting while a search runs.
+type writerStarts struct {
+	w    io.Writer
+	dir  string
+	t    *testing.T
+	idx  *index.DB
+	once sync.Once
+}
+
+func (ws *writerStarts) Write(p []byte) (int, error) {
+	ws.once.Do(func() {
+		idx, err := index.Open(filepath.Join(ws.dir, index.FileName))
+		if err != nil {
+			ws.t.Error(err)
+			return
+		}
+		name := "renamed"
+		if _, err := idx.UpdateDevice(context.Background(), "192.0.2.2", index.DeviceUpdate{Name: &name}); err != nil {
+			ws.t.Error(err)
+		}
+		ws.idx = idx
+	})
+	return ws.w.Write(p)
+}
+
+// A search that read the index immutable (no writer) warns when a writer
+// started during it, and keeps its exit code.
+func TestSearchWarnsWhenAWriterStarts(t *testing.T) {
+	f := newSearchFixture(t)
+	searchNow = func() time.Time { return fxNow }
+	defer func() { searchNow = time.Now }()
+	const warning = "warning: Woodshed started writing while this search ran; results may be incomplete. Run it again.\n"
+
+	var out, errOut bytes.Buffer
+	ws := &writerStarts{w: &out, dir: f.dir, t: t}
+	code := cmdSearch(append([]string{"--data", f.dir}, fxRange...), ws, &errOut)
+	if ws.idx != nil {
+		defer ws.idx.Close()
+	}
+	if code != 0 || !strings.HasSuffix(errOut.String(), warning) || strings.Count(out.String(), "\n") != 108 {
+		t.Fatalf("exit %d, %d lines, stderr %q", code, strings.Count(out.String(), "\n"), errOut.String())
+	}
+
+	// Beside a writer that was already running (WAL, not immutable): no warning.
+	out.Reset()
+	errOut.Reset()
+	if code := cmdSearch(append([]string{"--data", f.dir}, fxRange...), &out, &errOut); code != 0 || strings.Contains(errOut.String(), "warning") {
+		t.Fatalf("beside a writer: exit %d, stderr %q", code, errOut.String())
+	}
+	// With the writer gone again (immutable once more), --json warns too.
+	ws.idx.Close()
+	out.Reset()
+	errOut.Reset()
+	ws2 := &writerStarts{w: &out, dir: f.dir, t: t}
+	if code := cmdSearch(append([]string{"--data", f.dir, "--json"}, fxRange...), ws2, &errOut); code != 0 || !strings.HasSuffix(errOut.String(), warning) {
+		t.Fatalf("json: exit %d, stderr %q", code, errOut.String())
+	}
+	if ws2.idx != nil {
+		ws2.idx.Close()
+	}
+}

@@ -46,6 +46,9 @@ var (
 // DB is an open index. It is safe for concurrent use.
 type DB struct {
 	db *sql.DB
+	// immutable: opened by OpenReadOnly with no writer present (it reads the
+	// database file alone and wouldn't see a writer that starts later).
+	immutable bool
 }
 
 // Open opens (creating if needed) the index at path, in WAL mode, and migrates its

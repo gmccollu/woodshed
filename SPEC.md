@@ -1766,7 +1766,10 @@ Everything below is **decided (coordinator, 2026-11-14, owner-delegated)**:
    they don't. A `mode=ro` open creates both files when they're missing (measured on the pure-Go SQLite build), which
    would break "creates nothing" with the service stopped; without them no writer has the index open, since the last
    connection to close removes them. If a service starts mid-search, that search may miss index rows written after it
-   began. This narrows §11.4's "never `immutable`". The schema must match this build's: a read-only open can't migrate
+   began, so an immutable search compares `index.db`'s size and mtime and whether `-wal` exists before and after,
+   and if any changed prints `warning: Woodshed started writing while this search ran; results may be incomplete.
+   Run it again.` on standard error, keeping the exit code (coordinator, 2026-11-14). This narrows §11.4's "never
+   `immutable`". The schema must match this build's: a read-only open can't migrate
    (exit 4 with the reason).
 2. The query and filters go through the API's own parser (`api.ParseSearch`) and the server's query builder
    (`server.SearchQuery`), so they can't drift from `/api/search`. Each flag is first checked on its own, so the

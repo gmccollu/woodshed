@@ -51,7 +51,7 @@ func OpenReadOnly(path string) (*DB, error) {
 	}
 	sdb.SetMaxOpenConns(4)
 	sdb.SetMaxIdleConns(4)
-	d := &DB{db: sdb}
+	d := &DB{db: sdb, immutable: !live}
 	v, err := d.SchemaVersion(context.Background())
 	if err != nil {
 		sdb.Close()
@@ -67,6 +67,29 @@ func OpenReadOnly(path string) (*DB, error) {
 			path, v, CurrentSchema)
 	}
 	return d, nil
+}
+
+// Immutable reports whether OpenReadOnly opened the index immutable (no
+// writer had it open). Such a reader doesn't see what a writer that starts
+// later writes, so a caller should check the files afterwards (WriterStarted).
+func (d *DB) Immutable() bool { return d.immutable }
+
+// FileState is what WriterStarted compares: the index file's size and
+// modification time, and whether its -wal exists.
+type FileState struct {
+	Size    int64
+	ModTime int64
+	WAL     bool
+}
+
+// StateOf returns the FileState of the index at path.
+func StateOf(path string) FileState {
+	var st FileState
+	if fi, err := os.Stat(path); err == nil {
+		st.Size, st.ModTime = fi.Size(), fi.ModTime().UnixNano()
+	}
+	st.WAL = exists(path + "-wal")
+	return st
 }
 
 // fileURI is path as an SQLite file: URI ("file:///C:/x/index.db" on Windows).
