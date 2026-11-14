@@ -267,6 +267,20 @@ func TestSendTrapErrors(t *testing.T) {
 	if err == nil || !(strings.Contains(err.Error(), "discovery") || strings.Contains(err.Error(), "nothing is listening")) {
 		t.Errorf("no receiver: %v", err)
 	}
+	// v2c informs to nothing: they end (an error or timeouts), they don't hang.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		res, err := Send(context.Background(), SendOptions{Addr: addr, Proto: "trap", Count: 3, Trap: TrapOptions{Inform: true, Timeout: 100 * time.Millisecond}})
+		if err == nil && (res.Informs == nil || res.Informs.Answered != 0 || res.Informs.TimedOut != 3) {
+			t.Errorf("informs to nothing: %+v", res.Informs)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("informs to a closed port hang")
+	}
 }
 
 // TestVerifyTrapRecords: verifyseq's counting reads a trap record's sequence

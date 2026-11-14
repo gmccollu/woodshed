@@ -546,13 +546,15 @@ func (s *trapSender) expire(now time.Time) {
 	}
 }
 
-// waitPending waits until every inform is answered or has timed out.
+// waitPending waits until every inform is answered or has timed out (it
+// expires them itself, so it ends even when the reader has stopped).
 func (s *trapSender) waitPending(ctx context.Context) {
 	for ctx.Err() == nil {
+		s.expire(time.Now())
 		s.mu.Lock()
-		n := len(s.pending)
+		n, stopped := len(s.pending), s.readErr != nil
 		s.mu.Unlock()
-		if n == 0 {
+		if n == 0 || stopped {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
