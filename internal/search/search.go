@@ -422,20 +422,10 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 			}
 			break
 		}
-		best, bestKey, bestHas := -1, int64(0), false
-		for i, s := range streams {
-			if s.done && s.head() == nil {
-				continue
-			}
-			k, has := s.key(r)
-			if best < 0 || better(r.desc, k, has, s.dev, bestKey, bestHas, streams[best].dev) {
-				best, bestKey, bestHas = i, k, has
-			}
-		}
-		if best < 0 {
+		s := r.pick(streams)
+		if s == nil {
 			break // exhausted
 		}
-		s := streams[best]
 		if s.head() == nil {
 			// Read more of the best stream. Every request reads at least once, so
 			// a cursor always moves on; re-reading a line the previous page found
@@ -470,6 +460,26 @@ func (e *Engine) Search(ctx context.Context, q Query) (Page, error) {
 		page.Partial = false
 	}
 	return page, nil
+}
+
+// pick returns the stream the merge takes from next: the one whose next line
+// (or bound on the lines it hasn't read) comes first. It returns nil when every
+// stream is exhausted.
+func (r *run) pick(streams []*stream) *stream {
+	best, bestKey, bestHas := -1, int64(0), false
+	for i, s := range streams {
+		if s.done && s.head() == nil {
+			continue
+		}
+		k, has := s.key(r)
+		if best < 0 || better(r.desc, k, has, s.dev, bestKey, bestHas, streams[best].dev) {
+			best, bestKey, bestHas = i, k, has
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	return streams[best]
 }
 
 // better reports whether candidate (k, has, dev) goes before the current best.
