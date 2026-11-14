@@ -251,7 +251,7 @@
 
   <h3 class="mt-5 mb-1 text-[14px] font-semibold" id="snmp-users">v3 users</h3>
   <p class="hint mt-0">
-    Each v3 device sends as a user. Passphrases are kept encrypted in the data folder ({isWindows ? 'with Windows DPAPI' : 'readable only by the service account'}),
+    Each v3 device sends as a user. Passphrases are kept in the data folder, {isWindows ? 'encrypted with Windows DPAPI' : 'in a file only the service account can read'},
     never shown again and never exported. A user accepts its own security level and above.
   </p>
   {#if usersDone}<p class="done" role="status">{usersDone}</p>{/if}
