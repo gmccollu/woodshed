@@ -1,8 +1,6 @@
 package datatype
 
 import (
-	"fmt"
-
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/syslog"
@@ -134,29 +132,8 @@ func (syslogType) ValueLabel(key, value string) string {
 	return value
 }
 
-// Summary counts the records by severity.
-func (syslogType) Summary(recs [][]byte) []string {
-	var n [9]int64
-	for _, r := range recs {
-		s := Severity(r)
-		if s < 0 {
-			s = 8
-		}
-		n[s]++
-	}
-	var out []string
-	for i, c := range n {
-		if c == 0 {
-			continue
-		}
-		name := "unknown"
-		if i < 8 {
-			name = SeverityNames[i]
-		}
-		out = append(out, fmt.Sprintf("%s: %d", name, c))
-	}
-	return out
-}
+// NewSummary counts the records by severity.
+func (syslogType) NewSummary() Summary { return &syslogSummary{} }
 
 // SyslogFilter is the syslog type's filter: severities, facilities, and the
 // program/tag and hostname of the header (FieldMatcher).
