@@ -6,7 +6,11 @@
   import { anyUngrouped, groupsSeen, remember } from '../lib/status.svelte';
   import StatusDot from './StatusDot.svelte';
 
-  let { value = $bindable(), allowGroups = true }: { value: Scope; allowGroups?: boolean } = $props();
+  let {
+    value = $bindable(),
+    allowGroups = true,
+    allLabel = 'All devices',
+  }: { value: Scope; allowGroups?: boolean; /** What "all" means here (the bundle: every device active in the window). */ allLabel?: string } = $props();
 
   const LIST = 100;
   let open = $state(false);
@@ -66,13 +70,13 @@
 
 <div class="dp" bind:this={root}>
   <button type="button" class="ghost-btn trigger" aria-expanded={open} aria-haspopup="dialog" onclick={() => (open = !open)}>
-    <span class="truncate">{scopeLabel(value)}</span> <span aria-hidden="true">▾</span>
+    <span class="truncate">{value.mode === 'all' ? allLabel : scopeLabel(value)}</span> <span aria-hidden="true">▾</span>
   </button>
   {#if open}
     <div class="pop glass" role="dialog" aria-label="Choose devices">
       {#if allowGroups}
         <div class="opts" role="radiogroup" aria-label="Scope">
-          <label><input type="radio" checked={value.mode === 'all'} onchange={() => (value = { mode: 'all', group: '', devices: [] })} /> All devices</label>
+          <label><input type="radio" checked={value.mode === 'all'} onchange={() => (value = { mode: 'all', group: '', devices: [] })} /> {allLabel}</label>
           {#each groups as g (g)}
             <label><input type="radio" checked={value.mode === 'group' && value.group === g} onchange={() => (value = { mode: 'group', group: g, devices: [] })} /> Group: {g}</label>
           {/each}

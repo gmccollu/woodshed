@@ -32,12 +32,21 @@
   });
 
   // Keep the menu inside the window.
-  const pos = $derived(blockUi.menu ? { x: Math.min(blockUi.menu.x, innerWidth - 240), y: Math.min(blockUi.menu.y, innerHeight - 80) } : null);
+  const pos = $derived(blockUi.menu ? { x: Math.min(blockUi.menu.x, innerWidth - 240), y: Math.min(blockUi.menu.y, innerHeight - 80 - 38 * blockUi.menu.extra.length) } : null);
 </script>
 
 {#if blockUi.menu && pos}
   <div bind:this={menuEl} class="menu glass" role="menu" aria-label="Sender {targetLabel(blockUi.menu.target)}" style:left="{pos.x}px" style:top="{pos.y}px">
     <div class="menu-head">{targetLabel(blockUi.menu.target)}</div>
+    {#each blockUi.menu.extra as item (item.label)}
+      <button
+        role="menuitem"
+        onclick={() => {
+          blockUi.menu = null;
+          item.run();
+        }}>{item.label}</button
+      >
+    {/each}
     {#if blockUi.menu.blocked}
       <button role="menuitem" onclick={() => blockUi.menu && unblock(blockUi.menu.target.id)}>Unblock this sender</button>
     {:else}

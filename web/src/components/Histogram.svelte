@@ -3,7 +3,13 @@
   // range snapped to bucket edges; a click picks one bucket. Buckets the scan hasn't reached
   // yet (count null) are hatched; buckets spread from the index's checkpoints say "≈" in
   // their tooltip only.
+  //
+  // With `onpoint`, "Bundle around a moment" in the header switches to picking a point: the next
+  // click (or Enter on a bar) picks the time under the pointer, rounded down to the minute (to the
+  // second for buckets under a minute; a bar's start from the keyboard), and Esc cancels. Dragging
+  // works as before outside that mode. `mark` draws a line at a moment (the bundle's).
   import type { Histogram } from '../lib/api';
+  import { pointTime } from '../lib/bundle';
   import { snapSelection } from '../lib/events';
   import { num } from '../lib/format';
 
@@ -14,6 +20,11 @@
     utc = false,
     busy = false,
     onselect,
+    onpoint,
+    pointLabel = 'Bundle around a moment',
+    cursorText = 'Bundle around',
+    mark = null,
+    hint = 'Drag across the bars to zoom in; Back zooms out.',
   }: {
     hist: Histogram | null;
     from: string;
@@ -21,6 +32,14 @@
     utc?: boolean;
     busy?: boolean;
     onselect: (from: string, to: string) => void;
+    /** A point picked in "Bundle around a moment" mode (RFC 3339). */
+    onpoint?: (at: string) => void;
+    pointLabel?: string;
+    /** The words before the time on the line that follows the pointer while picking. */
+    cursorText?: string;
+    /** A moment to mark with a line (RFC 3339), or null. */
+    mark?: string | null;
+    hint?: string;
   } = $props();
 
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -77,8 +96,43 @@
     const x = Math.min(Math.max(e.clientX - r.left, 0), r.width - 1);
     return Math.floor((x / r.width) * buckets.length);
   }
+  // ----- pick a point -----
+  let picking = $state(false);
+  let hover = $state<number | null>(null);
+  function fracAt(e: PointerEvent): number {
+    const r = box!.getBoundingClientRect();
+    return Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1);
+  }
+  const timeAt = (frac: number) => pointTime(buckets[0].start, hist!.bucket_seconds, buckets.length, frac, from, to);
+  function pick(at: string) {
+    picking = false;
+    hover = null;
+    onpoint?.(at);
+  }
+  $effect(() => {
+    if (!picking) return;
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        picking = false;
+        hover = null;
+      }
+    };
+    addEventListener('keydown', esc, true);
+    return () => removeEventListener('keydown', esc, true);
+  });
+  const hoverAt = $derived(picking && hover !== null && buckets.length && hist ? timeAt(hover) : '');
+  const span0 = $derived(buckets.length ? Date.parse(buckets[0].start) : 0);
+  const spanMs = $derived(buckets.length * size);
+  const leftOf = (iso: string) => ((Date.parse(iso) - span0) / spanMs) * 100;
+  const markLeft = $derived(mark && spanMs && Date.parse(mark) >= Date.parse(from) && Date.parse(mark) <= Date.parse(to) ? leftOf(mark) : null);
+
   function down(e: PointerEvent) {
     if (!buckets.length || e.button !== 0) return;
+    if (picking) {
+      pick(timeAt(fracAt(e)));
+      return;
+    }
     try {
       box!.setPointerCapture(e.pointerId);
     } catch {
@@ -88,7 +142,8 @@
     drag = { a: i, b: i };
   }
   function move(e: PointerEvent) {
-    if (drag) drag = { a: drag.a, b: indexAt(e) };
+    if (picking) hover = fracAt(e);
+    else if (drag) drag = { a: drag.a, b: indexAt(e) };
   }
   function up() {
     if (!drag || !hist) return;
@@ -98,6 +153,11 @@
     if (Date.parse(r.from) < Date.parse(r.to) && (r.from !== from || r.to !== to)) onselect(r.from, r.to);
   }
   function key(e: KeyboardEvent, i: number) {
+    if ((e.key === 'Enter' || e.key === ' ') && hist && picking) {
+      e.preventDefault();
+      pick(new Date(Math.max(Date.parse(buckets[i].start), Date.parse(from))).toISOString().replace(/\.000Z$/, 'Z'));
+      return;
+    }
     if ((e.key === 'Enter' || e.key === ' ') && hist) {
       e.preventDefault();
       const r = snapSelection(buckets.map((x) => x.start), hist.bucket_seconds, i, i, from, to);
@@ -113,18 +173,31 @@
     {#if hist?.source === 'index'}<span class="src" title="Counted from the index (per-minute and hourly stats, and file checkpoints), without reading the log files">from the index</span>{/if}
     {#if hist && buckets.some((b) => b.count === null)}<span class="legend"><span class="sw hatch" aria-hidden="true"></span>not counted yet</span>{/if}
     <span class="grow"></span>
-    {#if hist}<span class="hint">Drag across the bars to zoom in; Back zooms out.</span>{/if}
+    {#if hist}<span class="hint">{picking ? 'Click the moment on the bars (or Enter on one); Esc cancels.' : hint}</span>{/if}
+    {#if onpoint && hist && buckets.length}
+      <button type="button" class="pick" aria-pressed={picking} onclick={() => ((picking = !picking), (hover = null))} title="Then click a point on the bars">
+        {picking ? 'Cancel' : pointLabel}
+      </button>
+    {/if}
   </div>
   <div
     class="hist"
     class:empty={!hist}
+    class:picking
     bind:this={box}
     role="presentation"
     onpointerdown={down}
     onpointermove={move}
     onpointerup={up}
+    onpointerleave={() => (hover = null)}
     onpointercancel={() => (drag = null)}
   >
+    {#if markLeft !== null}<span class="mark" style:left="{markLeft}%" title="The bundle's moment" aria-hidden="true"></span>{/if}
+    {#if hoverAt}
+      <span class="cursor" style:left="{leftOf(hoverAt)}%" aria-hidden="true"
+        ><span class="clabel" class:flip={leftOf(hoverAt) > 70}>{cursorText} {label(Date.parse(hoverAt), multiDay, withSec)}{utc ? ' UTC' : ''}</span></span
+      >
+    {/if}
     {#each buckets as b, i (b.start)}
       <button
         type="button"
@@ -242,5 +315,51 @@
   }
   .hint {
     font-size: 12px;
+  }
+  .pick {
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: transparent;
+    color: var(--log-fg);
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .pick:hover,
+  .pick[aria-pressed='true'] {
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .hist.picking,
+  .hist.picking .bar {
+    cursor: copy;
+  }
+  .mark,
+  .cursor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 2px solid var(--sev-warn);
+    z-index: 2;
+    pointer-events: none;
+  }
+  .cursor {
+    border-left-style: dashed;
+    border-left-color: var(--log-fg);
+  }
+  .clabel {
+    position: absolute;
+    top: 2px;
+    left: 6px;
+    padding: 1px 6px;
+    border-radius: 6px;
+    background: var(--log-bar);
+    color: var(--log-fg);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .clabel.flip {
+    left: auto;
+    right: 6px;
   }
 </style>
