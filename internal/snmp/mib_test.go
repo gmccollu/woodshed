@@ -10,22 +10,22 @@ import (
 func TestBuiltinMIBs(t *testing.T) {
 	s := BuiltinMIBs()
 	for oid, want := range map[string]string{
-		"1.3.6.1.6.3.1.1.5.1":      "coldStart",
-		"1.3.6.1.6.3.1.1.5.2":      "warmStart",
-		"1.3.6.1.6.3.1.1.5.3":      "linkDown",
-		"1.3.6.1.6.3.1.1.5.4":      "linkUp",
-		"1.3.6.1.6.3.1.1.5.5":      "authenticationFailure",
-		"1.3.6.1.2.1.1.3.0":        "sysUpTime.0",
-		"1.3.6.1.6.3.1.1.4.1.0":    "snmpTrapOID.0",
-		"1.3.6.1.6.3.1.1.4.3.0":    "snmpTrapEnterprise.0",
-		"1.3.6.1.2.1.2.2.1.8.3":    "ifOperStatus.3",
-		"1.3.6.1.2.1.31.1.1.1.1.7": "ifName.7",
+		"1.3.6.1.6.3.1.1.5.1":       "coldStart",
+		"1.3.6.1.6.3.1.1.5.2":       "warmStart",
+		"1.3.6.1.6.3.1.1.5.3":       "linkDown",
+		"1.3.6.1.6.3.1.1.5.4":       "linkUp",
+		"1.3.6.1.6.3.1.1.5.5":       "authenticationFailure",
+		"1.3.6.1.2.1.1.3.0":         "sysUpTime.0",
+		"1.3.6.1.6.3.1.1.4.1.0":     "snmpTrapOID.0",
+		"1.3.6.1.6.3.1.1.4.3.0":     "snmpTrapEnterprise.0",
+		"1.3.6.1.2.1.2.2.1.8.3":     "ifOperStatus.3",
+		"1.3.6.1.2.1.31.1.1.1.1.7":  "ifName.7",
 		"1.3.6.1.2.1.31.1.1.1.18.7": "ifAlias.7",
-		"1.3.6.1.4.1":              "enterprises",
-		"1.3.6.1.4.1.32473.1":      "", // under a plain subtree node: no name
-		"1.3.6.1.6.3.15.1.1.4.0":   "usmStatsUnknownEngineIDs.0",
-		"1.3.6.1.6.3.18.1.3.0":     "snmpTrapAddress.0",
-		"2.5":                      "",
+		"1.3.6.1.4.1":               "enterprises",
+		"1.3.6.1.4.1.32473.1":       "", // under a plain subtree node: no name
+		"1.3.6.1.6.3.15.1.1.4.0":    "usmStatsUnknownEngineIDs.0",
+		"1.3.6.1.6.3.18.1.3.0":      "snmpTrapAddress.0",
+		"2.5":                       "",
 	} {
 		o, _ := ParseOID(oid)
 		if got := s.Name(o); got != want {
@@ -207,7 +207,7 @@ func TestMIBFiles(t *testing.T) {
 		v    int64
 		want string
 	}{
-		{"1.3.6.1.4.1.32473.2.1.1.2.5", 3, "failed"},  // a TC imported from another file
+		{"1.3.6.1.4.1.32473.2.1.1.2.5", 3, "failed"},   // a TC imported from another file
 		{"1.3.6.1.4.1.32473.2.1.1.2.5", -1, "unknown"}, // a negative enumeration
 		{"1.3.6.1.4.1.32473.2.2.0", 2, "auto"},
 		{"1.3.6.1.4.1.32473.2.1.1.3.5", 1, ""},
