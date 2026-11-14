@@ -26,6 +26,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
 	"github.com/gmccollu/woodshed/internal/store"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 	"github.com/gmccollu/woodshed/internal/updatecheck"
 )
 
@@ -946,7 +947,8 @@ func (b *backend) StorageHistory(ctx context.Context) ([]api.StorageEntry, error
 	}
 	out := make([]api.StorageEntry, len(ds))
 	for i, d := range ds {
-		out[i] = api.StorageEntry{Time: d.Time, File: d.File, DeviceID: d.DeviceID, Bytes: d.Bytes, Reason: string(d.Reason)}
+		out[i] = api.StorageEntry{Time: d.Time, File: d.File, DeviceID: d.DeviceID, Bytes: d.Bytes, Reason: string(d.Reason),
+			Type: logfile.NormType(d.Type)}
 	}
 	return out, nil
 }

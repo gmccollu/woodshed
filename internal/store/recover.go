@@ -29,9 +29,14 @@ import (
 //     appends to it on its next message. Every other uncompressed file is queued
 //     for compression.
 func (s *Store) recover(ctx context.Context) error {
-	entries, temps, err := logfile.List(s.dataDir)
+	entries, temps, unknown, err := logfile.ListAll(s.dataDir)
 	if err != nil {
 		return err
+	}
+	// A folder inside a device folder that no data type claims is left alone
+	// (SPEC §11.1), and said once per start.
+	for _, u := range unknown {
+		s.log.Info("store: ignoring a folder no data type claims", "folder", u)
 	}
 	var notes []string
 	removed := 0

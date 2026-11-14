@@ -459,7 +459,7 @@ without `updates` (a 1.0 client or script) leaves it as it is.
 - Turning `enabled` on for the first time without `cert_file` creates the CA and the certificate before the PUT
   returns. Turning it off keeps them.
 
-`GET /api/storage/history` → `[{"time", "file", "device_id", "bytes", "reason": "age|cap|low_disk"}]`
+`GET /api/storage/history` → `[{"time", "file", "device_id", "bytes", "reason": "age|cap|low_disk", "type": "syslog|trap"}]`
 
 ## TLS syslog listener
 

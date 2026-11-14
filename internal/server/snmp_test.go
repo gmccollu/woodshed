@@ -120,7 +120,11 @@ func TestTrapsEndToEndInProcess(t *testing.T) {
 	}
 	ids := map[string]string{}
 	for _, rn := range runs {
-		res, err := loadgen.Send(ctx, loadgen.SendOptions{Addr: addr, Proto: "trap", Count: rn.n, Rate: 2000, Trap: rn.to})
+		rate := 2000.0
+		if rn.to.Inform {
+			rate = 60 // under the reply limit (100 a second per source): every inform from 127.0.0.1
+		}
+		res, err := loadgen.Send(ctx, loadgen.SendOptions{Addr: addr, Proto: "trap", Count: rn.n, Rate: rate, Trap: rn.to})
 		if err != nil {
 			t.Fatalf("%s: %v", rn.name, err)
 		}
@@ -355,4 +359,37 @@ func TestSNMPUsersAPI(t *testing.T) {
 		t.Fatalf("engine after restart %+v", st)
 	}
 	_ = time.Second
+}
+
+// Replies are limited to 100 a second per source (SPEC §11.2.3): a burst of
+// informs from one sender is stored whole, answered up to the limit, and the
+// rest counted as rate-limited.
+func TestInformReplyLimit(t *testing.T) {
+	dir := t.TempDir()
+	snmpPort := freeUDP(t)
+	cfgPath := writeConfig(t, dir, freePort(t), 0, func(c *config.Config) {
+		c.Listeners.SNMP = config.SNMPListener{Enabled: true, Addr: "127.0.0.1", Port: snmpPort, AnswerInforms: true}
+	})
+	r := start(t, cfgPath)
+	res, err := loadgen.Send(context.Background(), loadgen.SendOptions{Addr: fmt.Sprintf("127.0.0.1:%d", snmpPort), Proto: "trap",
+		Count: 400, Trap: loadgen.TrapOptions{Version: "2c", Inform: true, Timeout: 500 * time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Informs == nil || res.Informs.Answered < 100 || res.Informs.Answered > 300 || res.Informs.TimedOut == 0 {
+		t.Fatalf("informs %+v", res.Informs)
+	}
+	var st api.SNMPState
+	waitFor(t, "the counts", func() bool {
+		r.do(t, "GET", "/api/snmp", nil, &st)
+		return st.Counts24h.Received == 400
+	})
+	if st.Counts24h.InformsAnswered != int64(res.Informs.Answered) || st.Counts24h.RepliesRateLimited != 400-st.Counts24h.InformsAnswered {
+		t.Fatalf("counts %+v, informs %+v", st.Counts24h, res.Informs)
+	}
+	r.srv.store.Flush()
+	v, err := loadgen.Verify(filepath.Join(dir, "data"), res.RunID, 400)
+	if err != nil || v.Missing != 0 || v.Duplicates != 0 {
+		t.Fatalf("stored %+v %v", v, err)
+	}
 }

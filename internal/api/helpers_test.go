@@ -110,7 +110,7 @@ func newFakeBackend() *fakeBackend {
 			Latest:          &LatestRelease{Version: "1.2.0", URL: "https://example.invalid/releases/tag/v1.2.0"},
 			UpdateAvailable: true,
 		},
-		history: []StorageEntry{{Time: ts("2026-11-09T00:00:01Z"), File: "logs/10.1.0.1/2026-10-10.log.gz", DeviceID: "10.1.0.1", Bytes: 1234, Reason: "age"}},
+		history: []StorageEntry{{Time: ts("2026-11-09T00:00:01Z"), File: "logs/10.1.0.1/2026-10-10.log.gz", DeviceID: "10.1.0.1", Bytes: 1234, Reason: "age", Type: "syslog"}},
 	}
 	for i, d := range []Device{
 		{ID: "10.1.0.1", IP: "10.1.0.1", Name: "edge-fw-01", Group: "HQ", Status: "online", MsgsPerMin: 36720, TotalMsgs: 9123456, BytesOnDisk: 123456789},
