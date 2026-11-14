@@ -4,6 +4,26 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [1.2.0] - unreleased
+
+### Added
+- UDP messages wait in a queue between the network and the disk, so a slow write (an fsync, a file rotation, a
+  compression pass) no longer makes the operating system drop them. The queue holds 100,000 messages or 64 MiB per UDP
+  listener (`listeners.udp_queue_messages` and `udp_queue_bytes` in the config file); when it's full, messages are
+  dropped and counted for their device, with an event once a minute and a banner ("writing to disk fell behind").
+- **About** shows the UDP queue: its capacity, what's waiting now, and the most messages waiting in each of the last
+  24 hours, so a recurring stall shows up. If messages go missing while the queue never fills, they were lost before
+  Woodshed read them.
+- The dashboard and About split dropped messages by reason: writes paused (low disk), write errors, refused new
+  senders, and a full UDP queue.
+- API: `/api/stats` gains `dropped_by_reason` and `udp_queue`; banner kind `udp_queue_full` ([docs/api.md](docs/api.md)).
+- `woodshed bench` reports the UDP queue's high-water mark and drops, and says whether every missing message was
+  counted. `--stall-every` and `--stall-for` fake a slow disk, and `--udp-queue-messages` sets the queue's size.
+
+### Changed
+- When Woodshed stops, it stores the UDP messages still queued first, for at most a third of the shutdown time
+  (5 seconds for the service); any left then are counted as dropped.
+
 ## [1.1.0] - 2026-11-14
 
 ### Added

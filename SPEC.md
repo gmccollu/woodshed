@@ -1761,6 +1761,29 @@ Everything below is **decided (coordinator, 2026-11-14, owner-delegated)**:
 27. The community allowlist is kept in the credentials store, not the TOML, and shown only as hash prefixes
     (§11.2.1).
 
+**Decided (build, 2026-11-14)**, the UDP queue (§11.5), for the owner to overrule:
+28. `dropped_by_reason` is counted in memory since the server started, not in the index: no schema migration in
+    step (b), so it can't collide with step (d)'s. Within a day of a restart it can sum to less than `dropped_24h`
+    (docs/api.md says so). `paused` is the brief's "low_disk": queued messages that reach a paused store count there.
+29. A queue drop counts where the message would have been stored: the sender's device, admitted as `Write` would. A
+    sender the device limits refuse, or past the drainer's per-sender table (65,536 senders between two reports), is
+    counted under the `_refused` stats row, still as `queue_full`, so totals stay exact.
+30. The events log gets one `queue_full` event a minute for all devices together (warn, naming the device when there's
+    one), not one per device as for paused and write-error drops: a stall can touch thousands of devices.
+31. `udp_queue_bytes` counts message bytes, not Go's per-entry overhead (about 80 bytes, so at most 8 MB more at the
+    default 100,000). The reader truncates at `max_message_bytes` before queueing, so the count is what's stored.
+32. Shutdown drains for at most a third of the shutdown timeout (5 s for the service, about 1.3 s portable); what's
+    left then counts as `queue_full`. Close still waits for the message in the sink, so no write happens after it.
+33. `high_water_by_hour` runs from the later of the start and 24 hours ago (so fewer than 24 entries in the first
+    day); the current hour includes the depth now. A rebind keeps the history; `udp_queue` lists an enabled listener
+    while it's down, with `port` 0.
+34. The `udp_queue_full` banner names the limit that refused the latest drop (`udp_queue_bytes` with a size, or
+    `udp_queue_messages` with a count); several UDP listeners share one banner with the counts summed.
+35. `woodshed bench` gains `--stall-every`, `--stall-for` and `--udp-queue-messages`, so §11.6's fake-slow-disk run
+    needs no test build. Measured on the build Mac (Apple M4 Pro, macOS, loopback), 10,000 msg/s for 130 s with a
+    3 s stall every minute: the default queue lost 0 of 1,300,000 (high-water 30,000); a 1,000-message queue lost
+    57,998, all counted as `queue_full` by the listener and the store alike (sent = stored + counted).
+
 ### 11.9 Questions settled (1.2), decided (coordinator, 2026-11-14, owner-delegated)
 1. No IANA Private Enterprise Number for now; the engine ID keeps the placeholder (§11.2). Revisit if the project
    ever publishes a MIB.
