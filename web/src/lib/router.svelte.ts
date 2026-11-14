@@ -1,9 +1,10 @@
 // Hash routing (#/devices) so the embedded server needs no SPA fallback. A page can keep
 // its own state after a "?" (#/events?q=deny&r=1h), so it can be bookmarked or shared.
 
-export type Route = 'welcome' | 'dashboard' | 'devices' | 'events' | 'export' | 'settings' | 'about';
+/** "device" (1.3) is one device's page (#/device?id=10.1.0.1), opened from Devices; it isn't in the nav. */
+export type Route = 'welcome' | 'dashboard' | 'devices' | 'events' | 'export' | 'settings' | 'about' | 'device';
 
-const ROUTES: Route[] = ['welcome', 'dashboard', 'devices', 'events', 'export', 'settings', 'about'];
+const ROUTES: Route[] = ['welcome', 'dashboard', 'devices', 'events', 'export', 'settings', 'about', 'device'];
 
 /** Old names that still open their page: Events was called Search, so old links and bookmarks keep working. */
 const ALIASES: Record<string, Route> = { search: 'events' };

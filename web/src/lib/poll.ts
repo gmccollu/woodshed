@@ -504,5 +504,16 @@ export function stripsOf(series: PollSeries[]): { key: string; label: string; un
   return out;
 }
 
+/** One line of a chart (PollChart.svelte). */
+export interface ChartLine {
+  label: string;
+  /** A CSS colour (var(--chart-N)). */
+  color: string;
+  /** Out-direction lines are dashed. */
+  dash?: boolean;
+  values: (number | null)[];
+}
+export const CHART_COLORS = Array.from({ length: 8 }, (_, i) => `var(--chart-${i + 1})`);
+
 /** A delta series (errors, discards): chart its sum per bucket, not its average. */
 export const isDelta = (key: string) => key.endsWith('_d') || key.endsWith('.in_err_d') || key.endsWith('.out_err_d');

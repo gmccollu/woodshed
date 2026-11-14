@@ -58,6 +58,16 @@
   --sev-info: #8fd6a8;
   --sev-debug: #b3b9c4;
   --sev-unknown: #c9b5f5;
+  /* Chart lines on cards (the device page's Polling charts): series 1-8, checked at 3:1. */
+  --chart-1: #3846c4;
+  --chart-2: #b4520b;
+  --chart-3: #13795b;
+  --chart-4: #b02a6d;
+  --chart-5: #6a43b8;
+  --chart-6: #7a6200;
+  --chart-7: #0b6694;
+  --chart-8: #b3262c;
+  --chart-mark: #85520a;
 }
 
 .dark {
@@ -103,6 +113,15 @@
   --log-fg: #e3e6eb;
   --log-dim: #959cab;
   --log-bar: #171a20;
+  --chart-1: #8e9bff;
+  --chart-2: #f0a35e;
+  --chart-3: #4fd1a5;
+  --chart-4: #f27fbf;
+  --chart-5: #b79cff;
+  --chart-6: #e2c35b;
+  --chart-7: #5fc3f0;
+  --chart-8: #ff8a80;
+  --chart-mark: #f3c27a;
 }
 
 @theme inline {
