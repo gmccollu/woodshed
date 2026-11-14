@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"time"
 )
 
 // Device list paging (docs/api.md, GET /api/devices).
@@ -23,6 +24,10 @@ type DeviceQuery struct {
 	Ungrouped     bool
 	Hidden        string // include, only, exclude
 	Blocked       string // include, only, exclude
+	// ActiveFrom and ActiveTo (both or neither) keep only the devices with a
+	// stored record of any type received in [ActiveFrom, ActiveTo) (1.2, the
+	// incident bundle's preview).
+	ActiveFrom, ActiveTo time.Time
 }
 
 // DevicePage is the body of GET /api/devices.
@@ -75,6 +80,18 @@ func ParseDeviceQuery(v url.Values) (DeviceQuery, error) {
 	}
 	if q.Group != "" && q.Ungrouped {
 		return q, fmt.Errorf("group and ungrouped=true are alternatives; send one")
+	}
+	if q.ActiveFrom, err = parseTimeParam(v, "active_from"); err != nil {
+		return q, err
+	}
+	if q.ActiveTo, err = parseTimeParam(v, "active_to"); err != nil {
+		return q, err
+	}
+	switch {
+	case q.ActiveFrom.IsZero() != q.ActiveTo.IsZero():
+		return q, fmt.Errorf("active_from and active_to go together; send both or neither")
+	case !q.ActiveFrom.IsZero() && !q.ActiveFrom.Before(q.ActiveTo):
+		return q, fmt.Errorf("active_from must be before active_to")
 	}
 	return q, nil
 }

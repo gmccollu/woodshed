@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"os"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
@@ -139,11 +140,17 @@ func (b *backend) Context(ctx context.Context, ref string, before, after int) (a
 }
 
 func toExportRequest(r api.ExportRequest) export.Request {
-	return export.Request{AllDevices: r.AllDevices, Devices: r.Devices, From: r.From, To: r.To, Filters: export.Filters{
+	req := export.Request{AllDevices: r.AllDevices, Devices: r.Devices, From: r.From, To: r.To, Filters: export.Filters{
 		Group: r.Group, Ungrouped: r.Ungrouped, Severities: toSeveritySet(r.Severities), Q: r.Q, Regex: r.Regex, Case: r.Case,
 		Apps: r.App, Hosts: r.Host, Exclude: r.Exclude, Terms: r.Terms, Facilities: toFacilitySet(r.Facilities),
 		ExcludeDevices: r.ExcludeDevices, ExcludeApps: r.ExcludeApp, ExcludeHosts: r.ExcludeHost, Types: exportTypes(r.Types),
 		Trap: r.Trap}}
+	if r.Kind == export.KindBundle {
+		at := r.At
+		req.Kind, req.At, req.Before, req.After, req.ActiveDevices = export.KindBundle, &at, r.Before, r.After, r.ActiveDevices
+		req.Types = r.Types // a bundle's types are its own: none means every type with data
+	}
+	return req
 }
 
 // exportTypes keeps a 1.1 request's entry as it was: syslog alone is no types.
@@ -164,12 +171,33 @@ func toAPIExport(e export.Info) api.ExportInfo {
 			Type: "syslog", Syntax: map[bool]string{false: "text", true: "terms"}[e.Filters.Terms],
 			Facilities: fromFacilitySet(e.Filters.Facilities), ExcludeDevices: e.Filters.ExcludeDevices,
 			ExcludeApp: e.Filters.ExcludeApps, ExcludeHost: e.Filters.ExcludeHosts,
-			Kind: "export", Types: e.Filters.TypesOrSyslog(), Trap: api.TrapListsOf(e.Filters.Trap)},
+			Kind: export.KindExport, Types: e.Filters.TypesOrSyslog(), Trap: api.TrapListsOf(e.Filters.Trap)},
 	}
 	if ts := e.Filters.TypesOrSyslog(); len(ts) == 1 {
 		out.Filters.Type = ts[0]
 	}
+	if f := e.Filters; f.IsBundle() {
+		at := f.At.UTC()
+		out.Filters.Kind, out.Filters.At = export.KindBundle, &at
+		out.Filters.Before, out.Filters.After = export.FormatSpan(f.Before), export.FormatSpan(f.After)
+		out.Filters.ActiveDevices = f.ActiveDevices
+		out.Filters.Types = nonNilStrings(f.Types)
+		out.Filename = export.BundleFileName(hostname(), at)
+	}
 	return out
+}
+
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// hostname is this machine's name, for a bundle's download name.
+func hostname() string {
+	h, _ := os.Hostname()
+	return h
 }
 
 func (b *backend) CreateExport(ctx context.Context, r api.ExportRequest) (api.ExportInfo, error) {
