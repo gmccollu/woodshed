@@ -47,8 +47,11 @@ type run struct {
 	steps, maxSteps int
 	scanned         int64 // bytes of uncompressed stream read for matching
 	files           map[int64]struct{}
-	timedOut        bool
-	err             error // a context error
+	// gone, when set (Each), collects the files skipped because they were
+	// gone or couldn't be read.
+	gone     map[int64]struct{}
+	timedOut bool
+	err      error // a context error
 
 	unesc []byte
 	msg   model.Message // fields' scratch parse
@@ -369,6 +372,9 @@ func (s *stream) step(r *run) {
 		// A file that can't be read (truncated, corrupt, or deleted on an OS that
 		// doesn't keep open files readable): keep what was found, skip the rest.
 		r.e.log.Warn("search: stopped reading a log file", "file", s.cur.file.Path, "err", err)
+		if r.gone != nil {
+			r.gone[fi.ID] = struct{}{}
+		}
 		s.nextFileKeepQueue(r.desc)
 	}
 }
@@ -384,6 +390,9 @@ func (s *stream) openCur(r *run) bool {
 	if err != nil {
 		if !errors.Is(err, errGone) {
 			r.e.log.Warn("search: skipping a log file", "file", fi.Path, "err", err)
+		}
+		if r.gone != nil {
+			r.gone[fi.ID] = struct{}{}
 		}
 		s.nextFile(r.desc)
 		return false

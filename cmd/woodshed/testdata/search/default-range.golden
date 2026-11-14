@@ -1,0 +1,12 @@
+2026-11-09T13:00:00.000Z 192.0.2.1 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0080
+2026-11-09T14:30:00.000Z 192.0.2.1 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/0 seq=0084
+2026-11-09T16:00:00.000Z 192.0.2.1 no pri: multi\nline message seq=0088
+2026-11-09T17:30:00.000Z 192.0.2.1 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0092
+2026-11-10T01:00:00.000Z 192.0.2.1 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/0 seq=0096
+2026-11-10T02:30:00.000Z 192.0.2.1 no pri: multi\nline message seq=0100
+2026-11-10T04:00:00.000Z 192.0.2.1 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0104
+2026-11-10T05:30:00.000Z 192.0.2.1 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/0 seq=0108
+2026-11-10T07:00:00.000Z 192.0.2.1 no pri: multi\nline message seq=0112
+2026-11-10T08:30:00.000Z 192.0.2.1 <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0116
+2026-11-10T10:00:00.000Z 192.0.2.1 <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/0 seq=0120
+2026-11-10T11:30:00.000Z 192.0.2.1 no pri: multi\nline message seq=0124

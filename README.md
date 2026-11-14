@@ -93,6 +93,8 @@ As of 1.1.0 (details in the [CHANGELOG](CHANGELOG.md)):
 - Web UI: a dashboard with the message rate, device tiles and a live tail with server-side filters; an Events page to
   browse and filter all stored history (text or regex, program/tag, host, exclude, devices, time, severity); a
   devices page to rename, group or hide senders; settings that apply without a restart; light and dark modes.
+- `woodshed search` searches the stored logs from a terminal with the same filters as Events, compressed days
+  included, on every OS (natively on Windows, no WSL). It only reads, so it's safe beside the running service.
 - The UI listens on `127.0.0.1:8514` only by default. LAN mode serves HTTPS with a password.
 - No telemetry. The only outbound connection is an optional daily update check, off until you turn it on: it
   fetches one public file (`https://gmccollu.github.io/woodshed/releases.json`), sends nothing about your

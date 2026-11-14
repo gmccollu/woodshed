@@ -1,0 +1,4 @@
+  <187>Nov 10 00:00:00 edge-fw-01 %FW-3-LINK: Link DOWN on Gi0/0 seq=0000
+> no pri: multi
+line message seq=0004
+  <14>Nov 10 00:00:00 web-02 kernel: eth0 link up seq=0008

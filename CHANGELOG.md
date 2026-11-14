@@ -4,6 +4,17 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [1.2.0] - unreleased
+
+### Added
+- `woodshed search` searches the stored logs from the command line with the Events engine: the same text, Terms and
+  Regex modes and every filter (devices, groups, severities, facilities, programs/tags, hosts, their exclusions, and
+  `--field KEY=V` / `--not-field KEY=V` for any field), compressed days included. Output is the stored lines, the
+  messages alone (`--raw`), NDJSON (`--json`), lines around each match (`--context N`) or a count, with a summary on
+  standard error and grep-style exit codes. It reads the data folder directly and never writes to it, so it works
+  beside the running service, with the UI off, or with the service stopped. See
+  [docs/user-guide.md](docs/user-guide.md#searching-from-the-command-line).
+
 ## [1.1.0] - 2026-11-14
 
 ### Added
