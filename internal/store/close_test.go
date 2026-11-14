@@ -154,6 +154,7 @@ func TestCloseDoesntWaitForAStarvedCompressor(t *testing.T) {
 	stalled := make(chan struct{})
 	s, opts, dir := compressEnv(t, func(s *Store) {
 		s.testHookLowerPrio = func() { close(stalled); <-release } // a thread the OS doesn't run
+		s.testKeepPrio = true                                      // the hook is the starvation; once released it must exit promptly
 	})
 	select {
 	case <-stalled:
@@ -205,6 +206,7 @@ func TestNoCompressionCommitsAfterClose(t *testing.T) {
 		s.testHookGzip = func(string) {
 			once.Do(func() { close(inGzip); <-release })
 		}
+		s.testKeepPrio = true // not about thread priority: don't let the OS starve the compressor
 	})
 	select {
 	case <-inGzip:
