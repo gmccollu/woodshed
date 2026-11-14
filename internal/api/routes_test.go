@@ -203,7 +203,8 @@ func sameShape(t *testing.T, where string, doc, got any, optional map[string]boo
 func TestRoutesMatchDocExamples(t *testing.T) {
 	examples := docExamples(t)
 	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history", "/api/storage/estimate",
-		"/api/search/schema", "/api/search/summary", "/api/saved-searches", "/api/tls", "/api/tls/failures"} {
+		"/api/search/schema", "/api/search/summary", "/api/saved-searches", "/api/tls", "/api/tls/failures",
+		"/api/poll", "/api/poll/targets", "/api/poll/series"} {
 		if _, ok := examples[route]; !ok {
 			t.Fatalf("no example for %s in docs/api.md", route)
 		}
@@ -223,6 +224,9 @@ func TestRoutesMatchDocExamples(t *testing.T) {
 		path := route
 		if route == "/api/storage/estimate" {
 			path += "?retention_bytes=21474836480"
+		}
+		if route == "/api/poll/series" {
+			path += "?device=10.1.0.1&series=in_bps"
 		}
 		r := do(t, c, "GET", srv.url(path), "")
 		if r.code != http.StatusOK {

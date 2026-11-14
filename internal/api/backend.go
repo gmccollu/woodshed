@@ -173,6 +173,8 @@ type Backend interface {
 	TLSBackend
 	// The SNMP trap receiver (snmp.go).
 	SNMPBackend
+	// The SNMP poller (poll.go).
+	PollBackend
 }
 
 // ErrNotFound is returned (possibly wrapped) by UpdateDevice, Context and the
@@ -354,6 +356,10 @@ type Device struct {
 	// type). TotalMsgs counts every type too.
 	Types       []string         `json:"types"`
 	LinesByType map[string]int64 `json:"lines_by_type"`
+	// Polled says a poll target writes into this device; PollStatus is that
+	// target's state.status (SPEC §12.5).
+	Polled     bool   `json:"polled"`
+	PollStatus string `json:"poll_status,omitempty"`
 }
 
 // DevicePatch is the body of PATCH /api/devices/{id}; nil fields are left alone.
@@ -375,6 +381,20 @@ type Settings struct {
 	// Updates is always in GET. A PUT without it (a 1.0 client or script)
 	// leaves updates.check as it is.
 	Updates *UpdatesSettings `json:"updates,omitempty"`
+	// Poll is the SNMP poller's defaults (SPEC §12); a PUT without it (a 1.2
+	// client) leaves them as they are.
+	Poll *PollSettings `json:"poll,omitempty"`
+}
+
+// PollSettings are Settings → Polling's defaults.
+type PollSettings struct {
+	IntervalS     int      `json:"interval_s"`
+	TimeoutMS     int      `json:"timeout_ms"`
+	Retries       int      `json:"retries"`
+	Concurrency   int      `json:"concurrency"`
+	MaxInterfaces int      `json:"max_interfaces"`
+	MaxTargets    int      `json:"max_targets"`
+	Presets       []string `json:"presets"`
 }
 
 // UpdatesSettings holds the update check setting.

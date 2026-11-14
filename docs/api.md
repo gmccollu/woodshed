@@ -31,7 +31,8 @@ Change this file first if the contract changes.
                                                // update_prompt, update_available (see "Update check"), tls_legacy, tls_cert_expiring,
                                                // tls_cert_names, tls_firewall (see "TLS syslog listener"), udp_queue_full
                                                // (see "UDP receive queue"), snmp_firewall, snmp_credentials, snmp_mibs
-                                               // (see "SNMP trap receiver"); an optional "url" on any banner
+                                               // (see "SNMP trap receiver"), poll_unreachable, poll_overrun
+                                               // (see "SNMP poller"); an optional "url" on any banner
 }
 ```
 A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
@@ -131,11 +132,14 @@ id, IP or name (case-insensitive substring); `hidden` and `blocked` default to `
   "first_seen": "...", "last_heard": "...", "status": "online", "blocked": false,   // status: online | quiet | offline | blocked
   "msgs_per_min": 36720, "total_msgs": 9123456, "bytes_on_disk": 123456789,
   "tls": null,                                 // null until the device has tried TLS since the server started; see below
-  "types": ["syslog", "trap"], "lines_by_type": {"syslog": 9120000, "trap": 3456}}]
+  "types": ["syslog", "trap"], "lines_by_type": {"syslog": 9120000, "trap": 3456},
+  "polled": false}]                            // since 1.3; a polled device also has "poll_status": "ok"
 ```
 `total_msgs` counts every data type (syslog and SNMP traps, SPEC §11.1), so a device that sends only traps is online.
 `types` lists the data types the device has files of on disk now (`[]` when none), and `lines_by_type` their stored
 lines (records), from the index.
+`polled` says an SNMP poll target writes into this device (SPEC §12.3), and `poll_status` (only then) is that
+target's `state.status` (see "SNMP poller").
 `tls`, once the device has tried syslog over TLS (counts since the server started, kept 24 h):
 ```json
 {"connections_24h": 288, "version": "TLS 1.3", "cipher": "TLS_AES_128_GCM_SHA256", "last_connected": "2026-11-13T15:09:51Z",
@@ -659,11 +663,18 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
   "ui": {"lan_mode": false, "port": 8514, "cert_file": "", "key_file": "", "require_login_local": false,
          "extra_hostnames": [], "trusted_hosts": []},
   "quiet": {"quiet_after_seconds": 300, "offline_after_seconds": 3600},
-  "updates": {"check": "ask"}
+  "updates": {"check": "ask"},
+  "poll": {"interval_s": 60, "timeout_ms": 2000, "retries": 1, "concurrency": 32, "max_interfaces": 64,
+           "max_targets": 500, "presets": ["system", "system-info", "interfaces"]}
 }
 ```
 `updates.check` must be `"ask"`, `"on"` or `"off"` (a `400` on `updates.check` otherwise); see "Update check". A PUT
 without `updates` (a 1.0 client or script) leaves it as it is.
+
+`poll` (since 1.3) is the SNMP poller's defaults (SPEC §12.1): a new target takes them for the fields its body leaves
+out. Ranges: `interval_s` 30–600, `timeout_ms` 200–10,000, `retries` 0–5, `concurrency` 1–256, `max_interfaces`
+1–1,024, `max_targets` 1–5,000; `presets` any of `system`, `system-info`, `interfaces`. Errors are keyed `poll.<field>`.
+A PUT without `poll` (a 1.2 client) leaves it as it is.
 
 `listeners.tls` is the TLS syslog listener (SPEC §10.3), off by default:
 - `port` is 1–65535, and differs from the UDP and TCP ports when they share an address (and from `ui.port`). Ports
@@ -855,6 +866,128 @@ the path's is a `400` on `name` (delete it and add the new name). `404` if unkno
 the SNMP listener, the engine ID, the last 24 h counts and the failing senders. `woodshed search --type trap`,
 `woodshed send --proto trap` and `woodshed bench --proto trap` are in docs/user-guide.md.
 
+## SNMP poller
+
+Since 1.3 (SPEC §12). With no targets nothing is polled and nothing is sent. Communities are write-only: `GET` says
+only `community_set`, and nothing else ever returns them.
+
+### Poll targets
+`GET /api/poll/targets` → every target, sorted by device then address (`GET /api/poll/targets/{id}` → one, with an
+`ETag`):
+```json
+[{"id": "pt_5c1e9a2b", "address": "10.1.0.1", "port": 161, "device_id": "10.1.0.1", "enabled": true,
+  "version": "3", "community_set": false, "v3_user": "monitor",
+  "interval_s": 60, "timeout_ms": 2000, "retries": 1,
+  "presets": ["system", "system-info", "interfaces"], "interfaces": "all", "max_interfaces": 64, "pinned": [],
+  "custom": [{"oid": "1.3.6.1.4.1.32473.1.2.0", "kind": "scalar", "label": "queue depth", "max_rows": 0}],
+  "state": {"status": "ok", "last_attempt": "2026-11-15T10:00:00Z", "last_ok": "2026-11-15T10:00:00Z",
+            "failing_since": null, "backoff_s": 0, "error": "", "rtt_ms": 4,
+            "engine_id": "80001f8880a1b2c3d4", "sys_name": "edge-fw-01", "sys_descr": "…",
+            "hc_counters": true, "host_resources": true, "interfaces_polled": 24, "interfaces_total": 26}}]
+```
+- `version`: `"1"`, `"2c"` or `"3"`. `community_set` says whether a v1/v2c community is stored; the community itself
+  is never returned. `v3_user` names a user from `/api/snmp/users`.
+- `interfaces`: `"all"` (up to `max_interfaces`) or a list of `ifName`s and indexes (`["eth1", "eth2", 7]`).
+- `pinned` (since 1.3, SPEC §12.11 #3): `ifName`s and indexes polled first when `max_interfaces` leaves interfaces out
+  (default `[]`); the device page's "pin" adds to it.
+- `state` may also have `"wrong_source": "192.0.2.9:161"`: replies with this target's request IDs came from another
+  address (they're dropped; the agent needs fixing).
+- `custom[].kind`: `"scalar"` or `"walk"`; `max_rows` (walks only) 1–1,024, default 128. At most 32 entries.
+- Fields left out of a body take the Settings defaults (`poll` in `/api/settings`) at the time of the request; on a
+  `PUT`, the target's current values. The read-only `id`, `community_set` and `state` are accepted and ignored, so a
+  `GET` body can be sent back as it is.
+- `state.status`: `ok`, `failing` (no answer or an error for 1–2 cycles), `backing_off`, `disabled`, or `pending` (not
+  polled yet). `error` is the last failure's text, without secrets.
+
+**Add:** `POST /api/poll/targets` body `{"address": "10.1.0.1", "version": "2c", "community": "…", …}` → `201` with the
+target. `device_id` defaults to the address; a new address becomes a device on its first answer.
+
+**Change:** `PUT /api/poll/targets/{id}` (the same body) → `200`. A missing `community` keeps the stored one; `""`
+with `version` `"1"` or `"2c"` is a `400`. If-Match with the target's `ETag`, as for saved searches.
+
+**Delete:** `DELETE /api/poll/targets/{id}` → `204`. The device's poll files stay until retention deletes them.
+
+- Limits: at most 500 targets (`poll.max_targets`; `409` beyond); one target per address and port (`409`, with
+  `errors.address`). `address` is an IP address
+  (no names: nothing is looked up). `port` 1–65535.
+- Validation errors: `400 {"errors": {"address": "…", "custom[2].oid": "…"}}`. A `v3_user` that doesn't exist is a
+  `400` on `v3_user`.
+
+**Test poll:** `POST /api/poll/test` body: a target as for **Add** (not saved), or `{"id": "pt_…"}` →
+```json
+{"ok": false, "exit": "partial",
+ "steps": [{"step": "discovery", "ok": true, "detail": "engine 80001f8880a1b2c3d4, boots 7", "rtt_ms": 3},
+           {"step": "system", "ok": true, "detail": "edge-fw-01, up 12 d 3 h", "rtt_ms": 4},
+           {"step": "host_resources", "ok": false, "detail": "not available on this device (noSuchObject)", "rtt_ms": 4},
+           {"step": "interfaces", "ok": true, "detail": "26 interfaces, 64-bit counters; 24 would be polled", "rtt_ms": 9}]}
+```
+`exit` is `ok`, `no_answer`, `auth` or `partial`, the CLI's exit codes by name (SPEC §12.7). At most one test per
+target at a time, and 10 a minute in all (`429` with `Retry-After` beyond). `{"id": …}` with other fields tests the
+stored target with those fields changed (a missing `community` uses the stored one). Step names: `discovery` (v3),
+`system`, `host_resources`, `interfaces`, `oid <oid> (<label>)` per custom OID, and `replies` when replies came from
+another address.
+
+### Poll data for graphs
+`GET /api/poll/series?device=10.1.0.1&from=…&to=…&bucket=60&series=in_bps,out_bps,cpu,if.eth3.in_bps` →
+```json
+{"device_id": "10.1.0.1", "bucket_seconds": 60, "source": "files",       // "files" | "rollup"
+ "series": [{"key": "in_bps", "label": "In (all interfaces)", "unit": "bit/s",
+             "points": [{"start": "2026-11-15T10:00:00Z", "avg": 81234567, "max": 90123456, "count": 1}]}],
+ "markers": [{"time": "2026-11-15T10:04:00.410Z", "kind": "restart", "reboot": "1",
+              "detail": "sysUpTime and hrSystemUptime reset"}],
+ "partial": false, "next_cursor": ""}
+```
+- Series keys: `in_bps`, `out_bps` (summed over interfaces), `max_if_in_bps`, `max_if_out_bps`, `errors_d`,
+  `discards_d`, `cpu`, `mem_used_pct`, `uptime_s`, `if.<ifName or index>.<in_bps|out_bps|in_err_d|out_err_d|in_disc_d|out_disc_d|oper>`,
+  and `oid.<oid>[.<row>]`. At most 16 series per request. Unknown keys are a `400`.
+- `bucket` as for the summary (SPEC §10.1.2), default from the range, so strips line up with the histogram.
+- `source` is `rollup` when every requested series is a headline series and the bucket is at least an hour; otherwise
+  the poll files are read with the search budget (`partial` and `next_cursor` as for the summary). A point with
+  `count: 0` is "not measured", drawn as a gap.
+- `markers` are the restarts and reboots in the range, and with any `if.` series, that interface's oper changes:
+  `{"time", "kind": "oper", "if": "eth3", "oper": "down", "was": "up", "detail": "eth3 down (was up)"}`. At most 100
+  per request.
+- `from` defaults to a day before `to`, `to` to now. A `next_cursor` (when `partial`) is passed back as `cursor` to read
+  on from where the budget stopped.
+
+**Timeline strips:** `GET /api/poll/timeline?devices=a,b&group=…&ungrouped=true&from=…&to=…&bucket=…` → for the selected devices
+that are polled (at most 4, the busiest by peak traffic, then `more`), the strips SPEC §12.5 describes, in the series
+shape above, plus every selected device's markers: `{"devices": [{"device_id", "series": [...]}], "markers":
+[{"device_id", "time", "kind", "reboot", "detail"}], "more": 2}`.
+
+**Device panel:** `GET /api/poll/device/{id}?from=…&to=…` →
+```json
+{"device_id": "10.1.0.1", "target_id": "pt_5c1e9a2b", "address": "10.1.0.1",
+ "system": {"sys_name": "edge-fw-01", "sys_descr": "…", "uptime_s": 1048512, "last_restart": "2026-11-15T10:04:00.410Z",
+            "cpu": {"now": 12, "peak": 91, "peak_at": "2026-11-15T09:30:00Z"},
+            "mem_used_pct": {"now": 40, "peak": 72, "peak_at": "2026-11-15T09:31:00Z"}},
+ "interfaces": [{"index": 3, "name": "eth3", "alias": "uplink", "oper": "up", "speed_mbps": 1000,
+                 "in_bps": 81234567, "out_bps": 3456789, "peak_in_bps": 812345678, "peak_out_bps": 95123456,
+                 "in_err_d": 12, "out_err_d": 0, "in_disc_d": 340, "out_disc_d": 0, "oper_changes": 2}],
+ "charted": ["eth1", "eth3", "eth2", "eth7"],
+ "interfaces_left_out": 2}
+```
+`charted` is the 4 busiest interfaces in the range, the default chart set. The interface list is sorted by peak
+traffic, highest first. The panel also has `hc_counters`, `host_resources` (`null` before the first answer),
+`last_cycle`, `rtt_ms`, `markers` (restarts and every interface's oper changes, as above) and `partial`. A device no
+target polls is a `404`.
+
+### Polling state
+
+`GET /api/poll` → the polling state, for Settings and `woodshed status`:
+```json
+{"targets": 12, "answering": 11, "failing": 1, "backing_off": 0, "last_cycle": "2026-11-15T10:00:00Z",
+ "hour": {"cycles": 720, "failures": {"timeout": 3}, "overruns": 0, "unmatched": 0}}
+```
+`last_cycle` is `null` before the first; `failures` counts the last hour's failed cycles by status.
+
+Banners (since 1.3): `poll_unreachable` (warn, action `""`): polled devices that haven't answered for 10 min, named in
+the text. `poll_overrun` (warn, action `""`): cycles skipped in the last hour because polling couldn't keep up; the
+text suggests a longer interval or a higher `poll.concurrency`.
+
+**CLI** (not HTTP): `woodshed poll test <address> …`, `woodshed search --type poll`, and the `woodshed status`
+Polling row, as in SPEC §12.7.
+
 ## Update check
 
 The opt-in update check (SPEC §10.2): off until someone agrees, it asks once, and when it's on it fetches one public file
@@ -1017,112 +1150,3 @@ is on (or a v3 user is set, or a trap was received), an `snmp` object gives `ena
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.
-
-## 1.3 (planned)
-
-Not in 1.2 builds: nothing in this section is served yet. It's the 1.3 contract (SPEC §12). As before, routes here
-sit in a `###` heading or after a label, never at the start of a line in the usual "`GET /api/...`" form, so
-`routes_test.go` doesn't request them; when one ships, move it into its section above in the usual form. Everything is
-additive (SPEC §12.9).
-
-### Poll targets
-
-**List:** `GET /api/poll/targets` → every target, sorted by device then address:
-```json
-[{"id": "pt_5c1e9a2b", "address": "10.1.0.1", "port": 161, "device_id": "10.1.0.1", "enabled": true,
-  "version": "3", "community_set": false, "v3_user": "monitor",
-  "interval_s": 60, "timeout_ms": 2000, "retries": 1,
-  "presets": ["system", "system-info", "interfaces"], "interfaces": "all", "max_interfaces": 64,
-  "custom": [{"oid": "1.3.6.1.4.1.32473.1.2.0", "kind": "scalar", "label": "queue depth", "max_rows": 0}],
-  "state": {"status": "ok", "last_attempt": "2026-11-15T10:00:00Z", "last_ok": "2026-11-15T10:00:00Z",
-            "failing_since": null, "backoff_s": 0, "error": "", "rtt_ms": 4,
-            "engine_id": "80001f8880a1b2c3d4", "sys_name": "edge-fw-01", "sys_descr": "…",
-            "hc_counters": true, "host_resources": true, "interfaces_polled": 24, "interfaces_total": 26}}]
-```
-- `version`: `"1"`, `"2c"` or `"3"`. `community_set` says whether a v1/v2c community is stored; the community itself
-  is never returned. `v3_user` names a user from `/api/snmp/users`.
-- `interfaces`: `"all"` (up to `max_interfaces`) or a list of `ifName`s and indexes (`["eth1", "eth2", 7]`).
-- `custom[].kind`: `"scalar"` or `"walk"`; `max_rows` (walks only) 1–1,024, default 128. At most 32 entries.
-- Fields left out of a body take the Settings defaults (`poll` in `/api/settings`).
-- `state.status`: `ok`, `failing` (no answer or an error for 1–2 cycles), `backing_off`, `disabled`, or `pending` (not
-  polled yet). `error` is the last failure's text, without secrets.
-
-**Add:** `POST /api/poll/targets` body `{"address": "10.1.0.1", "version": "2c", "community": "…", …}` → `201` with the
-target. `device_id` defaults to the address; a new address becomes a device on its first answer.
-
-**Change:** `PUT /api/poll/targets/{id}` (the same body) → `200`. A missing `community` keeps the stored one; `""`
-with `version` `"1"` or `"2c"` is a `400`. If-Match with the target's `ETag`, as for saved searches.
-
-**Delete:** `DELETE /api/poll/targets/{id}` → `204`. The device's poll files stay until retention deletes them.
-
-- Limits: at most 500 targets (`poll.max_targets`); one target per address and port. `address` is an IP address
-  (no names: nothing is looked up). `port` 1–65535.
-- Validation errors: `400 {"errors": {"address": "…", "custom[2].oid": "…"}}`. A `v3_user` that doesn't exist is a
-  `400` on `v3_user`.
-
-**Test poll:** `POST /api/poll/test` body: a target as for **Add** (not saved), or `{"id": "pt_…"}` →
-```json
-{"ok": false, "exit": "partial",
- "steps": [{"step": "discovery", "ok": true, "detail": "engine 80001f8880a1b2c3d4, boots 7", "rtt_ms": 3},
-           {"step": "system", "ok": true, "detail": "edge-fw-01, up 12 d 3 h", "rtt_ms": 4},
-           {"step": "host_resources", "ok": false, "detail": "not available on this device (noSuchObject)", "rtt_ms": 4},
-           {"step": "interfaces", "ok": true, "detail": "26 interfaces, 64-bit counters; 24 would be polled", "rtt_ms": 9}]}
-```
-`exit` is `ok`, `no_answer`, `auth` or `partial`, the CLI's exit codes by name (SPEC §12.7). At most one test per
-target at a time, and 10 a minute in all (`429` beyond).
-
-### Poll data for graphs
-
-**Series:** `GET /api/poll/series?device=10.1.0.1&from=…&to=…&bucket=60&series=in_bps,out_bps,cpu,if.eth3.in_bps` →
-```json
-{"device_id": "10.1.0.1", "bucket_seconds": 60, "source": "files",       // "files" | "rollup"
- "series": [{"key": "in_bps", "label": "In (all interfaces)", "unit": "bit/s",
-             "points": [{"start": "2026-11-15T10:00:00Z", "avg": 81234567, "max": 90123456, "count": 1}]}],
- "markers": [{"time": "2026-11-15T10:04:00.410Z", "kind": "restart", "reboot": "1",
-              "detail": "sysUpTime and hrSystemUptime reset"}],
- "partial": false, "next_cursor": ""}
-```
-- Series keys: `in_bps`, `out_bps` (summed over interfaces), `max_if_in_bps`, `max_if_out_bps`, `errors_d`,
-  `discards_d`, `cpu`, `mem_used_pct`, `uptime_s`, `if.<ifName or index>.<in_bps|out_bps|in_err_d|out_err_d|in_disc_d|out_disc_d|oper>`,
-  and `oid.<oid>[.<row>]`. At most 16 series per request. Unknown keys are a `400`.
-- `bucket` as for the summary (SPEC §10.1.2), default from the range, so strips line up with the histogram.
-- `source` is `rollup` when every requested series is a headline series and the bucket is at least an hour; otherwise
-  the poll files are read with the search budget (`partial` and `next_cursor` as for the summary). A point with
-  `count: 0` is "not measured", drawn as a gap.
-- `markers` are the restarts and reboots in the range, and with any `if.` series, that interface's oper changes.
-
-**Timeline strips:** `GET /api/poll/timeline?devices=a,b&group=…&from=…&to=…&bucket=…` → for the selected devices
-that are polled (at most 4, the busiest by peak traffic, then `more`), the strips SPEC §12.5 describes, in the series
-shape above, plus every selected device's markers: `{"devices": [{"device_id", "series": [...]}], "markers":
-[{"device_id", "time", "kind", "reboot", "detail"}], "more": 2}`.
-
-**Device panel:** `GET /api/poll/device/{id}?from=…&to=…` →
-```json
-{"device_id": "10.1.0.1", "target_id": "pt_5c1e9a2b", "address": "10.1.0.1",
- "system": {"sys_name": "edge-fw-01", "sys_descr": "…", "uptime_s": 1048512, "last_restart": "2026-11-15T10:04:00.410Z",
-            "cpu": {"now": 12, "peak": 91, "peak_at": "2026-11-15T09:30:00Z"},
-            "mem_used_pct": {"now": 40, "peak": 72, "peak_at": "2026-11-15T09:31:00Z"}},
- "interfaces": [{"index": 3, "name": "eth3", "alias": "uplink", "oper": "up", "speed_mbps": 1000,
-                 "in_bps": 81234567, "out_bps": 3456789, "peak_in_bps": 812345678, "peak_out_bps": 95123456,
-                 "in_err_d": 12, "out_err_d": 0, "in_disc_d": 340, "out_disc_d": 0, "oper_changes": 2}],
- "charted": ["eth1", "eth3", "eth2", "eth7"],
- "interfaces_left_out": 2}
-```
-`charted` is the 4 busiest interfaces in the range, the default chart set. The interface list is sorted by peak
-traffic, highest first.
-
-### Settings, status and banners
-- `/api/settings` gains `"poll": {"interval_s": 60, "timeout_ms": 2000, "retries": 1, "concurrency": 32,
-  "max_interfaces": 64, "max_targets": 500, "presets": ["system", "system-info", "interfaces"]}`. Ranges:
-  `interval_s` 30–600, `timeout_ms` 200–10,000, `retries` 0–5, `concurrency` 1–256, `max_interfaces` 1–1,024,
-  `max_targets` 1–5,000.
-- **Polling state:** `GET /api/poll` → `{"targets": 12, "answering": 11, "failing": 1, "backing_off": 0, "last_cycle":
-  "…", "hour": {"cycles": 720, "failures": {"timeout": 3}, "overruns": 0, "unmatched": 0}}`, for Settings and
-  `woodshed status`.
-- `/api/devices` entries gain `"polled": true|false` and, when polled, `"poll_status"` (the target's `state.status`).
-- Banners: `poll_unreachable` (warn, action `""`): polled devices that haven't answered for 10 min, named in the text.
-  `poll_overrun` (warn, action `""`): cycles skipped in the last hour because polling couldn't keep up; the text
-  suggests a longer interval or a higher `poll.concurrency`.
-
-**CLI** (not HTTP): `woodshed poll test <address> …`, `woodshed search --type poll`, and the `woodshed status`
-Polling row, as in SPEC §12.7.

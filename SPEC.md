@@ -2062,7 +2062,7 @@ The SNMP poller ("OID watcher") from §9's 1.3 entry **(owner, 2026-11-13)**: a 
 30–60 s from devices the user configures, kept as evidence beside their syslog and traps, graphed on the Events
 timeline, with reboots marked. It reuses 1.2's data-type framework (§11.1), its SNMP code (`internal/snmp`) and its
 credentials store (§11.2.6). Owner decisions are marked **(owner)**; the calls made here are **decided (coordinator,
-2026-11-15, owner-delegated)** and listed in §12.10. The API contract is in `docs/api.md` → "1.3 (planned)".
+2026-11-15, owner-delegated)** and listed in §12.10. The API contract is in `docs/api.md` → "SNMP poller" (and the poll parts of Search, Exports and Settings).
 
 **Scope (owner, §9):** sysUpTime; IF-MIB HC in/out octets, errors and discards, plus ifOperStatus; HOST-RESOURCES
 CPU and memory where the device supports it; per-device custom OIDs; vendor-neutral presets; poll data in the export.
