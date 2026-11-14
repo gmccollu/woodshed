@@ -337,6 +337,7 @@ func (r *Receiver) Handle(p *listen.TrapPacket) {
 	addr := p.From.Addr().Unmap()
 	usm := r.usm.Load()
 	m := snmp.Decode(p.Raw, usm, now)
+	r.counts.inc(&r.counts.received, now) // every datagram, stored or not (by_status counts the stored ones)
 
 	// The community list (v1/v2c): a refusal is counted, not stored (SPEC §11.2.2).
 	if (m.Version == snmp.V1 || m.Version == snmp.V2c) && m.Community != nil && !r.comms.Load().allows(m.Community) {

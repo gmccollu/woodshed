@@ -302,8 +302,9 @@ backslash; any other backslash is itself. At most 32 words and phrases, 8 levels
   Filters (`q`, `exclude`, syslog's or the trap filters) apply only to an export of one type; with more than one it's
   a `400` on `types`: "Filters apply to one data type; pick one, or leave the filters out." `type` (1.1) is the same
   as a one-entry `types`; both together must agree.
-- The trap filters (with `"types": ["trap"]`) are JSON lists of strings, with the names and meaning of search's:
-  `"snmp_versions": ["2c"]`, `"pdus": ["inform"]`, `"trap_oid": ["linkDown"]`, `"generic": ["0", "6"]`,
+- The trap filters (with `"types": ["trap"]`) are JSON lists of strings (numbers too, for `generic` and
+  `specific`), with the names and meaning of search's: `"snmp_versions": ["2c"]`, `"pdus": ["inform"]`,
+  `"trap_oid": ["linkDown"]`, `"generic": [0, 6]`,
   `"specific": ["17"]`, `"cred": ["#3f9a1c07"]`, `"status": ["ok"]` and the `exclude_` forms.
 - `kind` (since 1.2): `"export"` (the default). `"bundle"` (the incident bundle, below in "1.2 (planned)") isn't in
   this build: a `400` "kind: the incident bundle isn't in this build yet."
@@ -656,8 +657,9 @@ MIB folder and the v3 users are here whether or not the listener is on.
   assigned" format, `80000000` `05` and 8 random bytes, made at the first start, or `listeners.snmp.engine_id`),
   `boots` (one more at every start) and `time` (seconds since the start). Devices sending v3 informs to a fixed
   engine ID need `id`.
-- `counts_24h` covers the last 24 hours, since the server started. `received` counts every datagram handed to the
-  store, whatever its status (not community refusals, which aren't stored, nor discovery probes). `by_status` lists only the statuses with a count.
+- `counts_24h` covers the last 24 hours, since the server started. `received` counts every datagram the listener
+  read (community refusals and discovery probes included, which aren't stored). `by_status` counts the stored ones by
+  status, and lists only the statuses with a count.
   `discovery_reports` counts every Report sent (a discovery probe, an inform to another engine ID, a v3 message
   outside the time window). `replies_rate_limited` counts the Responses and Reports not sent because of the reply
   limits (100 a second per source address, 1,000 in all). `time_resyncs` counts authenticated v3 traps outside the

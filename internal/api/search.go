@@ -276,18 +276,47 @@ type ExportFilters struct {
 // TrapLists is a trap filter as JSON lists (saved searches, export bodies
 // and their echo): the parameters of docs/api.md "Trap filters".
 type TrapLists struct {
-	SNMPVersions      []string `json:"snmp_versions,omitempty"`
-	PDUs              []string `json:"pdus,omitempty"`
-	TrapOID           []string `json:"trap_oid,omitempty"`
-	ExcludeTrapOID    []string `json:"exclude_trap_oid,omitempty"`
-	Enterprise        []string `json:"enterprise,omitempty"`
-	ExcludeEnterprise []string `json:"exclude_enterprise,omitempty"`
-	Generic           []string `json:"generic,omitempty"`
-	Specific          []string `json:"specific,omitempty"`
-	ExcludeSpecific   []string `json:"exclude_specific,omitempty"`
-	Cred              []string `json:"cred,omitempty"`
-	ExcludeCred       []string `json:"exclude_cred,omitempty"`
-	Status            []string `json:"status,omitempty"`
+	SNMPVersions      ValueList `json:"snmp_versions,omitempty"`
+	PDUs              ValueList `json:"pdus,omitempty"`
+	TrapOID           ValueList `json:"trap_oid,omitempty"`
+	ExcludeTrapOID    ValueList `json:"exclude_trap_oid,omitempty"`
+	Enterprise        ValueList `json:"enterprise,omitempty"`
+	ExcludeEnterprise ValueList `json:"exclude_enterprise,omitempty"`
+	Generic           ValueList `json:"generic,omitempty"`
+	Specific          ValueList `json:"specific,omitempty"`
+	ExcludeSpecific   ValueList `json:"exclude_specific,omitempty"`
+	Cred              ValueList `json:"cred,omitempty"`
+	ExcludeCred       ValueList `json:"exclude_cred,omitempty"`
+	Status            ValueList `json:"status,omitempty"`
+}
+
+// ValueList is a JSON list of filter values: strings, or numbers for the
+// numeric ones ("generic": [0, 6] or ["0", "6"]).
+type ValueList []string
+
+// UnmarshalJSON reads strings and numbers (as written).
+func (l *ValueList) UnmarshalJSON(b []byte) error {
+	*l = nil
+	if string(b) == "null" {
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(b, &items); err != nil {
+		return errors.New("must be a list of strings or numbers")
+	}
+	for _, it := range items {
+		var s string
+		var n json.Number
+		switch {
+		case json.Unmarshal(it, &s) == nil:
+			*l = append(*l, s)
+		case json.Unmarshal(it, &n) == nil:
+			*l = append(*l, n.String())
+		default:
+			return fmt.Errorf("%s is not a string or a number", it)
+		}
+	}
+	return nil
 }
 
 // get is the lists as query parameters, for datatype.ParseTrapFilter.
@@ -295,7 +324,7 @@ func (t *TrapLists) get(p string) string {
 	if t == nil {
 		return ""
 	}
-	m := map[string][]string{"snmp_versions": t.SNMPVersions, "pdus": t.PDUs, "trap_oid": t.TrapOID,
+	m := map[string]ValueList{"snmp_versions": t.SNMPVersions, "pdus": t.PDUs, "trap_oid": t.TrapOID,
 		"exclude_trap_oid": t.ExcludeTrapOID, "enterprise": t.Enterprise, "exclude_enterprise": t.ExcludeEnterprise,
 		"generic": t.Generic, "specific": t.Specific, "exclude_specific": t.ExcludeSpecific, "cred": t.Cred,
 		"exclude_cred": t.ExcludeCred, "status": t.Status}

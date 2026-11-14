@@ -49,7 +49,6 @@ type counts struct {
 
 func (c *counts) addStatus(at time.Time, st snmp.Status) {
 	c.mu.Lock()
-	c.received.add(at, 1)
 	if int(st) < len(c.byStatus) {
 		c.byStatus[st].add(at, 1)
 	}
