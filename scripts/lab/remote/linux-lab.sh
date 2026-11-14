@@ -13,7 +13,9 @@
 #                                          comma-separated endpoint protection (EDR) services/processes ("-" skips; from lab.env)
 #   linux-lab.sh api METHOD PATH [BODY]    any local API call; download PATH OUT saves a body (export zips)
 #   linux-lab.sh devices                   the device folders under logs/
-#   linux-lab.sh sample OUT INTERVAL SECS [PID]     CSV of RSS, CPU seconds, fds, threads, UDP drops
+#   linux-lab.sh sample OUT INTERVAL SECS [PID]     CSV of RSS, CPU seconds, fds, threads, UDP drops; with INTERVAL >= 30 also
+#                                          OUT-stats.jsonl: the UDP queues (depth, high-water), drops by reason, SNMP counts
+#   linux-lab.sh ports                     JSON: which of UDP 514/162 and TCP 514/6514 the service holds
 #   linux-lab.sh soak-sampler start|stop|status SECS   the sampler as a transient systemd unit
 #   linux-lab.sh verify-detached RUN N OUTJSON      verifyseq as a transient unit (long runs)
 #   linux-lab.sh portable start|stop|status PORT    the tarball binary by hand, unprivileged, on PORT
@@ -61,12 +63,17 @@ svc)
 	health=$(curl -fsS --max-time 3 "$UI/healthz" 2>/dev/null || echo "")
 	status=$(woodshed status 2>&1 | head -20 || true)
 	rmem=$(sysctl -n net.core.rmem_max)
-	python3 - "$active" "$enabled" "$pid" "$user" "$caps" "$udp" "$tcp" "$health" "$status" "$rmem" <<'PY'
+	u162=0 t6514=0
+	if [ -n "$pid" ]; then
+		u162=$($S ss -H -lnup 'sport = :162' | grep -c "pid=$pid," || true)
+		t6514=$($S ss -H -lntp 'sport = :6514' | grep -c "pid=$pid," || true)
+	fi
+	python3 - "$active" "$enabled" "$pid" "$user" "$caps" "$udp" "$tcp" "$health" "$status" "$rmem" "$u162" "$t6514" <<'PY'
 import json, sys
 a = sys.argv[1:]
 print(json.dumps({"active": a[0], "enabled": a[1], "pid": a[2], "user": a[3], "cap_eff": a[4],
                   "udp514_sockets": int(a[5] or 0), "tcp514_listen": int(a[6] or 0), "healthz": a[7],
-                  "woodshed_status": a[8], "rmem_max": a[9]}))
+                  "woodshed_status": a[8], "rmem_max": a[9], "udp162_sockets": int(a[10] or 0), "tcp6514_listen": int(a[11] or 0)}))
 PY
 	;;
 fw-state)
@@ -144,6 +151,11 @@ api) # api METHOD PATH [BODYFILE]: the local UI API (no auth on localhost); prin
 	;;
 download) curl -fsS --max-time 300 -o "${2:?out}" "$UI${1:?path}" && ls -l "$2" ;;
 devices) $S ls -1 "${WL_DATA:-$DATA}/logs" ;;
+ports)
+	pid=$(svc_pid)
+	c() { if [ -n "$pid" ]; then $S ss -H "$1" "sport = :$2" | grep -c "pid=$pid," || true; else echo 0; fi; }
+	echo "{\"pid\": \"$pid\", \"udp514\": $(c -lnup 514), \"tcp514\": $(c -lntp 514), \"udp162\": $(c -lnup 162), \"tcp6514\": $(c -lntp 6514)}"
+	;;
 sample)
 	out=${1:?out} iv=${2:?interval} secs=${3:?seconds} pid=${4:-}
 	[ -n "$pid" ] || pid=$(svc_pid)
@@ -161,6 +173,17 @@ sample)
 		drops=$(awk '$2 ~ /:0202$/ {d += $NF} END {print d + 0}' /proc/net/udp /proc/net/udp6)
 		cpu=$(python3 -c "print(round(($ut + $st) / $tck, 2))")
 		echo "$(date -u +%H:%M:%S),$(($(date +%s) - t0)),$pid,$rss,$cpu,$fds,$thr,$drops" >>"$out"
+		if [ "$iv" -ge 30 ]; then # the service's own view: UDP queues, drops by reason, SNMP counts (one JSON line)
+			{ curl -fsS --max-time 5 "$UI/api/stats" 2>/dev/null; echo; curl -fsS --max-time 5 "$UI/api/snmp" 2>/dev/null; echo; } |
+				python3 -c '
+import json, sys, datetime
+ls = [l for l in sys.stdin.read().splitlines() if l.strip()]
+st = json.loads(ls[0]) if ls else {}; sn = json.loads(ls[1]) if len(ls) > 1 else {}
+print(json.dumps({"t": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "msgs_per_sec": st.get("msgs_per_sec"),
+  "dropped_24h": st.get("dropped_24h"), "dropped_by_reason": st.get("dropped_by_reason"), "kernel_dropped_24h": st.get("kernel_dropped_24h"),
+  "udp_queue": [{k: q.get(k) for k in ("listener", "depth", "high_water_24h", "dropped_24h", "high_water_by_hour")} for q in st.get("udp_queue") or []],
+  "snmp": sn.get("counts_24h")}))' >>"${out%.csv}-stats.jsonl" 2>/dev/null || true
+		fi
 		sleep "$iv"
 	done
 	;;

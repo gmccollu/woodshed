@@ -3,16 +3,23 @@
 # The count and the rate are split evenly over the chosen namespaces, each with its own
 # contiguous block of sequence numbers, so `verifyseq -n COUNT` checks the whole run.
 #
-#   wl-send --host IP --count N --run ID [--rate R] [--proto udp|tcp] [--framing lf|octet]
+#   wl-send --host IP --count N --run ID [--rate R] [--proto udp|tcp|tls|trap] [--framing lf|octet]
 #           [--port 514] [--first-seq S] [--size B] [--ns 0-7] [--out DIR] [--timeout SECS]
 #           [--detach UNIT]
+#           TLS:  [--ca FILE] [--server-name NAME]           (port 6514 unless --port)
+#           trap: [--snmp-version 1|2c|3] [--inform] [--inform-timeout DUR] [--community-file FILE]
+#                 [--user NAME] [--auth PROTO] [--priv PROTO] [--key-ext draft|alt] [--auth-pass-file FILE]
+#                 [--priv-pass-file FILE] [--trap-oid OID|NAME] [--varbinds N] [--engine-id HEX]   (port 162 unless --port)
 #   wl-send --unit-status UNIT | --unit-stop UNIT
 #
+# Files (--ca and the secret files) must be regular files under $LAB/stage/: the secrets are read by
+# `woodshed send` itself from the file, never from a command line.
 # --rate is the total msg/s (0: as fast as possible). --timeout bounds each sender (for the
 # firewall-closed checks, where a TCP connect would otherwise wait minutes). --detach runs
 # the same send as a transient systemd unit (survives the ssh session); its results go to
 # --out. The last line is machine-readable:
 #   WLSEND run=ID want=N sent=X senders=K elapsed_s=T rate=R failed=F out=DIR
+# (informs add: answered=A timed_out=T rtt_p50_max=D rtt_p99_max=D rtt_max=D, the worst sender's figures)
 # Exit status 0 when every sender sent its whole share. Run as root (ip netns exec).
 set -euo pipefail
 LAB=${WL_HOME:-/opt/woodpile-lab}
@@ -20,8 +27,16 @@ WP=$LAB/bin/woodshed
 CONF=${WL_CONF:-$LAB/senders.conf}
 DRY=${WL_DRYRUN:-}
 
-host="" port=514 proto=udp framing=lf count=0 rate=0 run="" first=0 size=160 nsspec="" out="" tmo="" detach=""
+host="" port="" proto=udp framing=lf count=0 rate=0 run="" first=0 size=160 nsspec="" out="" tmo="" detach=""
+ca="" sname="" topts=()
 orig=("$@")
+labfile() { # labfile FLAG PATH: a regular file under $LAB/stage/ (no .. and no symlink games)
+	local f=$2 r st
+	st=$(readlink -f "$LAB/stage" 2>/dev/null || echo /nonexistent)
+	r=$(readlink -f -- "$f" 2>/dev/null || echo "")
+	[[ "$f" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$f" != *..* ]] && [ ! -L "$f" ] && [ -n "$r" ] && [[ "$r" == "$st/"* ]] && [ -f "$r" ] ||
+		{ echo "wl-send: $1 must be a regular file under $LAB/stage/: $f" >&2; exit 2; }
+}
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--host) host=$2; shift 2 ;;
@@ -37,6 +52,14 @@ while [ $# -gt 0 ]; do
 	--out) out=$2; shift 2 ;;
 	--timeout) tmo=$2; shift 2 ;;
 	--detach) detach=$2; shift 2 ;;
+	--ca) ca=$2; shift 2 ;;
+	--server-name) sname=$2; shift 2 ;;
+	--inform) topts+=(--inform); shift ;;
+	--inform-timeout) topts+=(--timeout "$2"); shift 2 ;;
+	--community-file | --auth-pass-file | --priv-pass-file) labfile "$1" "$2"; topts+=("$1" "$2"); shift 2 ;;
+	--snmp-version | --user | --auth | --priv | --key-ext | --trap-oid | --varbinds | --engine-id)
+		[[ "$2" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "wl-send: bad value for $1" >&2; exit 2; }
+		topts+=("$1" "$2"); shift 2 ;;
 	--unit-status)
 		systemctl status --no-pager "$2" 2>&1 | head -5 || true
 		exit 0 ;;
@@ -46,7 +69,12 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -n "$host" ] && [ -n "$run" ] && [ "$count" -gt 0 ] || { echo "wl-send: --host, --run and --count are required" >&2; exit 2; }
-case "$proto" in udp | tcp) ;; *) echo "wl-send: --proto udp|tcp" >&2; exit 2 ;; esac
+case "$proto" in udp | tcp | tls | trap) ;; *) echo "wl-send: --proto udp|tcp|tls|trap" >&2; exit 2 ;; esac
+[ "$proto" = tls ] || [ -z "$ca$sname" ] || { echo "wl-send: --ca and --server-name are for --proto tls" >&2; exit 2; }
+[ "$proto" = trap ] || [ ${#topts[@]} = 0 ] || { echo "wl-send: the SNMP options are for --proto trap" >&2; exit 2; }
+[ -z "$ca" ] || labfile --ca "$ca"
+[ -z "$sname" ] || [[ "$sname" =~ ^[A-Za-z0-9.:-]+$ ]] || { echo "wl-send: bad --server-name" >&2; exit 2; }
+if [ -z "$port" ]; then case "$proto" in tls) port=6514 ;; trap) port=162 ;; *) port=514 ;; esac; fi
 [[ "$run" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "wl-send: bad --run" >&2; exit 2; }
 # optional allowlist of target addresses (root-owned, one per line): refuse any other --host
 if [ -f "$LAB/targets.allow" ] && ! grep -qxF -- "$host" "$LAB/targets.allow"; then
@@ -100,8 +128,13 @@ for ((j = 0; j < n; j++)); do
 	[ "$j" -lt "$extra" ] && c=$((c + 1))
 	r=0
 	[ "$rate" != 0 ] && r=$(python3 -c "print(round($rate / $n, 3))")
-	cmd=("$WP" send --host "$host" --port "$port" --proto "$proto" --framing "$framing" --count "$c" --rate "$r"
-		--run "$run" --first-seq "$seq" --size "$size" --hostname "wl-sender-$k")
+	cmd=("$WP" send --host "$host" --port "$port" --proto "$proto" --count "$c" --rate "$r" --run "$run" --first-seq "$seq")
+	case "$proto" in
+	trap) cmd+=(${topts[@]+"${topts[@]}"}) ;;   # woodshed send refuses --framing, --size and --hostname with traps
+	*) cmd+=(--framing "$framing" --size "$size" --hostname "wl-sender-$k") ;;
+	esac
+	[ -z "$ca" ] || cmd+=(--ca "$ca")
+	[ -z "$sname" ] || cmd+=(--server-name "$sname")
 	echo "$k $c $seq" >>"$out/plan"
 	if [ -n "$DRY" ]; then
 		echo "DRY ns=wps$k ${cmd[*]}"
@@ -130,19 +163,33 @@ def secs(d):
     return t
 plan = {l.split()[0]: int(l.split()[1]) for l in open(os.path.join(out, "plan"))}
 sent = 0; el = 0.0; short = 0
+inf = None   # informs: answered, timed out, the worst sender's p50/p99/max round trip (seconds)
 for k, c in sorted(plan.items(), key=lambda x: int(x[0])):
     try:
         txt = open(os.path.join(out, f"sender-{k}.out"), errors="replace").read()
     except OSError:
         txt = ""
-    m = re.search(r"Sent (\d+) messages? .*? in (\S+) \(", txt) or re.search(r"Sent (\d+) message", txt)
+    m = (re.search(r"Sent (\d+) (?:messages?|traps?|informs?) .*? in (\S+) \(", txt) or
+         re.search(r"Sent (\d+) (?:message|trap|inform)", txt))
     s = int(m.group(1)) if m else 0
     e = secs(m.group(2)) if m and m.lastindex and m.lastindex >= 2 else 0.0
     sent += s; el = max(el, e)
+    a = re.search(r"(\d+) answered, (\d+) timed out", txt)
+    if a:
+        inf = inf or {"answered": 0, "timed_out": 0, "p50": 0.0, "p99": 0.0, "max": 0.0}
+        inf["answered"] += int(a.group(1)); inf["timed_out"] += int(a.group(2))
+        rt = re.search(r"round trip p50 (\S+), p99 (\S+), max (\S+?)\.?$", txt, re.M)
+        if rt:
+            for key, val in zip(("p50", "p99", "max"), rt.groups()):
+                inf[key] = max(inf[key], secs(val))
     if s != c:
         short += 1
         print(f"sender {k}: sent {s} of {c}: {txt.strip().splitlines()[-1] if txt.strip() else 'no output'}")
 rate = sent / el if el else 0
-print(f"WLSEND run={run} want={want} sent={sent} senders={len(plan)} elapsed_s={el:.3f} rate={rate:.0f} failed={max(failed, short)} out={out}")
+extra = ""
+if inf:
+    extra = (f" answered={inf['answered']} timed_out={inf['timed_out']} rtt_p50_max={inf['p50'] * 1000:.2f}ms"
+             f" rtt_p99_max={inf['p99'] * 1000:.2f}ms rtt_max={inf['max'] * 1000:.2f}ms")
+print(f"WLSEND run={run} want={want} sent={sent} senders={len(plan)} elapsed_s={el:.3f} rate={rate:.0f} failed={max(failed, short)}{extra} out={out}")
 PY
 [ "$failed" = 0 ] && grep -q " failed=0 " "$out/summary"
