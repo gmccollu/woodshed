@@ -54,7 +54,7 @@ func OperName(v int64) string {
 // written. A record writes the ones it has, in this order; readers ignore
 // keys they don't know, so later versions can add some at the end.
 var Keys = map[string][]string{
-	KindSys: {"uptime", "hr_uptime", "cpu", "mem_used", "mem_total", "rtt_ms"},
+	KindSys: {"uptime", "hr_uptime", "cpu", "mem_used", "mem_total", "rtt_ms", "interval_s"},
 	KindIf: {"if", "name", "oper", "oper_was", "speed_mbps", "bits",
 		"in_octets", "out_octets", "in_bps", "out_bps",
 		"in_err", "out_err", "in_err_d", "out_err_d",
@@ -63,7 +63,7 @@ var Keys = map[string][]string{
 		"in_ucast_pps", "out_ucast_pps", "in_mcast_pps", "out_mcast_pps", "in_bcast_pps", "out_bcast_pps",
 		"disc", "wraps"},
 	KindOID:     {"oid", "row", "label", "type", "value", "rate", "disc", "capped"},
-	KindStatus:  {"status", "detail", "cred"},
+	KindStatus:  {"status", "detail", "cred", "interval_s"},
 	KindRestart: {"reboot", "uptime", "prev_uptime", "hr_uptime", "prev_hr_uptime", "boots", "prev_boots", "source"},
 	KindInfo: {"sys_name", "sys_descr", "sys_oid", "hc", "hr", "ifs_total", "ifs_polled",
 		"if", "name", "descr", "alias", "speed_mbps"},
