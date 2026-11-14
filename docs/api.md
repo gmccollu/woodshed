@@ -202,7 +202,8 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 - `q`: substring by default (case-insensitive unless `case=true`). With `regex=true` it's an RE2 regular expression;
   an invalid one is a `400` with the parse error. With `syntax=terms` it's boolean terms (below). `case` applies to
   all of them. Empty `q` matches every line, so it's a filtered browse.
-- `type`: the data type: `syslog` (the default) or `trap` (SNMP traps, below). Any other value is a
+- `type`: the data type: `syslog` (the default), `trap` (SNMP traps, below) or, since 1.3, `poll` (SNMP poll
+  records, below). Any other value is a
   `400 {"error": "type: unknown data type \"x\"."}`. Without `type`, everything means what it meant in 1.1.
 - `syntax`: `text` (the default: `q` and `exclude` mean exactly what they meant in 1.0) or `terms` (below). Anything
   else is a `400`.
@@ -243,8 +244,8 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 - `scanned_bytes`, `scanned_files` and `elapsed_ms` are for this request only; the UI adds them up across pages.
 - `ref` identifies one line for `/api/context`. It stays valid until the file is deleted by retention.
 - The filters below `exclude` (`app`, `host`, their excludes, `severities`, `min_severity`, `facilities`) are syslog's;
-  with `type=trap` each is a `400` (`{"error": "severities: not a filter for SNMP traps."}`). A parameter sent with an
-  empty value doesn't count as present.
+  with `type=trap` or `type=poll` each is a `400` (`{"error": "severities: not a filter for SNMP traps."}`, `… for
+  SNMP polls.`). A parameter sent with an empty value doesn't count as present.
 
 **`type=trap`** (SPEC §11.2.5): `q`, `syntax`, `regex`, `case` and `exclude` match the record text without its `raw=`
 part (so a search never matches base64), and the device selection and the range work as for syslog. The trap
@@ -276,6 +277,33 @@ A trap result (syslog results keep the shape above):
 - `generic` and `specific` are integers for v1 traps, `null` otherwise; `uptime` is `null` when the record has none.
   `value` is always a string. A record that doesn't parse has `status` `"malformed"` and the fields it has.
 
+**`type=poll`** (since 1.3, SPEC §12.3): the poller's record lines, one per cycle per part, searchable like any type
+(`/api/search`, `/api/search/summary`, saved searches, exports and `woodshed search`); Events shows them as graphs,
+not as a tab. `q`, `syntax`, `regex`, `case` and `exclude` match the whole record (`oper=down`), and the device
+selection and the range work as for syslog.
+- Schema fields: `device`, `kind` (domain `sys`, `if`, `oid`, `status`, `restart`, `info`), `if` (the interface's
+  name, or its index when it has none; on `if` lines and interface `info` lines), `oper` (domain `up`, `down`,
+  `testing`, `unknown`, `dormant`, `notPresent`, `lowerLayerDown`; `if` lines), `status` (domain `ok`, `timeout`,
+  `unreachable`, `auth_failed`, `unknown_user`, `unknown_engine`, `not_in_time`, `decrypt_failed`, `error`,
+  `overrun`; a `status` line's own, `ok` for every other kind), `reboot` (domain `1`, `0`, `?`; `restart` lines).
+- Filters, only with `type=poll` (with another type each is a `400` "`<name>: not a filter for syslog.`" or
+  "`… for SNMP traps.`"): `kinds`, `oper`, `poll_status` and `reboot` are sets like `severities` (empty means all,
+  `none` alone means nothing); `ifs` / `exclude_ifs` are comma-separated interface names (ignoring case) or indexes.
+  `oper` passes only `if` lines and `reboot` only `restart` lines; `exclude_ifs` never drops a line without an
+  interface. Syslog's and the trap type's filters with `type=poll` are a `400`
+  (`{"error": "status: not a filter for SNMP polls."}`: the poll status filter is `poll_status`).
+
+A poll result:
+```js
+{"received": "2026-11-15T10:00:00.131Z", "device_id": "10.1.0.1", "type": "poll", "ref": "opaque",
+ "raw": "kind=if cycle=1042 if=3 name=\"eth3\" oper=up speed_mbps=1000 in_octets=987654321012 … in_bps=81234567 …",
+ "fields": {"kind": "if", "cycle": 1042, "if": "eth3", "oper": "up", "status": "ok", "reboot": "",
+            "values": {"if": "3", "name": "eth3", "speed_mbps": "1000", "in_octets": "987654321012", "in_bps": "81234567"}}}
+```
+- `raw` is the stored record (SPEC §12.3), unescaped. `values` holds every other key of the record as text (`if`
+  there is the index); `oper`, `status` and `reboot` are `""` on the kinds that don't have them. A record that
+  doesn't parse has an empty `kind` and `values.error`.
+
 **`syntax=terms`** (grammar in SPEC §10.1.3): words and `"quoted phrases"` are substrings of the raw message, matched
 as `q` is (`case` applies to all of them). They're joined by `AND` (or just a space), `OR` and `NOT`, upper case only,
 with `( )` for grouping. NOT binds tightest, then AND, then OR. Inside a phrase, `\"` is a quote and `\\` a
@@ -291,7 +319,8 @@ backslash; any other backslash is itself. At most 32 words and phrases, 8 levels
 - Context isn't filtered: it's every stored line around the hit, so it takes no filter parameters.
 - `at_start` / `at_end` are true when there are no older / newer stored lines for that device.
 - Lines come from the same device and the same data type as the ref, in file order, and can cross into the
-  neighbouring part or day file. A trap `ref` returns trap lines, in the trap result shape.
+  neighbouring part or day file. A trap `ref` returns trap lines, in the trap result shape, and a poll `ref` poll
+  lines, in the poll result shape.
 - `before` / `after` max 500 each. A `ref` whose file is gone is a `404`.
 
 ## Exports
@@ -313,6 +342,8 @@ backslash; any other backslash is itself. At most 32 words and phrases, 8 levels
   `specific`), with the names and meaning of search's: `"snmp_versions": ["2c"]`, `"pdus": ["inform"]`,
   `"trap_oid": ["linkDown"]`, `"generic": [0, 6]`,
   `"specific": ["17"]`, `"cred": ["#3f9a1c07"]`, `"status": ["ok"]` and the `exclude_` forms.
+- The poll filters (since 1.3, with `"types": ["poll"]`) are JSON lists the same way: `"kinds": ["if"]`,
+  `"ifs": ["eth1", 7]`, `"exclude_ifs"`, `"oper": ["down"]`, `"poll_status": ["timeout"]`, `"reboot": ["1"]`.
 - `kind` (since 1.2): `"export"` (the default) or `"bundle"`, the incident bundle (below). `at`, `before`, `after`
   and `active_devices` on a plain export are a `400`.
 - One export builds at a time; a second `POST` while one is building is queued.
@@ -338,7 +369,7 @@ manifest, the gaps and the events log are the export's.
   `["trap"]`). `type` (1.1) is the same as a one-entry `types`.
 - No filters: a bundle is everything around the moment. `from`, `to`, `all_devices`, `exclude_devices`, and any
   filter (`q`, `exclude`, `regex`, `case`, `syntax` other than `"text"`, `severities`, `facilities`, `app`, `host`,
-  their `exclude_` forms, the trap filters) are a `400` naming the field.
+  their `exclude_` forms, the trap filters, the poll filters) are a `400` naming the field.
 - No device stored anything in the window (with `active_devices`): a `400` "No device stored anything between
   <from> and <to>." (naming the types when `types` was given). Named devices that sent nothing still get a bundle,
   with "none" in their summary.
@@ -352,7 +383,11 @@ The zip is an export's (below), with each type in its folder, and:
 - `README.txt` leads with the summary (SPEC §11.3): the moment and the window in UTC with the local offset, how the
   devices were picked, then per device its counts by type (syslog by severity, traps by name), first and last
   received, reboots (coldStart and warmStart traps), the gaps, and Woodshed's own drop and truncation counts in the
-  window. Times carry the date when the window spans more than one UTC day.
+  window. Times carry the date when the window spans more than one UTC day. Since 1.3 a device's polls have a Polls
+  line (cycles answered and the interval, uptime at the end, peak traffic, CPU and memory peaks, error and discard
+  deltas, oper changes; SPEC §12.6), and reboots also come from poll restarts: a coldStart or warmStart trap within
+  2 min of a poll restart is one line naming both sources (`09:30:58.112 (poll: sysUpTime and hrSystemUptime reset;
+  coldStart trap)`).
 - `manifest.json` has `"kind": "bundle"`, `"at"`, `"before"`, `"after"`, `"summary"` and `"summary_note"`, and
   `request.filters.active_devices` when that picked the devices. `summary` is the README's numbers per device:
   ```js
@@ -367,6 +402,19 @@ The zip is an export's (below), with each type in its folder, and:
   ```
   `first` and `last` are `null` for a type the device sent none of. `by_severity` always has all nine; `by_trap` is
   the trap names (from the MIB set, else the OID; `(malformed)` and the like for a record without one), most first.
+  Since 1.3, `types.poll` counts the CSV rows (`by_kind`: `sys`, `if`, `oid`, `status`, `restart`, `info`), and an
+  entry of a bundle with polls has `"poll"`:
+  ```js
+  {"cycles": 40, "answered": 40, "interval_s": 60, "uptime_end_s": 1048512,
+   "peak_in_bps": 812345678, "peak_in_if": "eth1", "peak_out_bps": 95123456, "peak_out_if": "eth1",
+   "cpu_peak": 91, "mem_peak_pct": 72, "errors_in_d": 12, "errors_out_d": 0, "discards_in_d": 340, "discards_out_d": 0,
+   "oper_changes": [{"if": "eth3", "down": "2026-11-15T09:30:58Z", "up": "2026-11-15T09:31:40Z"}]}
+  ```
+  A value that wasn't measured is `null` (never 0); `up` is `null` for an interface still down at the end.
+  `reboots[].source` is `"coldStart trap"` (or `"warmStart trap"`, `"… inform"`), `"poll"` with a `"detail"`
+  (`"sysUpTime and hrSystemUptime reset"`; `"…; the device may have rebooted"` without HOST-RESOURCES), or both in
+  one string, `"poll, coldStart trap"`, when a poll restart and a trap are within 2 min (at the earlier time, with the
+  poll's `detail`).
   `gaps` are the bundle's (the same for every device). `dropped` and `truncated` sum the stats buckets that start in
   the window (per minute, per hour past 24 h), so a bucket that straddles an edge counts whole.
 
@@ -383,7 +431,8 @@ from the index, without scanning, so the UI can show the size before building.
 "exclude_host": [], "kind": "export", "types": ["syslog"]}}]`, newest
 first. `ready_at` / `expires_at` are set once the export is ready; `filters` echoes the request. For an export of
 traps with trap filters, `filters` also has `"trap"`, an object of the trap lists given (`{"trap_oid": ["1.3.6.1.6.3.1.1.5.3"]}`,
-MIB names resolved, prefixes kept with `.*`), and `type` is `"trap"`; `trap` is omitted when there are none.
+MIB names resolved, prefixes kept with `.*`), and `type` is `"trap"`; `trap` is omitted when there are none. An export
+of polls with poll filters likewise has `"poll"` (`{"kinds": ["if"], "oper": ["down"]}`) and `type` `"poll"`.
 
 `GET /api/exports/{id}` → one entry, same shape.
 
@@ -407,17 +456,30 @@ them first), but not against the log retention cap.
   stays in `logs/`, exactly as in 1.0 and 1.1.
 - `traps/<device-id>/<YYYY-MM-DD>.log` (an export with `trap` in `types`): the trap record lines as stored, in the
   same envelope and escaping.
+- `poll/<device-id>/system.csv`, `interfaces.csv` and `oids.csv` (since 1.3, an export with `poll` in `types`): not
+  the stored lines but CSV files with a header row, UTF-8, comma-separated, RFC 4180 quoting (CRLF line ends), times
+  in RFC 3339 UTC, with the columns of SPEC §12.6: `system.csv` `time,cycle,uptime_s,hr_uptime_s,cpu_pct,
+  mem_used_bytes,mem_total_bytes,rtt_ms,status,detail` (failed cycles and restart markers are rows with their
+  status, `restart` with `detail` naming the sources); `interfaces.csv` `time,cycle,if_index,if_name,if_alias,oper,
+  speed_mbps,in_octets,out_octets,in_bps,out_bps,in_errors,out_errors,in_errors_delta,out_errors_delta,in_discards,
+  out_discards,in_discards_delta,out_discards_delta,discontinuity` (`if_alias` from the interface's latest names
+  line); `oids.csv` `time,cycle,oid,label,row,type,value,rate`. An empty cell is "not measured" (no previous sample,
+  a discontinuity, not supported), never zero. A file is in the zip only when it has rows. Each is in the
+  manifest's `files` with its rows as `lines`, its SHA-256 and an empty `day`; an export's `lines` counts CSV rows
+  for polls.
 - `manifest.json`: Woodshed version, export time, the request (devices with names and groups, range, filters:
   `severities`, `q`, `regex`, `case`, `app`, `host`, `exclude`, `type`, `syntax`, `facilities`, `exclude_devices`,
   `exclude_app` and `exclude_host`), and per-file line count and SHA-256. Also `gaps`: periods inside the range when Woodshed wasn't running or a listener
   was down, from the event log (the SNMP listener's as `proto` `"snmp"`). Since 1.2 also `"kind": "export"`,
   `"types"` (the data types exported) and `"folders"` (each zip folder's type: `{"logs": "syslog", "traps": "trap"}`
-  for the types exported); `request.filters.type` is `"trap"` for an export of traps alone.
+  for the types exported; since 1.3 also `"poll": "poll"`); `request.filters.type` is `"trap"` for an export of traps
+  alone, `"poll"` for one of polls alone.
 - `woodshed-events.log`: the service's own events in the range (start, stop, bind errors, rotations, deletions,
   drops, pauses).
 - `README.txt`: a short note on what each file is, with the range and the filters in plain words ("Filters: none"
   when there are none). A zip with traps also explains the record, and that a community is shown only as a hash
-  prefix in `cred=` and masked with `*` in `raw=`.
+  prefix in `cred=` and masked with `*` in `raw=`. A zip with polls explains each CSV column. No community or key is
+  ever in a zip (poll lines name a credential only as `cred=#<hash8>` or the user name).
 
 ## Search summary and schema (Events)
 
@@ -1048,27 +1110,6 @@ shape above, plus every selected device's markers: `{"devices": [{"device_id", "
 ```
 `charted` is the 4 busiest interfaces in the range, the default chart set. The interface list is sorted by peak
 traffic, highest first.
-
-### Poll lines in search
-
-`type=poll` is accepted by `/api/search`, `/api/search/summary`, saved searches, exports and `woodshed search`.
-- Schema fields: `device`, `kind` (domain `sys`, `if`, `oid`, `status`, `restart`, `info`), `if`, `oper` (domain
-  `up`, `down`, `testing`, `unknown`, `dormant`, `notPresent`, `lowerLayerDown`), `status` (domain `ok`, `timeout`,
-  `unreachable`, `auth_failed`, `unknown_user`, `unknown_engine`, `not_in_time`, `decrypt_failed`, `error`,
-  `overrun`), `reboot` (domain `1`, `0`, `?`).
-- Filters: `kinds`, `ifs` / `exclude_ifs`, `oper`, `poll_status`, `reboot`. Syslog's and the trap type's filters with
-  `type=poll` are a `400`, and the reverse.
-- Results: `{"received", "device_id", "type": "poll", "ref", "raw": <the stored line>, "fields": {"kind", "cycle",
-  "if", "oper", "status", "reboot", "values": {"in_bps": "81234567", …}}}`.
-
-### Exports and bundles
-- `types` may include `"poll"`. The zip gets `poll/<device-id>/system.csv`, `interfaces.csv` and `oids.csv` with the
-  columns of SPEC §12.6 (a file only when it has rows), each in the manifest with its SHA-256;
-  `"folders"` gains `"poll": "poll"`.
-- A bundle's manifest `summary` entries gain `"poll": {"cycles", "answered", "interval_s", "uptime_end_s",
-  "peak_in_bps", "peak_in_if", "peak_out_bps", "peak_out_if", "cpu_peak", "mem_peak_pct", "errors_in_d",
-  "errors_out_d", "discards_in_d", "discards_out_d", "oper_changes": [{"if", "down", "up"}]}`, and `reboots[].source`
-  may be `"poll"` (with `"detail"`) or list both sources when a poll restart and a coldStart trap are within 2 min.
 
 ### Settings, status and banners
 - `/api/settings` gains `"poll": {"interval_s": 60, "timeout_ms": 2000, "retries": 1, "concurrency": 32,
