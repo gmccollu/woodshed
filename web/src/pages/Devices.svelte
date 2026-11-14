@@ -10,8 +10,11 @@
   import { router } from '../lib/router.svelte';
   import { tlsHealth, tlsReason, tlsReasonShort } from '../lib/tls';
   import type { DeviceTls } from '../lib/api';
+  import PollTargets from '../components/PollTargets.svelte';
+  import { openPollForm, pollUi } from '../lib/pollui.svelte';
+  import { statusLabel as pollStatusLabel } from '../lib/poll';
 
-  type Col = 'name' | 'ip' | 'group' | 'status' | 'first_seen' | 'last_heard' | 'msgs_per_min' | 'total_msgs' | 'bytes_on_disk';
+  type Col = 'polled' | 'name' | 'ip' | 'group' | 'status' | 'first_seen' | 'last_heard' | 'msgs_per_min' | 'total_msgs' | 'bytes_on_disk';
 
   // The server pages, filters and sorts (docs/api.md), so this stays fast with 10,000 devices.
   const PAGE = 200;
@@ -20,8 +23,8 @@
   const SORT_HINT: Record<DeviceSort, string> = { name: 'A to Z', rate: 'busiest first', last_heard: 'most recent first', first_seen: 'newest first' };
 
   let showHidden = $state(false);
-  /** All devices, or only the blocked ones. */
-  let view = $state<'all' | 'blocked'>('all');
+  /** All devices, the polled ones (1.3: the poll targets, including addresses not heard from yet), or the blocked ones. */
+  let view = $state<'all' | 'polled' | 'blocked'>(/(?:^|&)view=polled\b/.test(router.query) ? 'polled' : 'all');
   let sortBy = $state<DeviceSort>('name');
   let offset = $state(0);
   let rows = $state<Device[] | null>(null);
@@ -36,6 +39,10 @@
   const groups = $derived(rows ? groupsSeen() : []);
   let q = $state('');
   // A link such as #/devices?q=10.8.0.1 (from Settings → failed TLS handshakes) fills the filter.
+  // #/devices?view=polled (banners, Settings → Polling, the Events strips' "and N more") opens the Polled list.
+  $effect(() => {
+    if (/(?:^|&)view=polled\b/.test(router.query)) view = 'polled';
+  });
   $effect(() => {
     const m = /(?:^|&)q=([^&]*)/.exec(router.query);
     if (m) ui.filter = decodeURIComponent(m[1]);
@@ -64,6 +71,7 @@
 
   $effect(() => {
     void blockUi.version; // reload after a block or unblock
+    void pollUi.version; // and after polling was added or changed
     const params = {
       limit: PAGE,
       offset,
@@ -160,6 +168,7 @@
 
   const cols: { c: Col; label: string; num?: boolean }[] = [
     { c: 'status', label: 'Status' },
+    { c: 'polled', label: 'Polled' },
     { c: 'name', label: 'Name' },
     { c: 'ip', label: 'IP address' },
     { c: 'group', label: 'Group' },
@@ -190,9 +199,13 @@
     </div>
     <div class="seg" role="radiogroup" aria-label="Which devices">
       <button role="radio" aria-checked={view === 'all'} onclick={() => ((view = 'all'), (offset = 0))}>All</button>
+      <button role="radio" aria-checked={view === 'polled'} onclick={() => ((view = 'polled'), (offset = 0))}>Polled</button>
       <button role="radio" aria-checked={view === 'blocked'} onclick={() => ((view = 'blocked'), (offset = 0))}>Blocked</button>
     </div>
-    {#if hiddenCount}
+    <button class="ghost-btn" onclick={() => openPollForm(null)} title="Poll a device by its IP address, also one Woodshed hasn't heard from yet">
+      <Icon name="plus" size={14} />Add by address
+    </button>
+    {#if hiddenCount && view !== 'polled'}
       <label class="flex items-center gap-2 text-[14px]">
         <input type="checkbox" bind:checked={showHidden} /> Show hidden ({hiddenCount})
       </label>
@@ -203,6 +216,12 @@
     {#each groups as g (g)}<option value={g}></option>{/each}
   </datalist>
 
+  {#if view === 'polled'}
+    <p class="mx-5 mt-0 mb-2 text-[13px] text-muted">
+      Devices Woodshed polls over SNMP (uptime, interface traffic and errors, CPU and memory), including addresses that haven't answered yet.
+    </p>
+    <PollTargets version={pollUi.version} onedit={(t) => openPollForm(t)} onadd={() => openPollForm(null)} />
+  {:else}
   <div class="overflow-x-auto">
     <table class="w-full border-collapse text-[14px]">
       <thead>
@@ -224,15 +243,22 @@
       </thead>
       <tbody>
         {#if loadError}
-          <tr><td colspan="10" class="text-bad-fg">Couldn't load devices: {loadError}</td></tr>
+          <tr><td colspan="11" class="text-bad-fg">Couldn't load devices: {loadError}</td></tr>
         {:else if rows === null}
-          <tr><td colspan="10" class="text-muted">Loading…</td></tr>
+          <tr><td colspan="11" class="text-muted">Loading…</td></tr>
         {:else if !rows.length}
-          <tr><td colspan="10" class="text-muted">{q || live.deviceTotal ? 'No devices match.' : 'No devices have sent anything yet.'}</td></tr>
+          <tr><td colspan="11" class="text-muted">{q || live.deviceTotal ? 'No devices match.' : 'No devices have sent anything yet.'}</td></tr>
         {/if}
         {#each rows ?? [] as d (d.id)}
           <tr class:opacity-60={d.hidden}>
             <td><StatusDot status={d.status} label /></td>
+            <td class="whitespace-nowrap">
+              {#if d.polled}
+                <a class="poll {d.poll_status}" href="#/device?id={encodeURIComponent(d.id)}" title="Open {d.name || d.ip}'s page with its poll charts">{pollStatusLabel(d.poll_status ?? 'pending')}</a>
+              {:else}
+                <button class="addpoll" onclick={() => openPollForm(null, d.ip, d.id)} aria-label="Add polling for {d.name || d.ip}">Add polling</button>
+              {/if}
+            </td>
             <td class="min-w-[160px]">
               {#if editing?.id === d.id && editing.field === 'name'}
                 <input
@@ -320,7 +346,7 @@
           </tr>
           {#if d.tls && tlsOpen[d.id]}
             <tr class="tlsrow">
-              <td colspan="10">
+              <td colspan="11">
                 <!-- width 0 + min-width 100%: the details never widen the table's columns. -->
                 <div class="tlsbox">
                 <dl class="tlsd">
@@ -352,7 +378,8 @@
       </tbody>
     </table>
   </div>
-  {#if rows && total > 0}
+  {/if}
+  {#if view !== 'polled' && rows && total > 0}
     <div class="pager">
       <span class="text-[13px] text-muted" aria-live="polite">
         {num(offset + 1)}–{num(Math.min(offset + rows.length, total))} of {num(total)}{q ? ` matching “${q}”` : ''}
@@ -435,6 +462,41 @@
   /* Hide starts with its icon, so an inline-flex baseline would sit it higher than Block. */
   .acts .ghost-btn {
     vertical-align: middle;
+  }
+  .poll {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    border: 1px solid var(--input-border);
+    background: var(--chip);
+    color: var(--fg);
+  }
+  .poll.ok {
+    border-color: var(--ok);
+    color: var(--ok-fg);
+  }
+  .poll.failing {
+    border-color: var(--warn);
+    color: var(--warn-fg);
+    background: var(--warn-bg);
+  }
+  .poll.backing_off {
+    border-color: var(--bad);
+    color: var(--bad-fg);
+    background: var(--error-bg);
+  }
+  .addpoll {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--link);
+    text-decoration: underline;
+    cursor: pointer;
   }
   .tcount {
     display: block;

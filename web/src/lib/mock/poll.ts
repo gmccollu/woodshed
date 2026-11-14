@@ -8,7 +8,7 @@
 //                           started (reboot=1), and its eth3 went down for 42 s 50 min before
 //   core-sw-01 (10.1.0.10)  v2c, 72 interfaces with the cap at 64: 8 are left out
 //   branch-fw-08 (10.8.0.1) v1: 32-bit counters, no HOST-RESOURCES; an agent restart 26 h before (reboot=?)
-//   branch-fw-07 (10.7.0.1) v2c, not answering for 4 min (failing); mock_poll_down=1: for 2 h (backing off,
+//   branch-fw-07 (10.7.0.1) v2c, not answering for 2.5 min (failing); mock_poll_down=1: for 2 h (backing off,
 //                           the poll_unreachable banner)
 //   10.9.0.1                added by address, never answered (pending; not a device yet)
 // URL parameters: mock_poll_down=1 (above), mock_poll_overrun=1 (cycles skipped: the poll_overrun banner).
@@ -134,7 +134,7 @@ const POLLED: Record<string, MockPolled> = {
     ifs: ifs(4, (i) => `port${i}`, () => 100, (i) => ['wan', 'lan', 'wifi', 'spare'][i - 1]),
     hc: true,
     hr: true,
-    silentFrom: T0 - (pollMock.down ? 2 * H : 4 * MIN),
+    silentFrom: T0 - (pollMock.down ? 2 * H : 150_000),
     engine: '',
   },
 };
@@ -455,7 +455,8 @@ function pollState(now: number): PollState {
   const backing = st.filter((s) => s.status === 'backing_off').length;
   const answering = st.filter((s) => s.status === 'ok').length;
   const cycles = [...targets.values()].filter((t) => t.enabled).reduce((n, t) => n + Math.round(3600 / t.interval_s), 0);
-  const silentMin = pollMock.down ? 60 : 4;
+  // branch-fw-07's failed cycles (one per attempt while backing off) and 10.9.0.1's, one a minute.
+  const failed = (pollMock.down ? 9 : 3) + 60;
   return {
     targets: targets.size,
     answering,
@@ -464,7 +465,7 @@ function pollState(now: number): PollState {
     last_cycle: iso(Math.floor(now / 15_000) * 15_000 + 4000 > now ? Math.floor(now / 15_000) * 15_000 - 11_000 : Math.floor(now / 15_000) * 15_000 + 4000),
     hour: {
       cycles,
-      failures: { timeout: pollMock.down ? 13 : silentMin + 60, ...(pollMock.overrun ? { overrun: 42 } : {}) },
+      failures: { timeout: failed, ...(pollMock.overrun ? { overrun: 42 } : {}) },
       overruns: pollMock.overrun ? 42 : 0,
       unmatched: 0,
     },
@@ -853,3 +854,22 @@ export function deviceRoute(id: string, u: URLSearchParams, now: number): Reply 
   };
   return { status: 200, body };
 }
+
+// ---------- search (docs/api.md → Poll lines in search) ----------
+
+const d = (key: string, label: string, param: string, exclude_param = '', domain: { value: string; label: string }[] | null = null) => ({ key, label, param, exclude_param, domain });
+const dom = (vs: string[]) => vs.map((value) => ({ value, label: value }));
+/** The poll type in /api/search/schema: searchable through the API and the CLI; Events doesn't offer it as a tab. */
+export const POLL_SCHEMA = {
+  type: 'poll',
+  label: 'SNMP polls',
+  default: false,
+  fields: [
+    d('device', 'Device', 'devices', 'exclude_devices'),
+    d('kind', 'Kind', 'kinds', '', dom(['sys', 'if', 'oid', 'status', 'restart', 'info'])),
+    d('if', 'Interface', 'ifs', 'exclude_ifs'),
+    d('oper', 'Oper status', 'oper', '', dom(['up', 'down', 'testing', 'unknown', 'dormant', 'notPresent', 'lowerLayerDown'])),
+    d('status', 'Status', 'poll_status', '', dom(['ok', 'timeout', 'unreachable', 'auth_failed', 'unknown_user', 'unknown_engine', 'not_in_time', 'decrypt_failed', 'error', 'overrun'])),
+    d('reboot', 'Reboot', 'reboot', '', dom(['1', '0', '?'])),
+  ],
+};
