@@ -179,6 +179,12 @@ func installOS(o InstallOptions) (Result, error) {
 	} else if created {
 		h.say("added the firewall rule %q, disabled (`woodshed tls on` turns it on)", fwrule.RuleName)
 	}
+	// The SNMP trap rule likewise (`woodshed snmp on` enables it; SPEC §11.2.7).
+	if created, err := fwrule.SNMPWindowsEnsure(h.run, exe); err != nil {
+		res.Notes = append(res.Notes, fmt.Sprintf("couldn't add the firewall rule %q: %v", fwrule.SNMPRuleName, err))
+	} else if created {
+		h.say("added the firewall rule %q, disabled (`woodshed snmp on` turns it on)", fwrule.SNMPRuleName)
+	}
 	if err := s.Start(); err != nil {
 		return res, fmt.Errorf("the service is installed but didn't start (see Event Viewer > Application): %w", err)
 	}
@@ -227,6 +233,7 @@ func uninstallOS(o UninstallOptions) (Result, error) {
 		_, _ = h.run("netsh", "advfirewall", "firewall", "delete", "rule", "name="+r.name)
 	}
 	_ = fwrule.WindowsRemove(h.run)
+	_ = fwrule.SNMPWindowsRemove(h.run)
 	_ = eventlog.Remove(WindowsName)
 
 	if exe != "" && strings.EqualFold(filepath.Clean(exe), filepath.Clean(windowsExe())) {

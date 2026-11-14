@@ -27,6 +27,11 @@
 //
 // ensure creates the rule disabled on TCP 6514 if it doesn't exist, and otherwise leaves it
 // exactly as it is (enabled or not, its port); remove deletes it (a real uninstall only).
+//
+// The SNMP trap rule (fwrule.SNMPRuleName, SPEC §11.2.7) works the same way, on UDP 162:
+//
+//	woodshed-aclfix.exe --snmp-firewall ensure "C:\Program Files\Woodshed\woodshed.exe"
+//	woodshed-aclfix.exe --snmp-firewall remove
 package main
 
 import (
@@ -46,6 +51,9 @@ func main() {
 	}
 	if len(os.Args) >= 3 && os.Args[1] == "--tls-firewall" {
 		os.Exit(tlsFirewall(os.Args[2:]))
+	}
+	if len(os.Args) >= 3 && os.Args[1] == "--snmp-firewall" {
+		os.Exit(snmpFirewall(os.Args[2:]))
 	}
 	if len(os.Args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix <data folder>")
@@ -112,5 +120,32 @@ func tlsFirewall(args []string) int {
 		return 0
 	}
 	fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix --tls-firewall ensure <woodshed.exe> | remove")
+	return 2
+}
+
+// snmpFirewall is --snmp-firewall ensure <exe> | remove.
+func snmpFirewall(args []string) int {
+	switch {
+	case len(args) == 2 && args[0] == "ensure":
+		created, err := fwrule.SNMPWindowsEnsure(fwrule.Exec, args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "woodshed-aclfix: --snmp-firewall ensure:", err)
+			return 1
+		}
+		if created {
+			fmt.Printf("woodshed-aclfix: added the firewall rule %q, disabled\n", fwrule.SNMPRuleName)
+		} else {
+			fmt.Printf("woodshed-aclfix: the firewall rule %q exists; left as it is\n", fwrule.SNMPRuleName)
+		}
+		return 0
+	case len(args) == 1 && args[0] == "remove":
+		if err := fwrule.SNMPWindowsRemove(fwrule.Exec); err != nil {
+			fmt.Fprintln(os.Stderr, "woodshed-aclfix: --snmp-firewall remove:", err)
+			return 1
+		}
+		fmt.Printf("woodshed-aclfix: removed the firewall rule %q\n", fwrule.SNMPRuleName)
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix --snmp-firewall ensure <woodshed.exe> | remove")
 	return 2
 }
