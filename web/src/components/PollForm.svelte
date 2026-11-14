@@ -18,15 +18,14 @@
   import {
     DEFAULT_ROWS,
     exitLabel,
-    interfacesText,
+    keepsCommunity,
     MAX_CUSTOM,
-    parseInterfaces,
-    parseList,
+    newPollForm,
+    pollTargetBody,
     PRESETS,
     stepLabel,
     targetErrors,
-    type PollCustom,
-    type PollPreset,
+    type PollFormState,
     type PollSettings,
     type PollTarget,
     type PollTargetInput,
@@ -57,25 +56,7 @@
   const init = untrack(() => ({ d: defaults, t0: target, address, device }));
   const d = init.d;
   const t0 = init.t0;
-  let f = $state({
-    address: t0?.address ?? init.address,
-    port: t0?.port ?? 161,
-    device: t0 && t0.device_id !== t0.address ? t0.device_id : init.device && init.device !== init.address ? init.device : '',
-    otherDevice: !!t0 && t0.device_id !== t0.address,
-    enabled: t0?.enabled ?? true,
-    version: (t0?.version ?? '2c') as PollVersion,
-    community: '',
-    v3User: t0?.v3_user ?? '',
-    interval: t0?.interval_s ?? d?.interval_s ?? 60,
-    timeoutMs: t0?.timeout_ms ?? d?.timeout_ms ?? 2000,
-    retries: t0?.retries ?? d?.retries ?? 1,
-    presets: [...(t0?.presets ?? d?.presets ?? ['system', 'system-info', 'interfaces'])] as PollPreset[],
-    ifMode: (t0 && t0.interfaces !== 'all' ? 'list' : 'all') as 'all' | 'list',
-    ifList: t0 ? interfacesText(t0.interfaces) : '',
-    maxIf: t0?.max_interfaces ?? d?.max_interfaces ?? 64,
-    pinned: (t0?.pinned ?? []).join(', '),
-    custom: (t0?.custom ?? []).map((c) => ({ ...c })) as PollCustom[],
-  });
+  let f = $state<PollFormState>(newPollForm(t0, d, init.address, init.device));
   let users = $state<SnmpUser[] | null>(null);
   let etag = '';
   let errors = $state<Record<string, string>>({});
@@ -104,28 +85,8 @@
     return () => removeEventListener('keydown', esc);
   });
 
-  function body(): PollTargetInput {
-    const b: PollTargetInput = {
-      address: f.address.trim(),
-      port: Number(f.port),
-      device_id: f.otherDevice && f.device.trim() ? f.device.trim() : f.address.trim(),
-      enabled: f.enabled,
-      version: f.version,
-      interval_s: Number(f.interval),
-      timeout_ms: Number(f.timeoutMs),
-      retries: Number(f.retries),
-      presets: [...f.presets],
-      interfaces: f.ifMode === 'all' ? 'all' : parseInterfaces(f.ifList || ' '),
-      max_interfaces: Number(f.maxIf),
-      pinned: parseList(f.pinned),
-      custom: f.custom.map((c) => ({ oid: c.oid.trim(), kind: c.kind, label: c.label.trim(), max_rows: c.kind === 'walk' ? Number(c.max_rows) : 0 })),
-    };
-    if (f.ifMode === 'list' && b.interfaces === 'all') b.interfaces = [];
-    if (f.version === '3') b.v3_user = f.v3User;
-    else if (f.community !== '' || !t0?.community_set || t0.version === '3') b.community = f.community;
-    return b;
-  }
-  const communityStored = $derived(!!t0?.community_set && t0.version !== '3' && f.version !== '3');
+  const body = (): PollTargetInput => pollTargetBody(f, t0);
+  const communityStored = $derived(keepsCommunity(f, t0));
 
   function check(b: PollTargetInput): boolean {
     errors = targetErrors(b, { creating: !t0, communitySet: communityStored });

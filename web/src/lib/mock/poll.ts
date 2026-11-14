@@ -259,7 +259,7 @@ export function devicePoll(device: string, now: number): { polled: boolean; poll
 type Reply = { status: number; body?: unknown; headers?: Record<string, string> };
 const bad = (status: number, error: string): Reply => ({ status, body: { error } });
 
-function clean(b: PollTargetInput, prev: StoredTarget | null, d: PollSettings): { t?: Omit<StoredTarget, 'id' | 'state' | 'version_n'>; errors?: Record<string, string> } {
+function clean(b: PollTargetInput, prev: StoredTarget | null, d: PollSettings, forTest = false): { t?: Omit<StoredTarget, 'id' | 'state' | 'version_n'>; errors?: Record<string, string> } {
   const version = b.version ?? prev?.version;
   const input: PollTargetInput = { ...b, version: version as PollTargetInput['version'] };
   const errors = targetErrors(
@@ -277,7 +277,7 @@ function clean(b: PollTargetInput, prev: StoredTarget | null, d: PollSettings): 
   const port = b.port ?? 161;
   const address = (b.address ?? '').trim();
   const clash = [...targets.values()].find((x) => x.address === address && x.port === port && x.id !== prev?.id);
-  if (clash && !errors.address) errors.address = `${address}:${port} is already polled.`;
+  if (clash && !forTest && !errors.address) errors.address = `${address}:${port} is already polled.`;
   if (Object.keys(errors).length) return { errors };
   const custom: PollCustom[] = (b.custom ?? prev?.custom ?? []).map((c) => ({
     oid: c.oid.trim().replace(/^\./, ''),
@@ -368,7 +368,7 @@ function testRoute(b: PollTargetInput & { id?: string }, settings: PollSettings,
     if (!s) return bad(404, 'No such poll target.');
     t = s;
   } else {
-    const c = clean(b, null, settings);
+    const c = clean(b, null, settings, true); // a test poll isn't saved, so another target at the address is fine
     if (c.errors) return { status: 400, body: { error: 'Some fields need fixing.', errors: c.errors } };
     t = { ...c.t!, community: b.community };
   }

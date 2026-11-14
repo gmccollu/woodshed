@@ -203,6 +203,9 @@ const probe = {
   },
 };
 (window as unknown as { __woodshedMock: typeof probe }).__woodshedMock = probe;
+// The request fixture replay (screenshots.mjs, "ui-requests-mock") sends the UI's exact bodies through the mock.
+(window as unknown as { __woodshedMockFetch: (path: string, init?: RequestInit) => Promise<Response> }).__woodshedMockFetch = (path, init) =>
+  mockTransport.fetch(path, init);
 
 // mock_loggedin=1 starts with a session, as if this browser had logged in earlier: the mock
 // issues a secret and puts it where the UI keeps one.

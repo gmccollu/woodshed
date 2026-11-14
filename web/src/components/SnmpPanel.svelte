@@ -22,7 +22,7 @@
   } from '../lib/api';
   import { ago, dateTime, num } from '../lib/format';
   import { deviceName, live, refreshStatus } from '../lib/status.svelte';
-  import { AUTHS, PRIVS, authLabel, isWeak, levelOf, needsKeyExt, parseEngineIds, privLabel, statusLabel, userErrors } from '../lib/traps';
+  import { AUTHS, PRIVS, authLabel, isWeak, levelOf, needsKeyExt, parseEngineIds, privLabel, statusLabel, userBody, userErrors } from '../lib/traps';
   import CopyButton from './CopyButton.svelte';
   import Icon from './Icon.svelte';
 
@@ -152,15 +152,7 @@
     const ids = parseEngineIds(uf.engineIds);
     ufErrors = userErrors({ name: uf.name, auth: uf.auth, priv: uf.priv, auth_pass: uf.authPass, priv_pass: uf.privPass, engine_ids: ids, keepAuth, keepPriv });
     if (Object.keys(ufErrors).length) return;
-    const body = {
-      name: uf.name,
-      auth: uf.auth,
-      priv: uf.auth === 'none' ? ('none' as SnmpPriv) : uf.priv,
-      key_ext: needsKeyExt(uf.priv) ? uf.keyExt : ('draft' as SnmpKeyExt),
-      engine_ids: ids,
-      ...(uf.authPass ? { auth_pass: uf.authPass } : {}),
-      ...(uf.privPass ? { priv_pass: uf.privPass } : {}),
-    };
+    const body = userBody({ ...uf, engineIds: ids });
     ufBusy = true;
     ufError = '';
     try {

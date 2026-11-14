@@ -8,10 +8,11 @@ export type PollVersion = '1' | '2c' | '3';
 /** A target's state.status (docs/api.md → Poll targets). */
 export type PollStatus = 'ok' | 'failing' | 'backing_off' | 'disabled' | 'pending';
 export type PollPreset = 'system' | 'system-info' | 'interfaces';
+/** In the contract's order (docs/api.md: "system", "system-info", "interfaces"), which bodies keep. */
 export const PRESETS: { key: PollPreset; label: string; hint: string }[] = [
   { key: 'system', label: 'System', hint: 'Uptime, CPU and memory (HOST-RESOURCES where the device has it), every interval' },
-  { key: 'interfaces', label: 'Interfaces', hint: 'Traffic, packets, errors, discards and oper status per interface, every interval' },
   { key: 'system-info', label: 'System info', hint: 'sysName, sysDescr and sysObjectID, hourly' },
+  { key: 'interfaces', label: 'Interfaces', hint: 'Traffic, packets, errors, discards and oper status per interface, every interval' },
 ];
 
 export interface PollCustom {
@@ -517,3 +518,116 @@ export const CHART_COLORS = Array.from({ length: 8 }, (_, i) => `var(--chart-${i
 
 /** A delta series (errors, discards): chart its sum per bucket, not its average. */
 export const isDelta = (key: string) => key.endsWith('_d') || key.endsWith('.in_err_d') || key.endsWith('.out_err_d');
+
+// ---------- the forms' request bodies (shared with the request fixture test) ----------
+
+/** The poll form's fields (PollForm.svelte). */
+export interface PollFormState {
+  address: string;
+  port: number;
+  /** The device the data goes to, when otherDevice is set. */
+  device: string;
+  otherDevice: boolean;
+  enabled: boolean;
+  version: PollVersion;
+  /** Write-only: "" keeps a stored community on an edit. */
+  community: string;
+  v3User: string;
+  interval: number;
+  timeoutMs: number;
+  retries: number;
+  presets: PollPreset[];
+  ifMode: 'all' | 'list';
+  ifList: string;
+  maxIf: number;
+  pinned: string;
+  custom: PollCustom[];
+}
+
+/** The form for a target (an edit) or a new one: prefilled from the target, else the Settings defaults. */
+export function newPollForm(t: PollTarget | null, defaults: PollSettings | null, address = '', device = ''): PollFormState {
+  return {
+    address: t?.address ?? address,
+    port: t?.port ?? 161,
+    device: t && t.device_id !== t.address ? t.device_id : device && device !== address ? device : '',
+    otherDevice: !!t && t.device_id !== t.address,
+    enabled: t?.enabled ?? true,
+    version: t?.version ?? '2c',
+    community: '',
+    v3User: t?.v3_user ?? '',
+    interval: t?.interval_s ?? defaults?.interval_s ?? 60,
+    timeoutMs: t?.timeout_ms ?? defaults?.timeout_ms ?? 2000,
+    retries: t?.retries ?? defaults?.retries ?? 1,
+    presets: [...(t?.presets ?? defaults?.presets ?? ['system', 'system-info', 'interfaces'])],
+    ifMode: t && t.interfaces !== 'all' ? 'list' : 'all',
+    ifList: t ? interfacesText(t.interfaces) : '',
+    maxIf: t?.max_interfaces ?? defaults?.max_interfaces ?? 64,
+    pinned: (t?.pinned ?? []).join(', '),
+    custom: (t?.custom ?? []).map((c) => ({ ...c })),
+  };
+}
+
+/** Whether an edit keeps a stored v1/v2c community (the field left empty keeps it). */
+export const keepsCommunity = (f: PollFormState, t: PollTarget | null) => !!t?.community_set && t.version !== '3' && f.version !== '3';
+
+/**
+ * The body POST and PUT /api/poll/targets and POST /api/poll/test get from the form: every field
+ * (the server's defaults apply only to a body that leaves one out); the community only when typed,
+ * or on a new target, or when an edit switches from v3; v3_user only for v3.
+ */
+export function pollTargetBody(f: PollFormState, t: PollTarget | null): PollTargetInput {
+  const b: PollTargetInput = {
+    address: f.address.trim(),
+    port: Number(f.port),
+    device_id: f.otherDevice && f.device.trim() ? f.device.trim() : f.address.trim(),
+    enabled: f.enabled,
+    version: f.version,
+    interval_s: Number(f.interval),
+    timeout_ms: Number(f.timeoutMs),
+    retries: Number(f.retries),
+    presets: PRESETS.map((p) => p.key).filter((k) => f.presets.includes(k)),
+    interfaces: f.ifMode === 'all' ? 'all' : parseInterfaces(f.ifList || ' '),
+    max_interfaces: Number(f.maxIf),
+    pinned: parseList(f.pinned),
+    custom: f.custom.map((c) => ({ oid: c.oid.trim(), kind: c.kind, label: c.label.trim(), max_rows: c.kind === 'walk' ? Number(c.max_rows) : 0 })),
+  };
+  if (f.ifMode === 'list' && b.interfaces === 'all') b.interfaces = [];
+  if (f.version === '3') b.v3_user = f.v3User;
+  else if (f.community !== '' || !keepsCommunity(f, t)) b.community = f.community;
+  return b;
+}
+
+/** Settings → Polling's fields (Settings.svelte). */
+export interface PollSettingsForm {
+  pollInterval: number;
+  pollTimeoutMs: number;
+  pollRetries: number;
+  pollConcurrency: number;
+  pollMaxIf: number;
+  pollMaxTargets: number;
+  pollPresets: PollPreset[];
+}
+const fin = (v: number | null) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+export function pollSettingsForm(p: PollSettings | undefined): PollSettingsForm {
+  return {
+    pollInterval: p?.interval_s ?? 60,
+    pollTimeoutMs: p?.timeout_ms ?? 2000,
+    pollRetries: p?.retries ?? 1,
+    pollConcurrency: p?.concurrency ?? 32,
+    pollMaxIf: p?.max_interfaces ?? 64,
+    pollMaxTargets: p?.max_targets ?? 500,
+    pollPresets: [...(p?.presets ?? ['system', 'system-info', 'interfaces'])],
+  };
+}
+/** The "poll" object of the PUT /api/settings body (the rest of the body is the other sections' as loaded). */
+export function pollSettingsBody(f: PollSettingsForm): PollSettings {
+  return {
+    interval_s: fin(f.pollInterval),
+    timeout_ms: fin(f.pollTimeoutMs),
+    retries: fin(f.pollRetries),
+    concurrency: fin(f.pollConcurrency),
+    max_interfaces: fin(f.pollMaxIf),
+    max_targets: fin(f.pollMaxTargets),
+    presets: PRESETS.map((p) => p.key).filter((k) => f.pollPresets.includes(k)),
+  };
+}

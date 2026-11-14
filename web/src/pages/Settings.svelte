@@ -23,10 +23,10 @@
   import { isCommunityHash } from '../lib/traps';
   import UpdatesSettings from '../components/UpdatesSettings.svelte';
   import PollStatePanel from '../components/PollStatePanel.svelte';
-  import { PRESETS as POLL_PRESETS, type PollPreset } from '../lib/poll';
+  import { PRESETS as POLL_PRESETS, pollSettingsBody, pollSettingsForm, type PollSettingsForm } from '../lib/poll';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
-  interface Form {
+  interface Form extends PollSettingsForm {
     udpEnabled: boolean;
     udpAddr: string;
     udpPort: number;
@@ -67,13 +67,6 @@
     trustedHosts: string;
     quietMin: number;
     offlineMin: number;
-    pollInterval: number;
-    pollTimeoutMs: number;
-    pollRetries: number;
-    pollConcurrency: number;
-    pollMaxIf: number;
-    pollMaxTargets: number;
-    pollPresets: PollPreset[];
   }
 
   let saved = $state<Settings | null>(null);
@@ -151,13 +144,7 @@
       trustedHosts: (s.ui.trusted_hosts ?? []).join('\n'),
       quietMin: round(s.quiet.quiet_after_seconds / 60),
       offlineMin: round(s.quiet.offline_after_seconds / 60),
-      pollInterval: s.poll?.interval_s ?? 60,
-      pollTimeoutMs: s.poll?.timeout_ms ?? 2000,
-      pollRetries: s.poll?.retries ?? 1,
-      pollConcurrency: s.poll?.concurrency ?? 32,
-      pollMaxIf: s.poll?.max_interfaces ?? 64,
-      pollMaxTargets: s.poll?.max_targets ?? 500,
-      pollPresets: [...(s.poll?.presets ?? ['system', 'system-info', 'interfaces'])],
+      ...pollSettingsForm(s.poll),
     };
   }
 
@@ -222,19 +209,7 @@
         offline_after_seconds: Math.round(n(f.offlineMin) * 60),
       },
       // Sent only to a server that has the poller (1.3 and later).
-      ...(saved?.poll
-        ? {
-            poll: {
-              interval_s: n(f.pollInterval),
-              timeout_ms: n(f.pollTimeoutMs),
-              retries: n(f.pollRetries),
-              concurrency: n(f.pollConcurrency),
-              max_interfaces: n(f.pollMaxIf),
-              max_targets: n(f.pollMaxTargets),
-              presets: POLL_PRESETS.map((p) => p.key).filter((k) => f.pollPresets.includes(k)),
-            },
-          }
-        : {}),
+      ...(saved?.poll ? { poll: pollSettingsBody(f) } : {}),
     };
   }
 
