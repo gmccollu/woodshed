@@ -481,9 +481,16 @@ func TestPortHolderFindsUs(t *testing.T) {
 	}
 	for _, proto := range []string{"udp", "tcp"} {
 		port, free := occupy(t, proto)
+		t0 := time.Now()
 		h := PortHolder(proto, port)
+		took := time.Since(t0)
 		free()
-		// Best effort by design, but for our own process it should work.
+		// Best effort by design, but for our own process it should work, unless the
+		// lookup ran out of its time budget (lsof on a loaded machine).
+		if h == "" && took >= holderTimeout {
+			t.Logf("%s: no holder: the lookup used its whole %v budget (%v)", proto, holderTimeout, took)
+			continue
+		}
 		if !strings.Contains(h, "pid "+strconv.Itoa(os.Getpid())) {
 			t.Errorf("%s: holder %q, want our pid %d", proto, h, os.Getpid())
 		}

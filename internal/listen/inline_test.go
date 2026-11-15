@@ -112,26 +112,38 @@ func cut(s, sep string) (string, string, bool) {
 // wakes, and nothing is queued.
 func TestInlineLoneDatagrams(t *testing.T) {
 	s, _, log, _, conn := startInline(t, func(string) bool { return true })
-	sendSpaced(conn, 0, 20)
-	waitFor(t, "20 delivered", func() bool { return len(log.snapshot()) == 20 })
+	// Each one sent 2 ms after the one before was delivered: lone by construction
+	// (an idle queue and far more than inlineGap since the last read), so every
+	// one goes inline whatever the scheduler does.
+	for i := 0; i < 20; i++ {
+		sendSpaced(conn, i, i+1)
+		waitFor(t, "delivered", func() bool { return len(log.snapshot()) == i+1 })
+	}
+	wantOrder(t, log.snapshot(), 20, func(int) string { return "inline" })
+	// A stream spaced the same way without waiting: order is exact whichever path
+	// each one took. On a busy runner the reader can find several waiting and
+	// correctly queue them, so how many go inline is only logged.
+	sendSpaced(conn, 20, 40)
+	waitFor(t, "40 delivered", func() bool { return len(log.snapshot()) == 40 })
 	got := log.snapshot()
-	// Order is exact whichever path each one took. On a busy CI runner a datagram may arrive within the quiet
-	// window of the previous one and correctly go through the queue, so require most, not all, to be inline.
-	wantOrder(t, got, 20, func(int) string { return "" })
+	wantOrder(t, got, 40, func(i int) string {
+		if i < 20 {
+			return "inline"
+		}
+		return ""
+	})
 	inline := 0
-	for _, g := range got {
+	for _, g := range got[20:] {
 		if p, _, _ := cut(g, ":"); p == "inline" {
 			inline++
 		}
 	}
-	if inline < 15 {
-		t.Errorf("only %d of 20 lone datagrams were delivered inline: %v", inline, got)
-	}
+	t.Logf("%d of 20 spaced datagrams sent without waiting went inline", inline)
 	// The inline path counts a message after TrySink takes it (listen.go enqueue),
 	// so the last one can be delivered and not yet counted.
-	waitFor(t, "20 received", func() bool { return s.Status().Received >= 20 })
+	waitFor(t, "40 received", func() bool { return s.Status().Received >= 40 })
 	st := s.Status()
-	if st.Received != 20 || st.UDPQueues[0].HighWater24h > 20-inline {
+	if st.Received != 40 || st.UDPQueues[0].HighWater24h > 20-inline {
 		t.Errorf("received %d, queue high-water %d with %d queued", st.Received, st.UDPQueues[0].HighWater24h, 20-inline)
 	}
 }
@@ -161,12 +173,14 @@ func TestInlineFallsBackToQueue(t *testing.T) {
 // reader never delivers inline, so arrival order holds; TrySink isn't even
 // asked.
 func TestInlineWaitsForBusyDrainer(t *testing.T) {
-	_, ss, log, tries, conn := startInline(t, func(raw string) bool { return raw != "<13>m0" })
+	s, ss, log, tries, conn := startInline(t, func(raw string) bool { return raw != "<13>m0" })
 	ss.stall()
 	sendSpaced(conn, 0, 1) // would block: queued, and the drainer stalls on it
 	waitFor(t, "the drainer to block", func() bool { return ss.inside.Load() == 1 })
 	sendSpaced(conn, 1, 6) // lone, but the drainer is busy
-	time.Sleep(50 * time.Millisecond)
+	// All five read (queued behind m0) before the drainer is let go: a reader
+	// that got to m5 only after the drain would rightly send it inline.
+	waitFor(t, "m1-m5 queued", func() bool { return s.Status().UDPQueues[0].Depth == 5 })
 	if n := tries.Load(); n != 1 {
 		t.Fatalf("TrySink asked %d times while the drainer was busy", n)
 	}

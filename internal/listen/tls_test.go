@@ -239,11 +239,12 @@ func TestTLSNamesAndTrust(t *testing.T) {
 // Failure reasons: plain syslog to the TLS port, an untrusted CA, a version
 // mismatch, a timeout and a close mid-handshake.
 func TestTLSFailureReasons(t *testing.T) {
-	// 1 s, not less: the real handshakes below (untrusted CA, version) must each
-	// finish within it on a slow runner, or they're recorded as timeouts.
-	s, _, _ := startTLS(t, tlsConfig(false), func(o *Options) { o.HandshakeTimeout = time.Second })
+	// The default handshake timeout (10 s): the real handshakes classified here
+	// must finish within it, and a short one turned them into timeouts on a
+	// starved runner. The timeout case has its own server below.
+	s, _, _ := startTLS(t, tlsConfig(false), nil)
 	addr := tlsAddr(t, s)
-	expect := func(what, reason, detail string) {
+	expectOn := func(s *Server, what, reason, detail string) {
 		t.Helper()
 		var f TLSFailure
 		waitFor(t, what, func() bool { f, _ = failureOf(s, "127.0.0.1"); return f.Reason == reason })
@@ -251,6 +252,7 @@ func TestTLSFailureReasons(t *testing.T) {
 			t.Errorf("%s: detail %q, want %q", what, f.Detail, detail)
 		}
 	}
+	expect := func(what, reason, detail string) { t.Helper(); expectOn(s, what, reason, detail) }
 
 	plain, _ := net.Dial("tcp", addr)
 	fmt.Fprintf(plain, "<13>plain syslog to the TLS port\n")
@@ -268,21 +270,26 @@ func TestTLSFailureReasons(t *testing.T) {
 	tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11})
 	expect("version", TLSVersion, "unsupported versions")
 
-	stall, _ := net.Dial("tcp", addr)
-	expect("timeout", TLSTimeout, "no complete handshake within 1s")
-	if !closedByServer(stall, 2*time.Second) {
-		t.Error("stalled handshake not closed")
-	}
-	stall.Close()
-
 	half, _ := net.Dial("tcp", addr)
 	half.Write([]byte{0x16, 0x03, 0x01, 0x00, 0x40, 0x01}) // a ClientHello's first bytes, then nothing
 	half.Close()
 	expect("closed", TLSClosed, "")
 
 	fs := s.TLSFailures()
-	if len(fs) != 1 || fs[0].IP != "127.0.0.1" || fs[0].Failures24h != 5 || fs[0].Delivered {
+	if len(fs) != 1 || fs[0].IP != "127.0.0.1" || fs[0].Failures24h != 4 || fs[0].Delivered {
 		t.Errorf("failures %+v", fs)
+	}
+
+	// A handshake that never starts, on a server with a short timeout.
+	st, _, _ := startTLS(t, tlsConfig(false), func(o *Options) { o.HandshakeTimeout = 300 * time.Millisecond })
+	stall, _ := net.Dial("tcp", tlsAddr(t, st))
+	expectOn(st, "timeout", TLSTimeout, "no complete handshake within 300ms")
+	if !closedByServer(stall, 2*time.Second) {
+		t.Error("stalled handshake not closed")
+	}
+	stall.Close()
+	if fs := st.TLSFailures(); len(fs) != 1 || fs[0].Failures24h != 1 {
+		t.Errorf("timeout server failures %+v", fs)
 	}
 }
 
