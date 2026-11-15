@@ -64,12 +64,19 @@ func startLogged(t *testing.T, cfgPath string, buf *syncBuf) *running {
 // freeUDP returns a free UDP port on 127.0.0.1.
 func freeUDP(t *testing.T) int {
 	t.Helper()
-	c, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 100 {
+		c, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := c.LocalAddr().(*net.UDPAddr).Port
+		c.Close()
+		if claimPort(port) { // never one freePort or freeUDP already returned
+			return port
+		}
 	}
-	defer c.Close()
-	return c.LocalAddr().(*net.UDPAddr).Port
+	t.Fatal("no free UDP port")
+	return 0
 }
 
 // The trap receiver end to end, in process (SPEC §11.6): v1, v2c and v3 traps
@@ -176,8 +183,14 @@ func TestTrapsEndToEndInProcess(t *testing.T) {
 	if f := page.Results[0].Fields; page.Results[0].Type != "trap" || f["version"] != "3" || f["status"] != "ok" {
 		t.Fatalf("result %+v", page.Results[0])
 	}
+	// The wrong-passphrase traps were sent last and nothing above waited for them:
+	// wait until all 5 are indexed (the 270 can be in before them).
 	q = url.Values{"type": {"trap"}, "status": {"auth_failed"}}
-	r.do(t, "GET", "/api/search?"+q.Encode(), nil, &page)
+	waitFor(t, "the auth_failed traps in the index", func() bool {
+		page.Results = nil
+		r.do(t, "GET", "/api/search?"+q.Encode(), nil, &page)
+		return len(page.Results) >= 5
+	})
 	if len(page.Results) != 5 || strings.Contains(page.Results[0].Raw, "vb=") {
 		t.Fatalf("auth_failed: %d %+v", len(page.Results), page.Results)
 	}

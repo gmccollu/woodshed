@@ -78,7 +78,7 @@ func TestLiveTailHidesHiddenDevices(t *testing.T) {
 	if gotWithin(all, loadgen.SeqTag(run)+"0 ", 300*time.Millisecond) {
 		t.Error("a hidden device's message was replayed to a default subscriber")
 	}
-	if !gotWithin(named, loadgen.SeqTag(run)+"0 ", 2*time.Second) {
+	if !gotWithin(named, loadgen.SeqTag(run)+"0 ", 5*time.Second) { // returns as soon as it arrives; 5 s like the others
 		t.Error("a subscriber naming the hidden device didn't get its replay")
 	}
 	m1 := send(1)
