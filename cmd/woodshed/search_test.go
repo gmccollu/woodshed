@@ -663,6 +663,19 @@ func TestSearchBesideWriter(t *testing.T) {
 	}()
 	defer func() { close(stop); <-done }()
 	time.Sleep(300 * time.Millisecond)
+	// And at least one flush: a starved writer goroutine had flushed nothing after
+	// the 300 ms, and the first search found no match (exit 1).
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		wmu.Lock()
+		upTo := flushedUpTo
+		wmu.Unlock()
+		if upTo >= 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the writer flushed nothing in 20 s")
+		}
+	}
 	searchNow = func() time.Time { return clock().Add(time.Hour) }
 	defer func() { searchNow = time.Now }()
 	for round := 0; round < 6; round++ {
