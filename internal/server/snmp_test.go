@@ -130,6 +130,9 @@ func TestTrapsEndToEndInProcess(t *testing.T) {
 		rate := 2000.0
 		if rn.to.Inform {
 			rate = 60 // under the reply limit (100 a second per source): every inform from 127.0.0.1
+			// Each Response follows its record's write; a slow disk under load
+			// delayed all 50 past the 2 s default. A late answer only costs time.
+			rn.to.Timeout = 10 * time.Second
 		}
 		res, err := loadgen.Send(ctx, loadgen.SendOptions{Addr: addr, Proto: "trap", Count: rn.n, Rate: rate, Trap: rn.to})
 		if err != nil {

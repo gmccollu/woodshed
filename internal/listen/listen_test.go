@@ -42,7 +42,7 @@ func (c *collector) sink(m model.Message) {
 
 func (c *collector) wait(t *testing.T, n int) []model.Message {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(10 * time.Second) // as waitFor: one datagram took over 5 s on a starved machine
 	for {
 		c.mu.Lock()
 		if len(c.msgs) >= n {
