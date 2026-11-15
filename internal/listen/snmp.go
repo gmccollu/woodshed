@@ -107,7 +107,7 @@ func (l *snmpListener) run() {
 		if n == 0 {
 			continue
 		}
-		l.srv.enqueueTrap(l.q, buf[:n], from)
+		l.srv.enqueueTrap(l.q, l.conn, buf[:n], from)
 	}
 }
 
@@ -143,15 +143,25 @@ func (l *snmpListener) close() {
 }
 
 // enqueueTrap is the SNMP reader's half: the blocklist and the allowlist, and
-// a copy into q (never truncated).
-func (s *Server) enqueueTrap(q *udpQueue, raw []byte, from netip.AddrPort) {
+// a copy into q (never truncated), or, for a lone datagram, Options.TrapTry.
+func (s *Server) enqueueTrap(q *udpQueue, conn *net.UDPConn, raw []byte, from netip.AddrPort) {
 	now := s.opts.Clock().UTC()
 	addr := from.Addr().Unmap()
 	if r := s.allow.Load().refusal(addr); r != "" {
 		s.rejects.add(addr, now, 1, r)
 		return
 	}
-	q.push(queued{raw: append(make([]byte, 0, len(raw)), raw...), from: addr, port: from.Port(), at: now})
+	e := queued{raw: append(make([]byte, 0, len(raw)), raw...), from: addr, port: from.Port(), at: now}
+	if s.opts.TrapTry != nil && q.inline(now) {
+		p := &TrapPacket{Raw: e.raw, From: netip.AddrPortFrom(addr, e.port), Received: now, conn: conn, srv: s}
+		s.received.Add(1)
+		e.finish = s.opts.TrapTry(p)
+		if e.finish == nil {
+			return
+		}
+		// The queue is empty (inline), so this can't be refused for room.
+	}
+	q.push(e)
 }
 
 // --- lifecycle (callers hold s.mu) ---
