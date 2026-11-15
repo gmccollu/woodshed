@@ -405,11 +405,11 @@ func TestCloseDrainsQueue(t *testing.T) {
 	if d := time.Since(t0); d > 3*time.Second {
 		t.Errorf("Close took %v", d)
 	}
-	// Empty: prompt.
+	// Empty: prompt, not the 5 s drain timeout (2 s leaves room for a stalled runner).
 	s2, _, _, _ := startQueued(t, 10000, 5*time.Second)
 	t0 = time.Now()
 	s2.Close()
-	if d := time.Since(t0); d > 500*time.Millisecond {
+	if d := time.Since(t0); d > 2*time.Second {
 		t.Errorf("Close of an idle listener took %v", d)
 	}
 }

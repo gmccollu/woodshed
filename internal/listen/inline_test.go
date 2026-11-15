@@ -127,6 +127,9 @@ func TestInlineLoneDatagrams(t *testing.T) {
 	if inline < 15 {
 		t.Errorf("only %d of 20 lone datagrams were delivered inline: %v", inline, got)
 	}
+	// The inline path counts a message after TrySink takes it (listen.go enqueue),
+	// so the last one can be delivered and not yet counted.
+	waitFor(t, "20 received", func() bool { return s.Status().Received >= 20 })
 	st := s.Status()
 	if st.Received != 20 || st.UDPQueues[0].HighWater24h > 20-inline {
 		t.Errorf("received %d, queue high-water %d with %d queued", st.Received, st.UDPQueues[0].HighWater24h, 20-inline)
@@ -147,6 +150,8 @@ func TestInlineFallsBackToQueue(t *testing.T) {
 		}
 		return "inline"
 	})
+	// Counted after TrySink takes it (listen.go enqueue): wait for the last one's count.
+	waitFor(t, "12 received", func() bool { return s.Status().Received >= 12 })
 	if st := s.Status(); st.Received != 12 {
 		t.Errorf("received %d", st.Received)
 	}

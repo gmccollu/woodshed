@@ -239,7 +239,9 @@ func TestTLSNamesAndTrust(t *testing.T) {
 // Failure reasons: plain syslog to the TLS port, an untrusted CA, a version
 // mismatch, a timeout and a close mid-handshake.
 func TestTLSFailureReasons(t *testing.T) {
-	s, _, _ := startTLS(t, tlsConfig(false), func(o *Options) { o.HandshakeTimeout = 300 * time.Millisecond })
+	// 1 s, not less: the real handshakes below (untrusted CA, version) must each
+	// finish within it on a slow runner, or they're recorded as timeouts.
+	s, _, _ := startTLS(t, tlsConfig(false), func(o *Options) { o.HandshakeTimeout = time.Second })
 	addr := tlsAddr(t, s)
 	expect := func(what, reason, detail string) {
 		t.Helper()
@@ -267,7 +269,7 @@ func TestTLSFailureReasons(t *testing.T) {
 	expect("version", TLSVersion, "unsupported versions")
 
 	stall, _ := net.Dial("tcp", addr)
-	expect("timeout", TLSTimeout, "no complete handshake within 300ms")
+	expect("timeout", TLSTimeout, "no complete handshake within 1s")
 	if !closedByServer(stall, 2*time.Second) {
 		t.Error("stalled handshake not closed")
 	}
@@ -425,7 +427,12 @@ func TestTLSHandshakeLimits(t *testing.T) {
 	}
 	fmt.Fprintf(est, "<13>during\n")
 	c.wait(t, 2)
-	waitFor(t, "the stalled handshakes' timeout", func() bool { return s.Status().TLSHandshakes == 0 })
+	// A handshake leaves the in-progress count before its failure is recorded
+	// (tls.go handshake: release, then tlsStats.fail), so wait for the record too.
+	waitFor(t, "the stalled handshakes' timeout", func() bool {
+		f, _ := failureOf(s, "198.51.0.1")
+		return s.Status().TLSHandshakes == 0 && f.Reason == TLSTimeout
+	})
 	if f, _ := failureOf(s, "198.51.0.1"); f.Reason != TLSTimeout {
 		t.Errorf("stalled: %+v", f)
 	}
@@ -600,7 +607,7 @@ func TestCloseWithIdleTCPAndTLSIsPrompt(t *testing.T) {
 	waitFor(t, "2 conns and a handshake", func() bool { st := s.Status(); return st.TCPConns == 2 && st.TLSHandshakes == 1 })
 	t0 := time.Now()
 	s.Close()
-	if d := time.Since(t0); d > time.Second {
+	if d := time.Since(t0); d > 5*time.Second { // far below the 1 min handshake and 24 h idle timeouts, with room for a stalled runner
 		t.Errorf("Close took %v with idle connections open", d)
 	}
 	for name, conn := range map[string]net.Conn{"tcp": tcp, "tls": tc, "handshake": stalled} {

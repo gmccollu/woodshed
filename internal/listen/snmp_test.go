@@ -60,7 +60,8 @@ func TestSNMPListener(t *testing.T) {
 			t.Fatalf("reply %d bytes, %v", n, err)
 		}
 	}
-	waitUntil(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 3 })
+	// Trap records "refuse this" before it calls Refuse, so wait for the refusal too.
+	waitUntil(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 3 && len(s.Rejected()) == 1 })
 	if len(got[1]) != 9000 {
 		t.Fatalf("truncated to %d", len(got[1]))
 	}
