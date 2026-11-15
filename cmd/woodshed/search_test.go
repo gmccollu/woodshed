@@ -521,13 +521,27 @@ func TestSearchInterrupted(t *testing.T) {
 	searchNow = func() time.Time { return fxNow }
 	defer func() { searchNow = time.Now }()
 	var out, errOut bytes.Buffer
-	// A slow consumer: the flusher's first write cancels the run.
-	cw := &cancelWriter{w: &out, cancel: func() {
-		if cancel != nil {
-			cancel()
+	var code int
+	// The interrupt comes from the flusher's first write, every 1 ms; on a busy
+	// runner the whole search can finish before the flusher goroutine runs at all,
+	// and then nothing is interrupted (exit 0, every line). Only that case is
+	// retried; any other outcome is checked below.
+	for try := 0; ; try++ {
+		out.Reset()
+		errOut.Reset()
+		cancel = nil
+		// A slow consumer: the flusher's first write cancels the run.
+		cw := &cancelWriter{w: &out, cancel: func() {
+			if cancel != nil {
+				cancel()
+			}
+		}}
+		code = cmdSearch(append([]string{"--data", f.dir}, fxRange...), cw, &errOut)
+		if code != 0 || strings.Count(out.String(), "\n") != 12*4*3 || try == 19 {
+			break
 		}
-	}}
-	code := cmdSearch(append([]string{"--data", f.dir}, fxRange...), cw, &errOut)
+		t.Logf("try %d: the search finished before the flusher's first tick; again", try)
+	}
 	if code != 130 || !strings.Contains(errOut.String(), "(interrupted)") {
 		t.Fatalf("exit %d, stderr %q", code, errOut.String())
 	}

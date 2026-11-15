@@ -206,10 +206,9 @@ func TestSendMessage(t *testing.T) {
 }
 
 func TestSendNothingListening(t *testing.T) {
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
-	code, _, errOut := runCLI("send", "--proto", "tcp", "--port", fmt.Sprint(port))
+	// Port 1 (tcpmux) is never served on a test machine; a just-closed ephemeral
+	// port can be taken by a parallel test before the dial (as in 382e54a).
+	code, _, errOut := runCLI("send", "--proto", "tcp", "--host", "127.0.0.1", "--port", "1")
 	if code != 1 || !strings.Contains(errOut, "woodshed send:") || !strings.Contains(errOut, "refused") {
 		t.Errorf("code %d, stderr %q", code, errOut)
 	}
