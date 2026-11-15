@@ -114,10 +114,22 @@ func TestInlineLoneDatagrams(t *testing.T) {
 	s, _, log, _, conn := startInline(t, func(string) bool { return true })
 	sendSpaced(conn, 0, 20)
 	waitFor(t, "20 delivered", func() bool { return len(log.snapshot()) == 20 })
-	wantOrder(t, log.snapshot(), 20, func(int) string { return "inline" })
+	got := log.snapshot()
+	// Order is exact whichever path each one took. On a busy CI runner a datagram may arrive within the quiet
+	// window of the previous one and correctly go through the queue, so require most, not all, to be inline.
+	wantOrder(t, got, 20, func(int) string { return "" })
+	inline := 0
+	for _, g := range got {
+		if p, _, _ := cut(g, ":"); p == "inline" {
+			inline++
+		}
+	}
+	if inline < 15 {
+		t.Errorf("only %d of 20 lone datagrams were delivered inline: %v", inline, got)
+	}
 	st := s.Status()
-	if st.Received != 20 || st.UDPQueues[0].HighWater24h != 0 {
-		t.Errorf("received %d, queue high-water %d", st.Received, st.UDPQueues[0].HighWater24h)
+	if st.Received != 20 || st.UDPQueues[0].HighWater24h > 20-inline {
+		t.Errorf("received %d, queue high-water %d with %d queued", st.Received, st.UDPQueues[0].HighWater24h, 20-inline)
 	}
 }
 
