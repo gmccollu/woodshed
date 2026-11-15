@@ -303,10 +303,13 @@ func TestSamplingRealTime(t *testing.T) {
 
 	const rate, dur = 5000, 2 * time.Second
 	start := time.Now()
-	var maxPublish time.Duration
+	var maxPublish, elapsed time.Duration
 	sent := 0
 	for time.Since(start) < dur {
-		due := int(time.Since(start).Seconds() * rate)
+		// elapsed is when the sends caught up, not after the sleep below: a sleep the
+		// OS stretches on a busy runner isn't time Publish took.
+		elapsed = time.Since(start)
+		due := int(elapsed.Seconds() * rate)
 		for ; sent < due; sent++ {
 			p := time.Now()
 			h.Publish(msg("192.0.2.1", 6, fmt.Sprintf("rt %d", sent)))
@@ -316,10 +319,10 @@ func TestSamplingRealTime(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	elapsed := time.Since(start)
-	time.Sleep(300 * time.Millisecond)
+	// Read until the stream has been quiet for 500 ms (a fixed sleep and a
+	// non-blocking drain could stop before a slow reader caught up).
 	var msgs, sampled int
-	var last Notice
+	var last, best Notice
 loop:
 	for {
 		select {
@@ -330,8 +333,11 @@ loop:
 			case "sampled":
 				sampled++
 				json.Unmarshal([]byte(ev.data), &last)
+				if last.Rate > best.Rate {
+					best = last
+				}
 			}
-		default:
+		case <-time.After(500 * time.Millisecond):
 			break loop
 		}
 	}
@@ -344,8 +350,10 @@ loop:
 	if msgs > 160 || msgs < 60 {
 		t.Errorf("delivered %d messages over %v, want about 50/s", msgs, elapsed)
 	}
-	if sampled < 1 || last.Rate < 3000 {
-		t.Errorf("sampled notices %d, last %+v", sampled, last)
+	// The highest notice, not the last: a window the publisher was stalled in
+	// (the runner, not the hub) reports a lower matching rate.
+	if sampled < 1 || best.Rate < 3000 {
+		t.Errorf("sampled notices %d, highest %+v, last %+v", sampled, best, last)
 	}
 }
 
@@ -362,15 +370,23 @@ func TestSlowSubscriberDrops(t *testing.T) {
 			got.Add(1)
 		}
 	}()
-	start := time.Now()
+	var publishing time.Duration
 	for i := 0; i < 1000; i++ {
+		p := time.Now()
 		h.Publish(msg("192.0.2.1", 6, "x"))
+		publishing += time.Since(p)
 		if i%8 == 7 {
-			time.Sleep(50 * time.Microsecond) // let the fast reader keep up
+			// Let the fast reader catch up before its 8-slot buffer refills: a fixed
+			// sleep lost whole batches when the OS didn't run the reader for a while.
+			want := int64(i + 1)
+			deadline := time.Now().Add(10 * time.Second)
+			for got.Load() < want && time.Now().Before(deadline) {
+				time.Sleep(50 * time.Microsecond)
+			}
 		}
 	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("Publish blocked: 1000 took %v", d)
+	if publishing > 2*time.Second {
+		t.Errorf("Publish blocked: 1000 took %v", publishing)
 	}
 	if n := slow.Dropped(); n != 1000-8 {
 		t.Errorf("slow dropped %d, want %d", n, 1000-8)
@@ -381,7 +397,7 @@ func TestSlowSubscriberDrops(t *testing.T) {
 	fast.Close()
 	wg.Wait()
 	t.Logf("fast subscriber got %d of 1000", got.Load())
-	if got.Load() < 900 {
+	if got.Load() != 1000 {
 		t.Errorf("fast subscriber got only %d", got.Load())
 	}
 	slow.Close()
