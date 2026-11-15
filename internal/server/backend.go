@@ -837,6 +837,10 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 	b.cfgMu.Lock()
 	b.cfg = next.Clone()
 	b.cfgMu.Unlock()
+	// Read the host names again now that ui.extra_hostnames is in place:
+	// prepareTLS's recheck ran before, and a status read in between (the
+	// run-state writer, the UI) would keep the old names for a minute.
+	b.tlsc.certs.Recheck()
 	if cur.Updates != next.Updates && b.updates != nil {
 		b.updates.SetCheck(next.Updates.Check)
 	}
