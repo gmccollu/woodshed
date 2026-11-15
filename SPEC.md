@@ -1605,8 +1605,10 @@ loss continues while the queue never fills, it's outside Woodshed, and that's no
 
 **Design:**
 - Each UDP socket (syslog's and the trap listener's) gets a bounded FIFO queue and one drainer goroutine. The reader
-  only reads a datagram, stamps the received time, applies the allowlist and blocklist, and enqueues; it never calls
-  the store, parses, or touches the disk.
+  only reads a datagram, stamps the received time, applies the allowlist and blocklist, and enqueues; it never waits
+  on the store or touches the disk. A lone datagram (the queue empty, the drainer idle, the socket quiet for 100 µs)
+  is the exception: the reader delivers it itself, through the store's `TryWrite`, which stores it only when that's
+  a buffer append with its stream's lock free and otherwise does nothing, so it goes to the queue (§11.8, 70).
 - The queue is bounded by messages and by bytes, whichever fills first: `listeners.udp_queue_messages` (default
   100,000, 1,000–2,000,000) and `listeners.udp_queue_bytes` (default 64 MiB, 1 MiB–1 GiB), file-only settings like
   the other listener tuning. 100,000 is 10 s at the 10,000 msg/s target, longer than any stall measured so far.
@@ -2040,6 +2042,22 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
     what's shown. Export's **Around a time** starts at now (so its window shows "cut at now") and offers **Preview in
     Events**. Local or UTC input reuses the app-wide preference; requests are always UTC. Export's types are Syslog,
     SNMP traps or Both; Both hides the filters, as the API refuses them with two types.
+
+**Decided (build, 2026-11-15), the Windows CPU fix after the 1.2.0-rc1 lab**, for the owner to overrule:
+70. **A lone UDP datagram skips the drainer.** rc1's lab (Windows Server 2022, 4 vCPU) measured about a core at 500
+    msg/s, half of it kernel time, for syslog and traps alike, and less per message as the rate rose. At low rates the
+    reader readied the drainer for every datagram and blocked again at once; the Go scheduler then wakes a second OS
+    thread to steal the readied goroutine, which on Windows spins with SwitchToThread (runtime `runqgrab`,
+    `osHasLowResTimer`): two thread wake-ups a message where 1.0 had one. Now, when the queue is empty, the drainer has
+    nothing in hand and the socket was quiet for 100 µs, the reader delivers the datagram itself through a call that
+    can't block: `store.TryWrite` (an append to an open stream's buffer under `TryLock`, with no new day, part or
+    flush; otherwise it does nothing). A delivery that would block, a burst and a backlog go through the queue as
+    before. A trap the reader decoded but couldn't store goes in as a finish step, so it's decoded and counted once.
+    FIFO, the counted drops and the shutdown drain are unchanged. Rejected: waking the drainer per batch with a timer
+    (still a wake per lone message, plus latency and a timer); spinning before parking (CPU at idle).
+71. **Proof:** `TestCPUPerMessage` (internal/loadgen, `WOODSHED_CPU=1`) measures process CPU per message (getrusage,
+    `GetProcessTimes` on Windows) with the sender in a child process, for this build and for rc1's path
+    (`BenchOptions.NoFastPath`) side by side; CI prints it on Linux, macOS and Windows.
 
 ### 11.9 Questions settled (1.2), decided (coordinator, 2026-11-14, owner-delegated)
 1. No IANA Private Enterprise Number for now; the engine ID keeps the placeholder (§11.2). Revisit if the project

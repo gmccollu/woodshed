@@ -81,6 +81,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - When Woodshed stops, it stores the UDP messages still queued first, for at most a third of the shutdown time
   (5 seconds for the service); any left then are counted as dropped.
 
+### Fixed
+- 1.2.0-rc1 only: on Windows, UDP syslog and SNMP traps cost about a CPU core at a few hundred messages a second,
+  because every message woke the UDP queue's second thread. A message that arrives on its own is now stored straight
+  away; bursts still go through the queue, so a slow disk is absorbed as before.
+
 ## [1.1.0] - 2026-11-14
 
 ### Added
