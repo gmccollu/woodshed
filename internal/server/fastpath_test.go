@@ -23,10 +23,14 @@ func TestUDPFastPath(t *testing.T) {
 	// it goes through the queue: send it alone and let it settle first.
 	fmt.Fprintf(conn, "<13>warm-up")
 	waitFor(t, "the warm-up stored", func() bool { return r.srv.be.store.Usage().Written == 1 })
+	// Each one 3 ms after the one before was stored, so it's lone by construction
+	// (sent as a stream, a starved reader found several waiting and rightly
+	// queued them: 13 of 20 inline).
 	const n = 20
 	for i := 0; i < n; i++ {
 		time.Sleep(3 * time.Millisecond)
 		fmt.Fprintf(conn, "<13>lone %d", i)
+		waitFor(t, "stored", func() bool { return r.srv.be.store.Usage().Written == int64(i+2) })
 	}
 	// Received is counted before the sink publishes (queue path) and before
 	// Inline (fast path), so wait for what's read below.
@@ -34,8 +38,9 @@ func TestUDPFastPath(t *testing.T) {
 		return ln.Status().Received == n+1 && r.srv.hub.Stats().Published == n+1
 	})
 	st := ln.Status()
-	// On a busy runner a datagram can still take the queue (read within the quiet
-	// gap of the one before, or a flush holding the device), so most, not all.
+	// A periodic flush holding the device's lock (or a drainer still finishing the
+	// warm-up) still sends one through the queue now and then; a starved runner
+	// can stretch those, so most, not all.
 	if st.Inline < 15 {
 		t.Errorf("%d of %d stored by the reader", st.Inline, n)
 	}

@@ -145,19 +145,23 @@ func (u *updServer) exercise(t *testing.T, keep string) {
 	cancel()
 }
 
+// waitLimit bounds each wait for the checker below: generous, as each returns as
+// soon as its condition holds (a starved runner took over 5 s on the 1 MiB case).
+const waitLimit = 20 * time.Second
+
 // waitCheck waits for the checker to schedule its next check and moves the
 // clock there, then waits for that check's request and result.
 func (u *updServer) next(t *testing.T) time.Time {
 	t.Helper()
-	d, ok := u.clock.WaitTimer(5 * time.Second)
+	d, ok := u.clock.WaitTimer(waitLimit)
 	if !ok {
 		t.Fatal("no check scheduled")
 	}
 	u.clock.Advance(d.Sub(u.clock.Now()))
-	if _, ok := u.fake.WaitRequest(5 * time.Second); !ok {
+	if _, ok := u.fake.WaitRequest(waitLimit); !ok {
 		t.Fatal("no request")
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitLimit)
 	for {
 		in := u.srv.be.updates.Info()
 		if _, pending := u.clock.Pending(); pending && in.LastCheck != nil && !in.LastCheck.Before(u.clock.Now()) {

@@ -385,7 +385,9 @@ func TestInformReplyLimit(t *testing.T) {
 	})
 	r := start(t, cfgPath)
 	res, err := loadgen.Send(context.Background(), loadgen.SendOptions{Addr: fmt.Sprintf("127.0.0.1:%d", snmpPort), Proto: "trap",
-		Count: 400, Trap: loadgen.TrapOptions{Version: "2c", Inform: true, Timeout: 500 * time.Millisecond}})
+		// 2 s: a Response that arrives after the timeout counts as answered on the
+		// server and timed out here (a starved runner reached ~500 ms round trips).
+		Count: 400, Trap: loadgen.TrapOptions{Version: "2c", Inform: true, Timeout: 2 * time.Second}})
 	if err != nil {
 		t.Fatal(err)
 	}
