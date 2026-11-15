@@ -635,7 +635,7 @@ func (b *builder) bundleReadme(info Info, sum []DeviceSummary) string {
 			row("Reboots", fmt.Sprintf("%d: %s", len(d.Reboots), strings.Join(rs, ", ")))
 		}
 		if len(d.Gaps) == 0 {
-			row("Gaps", "none (Woodshed and its listeners were up the whole window)")
+			row("Gaps", "none of 1 s or more (Woodshed and its listeners were up the whole window)")
 		} else {
 			var gs []string
 			for _, g := range d.Gaps {

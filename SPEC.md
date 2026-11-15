@@ -1518,7 +1518,7 @@ traps/<device>/<day>.log       traps, the stored record lines
                  crit 2, err 41, warning 310, notice 1,022, info 11,033 (none of emerg, alert, debug, unknown)
     SNMP traps   7: linkDown 3, linkUp 3, coldStart 1; first 09:30:11, last 09:31:02
     Reboots      1: 09:30:58 (coldStart trap)
-    Gaps         none (Woodshed and its listeners were up the whole window)
+    Gaps         none of 1 s or more (Woodshed and its listeners were up the whole window)
     Losses       dropped 0, truncated 0 (Woodshed's own counts; kernel UDP drops aren't visible on this OS)
   ```
   "Reboots" in 1.2 come from coldStart and warmStart traps; 1.3 adds uptime drops from polls. Gaps and losses come

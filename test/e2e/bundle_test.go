@@ -222,7 +222,7 @@ func TestIncidentBundle(t *testing.T) {
 		}
 		readme := string(files["README.txt"])
 		for _, s := range []string{"\n127.0.0.1\n  Syslog       600 messages, first ", "\n  SNMP traps   41: ", "coldStart 1",
-			"\n  Reboots      1: ", " (coldStart trap)\n", "\n  Gaps         none (Woodshed and its listeners were up the whole window)\n"} {
+			"\n  Reboots      1: ", " (coldStart trap)\n", "\n  Gaps         none of 1 s or more (Woodshed and its listeners were up the whole window)\n"} {
 			if !strings.Contains(readme, s) {
 				t.Errorf("%s README lacks %q:\n%s", zf.name, s, readme)
 			}

@@ -290,7 +290,7 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  %s: %s\n", d.Heading(), d.Line(ts))
 	}
 	if len(res.Gaps) == 0 {
-		fmt.Fprintln(stdout, "  gaps: none (Woodshed and its listeners were up the whole window)")
+		fmt.Fprintln(stdout, "  gaps: none of 1 s or more (Woodshed and its listeners were up the whole window)")
 	} else {
 		fmt.Fprintf(stdout, "  gaps: %d (Woodshed or a listener was down; see README.txt)\n", len(res.Gaps))
 	}

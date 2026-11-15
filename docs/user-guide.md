@@ -404,7 +404,7 @@ edge-fw-01 (192.0.2.1), group HQ
                crit 2, err 41, warning 310, notice 1,022, info 1,033 (none of emerg, alert, debug, unknown)
   SNMP traps   7: linkDown 3, linkUp 3, coldStart 1; first 09:30:11.000, last 09:31:02.000
   Reboots      1: 09:30:58.250 (coldStart trap)
-  Gaps         none (Woodshed and its listeners were up the whole window)
+  Gaps         none of 1 s or more (Woodshed and its listeners were up the whole window)
   Losses       dropped 0, truncated 0 (Woodshed's own counts; kernel UDP drops aren't visible on this OS)
 
 core-sw-02 (192.0.2.2)
@@ -447,7 +447,7 @@ sudo woodshed bundle --at now --before 4h --after 0s --out edge-reboot.zip
     2026-11-14 14:12:00 to 2026-11-14 14:52:00 UTC: 2,733 records from 2 devices (syslog, SNMP traps)
     edge-fw-01 (192.0.2.1), group HQ: syslog 2,408, SNMP traps 7, reboots 1, dropped 0, truncated 0
     core-sw-02 (192.0.2.2): syslog 318, SNMP traps 0, reboots 0, dropped 0, truncated 0
-    gaps: none (Woodshed and its listeners were up the whole window)
+    gaps: none of 1 s or more (Woodshed and its listeners were up the whole window)
   ```
 - **Exit status:** 0 when the zip was written, 1 when the window held nothing (and no zip is written), 2 for a mistake
   in the command or when the `--out` file already exists, 3 when the data folder can't be read, 4 when there's no
