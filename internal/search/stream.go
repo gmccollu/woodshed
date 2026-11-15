@@ -252,10 +252,13 @@ func (s *stream) park(r *run) {
 	s.close()
 }
 
-// nextFile moves to the next file in scan order.
+// nextFile moves to the next file in scan order. A pending line was in the
+// file left behind, so it goes too (a resumed stream whose file is gone moves on
+// in warm's open, before any step clears it).
 func (s *stream) nextFile(desc bool) {
 	s.close()
 	s.pos, s.hint, s.fileDone = -1, 0, false
+	s.pending = false
 	if desc {
 		s.fi--
 	} else {
