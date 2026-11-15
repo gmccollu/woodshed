@@ -162,6 +162,7 @@ type Status struct {
 	KernelDrops        int64
 
 	Received  int64 // messages handed to the sink since Start
+	Inline    int64 // of those, UDP datagrams (syslog and traps) the reader delivered itself (TrySink, TrapTry)
 	Truncated int64 // of those, cut at the max message size
 	Rejected  int64 // refused by the blocklist, the allowlist or the per-source limit since Start (a refused TCP connection counts once)
 
@@ -214,6 +215,7 @@ type Server struct {
 	idleTimeout  atomic.Int64 // time.Duration a TCP connection may go without a complete message
 
 	received, truncated, connsRefused    atomic.Int64
+	inline                               atomic.Int64
 	evicted, perSourceRefused, frameCuts atomic.Int64
 	conns                                atomic.Int64
 
@@ -411,6 +413,7 @@ func (s *Server) Status() Status {
 	st := Status{
 		UDPRcvbufRequestedBytes:  rcvbufOf(s.cfg),
 		Received:                 s.received.Load(),
+		Inline:                   s.inline.Load(),
 		Truncated:                s.truncated.Load(),
 		Rejected:                 s.rejects.totalCount(),
 		TCPConns:                 int(s.conns.Load()),
@@ -615,6 +618,7 @@ func (s *Server) enqueue(q *udpQueue, raw []byte, from netip.Addr) {
 				s.truncated.Add(1)
 			}
 			s.received.Add(1)
+			s.inline.Add(1)
 			return
 		}
 	}

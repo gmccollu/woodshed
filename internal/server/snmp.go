@@ -40,9 +40,10 @@ func trapSettings(l config.SNMPListener) trap.Settings {
 // the listener is on: Settings manages the users either way.
 func (b *backend) openSNMP(cfg config.Config) error {
 	r, err := trap.Open(trap.Options{
-		DataDir: cfg.Storage.DataDir,
-		Write:   b.trapWrite,
-		Admit:   func(a netip.Addr) error { return b.store.AdmitType(logfile.TypeTrap, a) },
+		DataDir:  cfg.Storage.DataDir,
+		Write:    b.trapWrite,
+		TryWrite: b.trapTryWrite,
+		Admit:    func(a netip.Addr) error { return b.store.AdmitType(logfile.TypeTrap, a) },
 		Event: func(level, text string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -68,6 +69,20 @@ func (b *backend) trapWrite(m model.Message) error {
 	}
 	b.live.add(m.Sender, m.Received)
 	return b.store.WriteType(logfile.TypeTrap, m)
+}
+
+// trapTryWrite is trapWrite that never waits on the store (store.TryWriteType),
+// for the SNMP reader's fast path; false means it did nothing.
+func (b *backend) trapTryWrite(m model.Message) (bool, error) {
+	ok, err := b.store.TryWriteType(logfile.TypeTrap, m)
+	if !ok {
+		return false, nil
+	}
+	if b.firstMsg.Load() == 0 {
+		b.firstMsg.CompareAndSwap(0, m.Received.UnixMilli())
+	}
+	b.live.add(m.Sender, m.Received)
+	return true, err
 }
 
 // trapQueueDrop counts the SNMP listener's queue drops for the senders' trap

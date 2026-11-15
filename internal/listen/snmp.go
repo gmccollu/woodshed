@@ -157,6 +157,7 @@ func (s *Server) enqueueTrap(q *udpQueue, conn *net.UDPConn, raw []byte, from ne
 		s.received.Add(1)
 		e.finish = s.opts.TrapTry(p)
 		if e.finish == nil {
+			s.inline.Add(1)
 			return
 		}
 		// The queue is empty (inline), so this can't be refused for room.
