@@ -92,6 +92,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
         run: go test -count=1 -timeout 20m -run 'Scale|10000' -v ./internal/server/...
 
+      # Process CPU per UDP message at 10, 100, 500 and 2,000 msg/s (syslog and traps, sender in a
+      # child process), for this build's fast path and for every datagram through the queue as in
+      # 1.2.0-rc1, printed side by side. It fails only if messages go missing. Windows is where
+      # rc1's cost showed (the 1.2.0-rc1 lab: about a core at 500 msg/s).
+      - name: CPU per message (printed)
+        env:
+          WOODSHED_CPU: "1"
+        run: go test -count=1 -timeout 10m -run "TestCPUPerMessage$" -v ./internal/loadgen/
+
       - name: go build
         run: |
           short=${GITHUB_SHA::7}

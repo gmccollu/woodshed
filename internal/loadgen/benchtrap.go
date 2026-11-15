@@ -38,6 +38,16 @@ func benchReceiver(dir string, st *store.Store, stall *staller, stalls, writeErr
 			}
 			return err
 		},
+		TryWrite: func(m model.Message) (bool, error) {
+			if stall.active() {
+				return false, nil
+			}
+			ok, err := st.TryWriteType(logfile.TypeTrap, m)
+			if ok && err != nil {
+				writeErrs.Add(1)
+			}
+			return ok, err
+		},
 	}, trap.Settings{AnswerInforms: true})
 	if err != nil {
 		return nil, to, err
