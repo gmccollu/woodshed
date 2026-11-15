@@ -92,6 +92,24 @@ func wantOrder(t *testing.T, got []string, n int, path func(i int) string) {
 	}
 }
 
+// idle reports whether q's drainer has nothing queued or in hand. It clears
+// busy only when it next looks for work, a moment after its last delivery, so
+// a test expecting the next lone datagram to go inline waits for this first.
+func idle(q *udpQueue) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.n == 0 && !q.busy
+}
+
+func queueOf(s *Server, snmp bool) *udpQueue {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if snmp {
+		return s.snmpQ
+	}
+	return s.udpQ
+}
+
 // seqOf is i in "<13>m<i>".
 func seqOf(raw string) int {
 	var i int
@@ -152,9 +170,11 @@ func TestInlineLoneDatagrams(t *testing.T) {
 // the ones delivered inline.
 func TestInlineFallsBackToQueue(t *testing.T) {
 	s, _, log, _, conn := startInline(t, func(raw string) bool { return seqOf(raw)%3 != 0 }) // m0, m3, m6, m9 "would block"
+	q := queueOf(s, false)
 	for i := 0; i < 12; i++ {
 		sendSpaced(conn, i, i+1)
-		waitFor(t, "delivered", func() bool { return len(log.snapshot()) == i+1 }) // each settles before the next
+		// Each settles before the next, the drainer included.
+		waitFor(t, "delivered", func() bool { return len(log.snapshot()) == i+1 && idle(q) })
 	}
 	wantOrder(t, log.snapshot(), 12, func(i int) string {
 		if i%3 == 0 {
@@ -185,7 +205,7 @@ func TestInlineWaitsForBusyDrainer(t *testing.T) {
 		t.Fatalf("TrySink asked %d times while the drainer was busy", n)
 	}
 	ss.resume()
-	waitFor(t, "6 delivered", func() bool { return len(log.snapshot()) == 6 })
+	waitFor(t, "6 delivered and the drainer idle", func() bool { return len(log.snapshot()) == 6 && idle(queueOf(s, false)) })
 	wantOrder(t, log.snapshot(), 6, func(int) string { return "queue" })
 	// Idle again: the next lone one goes inline.
 	sendSpaced(conn, 6, 7)
@@ -240,9 +260,10 @@ func TestTrapTryFinish(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	q := queueOf(s, true)
 	for i := 0; i < 6; i++ {
 		sendSpaced(c, i, i+1)
-		waitFor(t, "handled", func() bool { return len(log.snapshot()) == i+1 })
+		waitFor(t, "handled", func() bool { return len(log.snapshot()) == i+1 && idle(q) })
 	}
 	wantOrder(t, log.snapshot(), 6, func(i int) string {
 		if i%2 == 0 {
