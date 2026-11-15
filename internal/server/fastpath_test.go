@@ -22,7 +22,8 @@ func TestUDPFastPath(t *testing.T) {
 	// The first datagram opens the device's stream, which TryWrite never does, so
 	// it goes through the queue: send it alone and let it settle first.
 	fmt.Fprintf(conn, "<13>warm-up")
-	waitFor(t, "the warm-up stored", func() bool { return r.srv.be.store.Usage().Written == 1 })
+	// Published follows the store's write on both paths (Usage().Written only moves at a flush).
+	waitFor(t, "the warm-up stored", func() bool { return r.srv.hub.Stats().Published == 1 })
 	// Each one 3 ms after the one before was stored, so it's lone by construction
 	// (sent as a stream, a starved reader found several waiting and rightly
 	// queued them: 13 of 20 inline).
@@ -30,7 +31,7 @@ func TestUDPFastPath(t *testing.T) {
 	for i := 0; i < n; i++ {
 		time.Sleep(3 * time.Millisecond)
 		fmt.Fprintf(conn, "<13>lone %d", i)
-		waitFor(t, "stored", func() bool { return r.srv.be.store.Usage().Written == int64(i+2) })
+		waitFor(t, "stored", func() bool { return r.srv.hub.Stats().Published == int64(i+2) })
 	}
 	// Received is counted before the sink publishes (queue path) and before
 	// Inline (fast path), so wait for what's read below.
