@@ -182,7 +182,11 @@ func TestTLSHandshakeMatrix(t *testing.T) {
 			t.Errorf("%s: connected, want refused", c.name)
 			continue
 		}
-		waitFor(t, c.name+" failure", func() bool { return s.Status().TLSHandshakeFailed > before })
+		// The counter rises before the failure record is stored, so wait for the record itself.
+		waitFor(t, c.name+" failure", func() bool {
+			f, _ := failureOf(s, "127.0.0.1")
+			return s.Status().TLSHandshakeFailed > before && f.Reason == c.reason // earlier cases leave their own record
+		})
 		if f, _ := failureOf(s, "127.0.0.1"); f.Reason != c.reason {
 			t.Errorf("%s: reason %q (%s), want %q", c.name, f.Reason, f.Detail, c.reason)
 		}
