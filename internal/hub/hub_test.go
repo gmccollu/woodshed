@@ -303,22 +303,22 @@ func TestSamplingRealTime(t *testing.T) {
 
 	const rate, dur = 5000, 2 * time.Second
 	start := time.Now()
-	var maxPublish, elapsed time.Duration
+	var maxPublish, publishing time.Duration
 	sent := 0
 	for time.Since(start) < dur {
-		// elapsed is when the sends caught up, not after the sleep below: a sleep the
-		// OS stretches on a busy runner isn't time Publish took.
-		elapsed = time.Since(start)
-		due := int(elapsed.Seconds() * rate)
+		due := int(time.Since(start).Seconds() * rate)
 		for ; sent < due; sent++ {
 			p := time.Now()
 			h.Publish(msg("192.0.2.1", 6, fmt.Sprintf("rt %d", sent)))
-			if d := time.Since(p); d > maxPublish {
+			d := time.Since(p)
+			publishing += d
+			if d > maxPublish {
 				maxPublish = d
 			}
 		}
 		time.Sleep(time.Millisecond)
 	}
+	elapsed := time.Since(start)
 	// Read until the stream has been quiet for 500 ms (a fixed sleep and a
 	// non-blocking drain could stop before a slow reader caught up).
 	var msgs, sampled int
@@ -342,10 +342,15 @@ loop:
 		}
 	}
 	achieved := float64(sent) / elapsed.Seconds()
-	t.Logf("published %d in %v (%.0f msg/s, max Publish %v); delivered %d messages, %d sampled notices, last %+v",
-		sent, elapsed.Round(time.Millisecond), achieved, maxPublish, msgs, sampled, last)
-	if achieved < 0.95*rate {
-		t.Errorf("ingest slowed to %.0f msg/s", achieved)
+	t.Logf("published %d in %v (%.0f msg/s, %v in Publish, max %v); delivered %d messages, %d sampled notices, last %+v",
+		sent, elapsed.Round(time.Millisecond), achieved, publishing.Round(time.Millisecond), maxPublish, msgs, sampled, last)
+	// Ingest isn't slowed: the publisher catches up on its schedule each loop, so
+	// its rate only shows a stretched final sleep (a starved runner: 4663 msg/s
+	// with every Publish fast). The time spent inside Publish is the direct
+	// measure: a Publish that waited on the SSE reader would add up to most of
+	// the run.
+	if publishing > dur/2 {
+		t.Errorf("ingest slowed: %v of %v inside Publish", publishing, elapsed)
 	}
 	if msgs > 160 || msgs < 60 {
 		t.Errorf("delivered %d messages over %v, want about 50/s", msgs, elapsed)
