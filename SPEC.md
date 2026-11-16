@@ -2866,7 +2866,8 @@ the first bench, which records the measured numbers here:
 - **Ingest:** 50,000 flow records/s sustained for 10 min (IPFIX, about 30 records a packet), 0 loss, while syslog runs
   at 5,000 msg/s; bursts of 150,000 records/s for 10 s absorbed by the queue. Under 2 cores at 50,000/s.
 - **Memory:** at most 16 MiB of templates and exporter metadata; `pending_bytes` 32 MiB; open blocks at most 64 MiB
-  across exporters (a block is flushed early to stay under it); the queue's bytes (128 MiB); query state at most
+  across exporters (a block is flushed early to stay under it); the writers' directories at most 32 MiB across
+  exporters (a segment is closed early to stay under it, decision 58); the queue's bytes (128 MiB); query state at most
   256 MiB, whatever the window's size or key count (decision 51). 512 MiB for flows in all at the targets.
 - **Disk:** 12–20 bytes per stored record (to be measured).
 - **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core Apple
@@ -3241,15 +3242,27 @@ Made while building it, each **decided (build, 2026-11-16)**:
       bundle see every part (tests at a 10-block limit).
     - Fault injection (decision 50) covers every write of the streamed tail and a failed header read.
 
-58. **Left open (flagged):**
-    - The writer's directories have no cap across exporters: 216 bytes a block is about 0.8 MiB per exporter-hour at
-      one block a second (the 1 s flush makes one even for a quiet exporter), at most 1.7 MiB at the part limit, so
-      about 37 MiB by the hour's end over 50 exporters and about 220 MiB over 300. A cap would start parts by a share
-      of a budget, as FlowOpenBytesCap flushes blocks early: at 32 MiB, an hour stays one part up to about 40
-      exporters at one block a second and becomes 7 parts an hour at 300. Not done: it trades memory for many small
-      parts.
-    - An open segment's snapshot still copies 472 bytes a block per query that reaches it (bounded above). Sharing
-      the writer's append-only entries without a copy is the follow-up if it shows up.
+58. **The writers' directories have one budget across exporters, decided (coordinator, 2026-11-16):** 32 MiB by
+    default (`store.Options.FlowDirBudget`). Uncapped, 216 bytes a block is about 0.8 MiB per exporter-hour at one
+    block a second (the 1 s flush makes one even for a quiet exporter): about 37 MiB by the hour's end over 50
+    exporters and 220 MiB over 300, which with the 128 MiB query pool breaks the process's 256 MiB.
+    - Each writer's `DirBytes` (its blocks' and raw chunks' entries) is added to one total as it writes. After every
+      maintenance pass's flush (each second), while the total is over the budget, the segments whose writers keep the
+      most are closed, largest first, until it's back under. Their exporters' next records start the hour's next part
+      (`…T09.001.wsf`): a part roll, nothing dropped. The total can pass the budget by one second's blocks.
+    - `/api/stats` `flow_parts_early` counts these closes since the server started; the log says so at most once an
+      hour.
+    - Measured at 150,000 records a second (each exporter writes one block a second at both rates: the open-block
+      cap's early flushes don't trigger), a simulated second hour after the first filled the budget: 50 exporters at
+      3,000 a second make 1.16 parts an exporter-hour (8 early parts an hour in all), 300 at 500 a second make 4.15
+      (945 early parts an hour). An hour stays one part up to about 43 exporters at one block a second.
+    - Tested (`TestFlowDirBudget`): 300 exporters for 10 simulated minutes under a third of their uncapped
+      directories. The total never passes the budget by more than a block an exporter, live heap grows 20.5 MiB
+      (ceiling: the budget, 24 KiB an exporter and 8 MiB), and every record is read exactly once from the parts' files,
+      the index, a query and a reindex; a bundle over budget-rolled parts is checked in `internal/export`.
+59. **Left open (flagged):** an open segment's snapshot still copies 472 bytes a block per query that reaches it
+    (bounded by the part limit and the plan's batch). Sharing the writer's append-only entries without a copy is the
+    follow-up if it shows up.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
