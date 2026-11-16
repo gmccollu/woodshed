@@ -3018,8 +3018,10 @@ Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
     which a Go test generates from the real templates, so it can't drift.
 27. **Vendor-neutral:** the deny list (network, security and log-product vendors, their OS and product names, and
     desktop and server OS names) is in `internal/setuphelper/denylist_test.go` only. It runs over the templates, the
-    families, every rendered snippet, the page and the docs' setup sections. "NetFlow v9" is kept as the protocol's
-    name, as in the rest of §13.
+    families, every rendered snippet, the page and the docs' setup sections. **(owner, 2026-11-16)** no trademarked
+    flow-protocol name anywhere in the setup helper: it says "flow v9 (RFC 3954)" and "IPFIX (RFC 7011)", the flow
+    transports are `v9` and `ipfix`, and the deny list matches the name anywhere in a word, so an enum value built
+    from it fails too. softflowd's own `-v 9|10` flags are unchanged.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

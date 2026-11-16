@@ -3,8 +3,8 @@ what: flow
 transport: ipfix
 address: 192.0.2.10
 verification: reference
-reference: RFC 3954 (NetFlow v9), RFC 7011 (IPFIX)
-does: The values to enter in the device's flow export page so it sends flow records to Woodshed as IPFIX.
+reference: RFC 3954 (flow v9), RFC 7011 (IPFIX)
+does: The values to enter in the device's flow export page so it sends flow records to Woodshed as IPFIX (RFC 7011).
 check: Woodshed's Flows view lists the device as an exporter within a minute or two.
 placeholders: 
 addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
@@ -13,20 +13,20 @@ notes:
 - Reference only: not tested on a device; check your device's documentation.
 - Field names differ between devices; some call the collector a target or a server.
 - If the page offers sampling, note the rate: Woodshed shows counts as exported and scaled by it.
----- part steps "": In the device's web page, open its flow export (NetFlow or IPFIX) settings and enter
+---- part steps "": In the device's web page, open its flow export settings and enter
 Flow export: on
 Collector address: 192.0.2.10
 Port: 4739 (UDP)
-Version: IPFIX (sometimes listed as NetFlow v10)
+Version: IPFIX (sometimes listed as version 10)
 Interfaces: the ones whose traffic you want to see
 Active timeout: 60 seconds (how often long flows are reported)
 Template refresh: 60 seconds, if asked
 ==== text
-In the device's web page, open its flow export (NetFlow or IPFIX) settings and enter
+In the device's web page, open its flow export settings and enter
 Flow export: on
 Collector address: 192.0.2.10
 Port: 4739 (UDP)
-Version: IPFIX (sometimes listed as NetFlow v10)
+Version: IPFIX (sometimes listed as version 10)
 Interfaces: the ones whose traffic you want to see
 Active timeout: 60 seconds (how often long flows are reported)
 Template refresh: 60 seconds, if asked

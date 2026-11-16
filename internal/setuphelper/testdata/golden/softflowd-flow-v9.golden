@@ -1,10 +1,10 @@
 family: softflowd
 what: flow
-transport: netflow9
+transport: v9
 address: 192.0.2.10
 verification: reference
 reference: softflowd(8) manual page (-i, -n, -v, -t)
-does: Runs softflowd on <INTERFACE> and exports the flows it sees to Woodshed as NetFlow v9.
+does: Runs softflowd on <INTERFACE> and exports the flows it sees to Woodshed as flow v9 (RFC 3954).
 check: Woodshed's Flows view lists this machine as an exporter within a minute or two; `softflowctl statistics` shows the flows it has sent.
 placeholders: <INTERFACE>
 addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01

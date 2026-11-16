@@ -38,6 +38,12 @@ var denyList = []string{
 	"redhat", "rhel", "centos", "fedora", "suse", "alpine", "almalinux", "rocky linux",
 }
 
+// denyAnywhere are names caught anywhere in a word, not only as whole words,
+// so identifiers and enum values built from them fail too. The trademarked
+// flow-protocol name is one (owner, 2026-11-16): the helper says "flow v9
+// (RFC 3954)" and "IPFIX (RFC 7011)" instead.
+var denyAnywhere = []string{"netflow"}
+
 var denyRe = func() *regexp.Regexp {
 	parts := make([]string, len(denyList))
 	for i, w := range denyList {
@@ -52,6 +58,11 @@ func denied(s string) []string {
 		if m := denyRe.FindStringSubmatch(line); m != nil {
 			out = append(out, m[2]+" in: "+strings.TrimSpace(line))
 		}
+		for _, w := range denyAnywhere {
+			if strings.Contains(strings.ToLower(line), w) {
+				out = append(out, w+" in: "+strings.TrimSpace(line))
+			}
+		}
 	}
 	return out
 }
@@ -59,7 +70,7 @@ func denied(s string) []string {
 // TestDenyListSelf: the list works (a hit on each kind, no hit on the
 // families' own words).
 func TestDenyListSelf(t *testing.T) {
-	for _, s := range []string{"logging host for Cisco", "a JunOS box", "FortiGate", "PAN-OS 11", "Windows Server", "send to Splunk"} {
+	for _, s := range []string{"logging host for Cisco", "a JunOS box", "FortiGate", "PAN-OS 11", "Windows Server", "send to Splunk", "NetFlow v9", "transport netflow9", "export-protocol netflow-v9"} {
 		if len(denied(s)) == 0 {
 			t.Errorf("not caught: %q", s)
 		}

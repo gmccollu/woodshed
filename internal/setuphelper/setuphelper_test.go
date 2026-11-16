@@ -55,7 +55,7 @@ func goldenCases(t *testing.T) []goldenCase {
 	noTLS := sample()
 	noTLS.TLSNames, noTLS.TLSSource, noTLS.CASHA256 = nil, "", ""
 	flow := sample()
-	flow.Flow = &FlowListener{Enabled: true, Addr: "0.0.0.0", NetFlowPort: 2056, IPFIXPort: 4740}
+	flow.Flow = &FlowListener{Enabled: true, Addr: "0.0.0.0", V9Port: 2056, IPFIXPort: 4740}
 	cs = append(cs,
 		goldenCase{"choices-line-cli-syslog-tcp", sample(), Request{Family: "line-cli", What: "syslog", Transport: "tcp", Severity: "warning",
 			Facility: "local5", SourceInterface: "Vlan10"}},

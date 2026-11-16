@@ -1,11 +1,11 @@
 {{/*
 family: softflowd
 what: flow
-transports: netflow9, ipfix
+transports: v9, ipfix
 reference: softflowd(8) manual page (-i, -n, -v, -t)
 verification: reference
 */}}
-{{define "does"}}Runs softflowd on {{.Interface}} and exports the flows it sees to Woodshed as {{if eq .Transport "ipfix"}}IPFIX{{else}}NetFlow v9{{end}}.{{end}}
+{{define "does"}}Runs softflowd on {{.Interface}} and exports the flows it sees to Woodshed as {{if eq .Transport "ipfix"}}IPFIX (RFC 7011){{else}}flow v9 (RFC 3954){{end}}.{{end}}
 
 {{define "parts"}}
 @@part command - Run softflowd (as root), or put the same options in your distribution's softflowd service settings

@@ -1,18 +1,18 @@
 {{/*
 family: web-ui
 what: flow
-transports: netflow9, ipfix
-reference: RFC 3954 (NetFlow v9), RFC 7011 (IPFIX)
+transports: v9, ipfix
+reference: RFC 3954 (flow v9), RFC 7011 (IPFIX)
 verification: reference
 */}}
-{{define "does"}}The values to enter in the device's flow export page so it sends flow records to Woodshed as {{if eq .Transport "ipfix"}}IPFIX{{else}}NetFlow v9{{end}}.{{end}}
+{{define "does"}}The values to enter in the device's flow export page so it sends flow records to Woodshed as {{if eq .Transport "ipfix"}}IPFIX (RFC 7011){{else}}flow v9 (RFC 3954){{end}}.{{end}}
 
 {{define "parts"}}
-@@part steps - In the device's web page, open its flow export (NetFlow or IPFIX) settings and enter
+@@part steps - In the device's web page, open its flow export settings and enter
 Flow export: on
 Collector address: {{.Address}}
 Port: {{.Port}} (UDP)
-Version: {{if eq .Transport "ipfix"}}IPFIX (sometimes listed as NetFlow v10){{else}}NetFlow v9{{end}}
+Version: {{if eq .Transport "ipfix"}}IPFIX (sometimes listed as version 10){{else}}version 9{{end}}
 Interfaces: the ones whose traffic you want to see
 Active timeout: 60 seconds (how often long flows are reported)
 Template refresh: 60 seconds, if asked

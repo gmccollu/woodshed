@@ -14,7 +14,7 @@
    "reference": "the device's own documentation",
    "transports": {
     "flow": [
-     "netflow9",
+     "v9",
      "ipfix"
     ],
     "poll": [
@@ -186,7 +186,7 @@
    "reference": "softflowd(8) manual page",
    "transports": {
     "flow": [
-     "netflow9",
+     "v9",
      "ipfix"
     ],
     "poll": [],
@@ -218,7 +218,7 @@
    "reference": "the device's own documentation",
    "transports": {
     "flow": [
-     "netflow9",
+     "v9",
      "ipfix"
     ],
     "poll": [
@@ -264,8 +264,8 @@
    "transport": "ipfix",
    "address": "10.1.0.50",
    "verification": "reference",
-   "reference": "common line-oriented flow export commands (flow exporter, flow monitor); RFC 3954 (NetFlow v9) and RFC 7011 (IPFIX)",
-   "does": "Exports the device's flow records to Woodshed as IPFIX over UDP.",
+   "reference": "common line-oriented flow export commands (flow exporter, flow monitor); RFC 3954 (flow v9) and RFC 7011 (IPFIX)",
+   "does": "Exports the device's flow records to Woodshed as IPFIX (RFC 7011) over UDP.",
    "text": "! Enter in global configuration mode, then save the configuration\nflow exporter WOODSHED\n destination 10.1.0.50\n transport udp 4739\n export-protocol ipfix\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n",
    "parts": [
     {
@@ -279,6 +279,7 @@
     "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.",
     "Reference only: not tested on a device; check your device's documentation.",
     "Flow export commands differ more than any other here: some devices use one `ip flow-export destination 10.1.0.50 4739` line with a version keyword, some an exporter and monitor pair as above, some a policy that matches traffic first. Treat this as the list of values to set.",
+    "The export version keyword differs too: use your device's keyword for IPFIX.",
     "\u003cFLOW-RECORD\u003e is a flow record the device defines (many have a built-in one with addresses, ports, protocol and counters); \u003cMONITORED-INTERFACE\u003e is the interface whose traffic to export.",
     "The template timeout (60 s) makes the device resend its templates every minute, so Woodshed can decode its flows soon after a restart."
    ],
@@ -295,27 +296,28 @@
     "logs-01.example.net"
    ]
   },
-  "line-cli/flow/netflow9": {
+  "line-cli/flow/v9": {
    "family": "line-cli",
    "what": "flow",
-   "transport": "netflow9",
+   "transport": "v9",
    "address": "10.1.0.50",
    "verification": "reference",
-   "reference": "common line-oriented flow export commands (flow exporter, flow monitor); RFC 3954 (NetFlow v9) and RFC 7011 (IPFIX)",
-   "does": "Exports the device's flow records to Woodshed as NetFlow v9 over UDP.",
-   "text": "! Enter in global configuration mode, then save the configuration\nflow exporter WOODSHED\n destination 10.1.0.50\n transport udp 2055\n export-protocol netflow-v9\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n",
+   "reference": "common line-oriented flow export commands (flow exporter, flow monitor); RFC 3954 (flow v9) and RFC 7011 (IPFIX)",
+   "does": "Exports the device's flow records to Woodshed as flow v9 (RFC 3954) over UDP.",
+   "text": "! Enter in global configuration mode, then save the configuration\nflow exporter WOODSHED\n destination 10.1.0.50\n transport udp 2055\n export-protocol v9\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n",
    "parts": [
     {
      "kind": "cli",
      "path": "",
      "title": "Enter in global configuration mode, then save the configuration",
-     "text": "flow exporter WOODSHED\n destination 10.1.0.50\n transport udp 2055\n export-protocol netflow-v9\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n"
+     "text": "flow exporter WOODSHED\n destination 10.1.0.50\n transport udp 2055\n export-protocol v9\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n"
     }
    ],
    "notes": [
     "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.",
     "Reference only: not tested on a device; check your device's documentation.",
     "Flow export commands differ more than any other here: some devices use one `ip flow-export destination 10.1.0.50 2055` line with a version keyword, some an exporter and monitor pair as above, some a policy that matches traffic first. Treat this as the list of values to set.",
+    "The export version keyword differs too: use your device's keyword for version 9.",
     "\u003cFLOW-RECORD\u003e is a flow record the device defines (many have a built-in one with addresses, ports, protocol and counters); \u003cMONITORED-INTERFACE\u003e is the interface whose traffic to export.",
     "The template timeout (60 s) makes the device resend its templates every minute, so Woodshed can decode its flows soon after a restart."
    ],
@@ -1113,7 +1115,7 @@
    "address": "10.1.0.50",
    "verification": "reference",
    "reference": "softflowd(8) manual page (-i, -n, -v, -t)",
-   "does": "Runs softflowd on \u003cINTERFACE\u003e and exports the flows it sees to Woodshed as IPFIX.",
+   "does": "Runs softflowd on \u003cINTERFACE\u003e and exports the flows it sees to Woodshed as IPFIX (RFC 7011).",
    "text": "# Run softflowd (as root), or put the same options in your distribution's softflowd service settings\nsoftflowd -i \u003cINTERFACE\u003e -n 10.1.0.50:4739 -v 10 -t maxlife=60\n\n# See what it's exporting\nsoftflowctl statistics\n",
    "parts": [
     {
@@ -1148,14 +1150,14 @@
     "logs-01.example.net"
    ]
   },
-  "softflowd/flow/netflow9": {
+  "softflowd/flow/v9": {
    "family": "softflowd",
    "what": "flow",
-   "transport": "netflow9",
+   "transport": "v9",
    "address": "10.1.0.50",
    "verification": "reference",
    "reference": "softflowd(8) manual page (-i, -n, -v, -t)",
-   "does": "Runs softflowd on \u003cINTERFACE\u003e and exports the flows it sees to Woodshed as NetFlow v9.",
+   "does": "Runs softflowd on \u003cINTERFACE\u003e and exports the flows it sees to Woodshed as flow v9 (RFC 3954).",
    "text": "# Run softflowd (as root), or put the same options in your distribution's softflowd service settings\nsoftflowd -i \u003cINTERFACE\u003e -n 10.1.0.50:2055 -v 9 -t maxlife=60\n\n# See what it's exporting\nsoftflowctl statistics\n",
    "parts": [
     {
@@ -1196,15 +1198,15 @@
    "transport": "ipfix",
    "address": "10.1.0.50",
    "verification": "reference",
-   "reference": "RFC 3954 (NetFlow v9), RFC 7011 (IPFIX)",
-   "does": "The values to enter in the device's flow export page so it sends flow records to Woodshed as IPFIX.",
-   "text": "In the device's web page, open its flow export (NetFlow or IPFIX) settings and enter\nFlow export: on\nCollector address: 10.1.0.50\nPort: 4739 (UDP)\nVersion: IPFIX (sometimes listed as NetFlow v10)\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n",
+   "reference": "RFC 3954 (flow v9), RFC 7011 (IPFIX)",
+   "does": "The values to enter in the device's flow export page so it sends flow records to Woodshed as IPFIX (RFC 7011).",
+   "text": "In the device's web page, open its flow export settings and enter\nFlow export: on\nCollector address: 10.1.0.50\nPort: 4739 (UDP)\nVersion: IPFIX (sometimes listed as version 10)\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n",
    "parts": [
     {
      "kind": "steps",
      "path": "",
-     "title": "In the device's web page, open its flow export (NetFlow or IPFIX) settings and enter",
-     "text": "Flow export: on\nCollector address: 10.1.0.50\nPort: 4739 (UDP)\nVersion: IPFIX (sometimes listed as NetFlow v10)\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n"
+     "title": "In the device's web page, open its flow export settings and enter",
+     "text": "Flow export: on\nCollector address: 10.1.0.50\nPort: 4739 (UDP)\nVersion: IPFIX (sometimes listed as version 10)\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n"
     }
    ],
    "notes": [
@@ -1223,21 +1225,21 @@
     "logs-01.example.net"
    ]
   },
-  "web-ui/flow/netflow9": {
+  "web-ui/flow/v9": {
    "family": "web-ui",
    "what": "flow",
-   "transport": "netflow9",
+   "transport": "v9",
    "address": "10.1.0.50",
    "verification": "reference",
-   "reference": "RFC 3954 (NetFlow v9), RFC 7011 (IPFIX)",
-   "does": "The values to enter in the device's flow export page so it sends flow records to Woodshed as NetFlow v9.",
-   "text": "In the device's web page, open its flow export (NetFlow or IPFIX) settings and enter\nFlow export: on\nCollector address: 10.1.0.50\nPort: 2055 (UDP)\nVersion: NetFlow v9\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n",
+   "reference": "RFC 3954 (flow v9), RFC 7011 (IPFIX)",
+   "does": "The values to enter in the device's flow export page so it sends flow records to Woodshed as flow v9 (RFC 3954).",
+   "text": "In the device's web page, open its flow export settings and enter\nFlow export: on\nCollector address: 10.1.0.50\nPort: 2055 (UDP)\nVersion: version 9\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n",
    "parts": [
     {
      "kind": "steps",
      "path": "",
-     "title": "In the device's web page, open its flow export (NetFlow or IPFIX) settings and enter",
-     "text": "Flow export: on\nCollector address: 10.1.0.50\nPort: 2055 (UDP)\nVersion: NetFlow v9\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n"
+     "title": "In the device's web page, open its flow export settings and enter",
+     "text": "Flow export: on\nCollector address: 10.1.0.50\nPort: 2055 (UDP)\nVersion: version 9\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n"
     }
    ],
    "notes": [

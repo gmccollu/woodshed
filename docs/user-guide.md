@@ -64,8 +64,8 @@ on its TLS certificate.
 1. Pick how the device is configured: a line-oriented CLI (one command per line in a configuration mode), a
    hierarchical set-style CLI (`set …` statements and `commit`), Linux with rsyslog, Linux with net-snmp's `snmpd`
    and `snmptrap`, Linux with softflowd, or a web page (a checklist of fields and values).
-2. Pick what to set up (syslog, SNMP traps, SNMP polling or flows) and how (UDP, TCP or TLS; SNMPv2c or v3; NetFlow
-   v9 or IPFIX).
+2. Pick what to set up (syslog, SNMP traps, SNMP polling or flows) and how (UDP, TCP or TLS; SNMPv2c or v3; flow v9
+   (RFC 3954) or IPFIX (RFC 7011)).
 3. Pick Woodshed's address as the device reaches it, and fill in the choices the snippet offers: the device's source
    interface, the lowest severity to send, the facility, an SNMPv3 user name.
 4. Copy each part to the device, put your own values in place of the placeholders (`<COMMUNITY>`,

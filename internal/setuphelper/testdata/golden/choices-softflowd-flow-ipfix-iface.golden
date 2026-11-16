@@ -4,7 +4,7 @@ transport: ipfix
 address: 192.0.2.10
 verification: reference
 reference: softflowd(8) manual page (-i, -n, -v, -t)
-does: Runs softflowd on eth1 and exports the flows it sees to Woodshed as IPFIX.
+does: Runs softflowd on eth1 and exports the flows it sees to Woodshed as IPFIX (RFC 7011).
 check: Woodshed's Flows view lists this machine as an exporter within a minute or two; `softflowctl statistics` shows the flows it has sent.
 placeholders: 
 addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01

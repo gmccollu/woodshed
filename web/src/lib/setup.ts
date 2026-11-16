@@ -68,8 +68,8 @@ export const TRANSPORT_LABEL: Record<string, string> = {
   tls: 'TLS',
   v2c: 'SNMPv2c',
   v3: 'SNMPv3',
-  netflow9: 'NetFlow v9',
-  ipfix: 'IPFIX',
+  v9: 'flow v9 (RFC 3954)',
+  ipfix: 'IPFIX (RFC 7011)',
 };
 
 export const SEVERITIES: { id: string; label: string }[] = [

@@ -101,7 +101,7 @@ var setupInteropCases = []setupCase{
 	{family: "net-snmp", what: "trap", transport: "v3"},
 	{family: "net-snmp", what: "poll", transport: "v2c"},
 	{family: "net-snmp", what: "poll", transport: "v3"},
-	{family: "softflowd", what: "flow", transport: "netflow9", skip: skipNoFlow},
+	{family: "softflowd", what: "flow", transport: "v9", skip: skipNoFlow},
 	{family: "softflowd", what: "flow", transport: "ipfix", skip: skipNoFlow},
 }
 

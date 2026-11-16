@@ -65,7 +65,7 @@ var transports = map[string][]string{
 	WhatSyslog: {"udp", "tcp", "tls"},
 	WhatTrap:   {"v2c", "v3"},
 	WhatPoll:   {"v2c", "v3"},
-	WhatFlow:   {"netflow9", "ipfix"},
+	WhatFlow:   {"v9", "ipfix"},
 }
 
 // Choice names (Request fields), as the API and the UI spell them.
@@ -235,16 +235,16 @@ type Listener struct {
 
 // FlowListener is the flow collector's listener (2.0).
 type FlowListener struct {
-	Enabled     bool
-	Addr        string
-	NetFlowPort int // NetFlow v9 (0: off)
-	IPFIXPort   int // IPFIX (0: off)
+	Enabled   bool
+	Addr      string
+	V9Port    int // flow v9, RFC 3954 (0: off)
+	IPFIXPort int // IPFIX (0: off)
 }
 
 // Default flow ports (SPEC §13.1).
 const (
-	DefaultNetFlowPort = 2055
-	DefaultIPFIXPort   = 4739
+	DefaultV9Port    = 2055
+	DefaultIPFIXPort = 4739
 )
 
 // Server is what a snippet needs to know about this Woodshed. It never holds
@@ -886,12 +886,12 @@ func (s Server) listenerFor(what, transport string) (Listener, string) {
 	case WhatTrap:
 		return s.Trap, "SNMP trap"
 	case WhatFlow:
-		f := FlowListener{NetFlowPort: DefaultNetFlowPort, IPFIXPort: DefaultIPFIXPort}
+		f := FlowListener{V9Port: DefaultV9Port, IPFIXPort: DefaultIPFIXPort}
 		if s.Flow != nil {
 			f = *s.Flow
 		}
-		port := cmp.Or(f.NetFlowPort, DefaultNetFlowPort)
-		name := "NetFlow"
+		port := cmp.Or(f.V9Port, DefaultV9Port)
+		name := "flow v9"
 		if transport == "ipfix" {
 			port, name = cmp.Or(f.IPFIXPort, DefaultIPFIXPort), "IPFIX"
 		}

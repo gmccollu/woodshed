@@ -1009,7 +1009,7 @@ snippet: communities, passphrases and the CA file are placeholders (`<COMMUNITY>
   `web-ui` ("Web UI checklist").
 - `what`: the data types the family has a template for: `syslog`, `trap`, `poll` (the SNMP agent settings Woodshed needs
   to poll the device) and `flow`. `transports` lists each one's transports, the default first: syslog `udp`, `tcp`,
-  `tls`; trap and poll `v2c`, `v3`; flow `netflow9`, `ipfix`. Every data type is a key of `transports` and `choices`,
+  `tls`; trap and poll `v2c`, `v3`; flow `v9`, `ipfix`. Every data type is a key of `transports` and `choices`,
   `[]` for the ones the family doesn't cover.
 - `choices`: per data type, the snippet body's fields that change its snippet. `v3_user`, `auth` and `priv` apply to
   the `v3` transport only.
