@@ -7,16 +7,12 @@
    "what": [
     "syslog",
     "trap",
-    "poll",
-    "flow"
+    "poll"
    ],
    "verification": "reference",
    "reference": "the device's own documentation",
    "transports": {
-    "flow": [
-     "v9",
-     "ipfix"
-    ],
+    "flow": [],
     "poll": [
      "v2c",
      "v3"
@@ -32,9 +28,7 @@
     ]
    },
    "choices": {
-    "flow": [
-     "source_interface"
-    ],
+    "flow": [],
     "poll": [
      "v3_user",
      "auth",
@@ -54,7 +48,8 @@
    },
    "notes": [
     "For devices configured with one command per line in a global configuration mode (`logging host …`, `snmp-server host …`).",
-    "Keywords and options differ between devices that share this style; where they're known to differ, the snippet's notes say so."
+    "Only lines that are the same on most such devices are given as text; keywords that differ are placeholders (\u003cTCP-OPTION\u003e, \u003cSHA-256-KEYWORD\u003e) to fill in from the device's documentation.",
+    "No flow template: flow export commands differ too much between devices of this style to give one that's useful. Use the web UI checklist's values (collector address, port, version, active and inactive timeouts, template refresh) with your device's documentation."
    ]
   },
   {
@@ -258,80 +253,6 @@
   }
  ],
  "snippets": {
-  "line-cli/flow/ipfix": {
-   "family": "line-cli",
-   "what": "flow",
-   "transport": "ipfix",
-   "address": "10.1.0.50",
-   "verification": "reference",
-   "reference": "common line-oriented flow export commands (flow exporter, flow monitor); RFC 3954 (flow v9) and RFC 7011 (IPFIX)",
-   "does": "Exports the device's flow records to Woodshed as IPFIX (RFC 7011) over UDP.",
-   "text": "! Enter in global configuration mode, then save the configuration\nflow exporter WOODSHED\n destination 10.1.0.50\n transport udp 4739\n export-protocol ipfix\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n",
-   "parts": [
-    {
-     "kind": "cli",
-     "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
-     "text": "flow exporter WOODSHED\n destination 10.1.0.50\n transport udp 4739\n export-protocol ipfix\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n"
-    }
-   ],
-   "notes": [
-    "Reference only: not tested on a device; check your device's documentation.",
-    "Flow export commands differ more than any other here: some devices use one `ip flow-export destination 10.1.0.50 4739` line with a version keyword, some an exporter and monitor pair as above, some a policy that matches traffic first. Treat this as the list of values to set.",
-    "The export version keyword differs too: use your device's keyword for IPFIX.",
-    "\u003cFLOW-RECORD\u003e is a flow record the device defines (many have a built-in one with addresses, ports, protocol and counters); \u003cMONITORED-INTERFACE\u003e is the interface whose traffic to export.",
-    "The template timeout (60 s) makes the device resend its templates every minute, so Woodshed can decode its flows soon after a restart."
-   ],
-   "check": "Woodshed's Flows view lists the device as an exporter within a minute or two, with its templates and sampling rate.",
-   "placeholders": [
-    "\u003cFLOW-RECORD\u003e",
-    "\u003cMONITORED-INTERFACE\u003e"
-   ],
-   "addresses": [
-    "10.1.0.50",
-    "192.168.64.1",
-    "fd00::50",
-    "logs-01",
-    "logs-01.example.net"
-   ]
-  },
-  "line-cli/flow/v9": {
-   "family": "line-cli",
-   "what": "flow",
-   "transport": "v9",
-   "address": "10.1.0.50",
-   "verification": "reference",
-   "reference": "common line-oriented flow export commands (flow exporter, flow monitor); RFC 3954 (flow v9) and RFC 7011 (IPFIX)",
-   "does": "Exports the device's flow records to Woodshed as flow v9 (RFC 3954) over UDP.",
-   "text": "! Enter in global configuration mode, then save the configuration\nflow exporter WOODSHED\n destination 10.1.0.50\n transport udp 2055\n export-protocol v9\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n",
-   "parts": [
-    {
-     "kind": "cli",
-     "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
-     "text": "flow exporter WOODSHED\n destination 10.1.0.50\n transport udp 2055\n export-protocol v9\n template data timeout 60\nflow monitor WOODSHED-MONITOR\n exporter WOODSHED\n record \u003cFLOW-RECORD\u003e\ninterface \u003cMONITORED-INTERFACE\u003e\n ip flow monitor WOODSHED-MONITOR input\n"
-    }
-   ],
-   "notes": [
-    "Reference only: not tested on a device; check your device's documentation.",
-    "Flow export commands differ more than any other here: some devices use one `ip flow-export destination 10.1.0.50 2055` line with a version keyword, some an exporter and monitor pair as above, some a policy that matches traffic first. Treat this as the list of values to set.",
-    "The export version keyword differs too: use your device's keyword for version 9.",
-    "\u003cFLOW-RECORD\u003e is a flow record the device defines (many have a built-in one with addresses, ports, protocol and counters); \u003cMONITORED-INTERFACE\u003e is the interface whose traffic to export.",
-    "The template timeout (60 s) makes the device resend its templates every minute, so Woodshed can decode its flows soon after a restart."
-   ],
-   "check": "Woodshed's Flows view lists the device as an exporter within a minute or two, with its templates and sampling rate.",
-   "placeholders": [
-    "\u003cFLOW-RECORD\u003e",
-    "\u003cMONITORED-INTERFACE\u003e"
-   ],
-   "addresses": [
-    "10.1.0.50",
-    "192.168.64.1",
-    "fd00::50",
-    "logs-01",
-    "logs-01.example.net"
-   ]
-  },
   "line-cli/poll/v2c": {
    "family": "line-cli",
    "what": "poll",
@@ -340,12 +261,12 @@
    "verification": "reference",
    "reference": "common line-oriented SNMP commands (snmp-server community, snmp-server group, snmp-server user); RFC 3414 and RFC 3415",
    "does": "Lets Woodshed poll the device's SNMP agent (SNMPv2c, read-only).",
-   "text": "! Enter in global configuration mode, then save the configuration\nsnmp-server community \u003cCOMMUNITY\u003e ro\n",
+   "text": "! Enter in global configuration mode, fill in the placeholders, then save the configuration\nsnmp-server community \u003cCOMMUNITY\u003e ro\n",
    "parts": [
     {
      "kind": "cli",
      "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
+     "title": "Enter in global configuration mode, fill in the placeholders, then save the configuration",
      "text": "snmp-server community \u003cCOMMUNITY\u003e ro\n"
     }
    ],
@@ -375,27 +296,29 @@
    "verification": "reference",
    "reference": "common line-oriented SNMP commands (snmp-server community, snmp-server group, snmp-server user); RFC 3414 and RFC 3415",
    "does": "Lets Woodshed poll the device's SNMP agent (SNMPv3, read-only).",
-   "text": "! Enter in global configuration mode, then save the configuration\nsnmp-server group woodshed v3 priv\nsnmp-server user \u003cV3-USER\u003e woodshed v3 auth sha-256 \u003cAUTH-PASSPHRASE\u003e priv aes 128 \u003cPRIV-PASSPHRASE\u003e\n",
+   "text": "! Enter in global configuration mode, fill in the placeholders, then save the configuration\nsnmp-server group woodshed v3 priv\nsnmp-server user \u003cV3-USER\u003e woodshed v3 auth \u003cSHA-256-KEYWORD\u003e \u003cAUTH-PASSPHRASE\u003e priv \u003cAES-128-KEYWORD\u003e \u003cPRIV-PASSPHRASE\u003e\n",
    "parts": [
     {
      "kind": "cli",
      "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
-     "text": "snmp-server group woodshed v3 priv\nsnmp-server user \u003cV3-USER\u003e woodshed v3 auth sha-256 \u003cAUTH-PASSPHRASE\u003e priv aes 128 \u003cPRIV-PASSPHRASE\u003e\n"
+     "title": "Enter in global configuration mode, fill in the placeholders, then save the configuration",
+     "text": "snmp-server group woodshed v3 priv\nsnmp-server user \u003cV3-USER\u003e woodshed v3 auth \u003cSHA-256-KEYWORD\u003e \u003cAUTH-PASSPHRASE\u003e priv \u003cAES-128-KEYWORD\u003e \u003cPRIV-PASSPHRASE\u003e\n"
     }
    ],
    "notes": [
     "Reference only: not tested on a device; check your device's documentation.",
     "Limit the agent to polls from Woodshed's address (10.1.0.50): most devices take an access list or a host list on the community or group line, written differently on each.",
     "Some devices also need the agent turned on (`snmp-server enable`, or a per-interface management setting) before they answer.",
+    "\u003cSHA-256-KEYWORD\u003e and \u003cAES-128-KEYWORD\u003e are the device's keywords for SHA-256 and AES-128; they differ between devices. Take them from the device's documentation, and pick protocols Woodshed has too.",
     "Add the same user in Woodshed: Settings → SNMP → v3 users, name \u003cV3-USER\u003e, SHA-256 and AES-128, with the same passphrases.",
-    "The protocol keywords differ between devices (`sha-256`, `sha256` or `sha2-256`; `aes 128` or `aes128`): pick the protocols both sides have.",
     "Then add the device in Woodshed: Devices → Add polling, its address, SNMPv3 and the user \u003cV3-USER\u003e."
    ],
    "check": "Devices → Add polling → Test poll answers with the device's name and interfaces; after the first cycle the device page shows its graphs.",
    "placeholders": [
     "\u003cV3-USER\u003e",
+    "\u003cSHA-256-KEYWORD\u003e",
     "\u003cAUTH-PASSPHRASE\u003e",
+    "\u003cAES-128-KEYWORD\u003e",
     "\u003cPRIV-PASSPHRASE\u003e"
    ],
    "addresses": [
@@ -414,24 +337,26 @@
    "verification": "reference",
    "reference": "common line-oriented logging commands (logging host, logging trap, logging facility, logging source-interface); RFC 5424 severities",
    "does": "Sends the device's log messages, informational and more severe, to Woodshed over TCP.",
-   "text": "! Enter in global configuration mode, then save the configuration\nlogging host 10.1.0.50 transport tcp port 514\nlogging trap informational\n",
+   "text": "! Enter in global configuration mode, fill in the placeholders, then save the configuration\nlogging host 10.1.0.50 \u003cTCP-OPTION\u003e\nlogging trap informational\n",
    "parts": [
     {
      "kind": "cli",
      "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
-     "text": "logging host 10.1.0.50 transport tcp port 514\nlogging trap informational\n"
+     "title": "Enter in global configuration mode, fill in the placeholders, then save the configuration",
+     "text": "logging host 10.1.0.50 \u003cTCP-OPTION\u003e\nlogging trap informational\n"
     }
    ],
    "notes": [
     "Reference only: not tested on a device; check your device's documentation.",
     "Before you turn on TCP or TLS logging on a firewall: some firewalls block traffic through them when a TCP or TLS syslog server can't be reached, or its certificate fails, unless a \"permit traffic when the log host is down\" option is set. Check that option first, or use UDP.",
-    "The host command differs most between devices: some take `logging host 10.1.0.50` for UDP 514 alone, some write the transport as `tcp/514` after the address or name the sending interface before it, and some use a `logging server` command instead.",
+    "\u003cTCP-OPTION\u003e is the device's way of saying TCP to port 514 on the host line. It differs between devices (a transport keyword with a port, a protocol/port pair after the address, or a separate command), so take it from the device's documentation.",
     "`logging trap` sets the lowest severity sent to log hosts on many devices; others set it on the host line, or accept the number (6) instead of the keyword.",
     "Turn on timestamps in the messages if the device offers it (with milliseconds and the time zone, where it can); Woodshed also keeps the time each message arrived."
    ],
    "check": "The device appears on Woodshed's Dashboard with its first message; if it doesn't, check the device's log host status and Woodshed's Listeners on the Setup page.",
-   "placeholders": [],
+   "placeholders": [
+    "\u003cTCP-OPTION\u003e"
+   ],
    "addresses": [
     "10.1.0.50",
     "192.168.64.1",
@@ -448,26 +373,28 @@
    "verification": "reference",
    "reference": "common line-oriented logging commands (logging host, logging trap, logging facility, logging source-interface); RFC 5424 severities",
    "does": "Sends the device's log messages, informational and more severe, to Woodshed over TLS.",
-   "text": "! Enter in global configuration mode, then save the configuration\nlogging host 10.1.0.50 transport tls port 6514\nlogging trap informational\n",
+   "text": "! Enter in global configuration mode, fill in the placeholders, then save the configuration\nlogging host 10.1.0.50 \u003cTLS-OPTION\u003e\nlogging trap informational\n",
    "parts": [
     {
      "kind": "cli",
      "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
-     "text": "logging host 10.1.0.50 transport tls port 6514\nlogging trap informational\n"
+     "title": "Enter in global configuration mode, fill in the placeholders, then save the configuration",
+     "text": "logging host 10.1.0.50 \u003cTLS-OPTION\u003e\nlogging trap informational\n"
     }
    ],
    "notes": [
     "Reference only: not tested on a device; check your device's documentation.",
     "Before you turn on TCP or TLS logging on a firewall: some firewalls block traffic through them when a TCP or TLS syslog server can't be reached, or its certificate fails, unless a \"permit traffic when the log host is down\" option is set. Check that option first, or use UDP.",
-    "The host command differs most between devices: some take `logging host 10.1.0.50` for UDP 514 alone, some write the transport as `tcp/6514` after the address or name the sending interface before it, and some use a `logging server` command instead.",
-    "`logging trap` sets the lowest severity sent to log hosts on many devices; others set it on the host line, or accept the number (6) instead of the keyword.",
-    "Import Woodshed's CA certificate as a trusted CA first (Settings → TLS → CA certificate: PEM to paste, DER to upload), and compare the fingerprint the device shows with 3F:9A:1C:07:5B:E2:44:D0:8C:61:2F:A9:73:0E:B5:16:C8:4D:92:E7:01:6B:3A:F5:58:C3:9E:20:7D:B4:4A:11. How you import it, and whether the host line names it, differs by device.",
+    "\u003cTLS-OPTION\u003e is the device's way of saying TLS to port 6514 on the host line, and often naming the trusted CA. It differs between devices, so take it from the device's documentation.",
+    "Import Woodshed's CA certificate as a trusted CA first (Settings → TLS → CA certificate: PEM to paste, DER to upload), and compare the fingerprint the device shows with 3F:9A:1C:07:5B:E2:44:D0:8C:61:2F:A9:73:0E:B5:16:C8:4D:92:E7:01:6B:3A:F5:58:C3:9E:20:7D:B4:4A:11. How you import it differs by device.",
     "If the device checks the server's name, give it logs-01, a name on Woodshed's certificate; many devices check names only, not IP addresses.",
+    "`logging trap` sets the lowest severity sent to log hosts on many devices; others set it on the host line, or accept the number (6) instead of the keyword.",
     "Turn on timestamps in the messages if the device offers it (with milliseconds and the time zone, where it can); Woodshed also keeps the time each message arrived."
    ],
    "check": "The device appears on Woodshed's Dashboard with its first message; if it doesn't, check the device's log host status and Woodshed's Listeners on the Setup page.",
-   "placeholders": [],
+   "placeholders": [
+    "\u003cTLS-OPTION\u003e"
+   ],
    "addresses": [
     "10.1.0.50",
     "192.168.64.1",
@@ -484,18 +411,18 @@
    "verification": "reference",
    "reference": "common line-oriented logging commands (logging host, logging trap, logging facility, logging source-interface); RFC 5424 severities",
    "does": "Sends the device's log messages, informational and more severe, to Woodshed over UDP.",
-   "text": "! Enter in global configuration mode, then save the configuration\nlogging host 10.1.0.50 transport udp port 514\nlogging trap informational\n",
+   "text": "! Enter in global configuration mode, fill in the placeholders, then save the configuration\nlogging host 10.1.0.50\nlogging trap informational\n",
    "parts": [
     {
      "kind": "cli",
      "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
-     "text": "logging host 10.1.0.50 transport udp port 514\nlogging trap informational\n"
+     "title": "Enter in global configuration mode, fill in the placeholders, then save the configuration",
+     "text": "logging host 10.1.0.50\nlogging trap informational\n"
     }
    ],
    "notes": [
     "Reference only: not tested on a device; check your device's documentation.",
-    "The host command differs most between devices: some take `logging host 10.1.0.50` for UDP 514 alone, some write the transport as `udp/514` after the address or name the sending interface before it, and some use a `logging server` command instead.",
+    "`logging host 10.1.0.50` alone sends over UDP to port 514 on most devices of this style.",
     "`logging trap` sets the lowest severity sent to log hosts on many devices; others set it on the host line, or accept the number (6) instead of the keyword.",
     "Turn on timestamps in the messages if the device offers it (with milliseconds and the time zone, where it can); Woodshed also keeps the time each message arrived."
    ],
@@ -517,12 +444,12 @@
    "verification": "reference",
    "reference": "common line-oriented SNMP commands (snmp-server host, snmp-server enable traps, snmp-server group, snmp-server user); RFC 3414 for the v3 user model",
    "does": "Sends the device's SNMP traps to Woodshed (SNMPv2c).",
-   "text": "! Enter in global configuration mode, then save the configuration\nsnmp-server host 10.1.0.50 version 2c \u003cCOMMUNITY\u003e\nsnmp-server enable traps\n",
+   "text": "! Enter in global configuration mode, fill in the placeholders, then save the configuration\nsnmp-server host 10.1.0.50 version 2c \u003cCOMMUNITY\u003e\nsnmp-server enable traps\n",
    "parts": [
     {
      "kind": "cli",
      "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
+     "title": "Enter in global configuration mode, fill in the placeholders, then save the configuration",
      "text": "snmp-server host 10.1.0.50 version 2c \u003cCOMMUNITY\u003e\nsnmp-server enable traps\n"
     }
    ],
@@ -551,25 +478,27 @@
    "verification": "reference",
    "reference": "common line-oriented SNMP commands (snmp-server host, snmp-server enable traps, snmp-server group, snmp-server user); RFC 3414 for the v3 user model",
    "does": "Sends the device's SNMP traps to Woodshed (SNMPv3).",
-   "text": "! Enter in global configuration mode, then save the configuration\nsnmp-server group woodshed v3 priv\nsnmp-server user \u003cV3-USER\u003e woodshed v3 auth sha-256 \u003cAUTH-PASSPHRASE\u003e priv aes 128 \u003cPRIV-PASSPHRASE\u003e\nsnmp-server host 10.1.0.50 version 3 priv \u003cV3-USER\u003e\nsnmp-server enable traps\n",
+   "text": "! Enter in global configuration mode, fill in the placeholders, then save the configuration\nsnmp-server group woodshed v3 priv\nsnmp-server user \u003cV3-USER\u003e woodshed v3 auth \u003cSHA-256-KEYWORD\u003e \u003cAUTH-PASSPHRASE\u003e priv \u003cAES-128-KEYWORD\u003e \u003cPRIV-PASSPHRASE\u003e\nsnmp-server host 10.1.0.50 version 3 priv \u003cV3-USER\u003e\nsnmp-server enable traps\n",
    "parts": [
     {
      "kind": "cli",
      "path": "",
-     "title": "Enter in global configuration mode, then save the configuration",
-     "text": "snmp-server group woodshed v3 priv\nsnmp-server user \u003cV3-USER\u003e woodshed v3 auth sha-256 \u003cAUTH-PASSPHRASE\u003e priv aes 128 \u003cPRIV-PASSPHRASE\u003e\nsnmp-server host 10.1.0.50 version 3 priv \u003cV3-USER\u003e\nsnmp-server enable traps\n"
+     "title": "Enter in global configuration mode, fill in the placeholders, then save the configuration",
+     "text": "snmp-server group woodshed v3 priv\nsnmp-server user \u003cV3-USER\u003e woodshed v3 auth \u003cSHA-256-KEYWORD\u003e \u003cAUTH-PASSPHRASE\u003e priv \u003cAES-128-KEYWORD\u003e \u003cPRIV-PASSPHRASE\u003e\nsnmp-server host 10.1.0.50 version 3 priv \u003cV3-USER\u003e\nsnmp-server enable traps\n"
     }
    ],
    "notes": [
     "Reference only: not tested on a device; check your device's documentation.",
+    "\u003cSHA-256-KEYWORD\u003e and \u003cAES-128-KEYWORD\u003e are the device's keywords for SHA-256 and AES-128; they differ between devices, and some offer only SHA-1. Take them from the device's documentation, and pick protocols Woodshed has too.",
     "Add the same user in Woodshed: Settings → SNMP → v3 users, name \u003cV3-USER\u003e, SHA-256 and AES-128, with the same passphrases.",
-    "The protocol keywords differ between devices (`sha-256`, `sha256` or `sha2-256`; `aes 128` or `aes128`), and some only offer SHA-1 or put the user's keys under the engine ID: pick the protocols both sides have.",
     "`snmp-server enable traps` turns on every notification the device has on some devices, and only a default set on others; narrow it to what you need."
    ],
    "check": "Search Events for type Traps after a change on the device (an interface going down and up, a configuration save); `woodshed snmp status` counts traps per device.",
    "placeholders": [
     "\u003cV3-USER\u003e",
+    "\u003cSHA-256-KEYWORD\u003e",
     "\u003cAUTH-PASSPHRASE\u003e",
+    "\u003cAES-128-KEYWORD\u003e",
     "\u003cPRIV-PASSPHRASE\u003e"
    ],
    "addresses": [
@@ -586,21 +515,27 @@
    "transport": "v2c",
    "address": "10.1.0.50",
    "verification": "tested",
-   "reference": "net-snmp manual pages: snmpd.conf(5) (agentAddress, rocommunity, rocommunity6, createUser, rouser)",
+   "reference": "net-snmp manual pages: snmpd.conf(5) (agentaddress, rocommunity, rocommunity6, createUser, rouser)",
    "does": "Lets Woodshed poll this machine's snmpd (SNMPv2c, read-only, from Woodshed's address only).",
-   "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)\n# Woodshed: answer polls (SNMPv2c, read-only).\nagentAddress udp:161,udp6:161\nrocommunity \u003cCOMMUNITY\u003e 10.1.0.50\n",
+   "text": "# /etc/snmp/snmpd.conf: Replace the existing agentaddress line with this one (add it if there's none)\nagentaddress udp:161,udp6:161\n\n# /etc/snmp/snmpd.conf: Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)\n# Woodshed: answer polls (SNMPv2c, read-only).\nrocommunity \u003cCOMMUNITY\u003e 10.1.0.50\n",
    "parts": [
     {
      "kind": "file",
      "path": "/etc/snmp/snmpd.conf",
-     "title": "Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)",
-     "text": "# Woodshed: answer polls (SNMPv2c, read-only).\nagentAddress udp:161,udp6:161\nrocommunity \u003cCOMMUNITY\u003e 10.1.0.50\n"
+     "title": "Replace the existing agentaddress line with this one (add it if there's none)",
+     "text": "agentaddress udp:161,udp6:161\n"
+    },
+    {
+     "kind": "file",
+     "path": "/etc/snmp/snmpd.conf",
+     "title": "Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)",
+     "text": "# Woodshed: answer polls (SNMPv2c, read-only).\nrocommunity \u003cCOMMUNITY\u003e 10.1.0.50\n"
     }
    ],
    "notes": [
     "Then add this machine in Woodshed: Devices → Add polling, its address, port 161, SNMPv2c and the same community; Test poll shows what answers.",
     "The source address limits the community to polls from 10.1.0.50. If Woodshed reaches this machine through NAT, use the address the polls arrive from.",
-    "agentAddress replaces snmpd's default listening address; keep any other agentAddress entries you need on the same line, comma-separated.",
+    "Edit the agentaddress line rather than adding a second one: snmpd joins every agentaddress line it reads, so the distribution's usual `agentaddress 127.0.0.1,[::1]` would stay, and two entries for port 161 can stop snmpd from starting. The new line listens on every address, IPv4 and IPv6; to keep loopback-only addresses too, list them on the same line, comma-separated.",
     "Keep snmpd.conf readable by root only: it holds the community."
    ],
    "check": "Devices → Add polling → Test poll answers with this machine's name and interfaces; after the first cycle the device page shows its graphs.",
@@ -621,22 +556,28 @@
    "transport": "v3",
    "address": "10.1.0.50",
    "verification": "tested",
-   "reference": "net-snmp manual pages: snmpd.conf(5) (agentAddress, rocommunity, rocommunity6, createUser, rouser)",
+   "reference": "net-snmp manual pages: snmpd.conf(5) (agentaddress, rocommunity, rocommunity6, createUser, rouser)",
    "does": "Lets Woodshed poll this machine's snmpd (SNMPv3, read-only).",
-   "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)\n# Woodshed: answer polls (SNMPv3, read-only).\nagentAddress udp:161,udp6:161\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\nrouser \u003cV3-USER\u003e priv\n",
+   "text": "# /etc/snmp/snmpd.conf: Replace the existing agentaddress line with this one (add it if there's none)\nagentaddress udp:161,udp6:161\n\n# /etc/snmp/snmpd.conf: Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)\n# Woodshed: answer polls (SNMPv3, read-only).\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\nrouser \u003cV3-USER\u003e priv\n",
    "parts": [
     {
      "kind": "file",
      "path": "/etc/snmp/snmpd.conf",
-     "title": "Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)",
-     "text": "# Woodshed: answer polls (SNMPv3, read-only).\nagentAddress udp:161,udp6:161\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\nrouser \u003cV3-USER\u003e priv\n"
+     "title": "Replace the existing agentaddress line with this one (add it if there's none)",
+     "text": "agentaddress udp:161,udp6:161\n"
+    },
+    {
+     "kind": "file",
+     "path": "/etc/snmp/snmpd.conf",
+     "title": "Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)",
+     "text": "# Woodshed: answer polls (SNMPv3, read-only).\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\nrouser \u003cV3-USER\u003e priv\n"
     }
    ],
    "notes": [
     "Then add this machine in Woodshed: Devices → Add polling, its address, port 161, SNMPv3 and the user \u003cV3-USER\u003e; Test poll shows what answers.",
     "Add the same user in Woodshed first: Settings → SNMP → v3 users, name \u003cV3-USER\u003e, SHA-256 and AES-128, with the same passphrases (at least 8 characters each).",
     "Some distributions want createUser in snmpd's persistent file (often /var/lib/snmp/snmpd.conf) instead, written while snmpd is stopped; their net-snmp-create-v3-user tool does that.",
-    "agentAddress replaces snmpd's default listening address; keep any other agentAddress entries you need on the same line, comma-separated.",
+    "Edit the agentaddress line rather than adding a second one: snmpd joins every agentaddress line it reads, so the distribution's usual `agentaddress 127.0.0.1,[::1]` would stay, and two entries for port 161 can stop snmpd from starting. The new line listens on every address, IPv4 and IPv6; to keep loopback-only addresses too, list them on the same line, comma-separated.",
     "Keep snmpd.conf readable by root only: it holds the passphrases."
    ],
    "check": "Devices → Add polling → Test poll answers with this machine's name and interfaces; after the first cycle the device page shows its graphs.",
@@ -684,7 +625,7 @@
    ],
    "notes": [
     "\u003cCOMMUNITY\u003e must be one Woodshed accepts: Settings → Listeners → SNMP traps lists the communities (an empty list accepts any).",
-    "Keep snmpd.conf readable by root only: it holds the community.",
+    "Keep snmpd.conf readable by root only, and ~/.snmp/snmp.conf by you only (chmod 600 ~/.snmp/snmp.conf): they hold the community.",
     "The test trap's OID is under the documentation enterprise number (32473), so it can't be mistaken for a real alarm."
    ],
    "check": "Search Events for type Traps: the trap snmpd sends at start (coldStart) and the test trap each appear once; `woodshed snmp status` counts them.",
@@ -730,7 +671,7 @@
    ],
    "notes": [
     "Add the same user in Woodshed first: Settings → SNMP → v3 users, name \u003cV3-USER\u003e, SHA-256 and AES-128, with the same passphrases (at least 8 characters each).",
-    "Keep snmpd.conf readable by root only: it holds the passphrases.",
+    "Keep snmpd.conf readable by root only, and ~/.snmp/snmp.conf by you only (chmod 600 ~/.snmp/snmp.conf): they hold the passphrases.",
     "The test trap's OID is under the documentation enterprise number (32473), so it can't be mistaken for a real alarm."
    ],
    "check": "Search Events for type Traps: the trap snmpd sends at start (coldStart) and the test trap each appear once; `woodshed snmp status` counts them.",
@@ -755,13 +696,13 @@
    "verification": "tested",
    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
    "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TCP.",
-   "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
+   "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
    "parts": [
     {
      "kind": "file",
      "path": "/etc/rsyslog.d/60-woodshed.conf",
      "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
-     "text": "# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" action.resumeRetryCount=\"-1\")\n"
+     "text": "# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n"
     },
     {
      "kind": "command",
@@ -771,7 +712,7 @@
     }
    ],
    "notes": [
-    "The in-memory queue keeps rsyslog from slowing the rest of the system while Woodshed can't be reached, and retries until it can; up to 10,000 messages wait in it."
+    "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting."
    ],
    "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.",
    "placeholders": [],
@@ -791,13 +732,13 @@
    "verification": "tested",
    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
    "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TLS.",
-   "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
+   "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
    "parts": [
     {
      "kind": "file",
      "path": "/etc/rsyslog.d/60-woodshed.conf",
      "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
-     "text": "# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" action.resumeRetryCount=\"-1\")\n"
+     "text": "# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n"
     },
     {
      "kind": "command",
@@ -810,7 +751,7 @@
     "\u003cCA-FILE\u003e is Woodshed's CA certificate as a PEM file on this machine: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem, and check its SHA-256 fingerprint is 3F:9A:1C:07:5B:E2:44:D0:8C:61:2F:A9:73:0E:B5:16:C8:4D:92:E7:01:6B:3A:F5:58:C3:9E:20:7D:B4:4A:11.",
     "rsyslog checks that Woodshed's certificate holds the name logs-01 (it doesn't check IP addresses).",
     "TLS needs rsyslog 8.2108 or later and its gtls network stream driver, which some distributions package separately.",
-    "The in-memory queue keeps rsyslog from slowing the rest of the system while Woodshed can't be reached, and retries until it can; up to 10,000 messages wait in it."
+    "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting."
    ],
    "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.",
    "placeholders": [
@@ -1194,13 +1135,13 @@
    "verification": "reference",
    "reference": "RFC 3954 (flow v9), RFC 7011 (IPFIX)",
    "does": "The values to enter in the device's flow export page so it sends flow records to Woodshed as IPFIX (RFC 7011).",
-   "text": "In the device's web page, open its flow export settings and enter\nFlow export: on\nCollector address: 10.1.0.50\nPort: 4739 (UDP)\nVersion: IPFIX (sometimes listed as version 10)\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n",
+   "text": "In the device's web page, open its flow export settings and enter\nFlow export: on\nCollector address: 10.1.0.50\nPort: 4739 (UDP)\nVersion: IPFIX (sometimes listed as version 10)\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nInactive timeout: 15 seconds (how soon a flow that went quiet is reported), if asked\nTemplate refresh: 60 seconds, if asked\n",
    "parts": [
     {
      "kind": "steps",
      "path": "",
      "title": "In the device's web page, open its flow export settings and enter",
-     "text": "Flow export: on\nCollector address: 10.1.0.50\nPort: 4739 (UDP)\nVersion: IPFIX (sometimes listed as version 10)\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n"
+     "text": "Flow export: on\nCollector address: 10.1.0.50\nPort: 4739 (UDP)\nVersion: IPFIX (sometimes listed as version 10)\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nInactive timeout: 15 seconds (how soon a flow that went quiet is reported), if asked\nTemplate refresh: 60 seconds, if asked\n"
     }
    ],
    "notes": [
@@ -1226,13 +1167,13 @@
    "verification": "reference",
    "reference": "RFC 3954 (flow v9), RFC 7011 (IPFIX)",
    "does": "The values to enter in the device's flow export page so it sends flow records to Woodshed as flow v9 (RFC 3954).",
-   "text": "In the device's web page, open its flow export settings and enter\nFlow export: on\nCollector address: 10.1.0.50\nPort: 2055 (UDP)\nVersion: version 9\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n",
+   "text": "In the device's web page, open its flow export settings and enter\nFlow export: on\nCollector address: 10.1.0.50\nPort: 2055 (UDP)\nVersion: version 9\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nInactive timeout: 15 seconds (how soon a flow that went quiet is reported), if asked\nTemplate refresh: 60 seconds, if asked\n",
    "parts": [
     {
      "kind": "steps",
      "path": "",
      "title": "In the device's web page, open its flow export settings and enter",
-     "text": "Flow export: on\nCollector address: 10.1.0.50\nPort: 2055 (UDP)\nVersion: version 9\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nTemplate refresh: 60 seconds, if asked\n"
+     "text": "Flow export: on\nCollector address: 10.1.0.50\nPort: 2055 (UDP)\nVersion: version 9\nInterfaces: the ones whose traffic you want to see\nActive timeout: 60 seconds (how often long flows are reported)\nInactive timeout: 15 seconds (how soon a flow that went quiet is reported), if asked\nTemplate refresh: 60 seconds, if asked\n"
     }
    ],
    "notes": [

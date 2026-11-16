@@ -3,7 +3,7 @@ what: poll
 transport: v2c
 address: 192.0.2.10
 verification: tested
-reference: net-snmp manual pages: snmpd.conf(5) (agentAddress, rocommunity, rocommunity6, createUser, rouser)
+reference: net-snmp manual pages: snmpd.conf(5) (agentaddress, rocommunity, rocommunity6, createUser, rouser)
 does: Lets Woodshed poll this machine's snmpd (SNMPv2c, read-only, from Woodshed's address only).
 check: Devices → Add polling → Test poll answers with this machine's name and interfaces; after the first cycle the device page shows its graphs.
 placeholders: <COMMUNITY>
@@ -11,14 +11,17 @@ addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
 notes:
 - Then add this machine in Woodshed: Devices → Add polling, its address, port 161, SNMPv2c and the same community; Test poll shows what answers.
 - The source address limits the community to polls from 192.0.2.10. If Woodshed reaches this machine through NAT, use the address the polls arrive from.
-- agentAddress replaces snmpd's default listening address; keep any other agentAddress entries you need on the same line, comma-separated.
+- Edit the agentaddress line rather than adding a second one: snmpd joins every agentaddress line it reads, so the distribution's usual `agentaddress 127.0.0.1,[::1]` would stay, and two entries for port 161 can stop snmpd from starting. The new line listens on every address, IPv4 and IPv6; to keep loopback-only addresses too, list them on the same line, comma-separated.
 - Keep snmpd.conf readable by root only: it holds the community.
----- part file "/etc/snmp/snmpd.conf": Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)
+---- part file "/etc/snmp/snmpd.conf": Replace the existing agentaddress line with this one (add it if there's none)
+agentaddress udp:161,udp6:161
+---- part file "/etc/snmp/snmpd.conf": Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)
 # Woodshed: answer polls (SNMPv2c, read-only).
-agentAddress udp:161,udp6:161
 rocommunity <COMMUNITY> 192.0.2.10
 ==== text
-# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)
+# /etc/snmp/snmpd.conf: Replace the existing agentaddress line with this one (add it if there's none)
+agentaddress udp:161,udp6:161
+
+# /etc/snmp/snmpd.conf: Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)
 # Woodshed: answer polls (SNMPv2c, read-only).
-agentAddress udp:161,udp6:161
 rocommunity <COMMUNITY> 192.0.2.10

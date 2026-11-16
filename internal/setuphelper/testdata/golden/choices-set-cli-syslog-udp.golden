@@ -10,7 +10,7 @@ placeholders:
 addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
 notes:
 - Reference only: not tested on a device; check your device's documentation.
-- `any any` sends every facility at any and above; the facility and level keywords differ slightly between devices.
+- `any any` sends every facility at every level; the facility and level keywords differ slightly between devices.
 - `structured-data` asks for RFC 5424 messages where the device offers it; leave the line out if it doesn't.
 - Set the address the messages come from with `set system syslog source-address <address>` if the device has several; Woodshed shows that address as the device.
 ---- part cli "": Enter in configuration mode, then commit

@@ -116,13 +116,13 @@ var families = []family{
 	{id: "line-cli", label: "Line-oriented CLI (global configuration mode)", reference: "the device's own documentation",
 		notes: []string{
 			"For devices configured with one command per line in a global configuration mode (`logging host …`, `snmp-server host …`).",
-			"Keywords and options differ between devices that share this style; where they're known to differ, the snippet's notes say so.",
+			"Only lines that are the same on most such devices are given as text; keywords that differ are placeholders (<TCP-OPTION>, <SHA-256-KEYWORD>) to fill in from the device's documentation.",
+			"No flow template: flow export commands differ too much between devices of this style to give one that's useful. Use the web UI checklist's values (collector address, port, version, active and inactive timeouts, template refresh) with your device's documentation.",
 		},
 		choices: map[string][]string{
 			WhatSyslog: {ChoiceSourceInterface, ChoiceSeverity, ChoiceFacility},
 			WhatTrap:   {ChoiceSourceInterface, ChoiceV3User, ChoiceAuth, ChoicePriv},
 			WhatPoll:   {ChoiceV3User, ChoiceAuth, ChoicePriv},
-			WhatFlow:   {ChoiceSourceInterface},
 		}},
 	{id: "set-cli", label: "Hierarchical set-style CLI", reference: "the device's own documentation; RFC 3413 and RFC 3415 for the SNMPv3 structure",
 		notes: []string{
@@ -195,21 +195,23 @@ func Facilities() []string {
 }
 
 // v3 protocols offered: the ones most devices and net-snmp share.
+// Placeholder stands for the device's own keyword (line-oriented CLIs spell
+// these differently: sha-256, sha256, sha2-256).
 type authProto struct {
-	ID, Label, NetSNMP, Line, Set string
+	ID, Label, NetSNMP, Placeholder, Set string
 }
 
 var auths = []authProto{
-	{"sha-256", "SHA-256", "SHA-256", "sha-256", "authentication-sha256"},
-	{"sha", "SHA-1", "SHA", "sha", "authentication-sha"},
+	{"sha-256", "SHA-256", "SHA-256", "<SHA-256-KEYWORD>", "authentication-sha256"},
+	{"sha", "SHA-1", "SHA", "<SHA-1-KEYWORD>", "authentication-sha"},
 }
 
 type privProto struct {
-	ID, Label, NetSNMP, Line, Set string
+	ID, Label, NetSNMP, Placeholder, Set string
 }
 
 var privs = []privProto{
-	{"aes-128", "AES-128", "AES", "aes 128", "privacy-aes128"},
+	{"aes-128", "AES-128", "AES", "<AES-128-KEYWORD>", "privacy-aes128"},
 }
 
 // AuthChoices and PrivChoices are the v3 protocol choices, the default first.
@@ -297,8 +299,8 @@ type Request struct {
 	Auth   string `json:"auth,omitempty"`
 	Priv   string `json:"priv,omitempty"`
 	// AgentPort is the port the device's SNMP agent listens on (polling;
-	// 0 is 161).
-	AgentPort int `json:"agent_port,omitempty"`
+	// absent is 161; 0 or more than 65535 is an error).
+	AgentPort *int `json:"agent_port,omitempty"`
 }
 
 // Part is one piece of a snippet: a file to add to, commands to run, lines
@@ -554,10 +556,86 @@ func Families() []Family {
 
 // ---- generating ----
 
+// sanitized is s with only values a snippet can take: IP addresses
+// (unmapped) and host names that match hostnameRe. Wildcard certificate names
+// ("*.example.net"), and anything with a quote, space or newline, are dropped,
+// so nothing from a certificate or the config can add text to a snippet.
+func (s Server) sanitized() Server {
+	ips := func(in []string) []string {
+		var out []string
+		for _, a := range in {
+			if ip, err := netip.ParseAddr(a); err == nil && ip.Zone() == "" {
+				if v := ip.Unmap().String(); !slices.Contains(out, v) {
+					out = append(out, v)
+				}
+			}
+		}
+		return out
+	}
+	names := func(in []string) []string {
+		var out []string
+		for _, n := range in {
+			if ip, err := netip.ParseAddr(n); err == nil {
+				if ip.Zone() == "" && !slices.Contains(out, ip.Unmap().String()) {
+					out = append(out, ip.Unmap().String())
+				}
+				continue
+			}
+			if isHostname(n) {
+				if v := strings.TrimSuffix(strings.ToLower(n), "."); !slices.Contains(out, v) {
+					out = append(out, v)
+				}
+			}
+		}
+		return out
+	}
+	s.HostIPs = ips(s.HostIPs)
+	s.Names = names(s.Names)
+	var tls []string
+	for _, n := range s.TLSNames {
+		if isHostname(n) {
+			tls = append(tls, strings.TrimSuffix(strings.ToLower(n), "."))
+		}
+	}
+	s.TLSNames = tls
+	unmap := func(l *Listener) {
+		if ip, err := netip.ParseAddr(l.Addr); err == nil {
+			l.Addr = ip.Unmap().String()
+		}
+	}
+	unmap(&s.UDP)
+	unmap(&s.TCP)
+	unmap(&s.TLS)
+	unmap(&s.Trap)
+	if s.Flow != nil {
+		f := *s.Flow
+		if ip, err := netip.ParseAddr(f.Addr); err == nil {
+			f.Addr = ip.Unmap().String()
+		}
+		s.Flow = &f
+	}
+	return s
+}
+
+// isHostname reports whether n is a host name a snippet can carry: letters,
+// digits, hyphens and dots, at least one letter or hyphen, at most 253.
+func isHostname(n string) bool {
+	return len(n) <= 253 && hostnameRe.MatchString(n) && strings.ContainsAny(n, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-")
+}
+
+// quoteOrEmpty is s quoted, or "an empty value" for "".
+func quoteOrEmpty(s string) string {
+	if s == "" {
+		return "an empty value"
+	}
+	return fmt.Sprintf("%q", s)
+}
+
 // Addresses is the list the page offers, the default first: the listener's
 // own address when it's bound to one, else this machine's IPs, then its
 // names. Loopback addresses come last, and only when there's nothing else.
 func (s Server) Addresses(bound string) []string {
+	s = s.sanitized()
 	var out, loop []string
 	add := func(a string) {
 		if a == "" || slices.Contains(out, a) || slices.Contains(loop, a) {
@@ -569,8 +647,8 @@ func (s Server) Addresses(bound string) []string {
 		}
 		out = append(out, a)
 	}
-	if bound != "" && bound != "0.0.0.0" && bound != "::" {
-		add(bound)
+	if ip, err := netip.ParseAddr(bound); err == nil && !ip.IsUnspecified() && ip.Zone() == "" {
+		add(ip.Unmap().String())
 	}
 	for _, a := range s.HostIPs {
 		add(a)
@@ -663,24 +741,25 @@ func Generate(s Server, r Request) (Snippet, error) {
 	})
 	given := map[string]bool{ChoiceSourceInterface: r.SourceInterface != "", ChoiceInterface: r.Interface != "",
 		ChoiceSeverity: r.Severity != "", ChoiceFacility: r.Facility != "", ChoiceV3User: r.V3User != "", ChoiceAuth: r.Auth != "",
-		ChoicePriv: r.Priv != "", ChoiceAgentPort: r.AgentPort != 0}
+		ChoicePriv: r.Priv != "", ChoiceAgentPort: r.AgentPort != nil}
 	for _, c := range []string{ChoiceSourceInterface, ChoiceInterface, ChoiceSeverity, ChoiceFacility, ChoiceV3User, ChoiceAuth, ChoicePriv, ChoiceAgentPort} {
 		if given[c] && !slices.Contains(allowed, c) {
 			return Snippet{}, badField(c, "doesn't apply to %s %s (%s)", r.Family, r.What, d.Transport)
 		}
 	}
 
+	s = s.sanitized()
 	lst, listenerName := s.listenerFor(r.What, d.Transport)
 	addrs := s.Addresses(lst.Addr)
 	d.Address = r.Address
 	if d.Address == "" {
 		if len(addrs) > 0 {
-			d.Address = addrs[0]
+			d.Address = addrs[0] // valid: Addresses keeps only IPs and host names
 		} else {
 			d.Address = "<WOODSHED-ADDRESS>"
 		}
 	}
-	if d.Address != "<WOODSHED-ADDRESS>" {
+	if d.Address != "<WOODSHED-ADDRESS>" || r.Address != "" {
 		ip, err := netip.ParseAddr(d.Address)
 		switch {
 		case err == nil && ip.Zone() == "":
@@ -688,10 +767,10 @@ func Generate(s Server, r Request) (Snippet, error) {
 			d.Address, d.IsIPv6 = ip.String(), ip.Is6()
 		case err == nil:
 			return Snippet{}, badField("address", "an address with a zone (%%) can't go in a device's configuration")
-		case len(d.Address) <= 253 && hostnameRe.MatchString(d.Address) && strings.ContainsAny(d.Address, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-"):
+		case isHostname(d.Address):
 			d.Address, d.IsName = strings.TrimSuffix(strings.ToLower(d.Address), "."), true
 		default:
-			return Snippet{}, badField("address", "%q isn't an IP address or a host name", r.Address)
+			return Snippet{}, badField("address", "%s isn't an IP address or a host name", quoteOrEmpty(d.Address))
 		}
 	}
 	d.Port = lst.Port
@@ -740,17 +819,24 @@ func Generate(s Server, r Request) (Snippet, error) {
 			d.Priv = privs[i]
 		}
 	}
-	if r.AgentPort < 0 || r.AgentPort > 65535 {
-		return Snippet{}, badField("agent_port", "must be 1 to 65535")
+	d.AgentPort = 161
+	if r.AgentPort != nil {
+		if *r.AgentPort < 1 || *r.AgentPort > 65535 {
+			return Snippet{}, badField("agent_port", "must be 1 to 65535")
+		}
+		d.AgentPort = *r.AgentPort
 	}
-	d.AgentPort = cmp.Or(r.AgentPort, 161)
 
 	if d.Transport == "tls" {
 		d.TLSOwnCA = s.TLSSource != "file"
 		d.CASHA256 = s.CASHA256
 		switch {
-		case d.IsName && (slices.Contains(s.TLSNames, d.Address) || len(s.TLSNames) == 0):
+		case d.IsName && slices.Contains(s.TLSNames, d.Address):
 			d.TLSName, d.TLSNameKnown = d.Address, true
+		case d.IsName && len(s.TLSNames) == 0:
+			// No certificate yet (or none with names): the address is the
+			// name to check, but nothing says it's on the certificate.
+			d.TLSName = d.Address
 		default:
 			for _, n := range s.TLSNames {
 				if n != "localhost" {
@@ -806,7 +892,7 @@ func Generate(s Server, r Request) (Snippet, error) {
 	if listenerName != "" && !lst.Enabled {
 		sn.Notes = append(sn.Notes, listenerOffNote(r.What, d.Transport, listenerName, s.Flow == nil))
 	}
-	if b := lst.Addr; r.Address != "" && b != "" && b != "0.0.0.0" && b != "::" && b != d.Address {
+	if b := lst.Addr; r.Address != "" && !d.IsName && b != "" && b != "0.0.0.0" && b != "::" && b != d.Address {
 		sn.Notes = append(sn.Notes, fmt.Sprintf("Woodshed's %s listener is bound to %s only, so it won't hear a device that sends to %s.", listenerName, b, d.Address))
 	}
 	if t.Verification == Reference {

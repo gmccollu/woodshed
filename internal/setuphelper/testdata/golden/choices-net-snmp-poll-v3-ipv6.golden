@@ -3,7 +3,7 @@ what: poll
 transport: v3
 address: 2001:db8::10
 verification: tested
-reference: net-snmp manual pages: snmpd.conf(5) (agentAddress, rocommunity, rocommunity6, createUser, rouser)
+reference: net-snmp manual pages: snmpd.conf(5) (agentaddress, rocommunity, rocommunity6, createUser, rouser)
 does: Lets Woodshed poll this machine's snmpd (SNMPv3, read-only).
 check: Devices → Add polling → Test poll answers with this machine's name and interfaces; after the first cycle the device page shows its graphs.
 placeholders: <AUTH-PASSPHRASE> <PRIV-PASSPHRASE>
@@ -12,16 +12,19 @@ notes:
 - Then add this machine in Woodshed: Devices → Add polling, its address, port 161, SNMPv3 and the user monitor; Test poll shows what answers.
 - Add the same user in Woodshed first: Settings → SNMP → v3 users, name monitor, SHA-256 and AES-128, with the same passphrases (at least 8 characters each).
 - Some distributions want createUser in snmpd's persistent file (often /var/lib/snmp/snmpd.conf) instead, written while snmpd is stopped; their net-snmp-create-v3-user tool does that.
-- agentAddress replaces snmpd's default listening address; keep any other agentAddress entries you need on the same line, comma-separated.
+- Edit the agentaddress line rather than adding a second one: snmpd joins every agentaddress line it reads, so the distribution's usual `agentaddress 127.0.0.1,[::1]` would stay, and two entries for port 161 can stop snmpd from starting. The new line listens on every address, IPv4 and IPv6; to keep loopback-only addresses too, list them on the same line, comma-separated.
 - Keep snmpd.conf readable by root only: it holds the passphrases.
----- part file "/etc/snmp/snmpd.conf": Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)
+---- part file "/etc/snmp/snmpd.conf": Replace the existing agentaddress line with this one (add it if there's none)
+agentaddress udp:161,udp6:161
+---- part file "/etc/snmp/snmpd.conf": Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)
 # Woodshed: answer polls (SNMPv3, read-only).
-agentAddress udp:161,udp6:161
 createUser monitor SHA-256 <AUTH-PASSPHRASE> AES <PRIV-PASSPHRASE>
 rouser monitor priv
 ==== text
-# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)
+# /etc/snmp/snmpd.conf: Replace the existing agentaddress line with this one (add it if there's none)
+agentaddress udp:161,udp6:161
+
+# /etc/snmp/snmpd.conf: Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)
 # Woodshed: answer polls (SNMPv3, read-only).
-agentAddress udp:161,udp6:161
 createUser monitor SHA-256 <AUTH-PASSPHRASE> AES <PRIV-PASSPHRASE>
 rouser monitor priv

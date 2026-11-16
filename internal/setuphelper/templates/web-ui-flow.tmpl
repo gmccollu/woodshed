@@ -15,6 +15,7 @@ Port: {{.Port}} (UDP)
 Version: {{if eq .Transport "ipfix"}}IPFIX (sometimes listed as version 10){{else}}version 9{{end}}
 Interfaces: the ones whose traffic you want to see
 Active timeout: 60 seconds (how often long flows are reported)
+Inactive timeout: 15 seconds (how soon a flow that went quiet is reported), if asked
 Template refresh: 60 seconds, if asked
 {{end}}
 

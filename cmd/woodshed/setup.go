@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -100,11 +101,16 @@ setup families" lists what each covers).`, stderr)
 	fs.StringVar(&r.V3User, "v3-user", "", "v3: the user `name` (default: a placeholder)")
 	fs.StringVar(&r.Auth, "auth", "", "v3: the authentication `protocol`: "+strings.Join(setuphelper.AuthChoices(), " or ")+" (default sha-256)")
 	fs.StringVar(&r.Priv, "priv", "", "v3: the privacy `protocol`: "+strings.Join(setuphelper.PrivChoices(), ", "))
-	fs.IntVar(&r.AgentPort, "agent-port", 0, "poll: the `port` the device's SNMP agent listens on (default 161)")
+	agentPort := fs.Int("agent-port", 0, "poll: the `port` the device's SNMP agent listens on (default 161)")
 	asJSON := fs.Bool("json", false, "print the whole snippet as JSON (the shape of POST /api/setup/snippet)")
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "agent-port" {
+			r.AgentPort = agentPort
+		}
+	})
 	if *typ != "" {
 		if r.What != "" && r.What != *typ {
 			fmt.Fprintln(stderr, "woodshed setup snippet: --type and --what say different things; give one")

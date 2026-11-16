@@ -1,9 +1,11 @@
 package setuphelper
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,14 +71,20 @@ func goldenCases(t *testing.T) []goldenCase {
 		goldenCase{"choices-rsyslog-syslog-tls-no-cert-yet", noTLS, Request{Family: "rsyslog", What: "syslog", Transport: "tls"}},
 		goldenCase{"choices-net-snmp-trap-v3-ipv6", sample(), Request{Family: "net-snmp", What: "trap", Transport: "v3", Address: "2001:db8::10",
 			V3User: "monitor", Auth: "sha"}},
-		goldenCase{"choices-net-snmp-poll-v2c-port", sample(), Request{Family: "net-snmp", What: "poll", Transport: "v2c", AgentPort: 1161}},
+		goldenCase{"choices-net-snmp-poll-v2c-port", sample(), Request{Family: "net-snmp", What: "poll", Transport: "v2c", AgentPort: ptr(1161)}},
 		goldenCase{"choices-net-snmp-poll-v3-ipv6", sample(), Request{Family: "net-snmp", What: "poll", Transport: "v3", Address: "2001:db8::10",
 			V3User: "monitor"}},
 		goldenCase{"choices-softflowd-flow-ipfix-iface", sample(), Request{Family: "softflowd", What: "flow", Transport: "ipfix", Interface: "eth1"}},
-		goldenCase{"choices-line-cli-flow-listener", flow, Request{Family: "line-cli", What: "flow", Transport: "ipfix", SourceInterface: "Loopback0"}},
+		goldenCase{"choices-web-ui-flow-listener", flow, Request{Family: "web-ui", What: "flow", Transport: "ipfix"}},
 		goldenCase{"flow-listener-off-softflowd-v9", flowOff, Request{Family: "softflowd", What: "flow", Transport: "v9"}},
 		// The flow port is off: v9 goes to the IPFIX port, which takes every version.
-		goldenCase{"flow-ipfix-port-only-line-cli-v9", ipfixOnly, Request{Family: "line-cli", What: "flow", Transport: "v9"}},
+		goldenCase{"flow-ipfix-port-only-web-ui-v9", ipfixOnly, Request{Family: "web-ui", What: "flow", Transport: "v9"}},
+		// A host name and no certificate yet: the name to check, but not "a name on the certificate".
+		goldenCase{"choices-line-cli-syslog-tls-name-no-cert", noTLS, Request{Family: "line-cli", What: "syslog", Transport: "tls", Address: "logs-01.example.net"}},
+		goldenCase{"choices-line-cli-trap-v3-sha", sample(), Request{Family: "line-cli", What: "trap", Transport: "v3", V3User: "monitor", Auth: "sha"}},
+		goldenCase{"choices-set-cli-poll-v2c-name", sample(), Request{Family: "set-cli", What: "poll", Transport: "v2c", Address: "logs-01.example.net"}},
+		goldenCase{"choices-set-cli-syslog-debug", sample(), Request{Family: "set-cli", What: "syslog", Severity: "debug"}},
+		goldenCase{"choices-rsyslog-syslog-emerg", sample(), Request{Family: "rsyslog", What: "syslog", Severity: "emerg"}},
 		goldenCase{"listener-off-web-ui-syslog-tls", off, Request{Family: "web-ui", What: "syslog", Transport: "tls"}},
 		goldenCase{"listener-off-line-cli-trap", off, Request{Family: "line-cli", What: "trap"}},
 		goldenCase{"bound-line-cli-syslog-udp", bound, Request{Family: "line-cli", What: "syslog", Transport: "udp"}},
@@ -153,8 +161,8 @@ func TestEveryTemplateRenders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ts) != 15 {
-		t.Errorf("%d templates, want 15", len(ts))
+	if len(ts) != 14 {
+		t.Errorf("%d templates, want 14", len(ts))
 	}
 	for _, tm := range ts {
 		for _, tr := range tm.Transports {
@@ -235,7 +243,7 @@ func TestFamilies(t *testing.T) {
 	for _, f := range fs {
 		got = append(got, f.ID+":"+strings.Join(f.What, ",")+":"+f.Verification)
 	}
-	want := []string{"line-cli:syslog,trap,poll,flow:reference", "set-cli:syslog,trap,poll:reference", "rsyslog:syslog:tested",
+	want := []string{"line-cli:syslog,trap,poll:reference", "set-cli:syslog,trap,poll:reference", "rsyslog:syslog:tested",
 		"net-snmp:trap,poll:tested", "softflowd:flow:tested", "web-ui:syslog,trap,poll,flow:reference"}
 	if !slices.Equal(got, want) {
 		t.Errorf("families\n got %v\nwant %v", got, want)
@@ -273,8 +281,9 @@ func TestRequestErrors(t *testing.T) {
 		{Request{Family: "net-snmp", What: "trap", Transport: "v3", V3User: "a user"}, "v3_user"},
 		{Request{Family: "net-snmp", What: "trap", Transport: "v3", Auth: "md5"}, "auth"},
 		{Request{Family: "net-snmp", What: "trap", Transport: "v3", Priv: "des"}, "priv"},
-		{Request{Family: "net-snmp", What: "poll", AgentPort: 70000}, "agent_port"},
-		{Request{Family: "net-snmp", What: "trap", AgentPort: 1161}, "agent_port"},
+		{Request{Family: "net-snmp", What: "poll", AgentPort: ptr(70000)}, "agent_port"},
+		{Request{Family: "net-snmp", What: "trap", AgentPort: ptr(1161)}, "agent_port"},
+		{Request{Family: "net-snmp", What: "poll", AgentPort: ptr(0)}, "agent_port"},
 		{Request{Family: "softflowd", What: "flow", Interface: "eth0 -n 198.51.100.1:9"}, "interface"},
 	} {
 		_, err := Generate(sample(), c.req)
@@ -349,5 +358,67 @@ func TestTemplateHeaders(t *testing.T) {
 	}
 	if tm, err := parseTemplate("rsyslog-syslog.tmpl", head(append(ok, "verification: lab_checked", "checked_on: 2026-11-16")...)); err != nil || tm.CheckedOn != "2026-11-16" {
 		t.Errorf("lab_checked: %v %+v", err, tm)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// Names from the certificate or the config are checked before they reach a
+// snippet: a wildcard name, or one with a quote, a space or a newline, is
+// dropped from the addresses and the TLS name, and so can't add text to
+// any snippet (review, 2026-11-16).
+func TestHostileNames(t *testing.T) {
+	srv := sample()
+	bad := []string{"*.example.net", `logs"; rm -rf / #`, "logs-01\nlogging host 198.51.100.66", "two words", "-x", ""}
+	srv.TLSNames = append(slices.Clone(bad), "logs-01.example.net")
+	srv.Names = append(slices.Clone(bad), "logs-01.example.net")
+	srv.HostIPs = append([]string{"::ffff:192.0.2.10", "not-an-ip", "fe80::1%eth0"}, srv.HostIPs...)
+	srv.UDP.Addr = "::ffff:192.0.2.10"
+	for _, f := range Families() {
+		for _, w := range f.What {
+			for _, tr := range f.Transports[w] {
+				s, err := Generate(srv, Request{Family: f.ID, What: w, Transport: tr})
+				if err != nil {
+					t.Fatalf("%s %s %s: %v", f.ID, w, tr, err)
+				}
+				b, _ := json.Marshal(s)
+				for _, x := range []string{"*.example.net", "rm -rf", "198.51.100.66", "two words", "not-an-ip", "fe80::1", "::ffff:"} {
+					if strings.Contains(string(b), x) {
+						t.Errorf("%s %s %s: %q reached the snippet", f.ID, w, tr, x)
+					}
+				}
+				for _, a := range s.Addresses {
+					if !isHostname(a) {
+						if _, err := netip.ParseAddr(a); err != nil {
+							t.Errorf("%s %s %s: address %q", f.ID, w, tr, a)
+						}
+					}
+				}
+			}
+		}
+	}
+	// Only wildcard or bad names on the certificate: the TLS name is a placeholder.
+	srv = sample()
+	srv.TLSNames = []string{"*.example.net", "bad\"name"}
+	s, err := Generate(srv, Request{Family: "rsyslog", What: "syslog", Transport: "tls"})
+	if err != nil || !strings.Contains(s.Text, `StreamDriverPermittedPeers="<WOODSHED-TLS-NAME>"`) {
+		t.Errorf("wildcard only: %v\n%s", err, s.Text)
+	}
+	// A bound IPv4-mapped address is offered unmapped, and a host name gets no "won't hear" note.
+	srv = sample()
+	srv.UDP.Addr = "::ffff:192.0.2.20"
+	s, _ = Generate(srv, Request{Family: "line-cli", What: "syslog", Transport: "udp"})
+	if s.Address != "192.0.2.20" || s.Addresses[0] != "192.0.2.20" {
+		t.Errorf("bound mapped: %s %v", s.Address, s.Addresses)
+	}
+	s, _ = Generate(srv, Request{Family: "line-cli", What: "syslog", Transport: "udp", Address: "logs-01.example.net"})
+	for _, n := range s.Notes {
+		if strings.Contains(n, "won't hear") {
+			t.Errorf("a host name got the bound note: %q", n)
+		}
+	}
+	// An empty address in an error isn't quoted as "".
+	if _, err := Generate(sample(), Request{Family: "rsyslog", What: "syslog", Address: " "}); err == nil || strings.Contains(err.Error(), `""`) {
+		t.Errorf("blank address: %v", err)
 	}
 }

@@ -10,7 +10,7 @@ placeholders: <COMMUNITY>
 addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
 notes:
 - <COMMUNITY> must be one Woodshed accepts: Settings → Listeners → SNMP traps lists the communities (an empty list accepts any).
-- Keep snmpd.conf readable by root only: it holds the community.
+- Keep snmpd.conf readable by root only, and ~/.snmp/snmp.conf by you only (chmod 600 ~/.snmp/snmp.conf): they hold the community.
 - The test trap's OID is under the documentation enterprise number (32473), so it can't be mistaken for a real alarm.
 ---- part file "/etc/snmp/snmpd.conf": Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts
 # Woodshed: send traps (SNMPv2c).

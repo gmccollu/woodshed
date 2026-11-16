@@ -8,8 +8,8 @@ verification: reference
 {{define "does"}}Sends the device's log messages, {{.Severity.Word}} and more severe, to Woodshed over {{if eq .Transport "udp"}}UDP{{else if eq .Transport "tcp"}}TCP{{else}}TLS{{end}}.{{end}}
 
 {{define "parts"}}
-@@part cli - Enter in global configuration mode, then save the configuration
-logging host {{.Address}} transport {{.Transport}} port {{.Port}}
+@@part cli - Enter in global configuration mode, fill in the placeholders, then save the configuration
+logging host {{.Address}}{{if eq .Transport "tcp"}} <TCP-OPTION>{{else if eq .Transport "tls"}} <TLS-OPTION>{{else if ne .Port 514}} <UDP-PORT-OPTION>{{end}}
 logging trap {{.Severity.Line}}
 {{- if .Facility}}
 logging facility {{.Facility}}{{end}}
@@ -18,12 +18,15 @@ logging source-interface {{.SourceInterface}}{{end}}
 {{end}}
 
 {{define "notes"}}
-The host command differs most between devices: some take `logging host {{.Address}}` for UDP 514 alone, some write the transport as `{{if eq .Transport "udp"}}udp{{else}}tcp{{end}}/{{.Port}}` after the address or name the sending interface before it, and some use a `logging server` command instead.
+{{if eq .Transport "tcp"}}<TCP-OPTION> is the device's way of saying TCP to port {{.Port}} on the host line. It differs between devices (a transport keyword with a port, a protocol/port pair after the address, or a separate command), so take it from the device's documentation.
+{{else if eq .Transport "tls"}}<TLS-OPTION> is the device's way of saying TLS to port {{.Port}} on the host line, and often naming the trusted CA. It differs between devices, so take it from the device's documentation.
+{{else if ne .Port 514}}<UDP-PORT-OPTION> is the device's way of naming UDP port {{.Port}} on the host line (Woodshed doesn't use the usual 514); it differs between devices.
+{{else}}`logging host {{.Address}}` alone sends over UDP to port 514 on most devices of this style.
+{{end}}
+{{- if eq .Transport "tls"}}Import Woodshed's CA certificate as a trusted CA first (Settings → TLS → CA certificate: PEM to paste, DER to upload){{if .CASHA256}}, and compare the fingerprint the device shows with {{.CASHA256}}{{end}}. How you import it differs by device.
+If the device checks the server's name, give it {{.TLSName}}{{if .TLSNameKnown}}, a name on Woodshed's certificate{{else}} (it must be a DNS name on Woodshed's certificate; Settings → TLS lists them once TLS is on){{end}}; many devices check names only, not IP addresses.
+{{end}}
 `logging trap` sets the lowest severity sent to log hosts on many devices; others set it on the host line, or accept the number ({{.Severity.Num}}) instead of the keyword.
-{{- if eq .Transport "tls"}}
-Import Woodshed's CA certificate as a trusted CA first (Settings → TLS → CA certificate: PEM to paste, DER to upload){{if .CASHA256}}, and compare the fingerprint the device shows with {{.CASHA256}}{{end}}. How you import it, and whether the host line names it, differs by device.
-If the device checks the server's name, give it {{.TLSName}}{{if .TLSNameKnown}}, a name on Woodshed's certificate{{else}}: a DNS name on Woodshed's certificate (Settings → TLS){{end}}; many devices check names only, not IP addresses.
-{{- end}}
 {{- if .SourceInterface}}
 The source interface's address is what Woodshed shows as the device, so pick one with a stable address.
 {{- end}}

@@ -78,6 +78,9 @@ func TestSetupSnippet(t *testing.T) {
 		{`{"family": "vendor-x", "what": "syslog"}`, "family"},
 		{`{"family": "rsyslog", "what": "syslog", "address": "a;b"}`, "address"},
 		{`{"family": "rsyslog", "what": "syslog", "severity": "loud"}`, "severity"},
+		// A typed 0 isn't the default port: POST refuses it as GET does.
+		{`{"family": "net-snmp", "what": "poll", "agent_port": 0}`, "agent_port"},
+		{`{"family": "net-snmp", "what": "poll", "agent_port": 70000}`, "agent_port"},
 	} {
 		code, m := post(c.body)
 		errs, _ := m["errors"].(map[string]any)
@@ -111,7 +114,7 @@ func TestSetupSnippet(t *testing.T) {
 	r := do(t, c, "GET", srv.url("/api/setup/snippet?"+q.Encode()), "")
 	var g map[string]any
 	json.Unmarshal(r.body, &g)
-	if r.code != 200 || !strings.Contains(g["text"].(string), "agentAddress udp:1161,udp6:1161") || !strings.Contains(g["text"].(string), "rouser monitor priv") {
+	if r.code != 200 || !strings.Contains(g["text"].(string), "agentaddress udp:1161,udp6:1161") || !strings.Contains(g["text"].(string), "rouser monitor priv") {
 		t.Errorf("GET: %d %s", r.code, r.body)
 	}
 	if r := do(t, c, "GET", srv.url("/api/setup/snippet?family=net-snmp&what=poll&agent_port=x"), ""); r.code != 400 {

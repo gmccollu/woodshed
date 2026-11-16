@@ -20,6 +20,7 @@ Port: 4739 (UDP)
 Version: IPFIX (sometimes listed as version 10)
 Interfaces: the ones whose traffic you want to see
 Active timeout: 60 seconds (how often long flows are reported)
+Inactive timeout: 15 seconds (how soon a flow that went quiet is reported), if asked
 Template refresh: 60 seconds, if asked
 ==== text
 In the device's web page, open its flow export settings and enter
@@ -29,4 +30,5 @@ Port: 4739 (UDP)
 Version: IPFIX (sometimes listed as version 10)
 Interfaces: the ones whose traffic you want to see
 Active timeout: 60 seconds (how often long flows are reported)
+Inactive timeout: 15 seconds (how soon a flow that went quiet is reported), if asked
 Template refresh: 60 seconds, if asked

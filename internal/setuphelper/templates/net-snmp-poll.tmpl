@@ -2,15 +2,16 @@
 family: net-snmp
 what: poll
 transports: v2c, v3
-reference: net-snmp manual pages: snmpd.conf(5) (agentAddress, rocommunity, rocommunity6, createUser, rouser)
+reference: net-snmp manual pages: snmpd.conf(5) (agentaddress, rocommunity, rocommunity6, createUser, rouser)
 verification: tested
 */}}
 {{define "does"}}Lets Woodshed poll this machine's snmpd (SNMP{{.Transport}}, read-only{{if eq .Transport "v2c"}}, from Woodshed's address only{{end}}).{{end}}
 
 {{define "parts"}}
-@@part file /etc/snmp/snmpd.conf Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd)
+@@part file /etc/snmp/snmpd.conf Replace the existing agentaddress line with this one (add it if there's none)
+agentaddress udp:{{.AgentPort}},udp6:{{.AgentPort}}
+@@part file /etc/snmp/snmpd.conf Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)
 # Woodshed: answer polls (SNMP{{.Transport}}, read-only).
-agentAddress udp:{{.AgentPort}},udp6:{{.AgentPort}}
 {{if eq .Transport "v2c"}}{{if .IsIPv6}}rocommunity6{{else}}rocommunity{{end}} <COMMUNITY> {{.Address}}
 {{- else}}createUser {{.V3User}} {{.Auth.NetSNMP}} <AUTH-PASSPHRASE> {{.Priv.NetSNMP}} <PRIV-PASSPHRASE>
 rouser {{.V3User}} priv{{end}}
@@ -24,7 +25,7 @@ Some distributions want createUser in snmpd's persistent file (often /var/lib/sn
 {{end}}
 {{- if ne .AgentPort 161}}Port {{.AgentPort}} isn't SNMP's usual 161: give it in Woodshed's polling form too.
 {{end}}
-agentAddress replaces snmpd's default listening address; keep any other agentAddress entries you need on the same line, comma-separated.
+Edit the agentaddress line rather than adding a second one: snmpd joins every agentaddress line it reads, so the distribution's usual `agentaddress 127.0.0.1,[::1]` would stay, and two entries for port {{.AgentPort}} can stop snmpd from starting. The new line listens on every address, IPv4 and IPv6; to keep loopback-only addresses too, list them on the same line, comma-separated.
 Keep snmpd.conf readable by root only: it holds the {{if eq .Transport "v2c"}}community{{else}}passphrases{{end}}.
 {{end}}
 

@@ -10,13 +10,13 @@ placeholders:
 addresses: 192.0.2.20 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
 notes:
 - Reference only: not tested on a device; check your device's documentation.
-- The host command differs most between devices: some take `logging host 192.0.2.20` for UDP 514 alone, some write the transport as `udp/514` after the address or name the sending interface before it, and some use a `logging server` command instead.
+- `logging host 192.0.2.20` alone sends over UDP to port 514 on most devices of this style.
 - `logging trap` sets the lowest severity sent to log hosts on many devices; others set it on the host line, or accept the number (6) instead of the keyword.
 - Turn on timestamps in the messages if the device offers it (with milliseconds and the time zone, where it can); Woodshed also keeps the time each message arrived.
----- part cli "": Enter in global configuration mode, then save the configuration
-logging host 192.0.2.20 transport udp port 514
+---- part cli "": Enter in global configuration mode, fill in the placeholders, then save the configuration
+logging host 192.0.2.20
 logging trap informational
 ==== text
-! Enter in global configuration mode, then save the configuration
-logging host 192.0.2.20 transport udp port 514
+! Enter in global configuration mode, fill in the placeholders, then save the configuration
+logging host 192.0.2.20
 logging trap informational

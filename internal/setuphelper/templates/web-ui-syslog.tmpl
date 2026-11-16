@@ -24,7 +24,7 @@ Message format: RFC 5424 if offered, otherwise the default
 {{define "notes"}}
 Field names differ between devices; some put the port into the address field as {{.HostPort}}.
 {{- if eq .Transport "tls"}}
-{{if .CASHA256}}Compare the CA fingerprint the device shows with {{.CASHA256}}. {{end}}If the device checks the server's name, use {{.TLSName}}{{if not .TLSNameKnown}}: a DNS name on Woodshed's certificate (Settings → TLS){{end}}; many check names only, not IP addresses.
+{{if .CASHA256}}Compare the CA fingerprint the device shows with {{.CASHA256}}. {{end}}If the device checks the server's name, use {{.TLSName}}{{if not .TLSNameKnown}} (it must be a DNS name on Woodshed's certificate; Settings → TLS lists them once TLS is on){{end}}; many check names only, not IP addresses.
 {{- end}}
 Pages that offer a "send a test message" button usually send it at once: watch the Dashboard.
 {{end}}

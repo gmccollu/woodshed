@@ -113,7 +113,7 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 						Errors: map[string]string{"agent_port": "must be 1 to 65535"}})
 					return
 				}
-				req.AgentPort = n
+				req.AgentPort = &n
 			}
 			snippet(w, r, req)
 		},

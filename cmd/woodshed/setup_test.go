@@ -35,7 +35,7 @@ func TestSetupSnippetCLI(t *testing.T) {
 	}
 	// --type is --what; the trap port comes from the config.
 	code, out, errOut = runCLI("setup", "snippet", "--config", cfg, "--family", "line-cli", "--type", "trap", "--source-interface", "Vlan10")
-	if code != 0 || !strings.Contains(out, "udp-port 10162") || !strings.Contains(out, "snmp-server trap-source Vlan10") ||
+	if code != 0 || !strings.Contains(out, "version 2c <COMMUNITY> <UDP-PORT-OPTION>") || !strings.Contains(errOut, "UDP port 10162") || !strings.Contains(out, "snmp-server trap-source Vlan10") ||
 		!strings.Contains(errOut, setuphelper.ReferenceOnlyNote) {
 		t.Errorf("line-cli trap: %d\n%s\n%s", code, out, errOut)
 	}
@@ -61,6 +61,7 @@ func TestSetupSnippetCLI(t *testing.T) {
 		{[]string{"--family", "rsyslog", "--what", "syslog", "--source-interface", "eth0"}, "--source-interface doesn't apply"},
 		{[]string{"--family", "nope", "--what", "syslog"}, "--family \"nope\" isn't a setup family"},
 		{[]string{"--family", "net-snmp", "--what", "poll", "--agent-port", "99999"}, "--agent-port must be"},
+		{[]string{"--family", "net-snmp", "--what", "poll", "--agent-port", "0"}, "--agent-port must be"},
 	} {
 		code, _, errOut := runCLI(append([]string{"setup", "snippet", "--config", cfg}, c.args...)...)
 		if code != 2 || !strings.Contains(errOut, c.want) {

@@ -11,7 +11,7 @@ verification: reference
 @@part cli - Enter in configuration mode, then commit
 {{- if eq .Transport "v2c"}}
 set snmp community <COMMUNITY> authorization read-only
-set snmp community <COMMUNITY> clients {{.Address}}/{{if .IsIPv6}}128{{else}}32{{end}}
+set snmp community <COMMUNITY> clients {{if .IsName}}<WOODSHED-IP>/32{{else}}{{.Address}}/{{if .IsIPv6}}128{{else}}32{{end}}{{end}}
 {{- else}}
 set snmp v3 usm local-engine user {{.V3User}} {{.Auth.Set}} authentication-password <AUTH-PASSPHRASE>
 set snmp v3 usm local-engine user {{.V3User}} {{.Priv.Set}} privacy-password <PRIV-PASSPHRASE>
@@ -23,7 +23,7 @@ commit
 {{end}}
 
 {{define "notes"}}
-{{if eq .Transport "v2c"}}{{if .IsName}}A client list usually takes addresses, not names: use the address Woodshed polls from.
+{{if eq .Transport "v2c"}}{{if .IsName}}A client list takes addresses, not names: <WOODSHED-IP> is the address Woodshed polls from ({{.Address}} resolves to it), /128 for IPv6.
 {{end}}{{else}}The statements follow the SNMPv3 access model (RFC 3415): the user joins a group, and the group may read a view. The keywords for each piece differ between devices.
 Add the same user in Woodshed: Settings → SNMP → v3 users, name {{.V3User}}, {{.Auth.Label}} and {{.Priv.Label}}, with the same passphrases.
 {{end}}

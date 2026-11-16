@@ -12,10 +12,10 @@ notes:
 - Reference only: not tested on a device; check your device's documentation.
 - <COMMUNITY> must be one Woodshed accepts: Settings → Listeners → SNMP traps lists the communities (an empty list accepts any).
 - `snmp-server enable traps` turns on every notification the device has on some devices, and only a default set on others; narrow it to what you need.
----- part cli "": Enter in global configuration mode, then save the configuration
+---- part cli "": Enter in global configuration mode, fill in the placeholders, then save the configuration
 snmp-server host 192.0.2.10 version 2c <COMMUNITY>
 snmp-server enable traps
 ==== text
-! Enter in global configuration mode, then save the configuration
+! Enter in global configuration mode, fill in the placeholders, then save the configuration
 snmp-server host 192.0.2.10 version 2c <COMMUNITY>
 snmp-server enable traps
