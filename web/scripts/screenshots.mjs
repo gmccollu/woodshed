@@ -1669,7 +1669,9 @@ const SHOTS = [
     clip: 'section[aria-labelledby="updates"]',
     act: `__btn('Check now').click();`,
     after: 3500,
-    check: `document.querySelector('section[aria-labelledby="updates"]').innerText.includes('OK, 1.1.0 is the latest (checked just now)')`,
+    // The mock answers 1.2 s after the click and the page says "just now" for 2 s, so by the time of the check it may
+    // read "2 s ago": accept either, as long as it's this check's result.
+    check: `/OK, 1\\.1\\.0 is the latest \\(checked (just now|[1-9] s ago)\\)/.test(document.querySelector('section[aria-labelledby="updates"]').innerText)`,
   },
   {
     name: 'settings-updates-failed-light',
@@ -2100,6 +2102,12 @@ const SHOTS = [
     name: 'poll-device-panel',
     url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',
     wait: 3000,
+    // The mock's flapping interface is eth3; whether it's among the 4 busiest of a 6 h window depends on the clock,
+    // so swap it in for the last charted one when it isn't (its up/down markers then show on every chart).
+    act: `const rows = [...document.querySelectorAll('tbody tr')]; const on = rows.filter((r) => r.classList.contains('on'));
+      const eth3 = rows.find((r) => r.querySelector('td:nth-child(2)')?.textContent.trim().startsWith('eth3'));
+      if (eth3 && !eth3.classList.contains('on')) { on[on.length - 1]?.click(); await __tick(); eth3.click(); }`,
+    after: 1500,
     check: `document.querySelectorAll('figure.chartcard').length === 5
       && [...document.querySelectorAll('figure.chartcard path')].filter((p) => p.getAttribute('d')).length === 13
       && document.querySelectorAll('figure.chartcard .mark.restart').length === 5
