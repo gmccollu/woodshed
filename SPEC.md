@@ -2909,9 +2909,12 @@ the first bench, which records the measured numbers here:
       | 150,000/s, 1 exporter | 23.0 → 1.5 MiB (38.6 → 13.8) | 9.6 → 0.3 MiB | — | 3,802 → 16 MiB |
       | 150,000/s, 50 exporters | 135 → 49 MiB (343 → 106) | 114 → 1.0 MiB (263 → 0.9) | 587 → 218 B | 147 GB → 221 MiB |
 
-      Closing one dense segment (1,000 blocks of 34 KB headers, a 34 MB footer): 166 → 0.7 MiB. Ceilings: the hour's
-      peak within 216 bytes a directory entry (×1.25) plus 24 MiB, at most 300 bytes kept a block, under 8 MiB at
-      the hour mark (`TestWriterHourHeapBounded`), and 8 MiB for a 136 MB footer's close (`TestCloseHeapBounded`).
+      Closing one dense segment (1,000 blocks of 34 KB headers, a 34 MB footer): 166 → 0.7 MiB. Ceilings, on what
+      doesn't depend on how far the collector lags a starved CPU (the sampled peak over 50 exporters was 121 MiB on
+      one core against 49 on many, the same 37.5 MiB live): the live heap within the directories' 216 bytes a block
+      (×1.25) plus 8 MiB, allocation within 2 KiB a block plus 320 KiB a part, at most 300 bytes kept a block, and
+      under 8 MiB at the hour mark (`TestWriterHourHeapBounded`); 8 MiB of heap and of allocation for a 136 MB
+      footer's close (`TestCloseHeapBounded`).
       Each exporter's open block (a record's 466 bytes in memory, under FlowOpenBytesCap) is outside these: 1.4 MiB
       at 3,000 records a second, 23–29 MiB for a full 50,000–65,536-record block.
   - A 150,000 records/s burst for 10 s: all 1,500,000 stored, nothing dropped by the queue, 0.33 of a core.
