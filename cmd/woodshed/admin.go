@@ -225,6 +225,7 @@ reached.`, stderr)
 		statusTLSRows(w, cfg, &rs)
 		statusSNMPRows(w, cfg, &rs)
 		statusPollRows(w, cfg, &rs, time.Now())
+		statusFlowRows(w, &rs)
 		w.row("Data", cfg.Storage.DataDir)
 		if cfgErr == nil {
 			updateRows(w, cfg, rs.Version)

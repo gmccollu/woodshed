@@ -68,6 +68,8 @@ func init() {
 		{"tls", cmdTLS},
 		{"snmp", cmdSNMP},
 		{"poll", cmdPoll},
+		{"flow", cmdFlow},
+		{"flows", cmdFlows},
 		{"update-check", cmdUpdateCheck},
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},

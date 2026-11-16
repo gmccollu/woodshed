@@ -348,6 +348,11 @@ func (b *backend) fillRunState(rs *RunState) {
 	rs.TLS = b.runStateTLS(cfg)
 	rs.SNMP = b.runStateSNMP(cfg)
 	rs.Poll = b.runStatePoll()
+	if b.flows != nil {
+		if fs, err := b.FlowState(ctx); err == nil && (fs.Enabled || fs.Budget.UsedBytes > 0 || len(fs.Exporters) > 0) {
+			rs.Flows = &fs
+		}
+	}
 }
 
 // udpBufferMin is the UDP receive buffer below which a burst is likely to

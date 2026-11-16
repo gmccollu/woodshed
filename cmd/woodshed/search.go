@@ -84,6 +84,8 @@ type searchFlags struct {
 	count, json, raw                   bool
 	config, data                       string
 	set                                map[string]bool // flags given on the command line
+	// flow is the flow filter flags (--src, --dst-port, …) by parameter.
+	flow map[string]*string
 }
 
 const searchDesc = `
@@ -124,6 +126,13 @@ Examples:
   woodshed search --from "2026-11-14 08:00" --to "2026-11-14 09:00" --json | jq .raw
   woodshed search --field host=edge-fw-01 --not-field severity=7 --count
   woodshed search --type poll --field kind=restart --last 7d   restarts and reboots seen by polls
+  woodshed search --type flow --src 10.20.0.0/16 --dst-port 443 --last 1h   flows, one CSV row each
+
+Flows (--type flow) have no text: QUERY and --exclude are refused; filter with
+--src, --dst, --ip, --port, --proto and the other flow flags (or --field), which
+take what /api/search's flow parameters take. Rows are the bundle's flows.csv
+columns after the device, oldest flow end first; --json prints the /api/search
+results; --count counts.
 
 Exit status: 0 when something matched, 1 when nothing did, 2 for a usage or query
 error, 3 when the data folder can't be read, 4 when there's no data folder or
@@ -161,6 +170,7 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&f.raw, "raw", false, "print only each message, unescaped")
 	fs.StringVar(&f.config, "config", config.DefaultConfigPath(), "config `file` that names the data folder")
 	fs.StringVar(&f.data, "data", "", "data `folder` to search (instead of the config's)")
+	f.flow = flowFilterFlags(fs.FlagSet)
 	usageErr := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "woodshed search: "+format+"\n", a...)
 		return exitUsage
@@ -218,6 +228,9 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 	// compare the index files afterwards and say so if one did.
 	indexPath := filepath.Join(dataDir, index.FileName)
 	before := index.StateOf(indexPath)
+	if req.Type == datatype.Flow {
+		return flowSearch(stdout, stderr, &f, req, dataDir, idx, indexPath, before)
+	}
 
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn,
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
@@ -336,6 +349,14 @@ var paramFlags = map[string]string{
 	"type": "--type", "q": "QUERY", "exclude": "--exclude", "syntax": "--terms", "regex": "--regex", "case": "--case",
 }
 
+func init() {
+	for _, p := range datatype.FlowFilterParams {
+		if _, ok := paramFlags[p]; !ok {
+			paramFlags[p] = "--" + strings.ReplaceAll(p, "_", "-")
+		}
+	}
+}
+
 // values builds the /api/search parameters of the flags (SPEC §11.4: they mean
 // exactly what those parameters mean), checking each one so a message names
 // the flag it came from.
@@ -404,6 +425,11 @@ func (f *searchFlags) values(now time.Time, loc *time.Location) (url.Values, err
 	}
 	set("group", f.group)
 	set("order", f.order)
+	for param, val := range f.flow {
+		if *val != "" {
+			add(param, "--"+strings.ReplaceAll(param, "_", "-"), strings.Split(*val, ",")...)
+		}
+	}
 	for param, val := range map[string]string{"devices": f.devices, "exclude_devices": f.excludeDevices, "severities": f.severities,
 		"facilities": f.facilities, "app": f.app, "exclude_app": f.excludeApp, "host": f.host, "exclude_host": f.excludeHost} {
 		if val != "" {
@@ -538,6 +564,22 @@ func (f *searchFlags) values(now time.Time, loc *time.Location) (url.Values, err
 		return nil, err
 	}
 	return v, nil
+}
+
+// flowFilterFlags registers a flag for each flow filter parameter: src as
+// --src, dst_port as --dst-port.
+func flowFilterFlags(fs *flag.FlagSet) map[string]*string {
+	out := map[string]*string{}
+	for _, p := range datatype.FlowFilterParams {
+		name := strings.ReplaceAll(p, "_", "-")
+		if fs.Lookup(name) != nil {
+			continue
+		}
+		v := new(string)
+		fs.StringVar(v, name, "", "flows: the "+p+" filter (`values`, comma-separated)")
+		out[p] = v
+	}
+	return out
 }
 
 func findType(name string) *search.TypeSchema {

@@ -359,7 +359,7 @@ func (b *backend) flowQuery(ctx context.Context, r api.SearchRequest) (flowquery
 	if err != nil {
 		return flowquery.Query{}, &api.RequestError{Msg: err.Error()}
 	}
-	return flowquery.Query{DeviceIDs: devs, From: from, To: to, Filter: f}, nil
+	return flowquery.Query{DeviceIDs: devs, From: from, To: to, Filter: f, DefaultRange: r.From.IsZero() && r.To.IsZero()}, nil
 }
 
 func flowErr(err error) error {
@@ -393,10 +393,11 @@ func (b *backend) FlowTop(ctx context.Context, r api.FlowTopRequest) (api.FlowTo
 	if err != nil {
 		return api.FlowTopPage{}, flowErr(err)
 	}
-	return toAPITop(r.By, r.Metric, q, res, time.Since(start)), nil
+	return ToAPITop(r.By, r.Metric, q, res, time.Since(start)), nil
 }
 
-func toAPITop(by, metric string, q flowquery.Query, res flowquery.TopResult, took time.Duration) api.FlowTopPage {
+// ToAPITop is a top-N result as /api/flows/top shows it (`woodshed flows top` too).
+func ToAPITop(by, metric string, q flowquery.Query, res flowquery.TopResult, took time.Duration) api.FlowTopPage {
 	t := res.Total
 	page := api.FlowTopPage{By: by, Metric: metric, From: q.From, To: q.To, Approx: res.Approx, Partial: res.Partial,
 		NextCursor: res.Cursor, Progress: toAPIProgress(res.Progress), ElapsedMS: took.Milliseconds(),

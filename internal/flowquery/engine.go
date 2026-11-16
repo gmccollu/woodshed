@@ -93,6 +93,10 @@ type Query struct {
 	DeviceIDs []string // nil: every device
 	From, To  time.Time
 	Filter    *Filter // nil: everything
+	// DefaultRange says From and To were filled in from "now" (the request
+	// named neither): a continuation keeps the first request's range rather
+	// than a cursor mismatch.
+	DefaultRange bool
 }
 
 func (q *Query) filter() *Filter {
@@ -104,7 +108,11 @@ func (q *Query) filter() *Filter {
 
 // key is the query's identity, for cursors.
 func (q *Query) key(extra ...any) string {
-	b, _ := json.Marshal(append([]any{q.DeviceIDs, q.From.UnixMilli(), q.To.UnixMilli(), q.Filter}, extra...))
+	from, to := q.From.UnixMilli(), q.To.UnixMilli()
+	if q.DefaultRange {
+		from, to = 0, 0
+	}
+	b, _ := json.Marshal(append([]any{q.DeviceIDs, from, to, q.Filter}, extra...))
 	return string(b)
 }
 
@@ -550,8 +558,9 @@ type SearchResult struct {
 
 // searchCursor resumes after a key.
 type searchCursor struct {
-	Key   hitKey `json:"k"`
-	Query string `json:"q"`
+	Key      hitKey `json:"k"`
+	Query    string `json:"q"`
+	From, To int64  `json:"f,omitempty"` // the first page's range (unix ms)
 }
 
 // Search returns up to limit records, newest first by flow end (asc: oldest
@@ -566,6 +575,9 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 			return SearchResult{}, ErrCursor
 		}
 		after = &c.Key
+		if q.DefaultRange && c.To != 0 {
+			q.From, q.To = time.UnixMilli(c.From).UTC(), time.UnixMilli(c.To).UTC()
+		}
 	}
 	p, err := e.planFor(ctx, &q, asc)
 	if err != nil {
@@ -658,7 +670,7 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 	case complete && len(ps) < limit:
 		// The window is exhausted.
 	case len(res.Hits) == limit:
-		res.Cursor = encodeCursor(keyOfHit(&res.Hits[len(res.Hits)-1]), qk)
+		res.Cursor = encodeCursor(keyOfHit(&res.Hits[len(res.Hits)-1]), qk, &q)
 	default:
 		// Out of budget: what's certain, and a cursor past every block read.
 		res.Partial = true
@@ -671,13 +683,13 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		default:
 			k = hitKey{End: bound + 1, Dev: "\U0010ffff"}
 		}
-		res.Cursor = encodeCursor(k, qk)
+		res.Cursor = encodeCursor(k, qk, &q)
 	}
 	return res, nil
 }
 
-func encodeCursor(k hitKey, qk string) string {
-	b, _ := json.Marshal(searchCursor{Key: k, Query: hash(qk)})
+func encodeCursor(k hitKey, qk string, q *Query) string {
+	b, _ := json.Marshal(searchCursor{Key: k, Query: hash(qk), From: q.From.UnixMilli(), To: q.To.UnixMilli()})
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
