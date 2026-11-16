@@ -358,6 +358,17 @@ func TestSNMPUsersAPI(t *testing.T) {
 	if bytes.Contains(raw, []byte(pass)) {
 		t.Fatal("a passphrase in the list")
 	}
+	// A GET -> PUT round trip of the object as GET returns it (read-only fields included) is accepted.
+	for _, got := range list {
+		var back api.SNMPUser
+		if code := r.do(t, "PUT", "/api/snmp/users/"+got.Name, got, &back); code != 200 || back.Name != got.Name || back.Level != got.Level {
+			t.Errorf("round trip of %s: %d %+v", got.Name, code, back)
+		}
+	}
+	// An unknown field is still refused.
+	if code := r.do(t, "PUT", "/api/snmp/users/ops", map[string]any{"auth": "sha", "lvl": "x"}, nil); code != 400 {
+		t.Errorf("unknown field: %d, want 400", code)
+	}
 	if code := r.do(t, "DELETE", "/api/snmp/users/ops", nil, nil); code != 204 {
 		t.Fatalf("delete %d", code)
 	}

@@ -76,6 +76,12 @@ func TestTLSCommandLinux(t *testing.T) {
 		t.Error("the CLI made a key file")
 	}
 
+	// status names what tls on opened, not the generic "open the port" hint.
+	if _, sout, _ := runCLI("tls", "status", "--config", cfgPath); !strings.Contains(sout, "opened by woodshed tls on: ufw 6514/tcp") ||
+		strings.Contains(sout, "if devices can't connect") {
+		t.Errorf("status after on: %q", sout)
+	}
+
 	code, out, _ = runCLI("tls", "off", "--config", cfgPath)
 	if code != 0 || !strings.Contains(out, "Turned syslog over TLS off") || !strings.Contains(out, "losed 6514/tcp in ufw") {
 		t.Fatalf("off: %d %q", code, out)

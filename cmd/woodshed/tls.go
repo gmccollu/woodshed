@@ -267,9 +267,20 @@ func tlsStatus(stdout io.Writer, cfg config.Config) {
 	}
 	tlsRows(w, t)
 	if fwOS == "linux" {
-		w.row("Firewall", "if devices can't connect, open the port:")
-		for _, line := range strings.Split(strings.TrimRight(fwrule.LinuxCommands(l.Port), "\n"), "\n") {
-			w.row("", strings.TrimSpace(line))
+		if rec, err := fwrule.LinuxOpened(cfg.Storage.DataDir); err == nil && (len(rec.Ufw) > 0 || len(rec.Firewalld) > 0) {
+			var opened []string
+			for _, e := range rec.Ufw {
+				opened = append(opened, "ufw "+e)
+			}
+			for _, e := range rec.Firewalld {
+				opened = append(opened, "firewalld "+e)
+			}
+			w.row("Firewall", "opened by woodshed tls on: "+strings.Join(opened, ", "))
+		} else {
+			w.row("Firewall", "if devices can't connect, open the port:")
+			for _, line := range strings.Split(strings.TrimRight(fwrule.LinuxCommands(l.Port), "\n"), "\n") {
+				w.row("", strings.TrimSpace(line))
+			}
 		}
 	}
 	if fwOS == "windows" {
@@ -311,6 +322,6 @@ func tlsRows(w *tabw, t *server.RunStateTLS) {
 		if i == 0 {
 			label = "TLS fails"
 		}
-		w.row(label, fmt.Sprintf("%s: %s, %d in 24 h, last %s", f.IP, f.Reason, f.Count24h, f.LastSeen.Local().Format("2006-01-02 15:04")))
+		w.row(label, fmt.Sprintf("%s: %s, %d in 24 h, last %s", f.IP, f.Reason, f.Count24h, f.LastSeen.UTC().Format("2006-01-02 15:04 UTC")))
 	}
 }

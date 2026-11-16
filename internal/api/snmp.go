@@ -129,6 +129,15 @@ type SNMPUserInput struct {
 	PrivPass  string   `json:"priv_pass"`
 	KeyExt    string   `json:"key_ext"`
 	EngineIDs []string `json:"engine_ids"`
+
+	// The read-only fields of GET's SNMPUser, accepted and ignored, so a GET → PUT round trip of the object works
+	// (unknown fields are still refused).
+	Level    string   `json:"level,omitempty"`
+	AuthSet  *bool    `json:"auth_set,omitempty"`
+	PrivSet  *bool    `json:"priv_set,omitempty"`
+	Stored   string   `json:"stored,omitempty"`
+	Readable *bool    `json:"readable,omitempty"`
+	Weak     []string `json:"weak,omitempty"`
 }
 
 // MaxSNMPFailures caps GET /api/snmp/failures.
