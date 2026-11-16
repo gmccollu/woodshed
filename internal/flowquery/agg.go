@@ -702,7 +702,7 @@ type ssItem[K comparable] struct {
 	// uncounted: those adding nothing to the metric aren't sketched) may be
 	// missing from its other counts. Never exact.
 	late bool
-	idx int
+	idx  int
 }
 
 type ssTable[K comparable] struct {
