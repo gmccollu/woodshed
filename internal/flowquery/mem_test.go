@@ -519,31 +519,34 @@ func writeHours(t *testing.T, start time.Time, hours, exporters, blocks int) *En
 	return New(Options{DataDir: dir, Index: idx})
 }
 
-// A week over 50 exporters (8,400 segments): the plan streams the window, so
-// a top-N's and a search's peak heap is the same with 4 times the blocks,
-// and far under the query ceiling (SPEC §13.10 decision 56). At one block a
-// second a real week is 30 million blocks: the old plan's 64 bytes each
-// would have been 1.9 GB, before the segments' directories.
+// A week over 50 exporters (8,400 segments of 60 blocks): the plan streams
+// the window, so a top-N's and a search's peak heap over the week is about
+// its peak over the week's last day, 7 times fewer blocks, and far under the
+// query ceiling (SPEC §13.10 decision 56). The batches are the same shape
+// either way (a batch's size depends on the segments, not the window), so
+// the comparison holds on a starved CPU too. At one block a second a real
+// week is 30 million blocks: the old plan's 64 bytes each would have been
+// 1.9 GB, before the segments' directories.
 func TestWeekPlanBounded(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("short or race: writes 8,400 segments")
 	}
-	const exporters = 50
+	const exporters, blocks = 50, 60
+	e, week := writeWeek(t, exporters, blocks)
 	var peaks []uint64
-	for _, blocks := range []int{15, 60} {
-		e, week := writeWeek(t, exporters, blocks)
-		q := Query{From: week, To: week.Add(7 * 24 * time.Hour)}
+	for _, days := range []int{1, 7} {
+		q := Query{From: week.Add(time.Duration(7-days) * 24 * time.Hour), To: week.Add(7 * 24 * time.Hour)}
 		var top TopResult
 		var err error
 		peak, _ := peakDuring(func() { top, err = e.Top(bg, q, "src", "flows", 10, time.Hour, "") })
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := int64(exporters * 7 * 24 * blocks * 2)
-		if top.Partial || top.Total.Flows != want || top.Progress.RecordsDone != want || top.Progress.BlocksDone != int64(exporters*7*24*blocks) {
-			t.Fatalf("%d blocks: partial %v flows %d (want %d) progress %+v", blocks, top.Partial, top.Total.Flows, want, top.Progress)
+		want := int64(exporters * days * 24 * blocks * 2)
+		if top.Partial || top.Total.Flows != want || top.Progress.RecordsDone != want || top.Progress.BlocksDone != int64(exporters*days*24*blocks) {
+			t.Fatalf("%d days: partial %v flows %d (want %d) progress %+v", days, top.Partial, top.Total.Flows, want, top.Progress)
 		}
-		// A search's pages walk the week newest first; the first and a later one.
+		// A search's pages walk the window newest first; the first and a later one.
 		var sres SearchResult
 		speak, _ := peakDuring(func() { sres, err = e.Search(bg, q, 500, false, "", time.Hour) })
 		if err != nil || len(sres.Hits) != 500 || sres.Cursor == "" {
@@ -560,15 +563,18 @@ func TestWeekPlanBounded(t *testing.T) {
 		if err != nil || c != want || len(n) != exporters {
 			t.Fatalf("count %d (want %d) devices %d: %v", c, want, len(n), err)
 		}
-		t.Logf("%d exporters, a week, %d blocks a segment (%d blocks): top peak %.1f MiB, search peak %.1f MiB",
-			exporters, blocks, exporters*7*24*blocks, float64(peak)/(1<<20), float64(speak)/(1<<20))
+		t.Logf("%d exporters, %d days of %d-block segments (%d blocks): top peak %.1f MiB, search peak %.1f MiB",
+			exporters, days, blocks, exporters*days*24*blocks, float64(peak)/(1<<20), float64(speak)/(1<<20))
 		peaks = append(peaks, max(peak, speak))
 		if p := max(peak, speak); p > 192<<20 {
 			t.Fatalf("peak %.1f MiB over the ceiling", float64(p)/(1<<20))
 		}
+		if u := e.pool.Used(); u != 0 {
+			t.Fatalf("pool used %d after the queries", u)
+		}
 	}
 	if d := int64(peaks[1]) - int64(peaks[0]); d > 16<<20 {
-		t.Fatalf("4 times the blocks grew the peak by %.1f MiB", float64(d)/(1<<20))
+		t.Fatalf("7 times the blocks grew the peak by %.1f MiB", float64(d)/(1<<20))
 	}
 }
 

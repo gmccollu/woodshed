@@ -2894,8 +2894,9 @@ the first bench, which records the measured numbers here:
     1,000,000 keys.
   - **Plans and the writer (build, 2026-11-16, fourth and fifth rounds;** decisions 56 and 57; peak heap measured by
     the tests on the build machine):
-    - A week over 50 exporters (8,400 segments; 126,000 and 504,000 blocks): a top-N 10–23 MiB, a search page
-      6–16 MiB (`TestWeekPlanBounded`, ceiling 192 MiB, and 4 times the blocks may not add 16 MiB). A minute's
+    - A week over 50 exporters (8,400 segments of 60 blocks, 504,000 blocks): a top-N 23 MiB, a search page 16 MiB,
+      against 20 and 16 MiB over its last day, 7 times fewer blocks (`TestWeekPlanBounded`, ceiling 192 MiB, and the
+      week may not add 16 MiB; batches are the same shape either way, so it holds beside CPU burners too). A minute's
       window over 300 exporters' 3,600-block segments: 579 MiB → 19 MiB over closed segments, 730 → 21 MiB over open
       ones (`TestNarrowWindowPlanBounded`, ceiling 64 MiB).
     - The writer over an hour of ingest (`internal/flowseg/hourmem_test.go`: a simulated store, real headers of
