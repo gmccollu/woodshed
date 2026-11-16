@@ -28,6 +28,7 @@ import (
 //     an event time. Interface names from options data.
 //   - rtDev, a router (delta counters): domain 1 sampled 1 in 100, domain 2
 //     unsampled, biflow reverse counters on some, an enterprise extra.
+//
 // Records arrive every 15 s from 23:30 to 00:20 UTC, and fwDev has two raw
 // sets (one no_template, one malformed) at 23:55.
 var (
@@ -542,4 +543,6 @@ func TestFlowHumanUnits(t *testing.T) {
 	}
 }
 
-func createFile(p string) (*os.File, error) { return os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) }
+func createFile(p string) (*os.File, error) {
+	return os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+}
