@@ -191,7 +191,7 @@ func TestTopConversationsPeakHeap(t *testing.T) {
 		var res TopResult
 		var err error
 		peak, base := peakDuring(func() {
-			res, err = e.Top(context.Background(), q, "conversation", "bytes", 100, time.Minute, "")
+			res, err = e.Top(context.Background(), q, "conversation", "bytes", 100, time.Hour, "") // complete even on a starved CPU
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -298,7 +298,7 @@ func TestTopExactAcrossWorkers(t *testing.T) {
 	for i := range ref {
 		want.Add(&ref[i])
 	}
-	res, err := e.Top(bg, hourQuery(), "src", "bytes", 50, time.Minute, "")
+	res, err := e.Top(bg, hourQuery(), "src", "bytes", 50, time.Hour, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,23 +348,23 @@ func TestPoolSharedAndSavedStatesEvicted(t *testing.T) {
 		t.Fatal("the saved state holds no pool bytes")
 	}
 	// A second query over every key fills the pool: the saved state goes.
-	second, err := e.Top(bg, hourQuery(), "conversation", "flows", 10, time.Minute, "")
+	second, err := e.Top(bg, hourQuery(), "conversation", "flows", 10, time.Hour, "")
 	if err != nil || second.Partial {
 		t.Fatalf("second: %v partial %v", err, second.Partial)
 	}
 	if !second.Approx || second.ErrorBound <= 0 {
 		t.Fatalf("second: a 24 MiB pool can't hold 400,000 conversations exactly; approx %v bound %d", second.Approx, second.ErrorBound)
 	}
-	if _, err := e.Top(bg, hourQuery(), "src", "flows", 10, time.Minute, first.Cursor); err != ErrExpired {
+	if _, err := e.Top(bg, hourQuery(), "src", "flows", 10, time.Hour, first.Cursor); err != ErrExpired {
 		t.Fatalf("the evicted cursor: %v, want ErrExpired", err)
 	}
 	if u := e.pool.Used(); u != 0 {
 		t.Fatalf("pool used %d with no query running or saved", u)
 	}
 	// A summary's values come from the same pool: capped, flagged, returned.
-	sum, err := e.Summary(bg, hourQuery(), SummaryQuery{Fields: []string{"src", "dst"}, Top: 5}, time.Minute, "")
-	if err != nil {
-		t.Fatal(err)
+	sum, err := e.Summary(bg, hourQuery(), SummaryQuery{Fields: []string{"src", "dst"}, Top: 5}, time.Hour, "")
+	if err != nil || sum.Partial {
+		t.Fatalf("summary: %v partial %v", err, sum.Partial)
 	}
 	if !sum.Fields[0].DistinctCapped || sum.Fields[0].Distinct > MaxDistinct || sum.Fields[1].Distinct != 3 {
 		t.Fatalf("summary src %d capped %v, dst %d", sum.Fields[0].Distinct, sum.Fields[0].DistinctCapped, sum.Fields[1].Distinct)
@@ -388,7 +388,7 @@ func TestConcurrentTopsShareWorkers(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			by := []string{"src", "dst", "conversation", "dst_port"}[g%4]
-			res, err := e.Top(bg, hourQuery(), by, "flows", 5, time.Minute, "")
+			res, err := e.Top(bg, hourQuery(), by, "flows", 5, time.Hour, "")
 			if err == nil && (res.Total.Flows != n || len(res.Rows) == 0) {
 				err = fmt.Errorf("%s: total %d rows %d", by, res.Total.Flows, len(res.Rows))
 			}
