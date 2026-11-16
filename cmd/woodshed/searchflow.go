@@ -19,9 +19,8 @@ import (
 )
 
 // `woodshed search --type flow` (SPEC §13.7): the flow engine over the data
-// folder, read-only. The open hour's segment has no footer until it closes,
-// so a search beside the running service sees closed segments only; it says
-// so when the window reaches into the current hour.
+// folder, read-only. Beside the running service, the hour it's still writing
+// is read up to its last complete block (about a second behind).
 
 // flowEngine is the flow query engine over a data folder, without a store
 // (no open segments).
@@ -151,10 +150,6 @@ func flowSearch(stdout, stderr io.Writer, f *searchFlags, req api.SearchRequest,
 			s += " (interrupted)"
 		}
 		fmt.Fprintln(stderr, s)
-	}
-	if to.After(searchNow().Truncate(time.Hour)) {
-		fmt.Fprintln(stderr, "note: the current hour's flows are in a segment the service is still writing; they're searchable "+
-			"from the UI or the API now, and here once the hour ends.")
 	}
 	if idx.Immutable() && index.StateOf(indexPath) != before {
 		fmt.Fprintln(stderr, "warning: Woodshed started writing while this search ran; results may be incomplete. Run it again.")

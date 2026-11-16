@@ -137,6 +137,19 @@ type planned struct {
 type segRef struct {
 	DeviceID, Rel, Path string
 	snap                *flowseg.Footer // nil: a closed segment
+	live                bool            // another process is writing it (OpenLive)
+}
+
+// openSeg opens a segment that has no snapshot: closed through its footer,
+// else (still being written, by another process) read-only up to its last
+// complete block.
+func openSeg(path string) (*flowseg.Reader, bool, error) {
+	r, err := flowseg.Open(path)
+	if errors.Is(err, flowseg.ErrNoFooter) {
+		r, err = flowseg.OpenLive(path)
+		return r, true, err
+	}
+	return r, false, err
 }
 
 type plan struct {
@@ -182,12 +195,11 @@ func (e *Engine) planFor(ctx context.Context, q *Query, asc bool) (*plan, error)
 			continue
 		}
 		path := filepath.Join(e.o.DataDir, filepath.FromSlash(r.Path))
-		rd, err := flowseg.Open(path)
+		rd, live, err := openSeg(path)
 		if err != nil {
-			// Deleted by retention since, or still open without a snapshot.
-			continue
+			continue // deleted by retention since
 		}
-		add(segRef{DeviceID: r.DeviceID, Rel: r.Path, Path: path}, rd.Footer())
+		add(segRef{DeviceID: r.DeviceID, Rel: r.Path, Path: path, live: live}, rd.Footer())
 		rd.Close()
 	}
 	for rel, os := range open {
@@ -237,9 +249,12 @@ func (r *readers) get(si int) (*flowseg.Reader, error) {
 	s := r.p.segs[si]
 	var rd *flowseg.Reader
 	var err error
-	if s.snap != nil {
+	switch {
+	case s.snap != nil:
 		rd, err = flowseg.OpenSnapshot(s.Path, s.snap)
-	} else {
+	case s.live:
+		rd, err = flowseg.OpenLive(s.Path)
+	default:
 		rd, err = flowseg.Open(s.Path)
 	}
 	if err != nil {
@@ -799,7 +814,7 @@ func (e *Engine) Raw(ctx context.Context, q Query, fn func(deviceID string, rs *
 	}
 	from, to := q.From.UnixMilli(), q.To.UnixMilli()
 	for _, s := range segs {
-		rd, err := flowseg.Open(filepath.Join(e.o.DataDir, filepath.FromSlash(s.Path)))
+		rd, _, err := openSeg(filepath.Join(e.o.DataDir, filepath.FromSlash(s.Path)))
 		if err != nil {
 			continue
 		}
