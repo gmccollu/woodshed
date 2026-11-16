@@ -3257,9 +3257,10 @@ Made while building it, each **decided (build, 2026-11-16)**:
       3,000 a second make 1.16 parts an exporter-hour (8 early parts an hour in all), 300 at 500 a second make 4.15
       (945 early parts an hour). An hour stays one part up to about 43 exporters at one block a second.
     - Tested (`TestFlowDirBudget`): 300 exporters for 10 simulated minutes under a third of their uncapped
-      directories. The total never passes the budget by more than a block an exporter, live heap grows 20.5 MiB
-      (ceiling: the budget, 24 KiB an exporter and 8 MiB), and every record is read exactly once from the parts' files,
-      the index, a query and a reindex; a bundle over budget-rolled parts is checked in `internal/export`.
+      directories. The total never passes the budget by more than a block an exporter, live heap grows 20–28 MiB
+      (ceiling: the budget, 24 KiB an exporter and 16 MiB; uncapped would be about 45), and every record is read
+      exactly once from the parts' files, the index, a query and a reindex; a bundle over budget-rolled parts is
+      checked in `internal/export`.
 59. **Left open (flagged):** an open segment's snapshot still copies 472 bytes a block per query that reaches it
     (bounded by the part limit and the plan's batch). Sharing the writer's append-only entries without a copy is the
     follow-up if it shows up.
