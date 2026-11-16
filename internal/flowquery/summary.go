@@ -293,7 +293,9 @@ func (a *summaryAcc) merge(o *summaryAcc) {
 			y := x.vals[v]
 			if y == nil {
 				cost := int64(valueCost + len(v) + len(va.label))
-				if x.vals == nil || len(x.vals) >= MaxDistinct || a.pool == nil || !a.pool.reserve(cost) {
+				// Once a field turns a value away, it takes no new ones: a value
+				// taken later would miss its earlier counts.
+				if x.capped || x.vals == nil || len(x.vals) >= MaxDistinct || a.pool == nil || !a.pool.reserve(cost) {
 					x.other += va.count
 					x.capped = true
 					continue

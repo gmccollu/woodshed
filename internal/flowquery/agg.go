@@ -513,7 +513,7 @@ func (a *agg[K]) rows(n int) []Row {
 		}
 		if sh.ss != nil {
 			for _, it := range sh.ss.items {
-				consider(it.k, &it.s, it.err, it.err > 0)
+				consider(it.k, &it.s, it.err, it.late)
 			}
 		}
 		sh.mu.Unlock()
@@ -698,6 +698,10 @@ type ssItem[K comparable] struct {
 	h   uint64
 	s   Sums
 	err int64 // the ranked metric's possible overestimate
+	// late: admitted once the table was full, so records before (some
+	// uncounted: those adding nothing to the metric aren't sketched) may be
+	// missing from its other counts. Never exact.
+	late bool
 	idx int
 }
 
@@ -803,7 +807,7 @@ func (t *ssTable[K]) add(k K, h uint64, s *Sums) bool {
 		return true // it can't outrank the lightest; its count is in the sketch
 	}
 	delete(t.pos, minIt.k)
-	minIt.k, minIt.h, minIt.s, minIt.err = k, h, *s, est
+	minIt.k, minIt.h, minIt.s, minIt.err, minIt.late = k, h, *s, est, true
 	minIt.s.addMetric(t.metric, est)
 	t.pos[k] = minIt
 	t.down(0)

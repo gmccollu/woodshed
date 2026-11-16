@@ -683,9 +683,9 @@ type TopResult struct {
 	Rows   []Row
 	Total  Sums
 	Approx bool
-	// ErrorBound: a key not in Rows has at most this of the metric beyond
-	// what the exact rows show (0 while exact); each approximate row has its
-	// own Err.
+	// ErrorBound: a key in neither table has at most this of the metric (0
+	// while exact); any key not in Rows has at most the larger of it and the
+	// last row's. Each approximate row has its own Err.
 	ErrorBound int64
 	Progress   Progress
 	Partial    bool

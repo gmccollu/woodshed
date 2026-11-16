@@ -385,8 +385,9 @@ type FlowTopPage struct {
 	Rows   []FlowTopRow `json:"rows"`
 	Other  FlowTopOther `json:"other"`
 	Approx bool         `json:"approx"`
-	// ErrorBound: past the exact limit, a key not in rows has at most this
-	// much of the metric (0 while exact).
+	// ErrorBound: past the exact limit, a key in neither table has at most
+	// this much of the metric (0 while exact); any key not in rows has at
+	// most the larger of it and the last row's value.
 	ErrorBound int64         `json:"error_bound"`
 	Progress   *FlowProgress `json:"progress"`
 	Partial    bool          `json:"partial"`

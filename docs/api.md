@@ -1264,7 +1264,8 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
   stay exact and new ones go to a fixed-size space-saving table with a count-min check. `approx` is then true, and:
   - a row from that table has `approx: true` and `max_error`. Its ranked metric is at most `max_error` over the true
     value, and its other counts cover only the records since the key entered the table;
-  - a key not in `rows` has at most `error_bound` of the metric.
+  - a key in neither table has at most `error_bound` of the metric, and any key not in `rows` has at most the larger
+    of `error_bound` and the last row's value.
 
   The totals stay exact.
 - A saved continuation holds its counts in the shared budget. When a new request needs room, the least recently used

@@ -134,7 +134,7 @@ func readFooterStream(fl io.ReaderAt, off, n int64, want uint32, size int64) (*F
 		return nil, false
 	}
 	// The blocks, one at a time.
-	f.Blocks = make([]BlockInfo, 0, nb)
+	f.Blocks = make([]BlockInfo, 0, min(nb, 4096)) // the count isn't CRC-checked yet
 	prevEnd := int64(0)
 	var hdr []byte
 	for i := uint64(0); i < nb; i++ {

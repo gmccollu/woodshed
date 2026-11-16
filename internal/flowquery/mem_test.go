@@ -409,3 +409,34 @@ func TestConcurrentTopsShareWorkers(t *testing.T) {
 		t.Fatalf("pool used %d after", u)
 	}
 }
+
+// A key that enters a full approximate table after records that added
+// nothing to the ranked metric (flow creates, for connections) isn't shown
+// as exact: its other counts may miss those records.
+func TestLateRowsAreApprox(t *testing.T) {
+	top, _ := NewTopWith("src", "connections", TopOptions{MaxKeys: 1, Small: true})
+	created := func(i int) *flow.Record {
+		return &flow.Record{Has: flow.HasSrc | flow.HasFwEvent, Src: addrN(i), FwEvent: flow.FwCreated, Sampling: 1}
+	}
+	// Fill every shard's table with keys of 0 connections.
+	for i := 0; i < 20_000; i++ {
+		top.Add(created(i))
+	}
+	late := 1 << 20
+	for j := 0; j < 50; j++ {
+		top.Add(created(late)) // 50 flows, no connection: turned away
+	}
+	top.Keys() // past the worker's combining cache
+	r := created(late)
+	r.FwEvent = flow.FwDeleted
+	top.Add(r) // its first connection: admitted
+	for _, row := range top.Rows(1 << 20) {
+		if row.Key == addrN(late).String() {
+			if !row.Approx || row.Flows != 1 { // the 50 earlier are missing, and the row says so
+				t.Fatalf("late row %+v: approx %v", row, row.Approx)
+			}
+			return
+		}
+	}
+	t.Fatal("the late key isn't listed")
+}
