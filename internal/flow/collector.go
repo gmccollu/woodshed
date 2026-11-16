@@ -174,7 +174,7 @@ func (e *exporter) count(at int64, c Counts) {
 	e.cmu.Unlock()
 }
 
-// Collector decodes NetFlow v5, v9 and IPFIX datagrams. Decode and Expire
+// Collector decodes flow v5, v9 and IPFIX datagrams. Decode and Expire
 // must be called from one goroutine; Stats, Templates and SetOptions are safe
 // from any.
 type Collector struct {

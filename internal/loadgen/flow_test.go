@@ -71,12 +71,12 @@ func decodeRun(t *testing.T, o FlowOptions, step time.Duration) (map[uint64]flow
 
 func TestFlowGenDecodes(t *testing.T) {
 	for _, o := range []FlowOptions{
-		{Proto: ProtoNetFlow5, Count: 95, RunID: "0a0b0c0d"},
-		{Proto: ProtoNetFlow5, Count: 60, Sampling: 100, RecordsPerPacket: 7},
-		{Proto: ProtoNetFlow9, Count: 200, Domains: 3, Sampling: 100, SampledDomains: 1, EnterpriseIEs: 2},
+		{Proto: ProtoFlowV5, Count: 95, RunID: "0a0b0c0d"},
+		{Proto: ProtoFlowV5, Count: 60, Sampling: 100, RecordsPerPacket: 7},
+		{Proto: ProtoFlowV9, Count: 200, Domains: 3, Sampling: 100, SampledDomains: 1, EnterpriseIEs: 2},
 		{Proto: ProtoIPFIX, Count: 300, Domains: 2, Sampling: 1000, TemplateEvery: 3},
 		{Proto: ProtoIPFIX, Count: 100, Biflow: true},
-		{Proto: ProtoNetFlow9, Count: 300, Events: true},
+		{Proto: ProtoFlowV9, Count: 300, Events: true},
 		{Proto: ProtoIPFIX, Count: 400, Events: true, DenyRatio: 0.3, Domains: 2},
 		{Proto: ProtoIPFIX, Count: 200, Events: true, Biflow: true},
 	} {
@@ -191,10 +191,10 @@ func TestFlowTemplateFirstDelay(t *testing.T) {
 
 func TestFlowOptionsErrors(t *testing.T) {
 	for _, o := range []FlowOptions{
-		{Proto: "netflow7"},
-		{Proto: ProtoNetFlow5, RecordsPerPacket: 31},
-		{Proto: ProtoNetFlow5, Events: true},
-		{Proto: ProtoNetFlow9, Biflow: true},
+		{Proto: "flow-v7"},
+		{Proto: ProtoFlowV5, RecordsPerPacket: 31},
+		{Proto: ProtoFlowV5, Events: true},
+		{Proto: ProtoFlowV9, Biflow: true},
 		{Proto: ProtoIPFIX, RunID: "xyz"},
 		{Proto: ProtoIPFIX, DenyRatio: 2},
 	} {

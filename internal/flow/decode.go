@@ -108,7 +108,7 @@ func allZero(b []byte) bool {
 	return true
 }
 
-// ---- NetFlow v5 ----
+// ---- flow v5 ----
 
 const (
 	v5Header = 24
@@ -210,7 +210,7 @@ func (e *exporter) nameIfs(r *Record, domain uint32, exact bool) {
 	}
 }
 
-// ---- NetFlow v9 and IPFIX ----
+// ---- flow v9 and IPFIX ----
 
 const (
 	v9Header    = 20

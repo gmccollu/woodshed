@@ -52,7 +52,7 @@ func fuzzCollector() *Collector {
 	return NewCollector(Options{PendingBytes: 64 << 10, PendingPerExporter: 16 << 10, MaxTemplates: 64, MaxTemplatesPerKey: 16})
 }
 
-func FuzzNetFlow5(f *testing.F) {
+func FuzzFlowV5(f *testing.F) {
 	f.Add(EncodeV5(V5Header{SysUptime: 9, UnixSecs: 1e9, SamplingInterval: 0x4064},
 		[]V5Record{{Src: ip("10.0.0.1"), Dst: ip("10.0.0.2"), First: 1, Last: 5}}))
 	f.Add([]byte{0, 5, 0, 30})
@@ -73,7 +73,7 @@ func seedV9() [][]byte {
 	return [][]byte{b.Message(Header{SysUptime: 10, ExportTime: 1e9, Seq: 1, Domain: 2})}
 }
 
-func FuzzNetFlow9(f *testing.F) {
+func FuzzFlowV9(f *testing.F) {
 	for _, s := range seedV9() {
 		f.Add(s, s)
 	}

@@ -3,7 +3,7 @@ package flow
 import "strconv"
 
 // Information Elements the decoders give columns or meaning to (the IANA IPFIX
-// registry; NetFlow v9 field types use the same numbers).
+// registry; flow v9 field types use the same numbers).
 const (
 	ieOctetDelta             = 1
 	iePacketDelta            = 2
@@ -152,7 +152,7 @@ var ieNames = map[uint16]string{
 	466: "natQuotaExceededEvent", 471: "maxSessionEntries", 472: "maxBIBEntries",
 }
 
-// v9ScopeNames are NetFlow v9's options scope field types (RFC 3954 §6.1).
+// v9ScopeNames are flow v9's options scope field types (RFC 3954 §6.1).
 var v9ScopeNames = map[uint16]string{1: "scopeSystem", 2: "scopeInterface", 3: "scopeLineCard", 4: "scopeCache",
 	5: "scopeTemplate"}
 

@@ -17,7 +17,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
-// `woodshed bench --proto ipfix|netflow9|netflow5` (SPEC §13.6, §13.8): the
+// `woodshed bench --proto ipfix|flow-v9|flow-v5` (SPEC §13.6, §13.8): the
 // flow bench, with the sender in a child process (`woodshed send`) so the
 // CPU measured is the pipeline's.
 
@@ -50,7 +50,7 @@ pipeline's CPU (cores), peak memory and the bytes per stored record. It doesn't
 touch a running Woodshed or its data.
 
 Exit status: 0 when every record arrived exactly once, 1 otherwise.`, stderr)
-	proto := fs.String("proto", "ipfix", "`protocol`: ipfix, netflow9 or netflow5")
+	proto := fs.String("proto", "ipfix", "`protocol`: ipfix, flow-v9 or flow-v5")
 	rate := fs.Float64("rate", 50000, "target `records` per second")
 	duration := fs.Duration("duration", 30*time.Second, "how long to send (a `duration` such as 30s or 10m)")
 	rpp := fs.Int("records-per-packet", 30, "records per `packet`")
