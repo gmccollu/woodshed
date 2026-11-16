@@ -2893,7 +2893,7 @@ the first bench, which records the measured numbers here:
     Exact keys cost 131 bytes for a conversation, 115 for an address and 99 for a port, checked against the heap up to
     1,000,000 keys.
   - **Plans and the writer (build, 2026-11-16, fourth and fifth rounds;** decisions 56 and 57; peak heap measured by
-    the tests, the same M4 Pro):
+    the tests on the build machine):
     - A week over 50 exporters (8,400 segments; 126,000 and 504,000 blocks): a top-N 23–30 MiB, a search page
       16–24 MiB (`TestWeekPlanBounded`, ceiling 192 MiB, and 4 times the blocks may not add 16 MiB). A minute's
       window over 300 exporters' 3,600-block segments: 579 MiB → 15 MiB over closed segments, 730 → 28 MiB over open
@@ -3190,20 +3190,29 @@ Made while building it, each **decided (build, 2026-11-16)**:
 
 56. **A query's plan streams the window** (`internal/flowquery/plan.go`):
     - Segments come from the index a page at a time (256 rows, `FlowSegmentsPage`: newest end first, or lowest start
-      first ascending) and load a batch at a time, sorted within the batch. A batch stops at **16,384 directory
+      first ascending, each a range on an `(end, path)` or `(start, path)` index) and load a batch at a time, sorted
+      within the batch. A batch stops at **16,384 directory
       entries loaded or 256 segments**, always a whole segment: every block and raw chunk of a loaded segment counts,
       in the window or not, since its footer (or snapshot) holds them all, and a segment counts one more for itself.
       Counting only the window's blocks let a minute over 300 exporters' hour segments load 273 of them a batch
       (579 MiB closed, 730 MiB open; 15 and 28 MiB now), and raw-only segments without limit. A closed segment with
       nothing in the window closes its file as soon as it's planned; the others hold one until their blocks are read.
+    - A batch's bytes (472 a directory entry, 64 a planned block) are charged to decision 51's 128 MiB pool until the
+      next batch, or until the query or its saved state ends, so saved continuations' plans count with the tables. A
+      segment the pool can't fit (after dropping saved states) ends the batch, charged anyway: one segment over at most.
+    - **Open segments are listed once, when the plan starts, and never come from the pages**: the store moves an open
+      segment's row on every flush, so a row could jump past the page cursor and be missed, or land during the plan
+      and be read twice. Descending they load first (any end); ascending at their indexed start less an hour (read by
+      path; unindexed: first). The pages skip their rows.
     - `complete_from` and a search page's certainty are the bound of everything unread: the batch's next block and
-      the next segment (an open segment the index lists late: any end, or its indexed start less an hour, ascending).
-      A search page past its budget reads on until that bound passes its cursor, so pages always progress.
+      the next segment, an unread open one included. A search page past its budget reads on until that bound passes
+      its cursor, so pages always progress; segments behind a cursor are skipped in a loop.
     - Progress counts the index's records until a segment loads, then its exact rows.
     - Open segments are listed without their snapshots (`store.OpenFlowList`); a plan takes each when its batch
       reaches it (472 bytes a block, at most 3.9 MiB at the part limit), and one closed since is read from its file.
       `OpenSnapshot` doesn't copy the snapshot's block list.
-    - `Each` (exports) goes a device at a time with its own plan; Count streams batches.
+    - `Each` (exports) goes a device at a time with its own plan; Count streams batches. `Raw` (a bundle's raw.txt)
+      pages the window's raw-holding segments, 256 rows at a time.
 
 *Fifth round, writer memory (build, 2026-11-16):*
 
