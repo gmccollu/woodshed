@@ -3061,7 +3061,10 @@ Made while building it, each **decided (build, 2026-11-16)**:
     (flows by default) with `bytes` and `bytes_scaled` beside; field values are filter values (protocols by name,
     ports as numbers labelled `tcp/443`).
 37. `GET /api/flows/templates?device=` lists an exporter's cached templates with IE names, for Settings → Flows.
-    `/api/context` refuses a flow ref. Bundles' active devices count a flow segment by its received range.
+    `/api/context` refuses a flow ref. Bundles' active devices are exact for flows: each candidate segment's blocks
+    prove or rule out the window by their received bounds, and only a block straddling an edge has its received
+    column decoded (then the raw sets), so the cost is a footer read per segment and usually one or two block decodes (late-decoded records can make
+    more blocks straddle an edge).
 38. In JSON bodies (saved searches, exports) the flow filters are top-level lists; `status` is shared with the trap
     lists' key. A parameter two types share is each one's own (`CheckParams`); messages say "flows".
 39. `woodshed search --type flow` prints the bundle CSV's columns after a device column, oldest flow end first; the
