@@ -1166,12 +1166,13 @@ in a `###` heading or after a label, never at the start of a line in the usual "
 **Settings:** `/api/settings` gains `listeners.flow` and `storage.flow_budget_bytes`:
 ```json
 {"listeners": {"flow": {"enabled": false, "addr": "0.0.0.0", "netflow_port": 2055, "ipfix_port": 4739,
-                        "template_timeout": "30m"}},
+                        "template_timeout": "30m", "rule_id_ies": []}},
  "storage": {"flow_budget_bytes": 0}}
 ```
 - Shown here as fragments of the settings object. `netflow_port` / `ipfix_port`: 0 (off) or 1–65535, not shared with
   another UDP listener on an overlapping address; at least one non-zero while enabled. `template_timeout` 1 min to
-  24 h.
+  24 h. `rule_id_ies`: up to 8 `"<enterprise number>:<element ID>"` strings naming the IEs that carry a rule or ACL
+  identifier (there's no standard one; SPEC §13.2.1); the first one a record has fills `rule_id`.
 - `flow_budget_bytes`: 0 means 40 % of `storage.retention_bytes`; otherwise at least 1 GiB and at most 90 % of it
   (a `400` on the key otherwise). File-only: `listeners.flow.pending_bytes`, `queue_messages`, `queue_bytes`.
 - `/api/status.listeners` gains `{"proto": "netflow", …}` and `{"proto": "ipfix", …}` entries while enabled.
@@ -1198,6 +1199,10 @@ in a `###` heading or after a label, never at the start of a line in the usual "
 - `in_if`, `out_if` and excludes: interface indexes or names (from the exporter's options data).
 - `domain`: observation domain or source IDs. `tcp_flags`: any of `fin,syn,rst,psh,ack,urg,ece,cwr`.
   `sampled`: `yes`, `no`, `unknown`. `status`: `ok`, `late`, `no_template`, `malformed`.
+- Firewall events and NAT (SPEC §13.2.1): `fw_event` (`created`, `deleted`, `denied`, `alert`, `update`, or 0–255),
+  `nat_event` (registry names or numbers), `post_nat_src`, `post_nat_dst`, `post_nat_ip` and their `exclude_` forms
+  (addresses or prefixes), `post_nat_src_port`, `post_nat_dst_port`, `rule_id` and `exclude_rule_id`. `ip_any`
+  matches pre- or post-NAT addresses on either side.
 - `from` / `to` are flow time: a record matches when its start-to-end overlaps the range.
 
 **Results** (`/api/search?type=flow`):
@@ -1208,22 +1213,29 @@ in a `###` heading or after a label, never at the start of a line in the usual "
             "tcp_flags": "SAPF", "packets": 1840, "bytes": 2210444, "sampling": 1000,
             "packets_scaled": 1840000, "bytes_scaled": 2210444000,
             "in_if": 3, "in_if_name": "eth3", "out_if": 1, "out_if_name": "eth1", "domain": 1,
+            "fw_event": "deleted", "nat_event": "nat44_session_delete", "event_time": null,
+            "post_nat_src": "192.0.2.10", "post_nat_src_port": 40112, "post_nat_dst": "198.51.100.7", "post_nat_dst_port": 443,
+            "initiator_bytes": null, "responder_bytes": null, "initiator_packets": null, "responder_packets": null,
+            "rev_bytes": null, "rev_packets": null, "rule_id": "",
             "tos": 0, "src_as": 0, "dst_as": 0, "next_hop": "", "time_source": "exporter", "status": "ok", "late": false,
             "extras": [{"pen": 32473, "id": 1, "hex": "0a0b"}]}}
 ```
+- Columns a record doesn't have are `null` (`rule_id` is `""`). An event with only an event time has `start` and
+  `end` equal to `event_time`.
 - `sampling` is `1` (unsampled), N (1 in N) or `0` (unknown); `packets_scaled` and `bytes_scaled` are `null` when it's
   `0`. There's no `raw`. `/api/context` isn't available for flows (`400`).
 - The order is by flow end, newest first (`order=asc` for oldest first). Paging, the budget and the cursor work as for
   search; `partial` responses also carry `progress` (below).
 
 **Summary:** `/api/search/summary?type=flow` uses the flow fields (`proto`, `dst_port`, `src_port`, `src`, `dst`,
-`in_if`, `out_if`, `domain`, `sampled`, `status`); each value's `count` is flows, plus `bytes` and `bytes_scaled`. The
+`in_if`, `out_if`, `fw_event`, `nat_event`, `rule_id`, `domain`, `sampled`, `status`); each value's `count` is flows, plus `bytes` and `bytes_scaled`. The
 histogram's `source` is `index` (from `flow_minute`) when unfiltered, with a `metric` parameter (`flows`, `bytes`,
 `packets`; default `flows`). Instead of `counted_from`, a partial flow summary carries `progress`.
 
 ### Top-N: `GET /api/flows/top`
 Parameters: the flow filters, the range, the device selection, plus `by` (`src`, `dst`, `conversation`, `dst_port`,
-`src_port`, `proto`, `in_if`, `out_if`), `metric` (`bytes` default, `packets`, `flows`), `top` (10, at most 100),
+`src_port`, `proto`, `in_if`, `out_if`, `post_nat_src`, `post_nat_dst`, `fw_event`, `rule_id`), `metric` (`bytes`
+default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), `top` (10, at most 100),
 `budget_ms` (2,000, at most 10,000) and `cursor`.
 ```json
 {"by": "src", "metric": "bytes", "from": "2026-11-16T09:00:00Z", "to": "2026-11-16T10:00:00Z",
@@ -1242,6 +1254,8 @@ Parameters: the flow filters, the range, the device selection, plus `by` (`src`,
   `"tcp/443"`; for interfaces the index, with the name as `label`.
 - `share` is of the metric's exported total. `scaled_complete` is false when some records had unknown sampling; a row
   whose records include any is a lower bound (`scaled_lower_bound: true`, shown with "≥").
+- "Top denied sources" is `by=src&fw_event=denied`. Totals follow SPEC §13.2.1's no-double-count rule for event
+  records; `connections` counts `deleted` and `denied` events for event-style exporters.
 - `approx` is true when more than 1,000,000 distinct keys switched the count to a space-saving top-K.
 - `progress.complete_from`: every block whose flows end after it has been read. A continuation with `next_cursor`
   returns running totals, not deltas.
@@ -1254,13 +1268,15 @@ the busiest, then `more`): `{"devices": [{"device_id", "points": [{"start", "byt
 ### Exports and bundles
 - `types` may include `"flow"`; `kind: "bundle"` includes it by default when there are flows in the window.
 - `flow_formats`: `["csv", "ipfix"]` (default), `["csv"]` or `["ipfix"]`.
-- The zip gets `flows/<device-id>/flows.csv` (the columns in SPEC §13.4), `flows.ipfix` (RFC 5655) and `raw.txt` when
+- The zip gets `flows/<device-id>/flows.csv` (the columns in SPEC §13.4, the event, NAT and biflow ones included), `flows.ipfix` (RFC 5655) and `raw.txt` when
   there are raw sets; `"folders"` gains `"flows": "flow"`.
 - `/api/exports/estimate` gains `"by_type": {"syslog": {"lines", "bytes"}, "flow": {"records", "bytes"}, …}`. More than
   20,000,000 flow records for one device is a `400` at estimate and at build: "Too many flow records for one zip
   (24,113,002 for 10.1.0.1); narrow the window or add a flow filter."
 - A bundle's manifest `summary` entries gain `"flow": {"records", "domains", "sampling", "bytes", "bytes_scaled",
   "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
+  "fw_events": {"created", "deleted", "denied"}, "top_denied_sources": [{"key", "count"}], "top_denied_ports": [...],
+  "nat_connections", "top_post_nat_sources": [...],
   "sequence_gaps", "lost_estimate", "no_template", "malformed"}`.
 
 ### Setup helper

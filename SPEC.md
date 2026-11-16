@@ -399,6 +399,10 @@ Designed in §13.
   one manifest.
 - Device setup helper (generated logging, trap and flow-export config per vendor).
 
+### After 2.0 (candidates)
+- **sFlow** as a fifth data type: packet samples and counter samples, which many switches export instead of
+  NetFlow or IPFIX (§13.11).
+
 ### Out of scope
 - SIEM features: correlation rules, threat detection, compliance reporting, case management.
 - Full network monitoring: discovery, topology, general-purpose SNMP polling (beyond the 1.3 poller's small set),
@@ -2621,8 +2625,14 @@ folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 
      as bytes);
    - packets and bytes: varints;
    - `sampling`, `template` (an index into the segment's template table), `exporter_domain`, `late`: run-length;
+   - **firewall-event, NAT and bidirectional columns** (§13.2.1): addresses like the other addresses, ports and
+     event codes as varints, counters as varints, times like the other times;
    - **extras:** a length-prefixed TLV list per record for every IE without a column, enterprise-specific ones
      included.
+   - **Mostly empty columns cost about nothing:** each column has a presence bitmap, run-length encoded, and stores
+     values only for the records that have one. A column that's empty for the whole block isn't written at all (the
+     block's column directory leaves it out), so a plain-flow exporter pays nothing for the event and NAT columns,
+     and an event-only exporter pays a few bytes per block for the counters it never sends.
 3. **Block index** (in each block header, and repeated in the footer): a 256-bit protocol bitmap, the distinct input
    and output interfaces (a list up to 64, else a Bloom filter), and a Bloom filter (about 1 % false positives) over
    the record's source and destination addresses, their /24 and /48 prefixes, and its ports. A query skips a block
@@ -2632,6 +2642,48 @@ folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 
    interface names) in force, so a segment decodes and exports on its own.
 6. **Footer:** the block directory and the segment's totals (records, bytes, packets, time ranges), then the footer's
    length and CRC. Written when the segment closes (the hour ends, the part limit, a clean stop).
+
+#### 13.2.1 Firewall events, NAT and bidirectional flows
+A troubleshooting collector's main flow sources include firewalls exporting **event-style** NetFlow v9 and IPFIX:
+one record when a connection is created, one when it's torn down, and one for each denied connection, with the NAT
+translation. Their fields get **first-class columns and filters**, not extras, decided (coordinator, 2026-11-16,
+owner-delegated), using the standard IANA IEs (checked against the IANA IPFIX registry, 2026-11-16). NetFlow v9
+templates that use the same field type numbers are read the same way.
+
+| Column | IANA IE | Notes |
+|---|---|---|
+| `fw_event` | `firewallEvent` (233) | 1 created, 2 deleted, 3 denied, 4 alert, 5 update; 0 is invalid and stored as given |
+| `nat_event` | `natEvent` (230) | the registry's values (NAT44 and NAT64 session create and delete, addresses exhausted, …), shown by name |
+| `post_nat_src`, `post_nat_dst` | `postNATSourceIPv4Address` (225), `postNATDestinationIPv4Address` (226), `postNATSourceIPv6Address` (281), `postNATDestinationIPv6Address` (282) | one column each for IPv4 and IPv6 |
+| `post_nat_src_port`, `post_nat_dst_port` | `postNAPTSourceTransportPort` (227), `postNAPTDestinationTransportPort` (228) | |
+| `start`, `end` | `flowStartMilliseconds` (152), `flowEndMilliseconds` (153) | also the other start and end IEs (§13.1.1) |
+| `event_time` | `observationTimeMilliseconds` (323) | the time an event was observed |
+| `in_if`, `out_if` | `ingressInterface` (10), `egressInterface` (14) | as for every flow |
+| `initiator_bytes`, `responder_bytes`, `initiator_packets`, `responder_packets` | `initiatorOctets` (231), `responderOctets` (232), `initiatorPackets` (298), `responderPackets` (299) | what event-style exporters often send instead of one-direction deltas |
+| `rev_bytes`, `rev_packets` | RFC 5103's reverse IEs (enterprise number 29305 with the forward IE's ID: reverse `octetDeltaCount`, `packetDeltaCount`, and their total-count forms) | the reverse direction of a biflow |
+| `rule_id` | none standard (below) | from an IE the user names |
+
+- **No standard IE carries an ACL or rule identifier.** The IANA registry has none (checked 2026-11-16); exporters
+  that send one use enterprise-specific IEs. So `rule_id` is filled from IEs listed in
+  `listeners.flow.rule_id_ies` (`["<enterprise number>:<element ID>", …]`, the first present wins; empty by default),
+  and stays in extras otherwise. The setup helper and the docs say how to find the IE in an exporter's template (the
+  Flows tab lists each exporter's template fields).
+- **Event records work with flow time.** A record with only an event time (`observationTimeMilliseconds`, or a v9
+  event timestamp field) gets `start = end = event_time`, so it matches every window containing that moment, sorts
+  by it, and falls in that minute of `flow_minute`. A record with no time at all uses its received time
+  (`time_source=received`).
+- **Counting bytes without double counting.** Delta counters (`octetDeltaCount`, `packetDeltaCount`) add up as
+  usual. A record carrying only totals (`octetTotalCount`, or the initiator and responder counts) adds them only on
+  its final record: a `deleted` event (2), or a non-event record. `created` (1), `update` (5) and `denied` (3) records
+  keep their counts in their columns but add nothing to sums, since a teardown repeats them. The `flows` metric
+  counts records; `connections` (Top and the README) counts `deleted` plus `denied` events for event-style
+  exporters, and records for the others.
+- **Deny events are filterable and in Top:** `fw_event=denied` (and the other names), `nat_event`, `post_nat_*` and
+  `rule_id` are filters (§13.3), Top can rank denied events (`by=src` with `fw_event=denied` is "top denied sources";
+  `by=rule_id` and `by=fw_event` too), and the Events Top panel has a **Denied** view: top denied sources,
+  destinations, destination ports and rules.
+- Biflow counters add to the conversation view: `conversation` sums `bytes` plus `rev_bytes` (or initiator plus
+  responder) for both directions.
 
 **Durability and recovery:**
 - Blocks are flushed every 1 s (or at 65,536 records) and fsynced on the store's 5 s schedule, so a crash loses at
@@ -2690,17 +2742,25 @@ trap type's and the poll type's filters are a 400 with it, and the reverse):
 - `in_if`, `out_if`: interface indexes or names from the options data, with excludes;
 - `domain`: exporter observation domain or source ID; `tcp_flags` (any of `syn,fin,rst,…`); `sampled` (`yes`,
   `no`, `unknown`); `status` (`ok`, `late`, `no_template`, `malformed`).
+- Firewall-event and NAT filters (§13.2.1): `fw_event` (`created`, `deleted`, `denied`, `alert`, `update`, or
+  numbers), `nat_event` (names or numbers), `post_nat_src`, `post_nat_dst`, `post_nat_ip` (addresses or prefixes,
+  with excludes), `post_nat_src_port`, `post_nat_dst_port`, and `rule_id` (with `exclude_rule_id`). `src` and `dst`
+  match the pre-NAT addresses; `ip_any` matches pre- or post-NAT on either side.
 - `q` is a 400 for flows (`q: flows have no text; use src, dst, ip, port or proto.`): they have no free text to match.
 
 **Results:** flow records, newest first by flow end (or `order=asc`), with the same budget, cursor and partial rules
 as `/api/search`: `{"received", "device_id", "type": "flow", "ref", "fields": {start, end, src, dst, src_port,
 dst_port, proto, tcp_flags, packets, bytes, packets_scaled, bytes_scaled, sampling, in_if, out_if, in_if_name,
-out_if_name, domain, time_source, status, extras}}`. There's no `raw`: a record isn't a line.
+out_if_name, domain, fw_event, nat_event, event_time, post_nat_src, post_nat_dst, post_nat_src_port,
+post_nat_dst_port, initiator_bytes, responder_bytes, initiator_packets, responder_packets, rev_bytes, rev_packets,
+rule_id, time_source, status, extras}}`. There's no `raw`: a record isn't a line.
 
 **Top-N:** `GET /api/flows/top` for a window and filter:
 - `by`: `src` (top talkers), `dst`, `conversation` (the unordered address pair, both directions summed),
-  `dst_port` (with protocol: `tcp/443`), `src_port`, `proto`, `in_if`, `out_if`;
-- `metric`: `bytes` (default), `packets` or `flows`; `top` 10 by default, at most 100;
+  `dst_port` (with protocol: `tcp/443`), `src_port`, `proto`, `in_if`, `out_if`, `post_nat_src`, `post_nat_dst`,
+  `fw_event`, `rule_id`;
+- `metric`: `bytes` (default), `packets`, `flows` or `connections` (§13.2.1); `top` 10 by default, at most 100. With
+  `fw_event=denied` the default metric is `flows` (denied events carry no bytes);
 - each row has the exported count, the scaled count (when every record behind it has a known sampling rate; with
   some unknown, the scaled value is a lower bound marked `≥`), its share of the window's total, and `first`/`last`
   flow times.
@@ -2721,9 +2781,10 @@ touch, and the flow-time span fully read (`complete_from`: every block ending af
 **Events:**
 - A **Flows** tab (`type=flow`), shown when the flow listener is on or flow segments exist: the results table (time,
   exporter, src → dst, ports, protocol, packets, bytes, both counts when sampled), the field panel (from the schema:
-  `proto`, `dst_port`, `src_port`, `src`, `dst`, `in_if`, `out_if`, `domain`, `sampled`, `status`; values count
-  flows, with bytes beside them), the histogram (flows or bytes per bucket, from `flow_minute` when unfiltered), and a
-  **Top** panel (talkers, destination ports, conversations), each value clickable into a filter.
+  `proto`, `dst_port`, `src_port`, `src`, `dst`, `in_if`, `out_if`, `fw_event`, `nat_event`, `rule_id`, `domain`,
+  `sampled`, `status`; values count flows, with bytes beside them), the histogram (flows or bytes per bucket, from
+  `flow_minute` when unfiltered), and a **Top** panel (talkers, destination ports, conversations, and **Denied**: top
+  denied sources, destinations, ports and rules), each value clickable into a filter.
 - On the other tabs, a **flow strip** under the histogram for the selected devices that export flows: bytes per
   second exported (and scaled), from `flow_minute`, on the same bucket edges as the poll strips (§12.5); at most 4
   devices.
@@ -2736,7 +2797,8 @@ for a plain export stays `["syslog"]` (§13.9). One zip, one manifest, one folde
 
 **Flows in the zip,** for each device, decided (coordinator, 2026-11-16, owner-delegated):
 - `flows/<device>/flows.csv`: one row per record in the window, columns
-  `start,end,src,src_port,dst,dst_port,proto,tcp_flags,packets,bytes,sampling,packets_scaled,bytes_scaled,in_if,in_if_name,out_if,out_if_name,domain,tos,src_as,dst_as,next_hop,time_source,status,received`,
+  `start,end,event_time,src,src_port,dst,dst_port,proto,tcp_flags,packets,bytes,sampling,packets_scaled,bytes_scaled,in_if,in_if_name,out_if,out_if_name,domain,fw_event,nat_event,post_nat_src,post_nat_src_port,post_nat_dst,post_nat_dst_port,initiator_bytes,responder_bytes,initiator_packets,responder_packets,rev_bytes,rev_packets,rule_id,tos,src_as,dst_as,next_hop,time_source,status,received`
+  (`fw_event` and `nat_event` by name),
   RFC 4180 with CRLF, times RFC 3339 UTC with milliseconds, `proto` as a number, `tcp_flags` as letters (`SAF`), empty
   cells for "not reported". Extras (enterprise IEs) aren't in the CSV.
 - `flows/<device>/flows.ipfix`: an IPFIX file (RFC 5655): the same records re-encoded as IPFIX messages, one
@@ -2748,8 +2810,9 @@ for a plain export stays `["syslog"]` (§13.9). One zip, one manifest, one folde
   `flow_formats` (`["csv"]`, `["ipfix"]` or both) picks one; the CSV compresses well inside the zip.
 - `flows/<device>/raw.txt`: the window's raw sets and malformed packets (§13.1.3), base64, one per line, when there
   are any.
-- The size estimate (`/api/exports/estimate`) gives the flow records and bytes separately, and the UI offers "Leave
-  flows out" when they're more than 80 % of the estimate. A zip holds at most 20 million flow records per device; past
+- The size estimate (`/api/exports/estimate`) gives the flow records and bytes separately, and the UI always offers
+  **Leave flows out** before building, pre-selected for a window over 4 h whose flows are estimated above 1 GB
+  (§13.11). A zip holds at most 20 million flow records per device; past
   that the export fails with a message to narrow the window or filter (`400` at estimate time).
 
 **README per device** gains a Flows block:
@@ -2759,6 +2822,9 @@ for a plain export stays `["syslog"]` (§13.9). One zip, one manifest, one folde
                  top talkers by bytes: 10.20.0.5 31 %, 10.20.0.9 12 %, 192.0.2.44 7 %
                  top destination ports: tcp/443 54 %, udp/53 9 %, tcp/22 4 %
                  top conversations: 10.20.0.5 ↔ 198.51.100.7 22 %
+                 firewall events: 48,210 created, 47,902 deleted, 3,114 denied
+                 top denied sources: 203.0.113.50 1,920, 198.51.100.23 411; top denied ports: tcp/23 1,204, tcp/445 870
+                 NAT: 41,377 translated connections; top post-NAT sources: 192.0.2.10 88 %
                  sequence gaps 3 (≈ 90 records lost before Woodshed); waiting for a template 0; malformed 0
 ```
 and the manifest's summary gains the same numbers as JSON.
@@ -2837,6 +2903,14 @@ the first bench, which records the measured numbers here:
   (16 bits each). Flags: `--rate` (records/s), `--records-per-packet`, `--domains`, `--sampling N`,
   `--template-every N`, `--template-first-delay` (to test pending data), `--enterprise-ies`. `woodshed bench --proto
   ipfix` measures ingest in-process.
+- **`--events`** (v9 and IPFIX): an event-style generator, because no open-source exporter emits firewall events.
+  It sends, per simulated connection, a `created` record, an optional `update`, and a `deleted` record with
+  initiator and responder totals, plus a share of `denied` records (`--deny-ratio`, default 0.1) with only an event
+  time; every record carries the `firewallEvent`, `natEvent`, post-NAT address and port, ingress and egress interface,
+  `observationTimeMilliseconds` and `flowStart`/`flowEndMilliseconds` IEs as a firewall would, a rule ID in an
+  enterprise IE (for `rule_id_ies`), and the sequence IE. `--biflow` sends RFC 5103 reverse counters instead. CI checks
+  every column, the deny filters, "top denied sources", the no-double-count rule and the CSV; the lab runs it from
+  the namespace senders at the rates below.
 - **End to end:** syslog, traps, a polled test agent and IPFIX from `woodshed send` into the real binary; a flow
   search, top-N, the Flows tab's summary, CLI search and top, and a bundle around a chosen time: its `flows/` CSV and
   IPFIX file hold exactly the generator's records in the window (by sequence number), the README's top talkers match
@@ -2866,7 +2940,7 @@ the first bench, which records the measured numbers here:
   relies on. Woodshed gains a second, binary on-disk format next to the plain text files (§1's "plain text files any
   tool can read" now has an exception, documented, with CSV and IPFIX exports as the readable form), and with flows
   on, what retention deletes first changes (the flow budget). Downgrading to 1.x loses access to flows. Nothing a 1.x
-  client or script does stops working. (Whether that merits a major version or a 1.4 is §13.11's first question.)
+  client or script does stops working. That's why it's 2.0 (§13.11).
 
 ### 13.10 Decisions for 2.0
 **Owner (§9):** the 2.0 scope: the collector on UDP 2055 and 4739, templates per exporter and domain, compact
@@ -2900,16 +2974,22 @@ Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
 17. The major version is a milestone and an operator-visible change (the binary format, the flow budget), not an API
     break (§13.9).
 
-### 13.11 Open questions (2.0)
-1. Is 2.0 the right number, given that nothing in the API breaks, or should this ship as 1.4?
-2. sFlow: many switches export only sFlow. It's a different protocol (packet samples, not flows); in scope for 2.x
-   as a fifth type, or out?
-3. Bidirectional flows (RFC 5103 reverse IEs) and NAT address IEs are kept as extras: should they get columns (and
-   filters) in 2.0, since firewalls commonly export them?
-4. The flow budget default (40 % of the cap): right for a site whose main evidence is syslog, or too generous?
-5. The setup helper's syntax families: is the list of six enough to start, and who lab-checks the CLI families?
-6. Should the bundle include flows by default for long windows (24 h), where they can dominate the zip, or only up to
-   a window length?
+### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
+1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
+   justify a major version even with an additive API (§13.9).
+2. **sFlow isn't in 2.0.** It's on the after-2.0 list as a candidate fifth type (§9).
+3. **Firewall-event, NAT and bidirectional fields are first-class columns and filters** (§13.2.1), with the standard
+   IANA IEs, event records on flow time, deny events in filters and Top, the CSV and README columns, and an
+   event-style generator for CI and the lab (§13.8). There's no standard rule-ID IE; `rule_id` comes from an IE the
+   user names.
+4. **The flow budget** stays at 40 % of the cap by default, configurable (`storage.flow_budget_bytes`).
+5. **The six setup families are enough for 2.0.** The CLI families stay **Reference only** until they're verified on
+   gear the project is allowed to use, and the page says so next to each one: "Reference only: not tested on a
+   device; check your device's documentation." Nothing is labelled **Tested** without a CI test that applies it, and
+   the deny-list test also fails a template marked Tested that no CI test names.
+6. **Flows are in bundles by default.** Before building, the bundle shows the per-type estimate and a **Leave flows
+   out** option; the 20 million records per device cap applies. For a window over 4 h whose flows are estimated above
+   1 GB, the UI pre-selects **Leave flows out** (the user can clear it).
 
 ## 14. Open questions
 1. Where the repo lives. The answer given was the internal GHE, which conflicts with "open source on
