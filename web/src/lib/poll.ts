@@ -122,9 +122,10 @@ export interface PollMarker {
   /** Restarts: "1" a reboot, "0" the agent only, "?" can't tell. */
   reboot?: '1' | '0' | '?' | (string & {});
   detail: string;
-  /** Oper markers: the interface and its new status. Not in docs/api.md yet; detail says it too. */
+  /** Oper markers: the interface, its new status and the one before (docs/api.md); detail says it too. */
   if?: string;
   oper?: string;
+  was?: string;
 }
 export interface PollSeriesResponse {
   device_id: string;
@@ -180,6 +181,8 @@ export interface PollDevicePanel {
   /** The 4 busiest in the range: the default chart set. */
   charted: string[];
   interfaces_left_out: number;
+  /** Restarts and every interface's oper changes in the range, charted or not (docs/api.md, at most 100). */
+  markers: PollMarker[];
 }
 
 export interface PollSettings {
@@ -330,7 +333,10 @@ export function markerTitle(m: PollMarker, name?: string): string {
   }
   if (m.kind === 'oper') {
     const what = m.if && m.oper ? `${m.if} ${m.oper}` : m.detail;
-    return `${who}${what || 'interface status changed'}${m.if && m.oper && m.detail && m.detail !== what ? ` (${m.detail})` : ''}`;
+    // The server's detail is already "eth3 down (was up)": use it as it is rather than repeat the change.
+    if (m.detail && what && m.detail.startsWith(what)) return `${who}${m.detail}`;
+    const was = m.was ? ` (was ${m.was})` : '';
+    return `${who}${what || 'interface status changed'}${was}${m.if && m.oper && m.detail && m.detail !== what && !was ? ` (${m.detail})` : ''}`;
   }
   return `${who}${m.kind}${m.detail ? `: ${m.detail}` : ''}`;
 }

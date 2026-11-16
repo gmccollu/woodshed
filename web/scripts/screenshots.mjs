@@ -33,6 +33,8 @@ const H_JS = `
     el.dispatchEvent(new Event('input', { bubbles: true }));
   };
   window.__tick = () => new Promise((r) => setTimeout(r, 120));
+  // Waits (up to 5 s) for f() to return something, and returns it: for an element a page renders after its data loads.
+  window.__until = async (f, ms = 5000) => { const t0 = Date.now(); let v; while (!(v = f()) && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 50)); return v; };
   // Shows only the card with this id on the Settings page, so a long page's section fits one shot.
   window.__only = (id) => document.querySelectorAll('section.card').forEach((c) => { if (c.id !== id) c.style.display = 'none'; });
   window.__field = (label) => [...document.querySelectorAll('label')].find((l) => l.textContent.trim().startsWith(label))?.querySelector('input,textarea');
@@ -2019,7 +2021,7 @@ const SHOTS = [
     name: 'bundle-export-around',
     url: '/?mock_panel=0#/export',
     wait: 1500,
-    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click();`,
+    act: `(await __until(() => [...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time'))).click();`,
     after: 2000,
     check: `document.body.innerText.includes('15 min / 5 min') && document.body.innerText.includes('24 h / 1 h') && !!__btn('Custom')
       && /Up to [\\d,]+ lines/.test(document.querySelector('[data-bundle-estimate]').innerText) && !!__btn('Preview in Events')
@@ -2032,8 +2034,8 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/export',
     wait: 1500,
-    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
-      __btn('Custom').click(); await __tick();
+    act: `(await __until(() => [...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time'))).click(); await __tick();
+      (await __until(() => __btn('Custom'))).click(); await __tick();
       const ins = document.querySelectorAll('input.dur'); __set(ins[0], '2 h'); __set(ins[1], '0');`,
     after: 1500,
     report: `window.__woodshedMock.lastExportBody`,
@@ -2046,8 +2048,8 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/export',
     wait: 1500,
-    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
-      [...document.querySelectorAll('[aria-label="Type the time in"] button')].find((b) => b.textContent === 'UTC').click(); await __tick();
+    act: `(await __until(() => [...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time'))).click(); await __tick();
+      (await __until(() => [...document.querySelectorAll('[aria-label="Type the time in"] button')].find((b) => b.textContent === 'UTC'))).click(); await __tick();
       window.__day = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
       const set = (el, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v); el.dispatchEvent(new Event('change', { bubbles: true })); };
       set(document.querySelector('input[type=date]'), window.__day); await __tick();
@@ -2065,7 +2067,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/export',
     wait: 1500,
-    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
+    act: `(await __until(() => [...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time'))).click(); await __tick();
       __btn('4 h / 1 h').click(); await new Promise((r) => setTimeout(r, 800)); __btn('Preview in Events').click();`,
     after: 3500,
     check: `location.hash.startsWith('#/events?') && new URLSearchParams(location.hash.split('?')[1]).get('bb') === '4h'
@@ -2100,16 +2102,35 @@ const SHOTS = [
       && !document.querySelector('#exq') && document.querySelector('li[data-id]').innerText.includes('Syslog, SNMP traps, SNMP polls and flows')`,
   },
   // 1.3: the SNMP poller (SPEC §12.5). `npm run screenshots -- poll` takes only these.
+  // Every interface's up/down, charted or not (a 1.3 fix): the mock's eth5 went down 3 h ago and, with no
+  // traffic, is never in the default chart set. Its change is in the list and on every chart, and the
+  // list's "Chart eth5" puts it on the interface chart.
+  ...both({
+    name: 'poll-device-changes',
+    url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',
+    wait: 3000,
+    clip: 'section[aria-labelledby="poll-h"]',
+    check: `(() => { const items = [...document.querySelectorAll('ul.changes li')].map((li) => li.textContent);
+      return items.some((t) => t.includes('eth5 down') && t.includes('not charted')) && items.some((t) => t.includes('rebooted'))
+        && [...document.querySelectorAll('figure.chartcard')].some((f) => f.textContent.includes('Memory used') && f.querySelector('.caption')?.textContent.includes('page cache'))
+        && !!__btn('Chart eth5') && [...document.querySelectorAll('figure.chartcard')].every((f) => f.querySelector('.mark.oper'))
+        && ![...document.querySelectorAll('figure.chartcard')].some((f) => f.textContent.includes('Interfaces:') && f.textContent.includes('eth5')); })()`,
+  }),
+  {
+    name: 'poll-device-changes-chart-it',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',
+    wait: 3000,
+    act: `__btn('Chart eth5').focus(); __btn('Chart eth5').click();`,
+    after: 1500,
+    check: `[...document.querySelectorAll('figure.chartcard')].some((f) => f.textContent.includes('Interfaces:') && f.textContent.includes('eth5'))
+      && !__btn('Chart eth5') && [...document.querySelectorAll('ul.changes li')].some((t) => t.textContent.includes('eth5 down') && !t.textContent.includes('not charted'))`,
+  },
   ...both({
     name: 'poll-device-panel',
     url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',
     wait: 3000,
-    // The mock's flapping interface is eth3; whether it's among the 4 busiest of a 6 h window depends on the clock,
-    // so swap it in for the last charted one when it isn't (its up/down markers then show on every chart).
-    act: `const rows = [...document.querySelectorAll('tbody tr')]; const on = rows.filter((r) => r.classList.contains('on'));
-      const eth3 = rows.find((r) => r.querySelector('td:nth-child(2)')?.textContent.trim().startsWith('eth3'));
-      if (eth3 && !eth3.classList.contains('on')) { on[on.length - 1]?.click(); await __tick(); eth3.click(); }`,
-    after: 1500,
     check: `document.querySelectorAll('figure.chartcard').length === 5
       && [...document.querySelectorAll('figure.chartcard path')].filter((p) => p.getAttribute('d')).length === 13
       && document.querySelectorAll('figure.chartcard .mark.restart').length === 5
@@ -2146,8 +2167,10 @@ const SHOTS = [
     name: 'poll-events-strips',
     url: '/?mock_panel=0#/events?dev=10.1.0.1&r=24h',
     wait: 3500,
+    // The mock's edge-fw-01 restarts once, eth3 goes down and up, and eth5 goes down: 1 restart and 3 oper marks on
+    // the histogram, and the same 4 on each of the 3 strips.
     check: `document.querySelectorAll('.strips .strip').length === 3 && document.querySelectorAll('.hist .pmark.restart').length === 1
-      && document.querySelectorAll('.hist .pmark.oper').length === 2 && document.querySelectorAll('.strips .mark').length === 9`,
+      && document.querySelectorAll('.hist .pmark.oper').length === 3 && document.querySelectorAll('.strips .mark').length === 12`,
     maxh: 1200,
   }),
   {

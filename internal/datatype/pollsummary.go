@@ -105,7 +105,7 @@ func (s *PollSummary) Add(rec []byte, t time.Time) {
 	switch r.Kind {
 	case pollrec.KindStatus:
 	case pollrec.KindRestart:
-		s.reboots = append(s.reboots, Reboot{Time: t, Source: "poll", Detail: RestartDetail(&r)})
+		s.reboots = append(s.reboots, Reboot{Time: t, Source: "poll", Detail: RestartDetail(&r), Reboot: r.Value("reboot")})
 	case pollrec.KindSys:
 		s.answered[r.Cycle] = true
 		if v, ok := r.Uint("uptime"); ok {

@@ -165,7 +165,7 @@ func TestPollSummary(t *testing.T) {
 		t.Errorf("README:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	rb := s.Reboots()
-	if len(rb) != 1 || rb[0].Source != "poll" || rb[0].Detail != "sysUpTime and hrSystemUptime reset" {
+	if len(rb) != 1 || rb[0].Source != "poll" || rb[0].Detail != "sysUpTime and hrSystemUptime reset" || rb[0].Reboot != "1" || !rb[0].IsReboot() {
 		t.Errorf("reboots %+v", rb)
 	}
 	if b, _ := json.Marshal(st); !strings.Contains(string(b), `"peak_in_if":"eth1"`) || !strings.Contains(string(b), `"oper_changes":[{"if":"eth3"`) {

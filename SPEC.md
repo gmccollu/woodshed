@@ -2176,6 +2176,9 @@ custom OIDs.
   doesn't move at all is a stuck counter, not a restart. A higher v3 `engineBoots` is a restart too.
 - It's a **reboot** when `hrSystemUptime` (where supported) also went down. Without HOST-RESOURCES, the marker says
   "restart (the device may have rebooted)": it can't tell an agent restart from a reboot.
+- The reason, in the same words on the charts, in the README and in the CSV: "sysUpTime reset" (lower than the last
+  sample), "sysUpTime rose less than the time since the last poll" (up, but by too little; never called a reset),
+  "engineBoots went up"; `hrSystemUptime` the same way (1.3 lab).
 - Either one writes a marker (`kind=restart` with `reboot=1|0|?`, §12.3), shows on the Events timeline and the device
   page, and goes into the bundle's README. A coldStart or warmStart trap within 2 min of a poll restart is the same
   event: the README shows one line naming both sources.
@@ -2308,6 +2311,10 @@ Simple and fast: every view reads the headline rollups or one device's poll file
                    errors +12 in (eth3), +0 out; discards +340 in (eth3); eth3 down 09:30:58 to 09:31:40
       Reboots      1: 09:30:58 (poll: sysUpTime and hrSystemUptime reset; coldStart trap)
   ```
+  Only restarts that may have been the device's count as reboots: `reboot=1`, `reboot=?` and the traps. With any
+  `reboot=0` (the agent's alone) the line is `Restarts     3 (0 reboots): …`, still listing every restart (§12.10
+  #14), and the device's one-line summary says `restarts 3, reboots 0`; with none it's `Reboots      none (…)`. (1.3
+  lab: three agent restarts read "Reboots 3".)
 - Plain exports take `types: ["poll"]` the same way, with the `poll` filters.
 
 ### 12.7 CLI

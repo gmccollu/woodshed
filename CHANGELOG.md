@@ -92,6 +92,22 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   failures and skipped cycles. Banners say when polled devices stop answering or polling can't keep up.
   `woodshed status` gains a Polling row.
 
+### Fixed
+- The device page's Polling panel showed up/down changes only for the interfaces on its charts, so an interface that
+  went down off the chart (often the one that matters) left no trace there. Every interface's changes, the restarts
+  and the reboots now mark every chart and are listed under them, newest first, with **Chart** for an interface that
+  isn't on the chart.
+- A chart marker's text no longer repeats the change ("eth3 down (was up)", not "eth3 down (eth3 down (was up))").
+- Incident bundles counted every poll restart as a reboot: three restarts of the SNMP agent alone read "Reboots 3".
+  Only restarts that may have been the device's count now; with agent-only ones the README says "Restarts 3
+  (0 reboots)", still listing each, and `woodshed bundle`'s summary says "restarts 3, reboots 0".
+- A restart found because the uptime rose by less than the time since the last poll was described as "sysUpTime
+  reset". It now says "sysUpTime rose less than the time since the last poll", the same on the charts, in the README
+  and in the CSV.
+- The device page's memory chart says that on Linux with net-snmp "used" includes the page cache (an idle host can
+  show about 90 %); the figure is still the agent's own. The user guide says so too, and the user guide and FAQ
+  explain why a single cycle's rate can read a few percent off while totals are exact.
+
 ### Security
 - Polls are the second kind of outbound traffic (after the opt-in update check): SNMP `Get`, `GetNext` and `GetBulk`
   only, only to the addresses and ports an administrator configured, from one ephemeral UDP socket that exists only

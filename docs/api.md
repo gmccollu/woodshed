@@ -425,7 +425,11 @@ The zip is an export's (below), with each type in its folder, and:
   `reboots[].source` is `"coldStart trap"` (or `"warmStart trap"`, `"… inform"`), `"poll"` with a `"detail"`
   (`"sysUpTime and hrSystemUptime reset"`; `"…; the device may have rebooted"` without HOST-RESOURCES), or both in
   one string, `"poll, coldStart trap"`, when a poll restart and a trap are within 2 min (at the earlier time, with the
-  poll's `detail`).
+  poll's `detail`). A poll restart also has `"reboot"`: `"1"` the device rebooted, `"0"` only its SNMP agent restarted
+  (`"…; the agent restarted, not the device"`), `"?"` can't tell. An uptime that went up, but by too little, is
+  `"sysUpTime rose less than the time since the last poll"`, not a reset. The README counts as reboots every entry but
+  `"reboot": "0"`: with any of those it says `Restarts     3 (0 reboots): …`, still listing each one, and
+  `woodshed bundle` prints `restarts 3, reboots 0`.
   `gaps` are the bundle's (the same for every device). `dropped` and `truncated` sum the stats buckets that start in
   the window (per minute, per hour past 24 h), so a bucket that straddles an edge counts whole.
 
