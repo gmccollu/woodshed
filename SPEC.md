@@ -2610,7 +2610,7 @@ a second, 86 million a day.
 
 **Files:** `logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf`, one segment per device per received hour (UTC), so the day
 folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 MiB or 8,192 blocks starts a numbered
-part (`…T09.001.wsf`), like log parts (§13.10 decision 56).
+part (`…T09.001.wsf`), like log parts (§13.10 decision 57).
 
 **Segment format (version 1):** little-endian, every section with a CRC-32C.
 1. **Header** (32 bytes): magic `WSFLOW01`, format version, device ID length and bytes, the hour, the writer's
@@ -2892,6 +2892,28 @@ the first bench, which records the measured numbers here:
     at 154 and 158 MiB of heap (ceiling 192 MiB, and the peak may not grow by more than 24 MiB with the key count).
     Exact keys cost 131 bytes for a conversation, 115 for an address and 99 for a port, checked against the heap up to
     1,000,000 keys.
+  - **Plans and the writer (build, 2026-11-16, fourth and fifth rounds;** decisions 56 and 57; peak heap measured by
+    the tests, the same M4 Pro):
+    - A week over 50 exporters (8,400 segments; 126,000 and 504,000 blocks): a top-N 23–30 MiB, a search page
+      16–24 MiB (`TestWeekPlanBounded`, ceiling 192 MiB, and 4 times the blocks may not add 16 MiB). A minute's
+      window over 300 exporters' 3,600-block segments: 579 MiB → 15 MiB over closed segments, 730 → 28 MiB over open
+      ones (`TestNarrowWindowPlanBounded`, ceiling 64 MiB).
+    - The writer over an hour of ingest (`internal/flowseg/hourmem_test.go`: a simulated store, real headers of
+      loadgen's size, blocks as long as 20 bytes a record, so a busy exporter's hour is 14 or 53 parts of 256 MiB),
+      before → after, heap above the hour's start at GOGC 10 (at the default GOGC 100 in brackets, where the
+      collector's headroom over the open blocks adds to it):
+
+      | Case | Peak over the hour | At the hour mark (every segment closing) | Kept a block | Allocated an hour |
+      |---|---|---|---|---|
+      | 50,000/s, 1 exporter | 27.9 → 1.1 MiB (58.1 → 4.3) | 9.2 → 0.3 MiB | — | 1,246 → 5 MiB |
+      | 150,000/s, 1 exporter | 23.0 → 1.5 MiB (38.6 → 13.8) | 9.6 → 0.3 MiB | — | 3,802 → 16 MiB |
+      | 150,000/s, 50 exporters | 135 → 49 MiB (343 → 106) | 114 → 1.0 MiB (263 → 0.9) | 587 → 218 B | 147 GB → 221 MiB |
+
+      Closing one dense segment (1,000 blocks of 34 KB headers, a 34 MB footer): 166 → 0.7 MiB. Ceilings: the hour's
+      peak within 216 bytes a directory entry (×1.25) plus 24 MiB, at most 300 bytes kept a block, under 8 MiB at
+      the hour mark (`TestWriterHourHeapBounded`), and 8 MiB for a 136 MB footer's close (`TestCloseHeapBounded`).
+      Each exporter's open block (a record's 466 bytes in memory, under FlowOpenBytesCap) is outside these: 1.4 MiB
+      at 3,000 records a second, 23–29 MiB for a full 50,000–65,536-record block.
   - A 150,000 records/s burst for 10 s: all 1,500,000 stored, nothing dropped by the queue, 0.33 of a core.
   - At 5,000 records/s a segment takes 21.9 bytes a record (the per-block index and the Bloom filter over random
     source ports weigh more in smaller blocks).
@@ -3156,34 +3178,63 @@ Made while building it, each **decided (build, 2026-11-16)**:
 54. **Summary values come from the same pool.** Per-worker counts flush into the shared ones at 1,024 values a field,
     and a field that once turns a value away takes no new ones, so a value can't miss its earlier counts. A bundle's
     README top-N tables share one 64 MiB pool, with small approximate tables (1,024 entries).
-55. **Still proportional to the window, and left as is (flagged):**
+55. **Still proportional to the window, and left as is (flagged; since bounded by decisions 56 and 57):**
     - the plan: 64 bytes for each block the window touches, one block a second per exporter at most, about 5.5 MiB
       per exporter-day;
-    - the open segments' directories: 472 bytes a block, about 1.7 MiB per open exporter-hour, copied per query
-      (the writer keeps 216 bytes a block since decision 56).
+    - the open segments' directories: 472 bytes a block, about 1.7 MiB per open exporter-hour.
 
-    A week over 50 exporters would plan about 1.9 GiB. Planning by segment instead of by block is the follow-up. The
-    writer's side, which built a closing segment's whole footer in memory, is decision 56.
+    A week over 50 exporters would plan about 1.9 GiB. The writer still built a closing segment's whole footer in
+    memory (ingest side, at hour close).
 
-*Fourth round, writer memory (build, 2026-11-16):*
+*Fourth round, plans (build, 2026-11-16):*
 
-56. **The segment writer's memory is bounded, at hour close too** (`internal/flowseg/state.go`,
+56. **A query's plan streams the window** (`internal/flowquery/plan.go`):
+    - Segments come from the index a page at a time (256 rows, `FlowSegmentsPage`: newest end first, or lowest start
+      first ascending) and load a batch at a time, sorted within the batch. A batch stops at **16,384 directory
+      entries loaded**, always a whole segment: every block of a loaded segment, in the window or not, since its
+      footer (or snapshot) holds them all. Counting only the window's blocks let a minute over 300 exporters' hour
+      segments load 273 of them a batch (579 MiB closed, 730 MiB open; 15 and 28 MiB now).
+    - `complete_from` and a search page's certainty are the bound of everything unread: the batch's next block and
+      the next segment (an open segment the index lists late: any end, or its indexed start less an hour, ascending).
+      A search page past its budget reads on until that bound passes its cursor, so pages always progress.
+    - Progress counts the index's records until a segment loads, then its exact rows.
+    - Open segments are listed without their snapshots (`store.OpenFlowList`); a plan takes each when its batch
+      reaches it (472 bytes a block, at most 3.9 MiB at the part limit), and one closed since is read from its file.
+      `OpenSnapshot` doesn't copy the snapshot's block list.
+    - `Each` (exports) goes a device at a time with its own plan; Count streams batches.
+
+*Fifth round, writer memory (build, 2026-11-16):*
+
+57. **The segment writer's memory is bounded, at hour close too** (`internal/flowseg/state.go`,
     `internal/store/flow.go`):
-    - Close writes the footer streamed: the template table, then the footer body through a 256 KiB buffer, each
-      block's header copied from the block itself with the CRC computed as it goes, then the section prefix and the
-      trailer. The format is unchanged (a test compares the bytes with the old in-memory encoder). Before, Close held
-      about four times the footer: 588 MiB for an exporter-hour of 3,600 one-second 50,000-record blocks (a 122 MB
-      footer), 83 MiB for one of 50 exporters at 3,000 records a second (22 MB), at the same hour mark for all 50. Now
-      0.4–4 MiB, most of it the directory Close returns: as Open reads it, entries only, the index loaded on demand.
+    - Close writes the footer streamed: the template table, then the footer body through a 256 KiB buffer (pooled),
+      each block's header copied from the block itself with the CRC computed as it goes, then the section prefix, an
+      fsync, and the trailer. The format is unchanged (a test compares the bytes with the old in-memory encoder at
+      five buffer sizes). The fsync keeps a crash from leaving a trailer over a torn body, which Open would call
+      corrupt rather than unfinished, so the store's recovery would skip it. Before, Close held about five times the
+      footer (166 MiB for a 34 MB one); now 0.7 MiB, most of it the directory Close returns.
+    - The store closes with `CloseSummary`, which returns Summary's fields and builds no directory, so 50 exporters
+      closing at the hour mark add 1 MiB of heap, not 114 MiB (§13.6).
     - The store's index rows come from `Writer.Summary` (the footer-level fields), not a snapshot that copied the
-      block directory on every flush (about 3 GB of garbage per exporter-hour at one block a second).
-    - The writer keeps 216 bytes a block (602 before, with a 472-byte BlockInfo and a header span), sampling and
-      domain lists shared with the previous block's.
-    - A segment starts a new part at **8,192 blocks**, as at 256 MiB. One block a second is 3,600 an hour, and early
-      flushes add up to about one more a second, so an hour stays one part; full blocks of 65,536 records reach
-      256 MiB first (about 200 blocks at 20 bytes a record). At the limit a writer keeps at most 1.7 MiB, a query
-      snapshot copies 3.9 MiB, and the footer holds at most 8,192 headers.
+      block directory on every flush: 147 GB of garbage an hour over 50 exporters at one block a second, 221 MiB now.
+    - The writer keeps 216 bytes a block (587 before, a 472-byte BlockInfo and a header span), sampling and domain
+      lists shared with the previous block's.
+    - A segment starts a new part at **8,192 blocks**, as at 256 MiB (`store.Options.FlowPartBlocks`). One block a
+      second is 3,600 an hour, and early flushes add up to about one more a second, so an hour stays one part; a busy
+      exporter reaches 256 MiB first (about 270 blocks of 50,000 records at 20 bytes a record). At the limit a writer
+      keeps at most 1.7 MiB, a snapshot copies 3.9 MiB, and the footer holds 8,192 headers. Queries, a reindex and a
+      bundle see every part (tests at a 10-block limit).
     - Fault injection (decision 50) covers every write of the streamed tail and a failed header read.
+
+58. **Left open (flagged):**
+    - The writer's directories have no cap across exporters: 216 bytes a block is about 0.8 MiB per exporter-hour at
+      one block a second (the 1 s flush makes one even for a quiet exporter), at most 1.7 MiB at the part limit, so
+      about 37 MiB by the hour's end over 50 exporters and about 220 MiB over 300. A cap would start parts by a share
+      of a budget, as FlowOpenBytesCap flushes blocks early: at 32 MiB, an hour stays one part up to about 40
+      exporters at one block a second and becomes 7 parts an hour at 300. Not done: it trades memory for many small
+      parts.
+    - An open segment's snapshot still copies 472 bytes a block per query that reaches it (bounded above). Sharing
+      the writer's append-only entries without a copy is the follow-up if it shows up.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
