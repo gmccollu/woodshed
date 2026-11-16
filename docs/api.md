@@ -1153,3 +1153,140 @@ SNMP poll target is configured (since 1.3), a `poll` object gives `targets`, `an
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.
+
+## 2.0 (planned)
+
+Not in 1.x builds: nothing in this section is served yet. It's the 2.0 contract (SPEC §13). As before, routes here sit
+in a `###` heading or after a label, never at the start of a line in the usual "`GET /api/...`" form, so
+`routes_test.go` doesn't request them; when one ships, move it into its section above. Everything is additive
+(SPEC §13.9).
+
+### Flow listener
+
+**Settings:** `/api/settings` gains `listeners.flow` and `storage.flow_budget_bytes`:
+```json
+{"listeners": {"flow": {"enabled": false, "addr": "0.0.0.0", "netflow_port": 2055, "ipfix_port": 4739,
+                        "template_timeout": "30m"}},
+ "storage": {"flow_budget_bytes": 0}}
+```
+- Shown here as fragments of the settings object. `netflow_port` / `ipfix_port`: 0 (off) or 1–65535, not shared with
+  another UDP listener on an overlapping address; at least one non-zero while enabled. `template_timeout` 1 min to
+  24 h.
+- `flow_budget_bytes`: 0 means 40 % of `storage.retention_bytes`; otherwise at least 1 GiB and at most 90 % of it
+  (a `400` on the key otherwise). File-only: `listeners.flow.pending_bytes`, `queue_messages`, `queue_bytes`.
+- `/api/status.listeners` gains `{"proto": "netflow", …}` and `{"proto": "ipfix", …}` entries while enabled.
+
+**Flow state:** `GET /api/flows` →
+```json
+{"enabled": true,
+ "budget": {"bytes": 8589934592, "used_bytes": 5100000000, "estimated_days": 4.8},
+ "exporters": [{"device_id": "10.1.0.1", "domains": [{"id": 1, "sampling": 1000, "templates": 6, "last_template": "2026-11-16T09:58:01Z"}],
+                "records_per_sec": 1180.5, "pending_bytes": 0,
+                "counts_24h": {"records": 101000000, "late": 120, "no_template": 0, "malformed": 0, "sequence_gaps": 3, "duplicates": 0},
+                "clock_skew_ms": 210, "time_source": "exporter"}]}
+```
+
+### Flow search and top-N
+
+`type=flow` is accepted by `/api/search`, `/api/search/summary`, saved searches, exports and `woodshed search`.
+
+**Filters** (with `type=flow` only; the other types' filters are a `400` with it, and `q` is
+`400 {"error": "q: flows have no text; use src, dst, ip, port or proto."}`):
+- `src`, `dst`, `ip` and `exclude_src`, `exclude_dst`, `exclude_ip`: comma-separated addresses or CIDR prefixes.
+- `src_port`, `dst_port`, `port` and their `exclude_` forms: comma-separated ports or ranges (`8000-8100`).
+- `proto`, `exclude_proto`: names (`tcp`, `udp`, `icmp`, `icmpv6`, `gre`, `esp`, `sctp`) or numbers 0–255.
+- `in_if`, `out_if` and excludes: interface indexes or names (from the exporter's options data).
+- `domain`: observation domain or source IDs. `tcp_flags`: any of `fin,syn,rst,psh,ack,urg,ece,cwr`.
+  `sampled`: `yes`, `no`, `unknown`. `status`: `ok`, `late`, `no_template`, `malformed`.
+- `from` / `to` are flow time: a record matches when its start-to-end overlaps the range.
+
+**Results** (`/api/search?type=flow`):
+```json
+{"received": "2026-11-16T09:31:02.004Z", "device_id": "10.1.0.1", "type": "flow", "ref": "opaque",
+ "fields": {"start": "2026-11-16T09:30:11.200Z", "end": "2026-11-16T09:31:01.950Z",
+            "src": "10.20.0.5", "src_port": 51544, "dst": "198.51.100.7", "dst_port": 443, "proto": 6, "proto_name": "tcp",
+            "tcp_flags": "SAPF", "packets": 1840, "bytes": 2210444, "sampling": 1000,
+            "packets_scaled": 1840000, "bytes_scaled": 2210444000,
+            "in_if": 3, "in_if_name": "eth3", "out_if": 1, "out_if_name": "eth1", "domain": 1,
+            "tos": 0, "src_as": 0, "dst_as": 0, "next_hop": "", "time_source": "exporter", "status": "ok", "late": false,
+            "extras": [{"pen": 32473, "id": 1, "hex": "0a0b"}]}}
+```
+- `sampling` is `1` (unsampled), N (1 in N) or `0` (unknown); `packets_scaled` and `bytes_scaled` are `null` when it's
+  `0`. There's no `raw`. `/api/context` isn't available for flows (`400`).
+- The order is by flow end, newest first (`order=asc` for oldest first). Paging, the budget and the cursor work as for
+  search; `partial` responses also carry `progress` (below).
+
+**Summary:** `/api/search/summary?type=flow` uses the flow fields (`proto`, `dst_port`, `src_port`, `src`, `dst`,
+`in_if`, `out_if`, `domain`, `sampled`, `status`); each value's `count` is flows, plus `bytes` and `bytes_scaled`. The
+histogram's `source` is `index` (from `flow_minute`) when unfiltered, with a `metric` parameter (`flows`, `bytes`,
+`packets`; default `flows`). Instead of `counted_from`, a partial flow summary carries `progress`.
+
+### Top-N: `GET /api/flows/top`
+Parameters: the flow filters, the range, the device selection, plus `by` (`src`, `dst`, `conversation`, `dst_port`,
+`src_port`, `proto`, `in_if`, `out_if`), `metric` (`bytes` default, `packets`, `flows`), `top` (10, at most 100),
+`budget_ms` (2,000, at most 10,000) and `cursor`.
+```json
+{"by": "src", "metric": "bytes", "from": "2026-11-16T09:00:00Z", "to": "2026-11-16T10:00:00Z",
+ "total": {"flows": 1204332, "bytes": 18200000000, "packets": 21400000,
+           "bytes_scaled": 1900000000000, "packets_scaled": 2100000000, "scaled_complete": false},
+ "rows": [{"key": "10.20.0.5", "label": "10.20.0.5", "flows": 40211, "bytes": 5642000000, "packets": 4100000,
+           "bytes_scaled": 564200000000, "packets_scaled": 410000000, "scaled_lower_bound": false,
+           "share": 0.31, "first": "2026-11-16T09:00:02Z", "last": "2026-11-16T09:59:58Z"}],
+ "other": {"flows": 1000000, "bytes": 9000000000},
+ "approx": false,
+ "progress": {"blocks_done": 1800, "blocks_total": 1800, "records_done": 1204332, "records_total": 1204332,
+              "complete_from": "2026-11-16T09:00:00Z"},
+ "partial": false, "next_cursor": "", "elapsed_ms": 2140}
+```
+- `key` for `conversation` is `"a ↔ b"` with the lower address first (both directions summed); for ports
+  `"tcp/443"`; for interfaces the index, with the name as `label`.
+- `share` is of the metric's exported total. `scaled_complete` is false when some records had unknown sampling; a row
+  whose records include any is a lower bound (`scaled_lower_bound: true`, shown with "≥").
+- `approx` is true when more than 1,000,000 distinct keys switched the count to a space-saving top-K.
+- `progress.complete_from`: every block whose flows end after it has been read. A continuation with `next_cursor`
+  returns running totals, not deltas.
+
+### Timeline strip
+**Strip:** `GET /api/flows/timeline?devices=a,b&from=…&to=…&bucket=…&metric=bytes` → per exporting device (at most 4,
+the busiest, then `more`): `{"devices": [{"device_id", "points": [{"start", "bytes", "bytes_scaled", "flows"}]}],
+"more": 0}`, from `flow_minute`, on the histogram's bucket edges.
+
+### Exports and bundles
+- `types` may include `"flow"`; `kind: "bundle"` includes it by default when there are flows in the window.
+- `flow_formats`: `["csv", "ipfix"]` (default), `["csv"]` or `["ipfix"]`.
+- The zip gets `flows/<device-id>/flows.csv` (the columns in SPEC §13.4), `flows.ipfix` (RFC 5655) and `raw.txt` when
+  there are raw sets; `"folders"` gains `"flows": "flow"`.
+- `/api/exports/estimate` gains `"by_type": {"syslog": {"lines", "bytes"}, "flow": {"records", "bytes"}, …}`. More than
+  20,000,000 flow records for one device is a `400` at estimate and at build: "Too many flow records for one zip
+  (24,113,002 for 10.1.0.1); narrow the window or add a flow filter."
+- A bundle's manifest `summary` entries gain `"flow": {"records", "domains", "sampling", "bytes", "bytes_scaled",
+  "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
+  "sequence_gaps", "lost_estimate", "no_template", "malformed"}`.
+
+### Setup helper
+**Families:** `GET /api/setup/families` →
+```json
+[{"id": "line-cli", "label": "Line-oriented CLI (global configuration mode)", "what": ["syslog", "trap", "flow", "poll"],
+  "verification": "reference", "reference": "the device's own documentation"},
+ {"id": "rsyslog", "label": "Linux: rsyslog", "what": ["syslog"], "verification": "tested", "reference": "rsyslog documentation, omfwd"}]
+```
+`verification`: `tested`, `lab_checked` (with `"checked_on"`) or `reference`.
+
+**Snippet:** `POST /api/setup/snippet` body `{"family": "rsyslog", "what": "syslog", "transport": "tls", "address":
+"logs-01.example.net"}` → `{"text": "…", "notes": ["…"], "placeholders": ["<CA-FILE>"], "verification": "tested"}`.
+- `address` defaults to the first of this Woodshed's addresses the Setup page lists; `transport` per `what`: syslog
+  `udp`, `tcp` or `tls`; trap `v2c` or `v3`; flow `netflow9` or `ipfix`; poll `v2c` or `v3`.
+- Secrets are always placeholders; no stored community or key is ever put into a snippet. Nothing is changed on the
+  server.
+
+### Banners (2.0)
+- `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives
+  the rate and the budget.
+- `flow_templates` (warn, action `""`): an exporter's data has been waiting for a template for over 10 min, or was
+  stored raw for lack of one.
+- `flow_clock` (warn, action `""`): an exporter's clock is more than an hour off; its flows use received time.
+- `flow_firewall` (warn, action `""`): Windows only, while the flow listener is on and a rule is disabled, missing or on
+  another port; the text gives `woodshed flow on`.
+
+**CLI** (not HTTP): `woodshed search --type flow`, `woodshed flows top`, `woodshed flow on|off|status`, `woodshed setup
+snippet`, `woodshed send --proto netflow5|netflow9|ipfix`, as in SPEC §13.7 and §13.8.
