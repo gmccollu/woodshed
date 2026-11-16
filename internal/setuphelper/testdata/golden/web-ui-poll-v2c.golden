@@ -1,0 +1,25 @@
+family: web-ui
+what: poll
+transport: v2c
+address: 192.0.2.10
+verification: reference
+reference: RFC 3416 (SNMP operations), RFC 3414 (SNMPv3 users)
+does: The values to enter in the device's SNMP agent page so Woodshed can poll it (SNMPv2c, read-only).
+check: Devices → Add polling → Test poll answers with the device's name and interfaces.
+placeholders: <COMMUNITY>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- Then add the device in Woodshed: Devices → Add polling, its address, SNMPv2c and the same community.
+- Field names differ between devices; some also need SNMP allowed on the interface Woodshed reaches.
+---- part steps "": In the device's web page, open its SNMP agent settings and enter
+SNMP agent: on
+SNMP version: v2c
+Read-only community: <COMMUNITY>
+Allowed managers (if asked): 192.0.2.10
+==== text
+In the device's web page, open its SNMP agent settings and enter
+SNMP agent: on
+SNMP version: v2c
+Read-only community: <COMMUNITY>
+Allowed managers (if asked): 192.0.2.10

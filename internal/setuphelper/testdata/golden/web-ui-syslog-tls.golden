@@ -1,0 +1,37 @@
+family: web-ui
+what: syslog
+transport: tls
+address: 192.0.2.10
+verification: reference
+reference: RFC 5424 (severities, facilities), RFC 5426 (UDP), RFC 6587 (TCP), RFC 5425 (TLS)
+does: The values to enter in the device's syslog (remote logging) page so it sends informational and more severe messages to Woodshed over TLS.
+check: The device appears on Woodshed's Dashboard with its first message, often right after you save.
+placeholders: 
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- Before you turn on TCP or TLS logging on a firewall: some firewalls block traffic through them when a TCP or TLS syslog server can't be reached, or its certificate fails, unless a "permit traffic when the log host is down" option is set. Check that option first, or use UDP.
+- Field names differ between devices; some put the port into the address field as 192.0.2.10:6514.
+- Compare the CA fingerprint the device shows with AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89. If the device checks the server's name, use logs-01; many check names only, not IP addresses.
+- Pages that offer a "send a test message" button usually send it at once: watch the Dashboard.
+---- part steps "": In the device's web page, open its syslog or remote logging settings and enter
+Remote logging: on
+Server address: 192.0.2.10
+Port: 6514
+Protocol: TLS (sometimes called secure or encrypted syslog)
+CA certificate: Woodshed's, from Settings → TLS → CA certificate (PEM to paste, DER to upload)
+Server name to check: logs-01
+Lowest severity to send: informational (6)
+Facility: leave the device's default
+Message format: RFC 5424 if offered, otherwise the default
+==== text
+In the device's web page, open its syslog or remote logging settings and enter
+Remote logging: on
+Server address: 192.0.2.10
+Port: 6514
+Protocol: TLS (sometimes called secure or encrypted syslog)
+CA certificate: Woodshed's, from Settings → TLS → CA certificate (PEM to paste, DER to upload)
+Server name to check: logs-01
+Lowest severity to send: informational (6)
+Facility: leave the device's default
+Message format: RFC 5424 if offered, otherwise the default

@@ -1,0 +1,40 @@
+family: line-cli
+what: flow
+transport: ipfix
+address: 192.0.2.10
+verification: reference
+reference: common line-oriented flow export commands (flow exporter, flow monitor); RFC 3954 (NetFlow v9) and RFC 7011 (IPFIX)
+does: Exports the device's flow records to Woodshed as IPFIX over UDP.
+check: Woodshed's Flows view lists the device as an exporter within a minute or two, with its templates and sampling rate.
+placeholders: <FLOW-RECORD> <MONITORED-INTERFACE>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- Flow export commands differ more than any other here: some devices use one `ip flow-export destination 192.0.2.10 4740` line with a version keyword, some an exporter and monitor pair as above, some a policy that matches traffic first. Treat this as the list of values to set.
+- <FLOW-RECORD> is a flow record the device defines (many have a built-in one with addresses, ports, protocol and counters); <MONITORED-INTERFACE> is the interface whose traffic to export.
+- The template timeout (60 s) makes the device resend its templates every minute, so Woodshed can decode its flows soon after a restart.
+---- part cli "": Enter in global configuration mode, then save the configuration
+flow exporter WOODSHED
+ destination 192.0.2.10
+ transport udp 4740
+ export-protocol ipfix
+ source Loopback0
+ template data timeout 60
+flow monitor WOODSHED-MONITOR
+ exporter WOODSHED
+ record <FLOW-RECORD>
+interface <MONITORED-INTERFACE>
+ ip flow monitor WOODSHED-MONITOR input
+==== text
+! Enter in global configuration mode, then save the configuration
+flow exporter WOODSHED
+ destination 192.0.2.10
+ transport udp 4740
+ export-protocol ipfix
+ source Loopback0
+ template data timeout 60
+flow monitor WOODSHED-MONITOR
+ exporter WOODSHED
+ record <FLOW-RECORD>
+interface <MONITORED-INTERFACE>
+ ip flow monitor WOODSHED-MONITOR input

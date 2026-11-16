@@ -1,0 +1,34 @@
+family: web-ui
+what: poll
+transport: v3
+address: 192.0.2.10
+verification: reference
+reference: RFC 3416 (SNMP operations), RFC 3414 (SNMPv3 users)
+does: The values to enter in the device's SNMP agent page so Woodshed can poll it (SNMPv3, read-only).
+check: Devices → Add polling → Test poll answers with the device's name and interfaces.
+placeholders: <V3-USER> <AUTH-PASSPHRASE> <PRIV-PASSPHRASE>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- Add the same user in Woodshed: Settings → SNMP → v3 users, with the same name, protocols and passphrases.
+- Then add the device in Woodshed: Devices → Add polling, its address, SNMPv3 and the user <V3-USER>.
+- Field names differ between devices; some also need SNMP allowed on the interface Woodshed reaches.
+---- part steps "": In the device's web page, open its SNMP agent settings and enter
+SNMP agent: on
+SNMP version: v3
+User name: <V3-USER>
+Security level: authentication and privacy (authPriv)
+Authentication: SHA-256, passphrase <AUTH-PASSPHRASE>
+Privacy: AES-128, passphrase <PRIV-PASSPHRASE>
+Access: read-only
+Allowed managers (if asked): 192.0.2.10
+==== text
+In the device's web page, open its SNMP agent settings and enter
+SNMP agent: on
+SNMP version: v3
+User name: <V3-USER>
+Security level: authentication and privacy (authPriv)
+Authentication: SHA-256, passphrase <AUTH-PASSPHRASE>
+Privacy: AES-128, passphrase <PRIV-PASSPHRASE>
+Access: read-only
+Allowed managers (if asked): 192.0.2.10

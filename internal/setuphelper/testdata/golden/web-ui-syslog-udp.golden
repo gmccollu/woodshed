@@ -1,0 +1,31 @@
+family: web-ui
+what: syslog
+transport: udp
+address: 192.0.2.10
+verification: reference
+reference: RFC 5424 (severities, facilities), RFC 5426 (UDP), RFC 6587 (TCP), RFC 5425 (TLS)
+does: The values to enter in the device's syslog (remote logging) page so it sends informational and more severe messages to Woodshed over UDP.
+check: The device appears on Woodshed's Dashboard with its first message, often right after you save.
+placeholders: 
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- Field names differ between devices; some put the port into the address field as 192.0.2.10:514.
+- Pages that offer a "send a test message" button usually send it at once: watch the Dashboard.
+---- part steps "": In the device's web page, open its syslog or remote logging settings and enter
+Remote logging: on
+Server address: 192.0.2.10
+Port: 514
+Protocol: UDP
+Lowest severity to send: informational (6)
+Facility: leave the device's default
+Message format: RFC 5424 if offered, otherwise the default
+==== text
+In the device's web page, open its syslog or remote logging settings and enter
+Remote logging: on
+Server address: 192.0.2.10
+Port: 514
+Protocol: UDP
+Lowest severity to send: informational (6)
+Facility: leave the device's default
+Message format: RFC 5424 if offered, otherwise the default

@@ -1,0 +1,21 @@
+family: line-cli
+what: trap
+transport: v2c
+address: 192.0.2.10
+verification: reference
+reference: common line-oriented SNMP commands (snmp-server host, snmp-server enable traps, snmp-server group, snmp-server user); RFC 3414 for the v3 user model
+does: Sends the device's SNMP traps to Woodshed (SNMPv2c).
+check: Search Events for type Traps after a change on the device (an interface going down and up, a configuration save); `woodshed snmp status` counts traps per device.
+placeholders: <COMMUNITY>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- <COMMUNITY> must be one Woodshed accepts: Settings → Listeners → SNMP traps lists the communities (an empty list accepts any).
+- `snmp-server enable traps` turns on every notification the device has on some devices, and only a default set on others; narrow it to what you need.
+---- part cli "": Enter in global configuration mode, then save the configuration
+snmp-server host 192.0.2.10 version 2c <COMMUNITY>
+snmp-server enable traps
+==== text
+! Enter in global configuration mode, then save the configuration
+snmp-server host 192.0.2.10 version 2c <COMMUNITY>
+snmp-server enable traps

@@ -1,0 +1,33 @@
+{{/*
+family: web-ui
+what: poll
+transports: v2c, v3
+reference: RFC 3416 (SNMP operations), RFC 3414 (SNMPv3 users)
+verification: reference
+*/}}
+{{define "does"}}The values to enter in the device's SNMP agent page so Woodshed can poll it (SNMP{{.Transport}}, read-only).{{end}}
+
+{{define "parts"}}
+@@part steps - In the device's web page, open its SNMP agent settings and enter
+SNMP agent: on
+SNMP version: {{if eq .Transport "v2c"}}v2c{{else}}v3{{end}}
+{{- if eq .Transport "v2c"}}
+Read-only community: <COMMUNITY>
+{{- else}}
+User name: {{.V3User}}
+Security level: authentication and privacy (authPriv)
+Authentication: {{.Auth.Label}}, passphrase <AUTH-PASSPHRASE>
+Privacy: {{.Priv.Label}}, passphrase <PRIV-PASSPHRASE>
+Access: read-only
+{{- end}}
+Allowed managers (if asked): {{.Address}}
+{{end}}
+
+{{define "notes"}}
+{{if eq .Transport "v3"}}Add the same user in Woodshed: Settings → SNMP → v3 users, with the same name, protocols and passphrases.
+{{end}}
+Then add the device in Woodshed: Devices → Add polling, its address, SNMP{{.Transport}}{{if eq .Transport "v2c"}} and the same community{{else}} and the user {{.V3User}}{{end}}.
+Field names differ between devices; some also need SNMP allowed on the interface Woodshed reaches.
+{{end}}
+
+{{define "check"}}Devices → Add polling → Test poll answers with the device's name and interfaces.{{end}}

@@ -1,0 +1,28 @@
+family: line-cli
+what: syslog
+transport: tcp
+address: 192.0.2.10
+verification: reference
+reference: common line-oriented logging commands (logging host, logging trap, logging facility, logging source-interface); RFC 5424 severities
+does: Sends the device's log messages, warning and more severe, to Woodshed over TCP.
+check: The device appears on Woodshed's Dashboard with its first message; if it doesn't, check the device's log host status and Woodshed's Listeners on the Setup page.
+placeholders: 
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- Before you turn on TCP or TLS logging on a firewall: some firewalls block traffic through them when a TCP or TLS syslog server can't be reached, or its certificate fails, unless a "permit traffic when the log host is down" option is set. Check that option first, or use UDP.
+- The host command differs most between devices: some take `logging host 192.0.2.10` for UDP 514 alone, some write the transport as `tcp/514` after the address or name the sending interface before it, and some use a `logging server` command instead.
+- `logging trap` sets the lowest severity sent to log hosts on many devices; others set it on the host line, or accept the number (4) instead of the keyword.
+- The source interface's address is what Woodshed shows as the device, so pick one with a stable address.
+- Turn on timestamps in the messages if the device offers it (with milliseconds and the time zone, where it can); Woodshed also keeps the time each message arrived.
+---- part cli "": Enter in global configuration mode, then save the configuration
+logging host 192.0.2.10 transport tcp port 514
+logging trap warnings
+logging facility local5
+logging source-interface Vlan10
+==== text
+! Enter in global configuration mode, then save the configuration
+logging host 192.0.2.10 transport tcp port 514
+logging trap warnings
+logging facility local5
+logging source-interface Vlan10

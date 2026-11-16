@@ -1,0 +1,41 @@
+{{/*
+family: rsyslog
+what: syslog
+transports: udp, tcp, tls
+reference: rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425
+verification: tested
+*/}}
+{{define "does"}}Forwards this machine's syslog{{if .Facility}} ({{.Facility}} only){{end}}, {{.Severity.Word}} and more severe, to Woodshed over {{if eq .Transport "udp"}}UDP{{else if eq .Transport "tcp"}}TCP{{else}}TLS{{end}}.{{end}}
+
+{{define "parts"}}
+@@part file /etc/rsyslog.d/60-woodshed.conf Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)
+# Woodshed: forward syslog over {{if eq .Transport "udp"}}UDP{{else if eq .Transport "tcp"}}TCP{{else}}TLS{{end}} (RFC 5424 format).
+{{if .Facility}}{{.Facility}}{{else}}*{{end}}.{{.Severity.Name}} action(type="omfwd" target="{{.Address}}" port="{{.Port}}"
+{{- if eq .Transport "udp"}} protocol="udp"
+{{- else}} protocol="tcp" TCP_Framing="octet-counted"{{end}}
+{{- if eq .Transport "tls"}}
+       StreamDriver="gtls" StreamDriverMode="1" StreamDriver.CAFile="<CA-FILE>"
+       StreamDriverAuthMode="x509/name" StreamDriverPermittedPeers="{{.TLSName}}"{{end}}
+       template="RSYSLOG_SyslogProtocol23Format"
+{{- if ne .Transport "udp"}}
+       queue.type="LinkedList" queue.size="10000" action.resumeRetryCount="-1"{{end}})
+@@part command - Check the file and send a test message
+sudo rsyslogd -N1
+logger -p user.{{if eq .Severity.Name "debug"}}debug{{else}}{{.Severity.Name}}{{end}} "Test message for Woodshed from $(hostname)"
+{{end}}
+
+{{define "notes"}}
+{{if .Facility}}The test message uses facility user, which the {{.Facility}} filter doesn't forward: use `logger -p {{.Facility}}.{{.Severity.Name}}` to test.
+{{end}}
+{{- if eq .Transport "tls"}}
+<CA-FILE> is Woodshed's CA certificate as a PEM file on this machine{{if .TLSOwnCA}}: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem{{if .CASHA256}}, and check its SHA-256 fingerprint is {{.CASHA256}}{{end}}{{else}}: this Woodshed uses your own certificate, so use the CA that issued it{{end}}.
+{{if .TLSNameKnown}}rsyslog checks that Woodshed's certificate holds the name {{.TLSName}}{{if not .IsName}} (it doesn't check IP addresses){{end}}.{{else}}<WOODSHED-TLS-NAME> is a DNS name on Woodshed's TLS certificate (Settings → TLS); rsyslog checks names, not IP addresses. Turn TLS on first to see them.{{end}}
+TLS needs rsyslog 8.2108 or later and its gtls network stream driver, which some distributions package separately.
+{{- end}}
+{{if ne .Transport "udp"}}The in-memory queue keeps rsyslog from slowing the rest of the system while Woodshed can't be reached, and retries until it can; up to 10,000 messages wait in it.
+{{end}}
+{{- if eq .Transport "udp"}}UDP has no delivery check: a message lost on the way is gone. Use TCP or TLS where that matters.
+{{end}}
+{{end}}
+
+{{define "check"}}On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.{{end}}

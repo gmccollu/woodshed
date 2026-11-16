@@ -1,0 +1,29 @@
+{{/*
+family: line-cli
+what: poll
+transports: v2c, v3
+reference: common line-oriented SNMP commands (snmp-server community, snmp-server group, snmp-server user); RFC 3414 and RFC 3415
+verification: reference
+*/}}
+{{define "does"}}Lets Woodshed poll the device's SNMP agent (SNMP{{.Transport}}, read-only).{{end}}
+
+{{define "parts"}}
+@@part cli - Enter in global configuration mode, then save the configuration
+{{- if eq .Transport "v3"}}
+snmp-server group woodshed v3 priv
+snmp-server user {{.V3User}} woodshed v3 auth {{.Auth.Line}} <AUTH-PASSPHRASE> priv {{.Priv.Line}} <PRIV-PASSPHRASE>
+{{- else}}
+snmp-server community <COMMUNITY> ro
+{{- end}}
+{{end}}
+
+{{define "notes"}}
+Limit the agent to polls from Woodshed's address ({{.Address}}): most devices take an access list or a host list on the community or group line, written differently on each.
+Some devices also need the agent turned on (`snmp-server enable`, or a per-interface management setting) before they answer.
+{{if eq .Transport "v3"}}Add the same user in Woodshed: Settings → SNMP → v3 users, name {{.V3User}}, {{.Auth.Label}} and {{.Priv.Label}}, with the same passphrases.
+The protocol keywords differ between devices (`sha-256`, `sha256` or `sha2-256`; `aes 128` or `aes128`): pick the protocols both sides have.
+{{end}}
+Then add the device in Woodshed: Devices → Add polling, its address, SNMP{{.Transport}}{{if eq .Transport "v2c"}} and the same community{{else}} and the user {{.V3User}}{{end}}.
+{{end}}
+
+{{define "check"}}Devices → Add polling → Test poll answers with the device's name and interfaces; after the first cycle the device page shows its graphs.{{end}}

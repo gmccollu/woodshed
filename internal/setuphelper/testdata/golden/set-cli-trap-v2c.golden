@@ -1,0 +1,25 @@
+family: set-cli
+what: trap
+transport: v2c
+address: 192.0.2.10
+verification: reference
+reference: common set-style SNMP statements (set snmp trap-group …, set snmp v3 …); RFC 3413 (target addresses, target parameters, notify) and RFC 3414 (USM)
+does: Sends the device's SNMP traps to Woodshed (SNMPv2c).
+check: Search Events for type Traps after a change on the device; `woodshed snmp status` counts traps per device.
+placeholders: <COMMUNITY>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- On many set-style devices the trap group's name is sent as the community, so the name is the <COMMUNITY> placeholder here. It must be one Woodshed accepts (Settings → Listeners → SNMP traps; an empty list accepts any).
+- Some devices also need the trap categories chosen (link, chassis, configuration) before they send anything.
+---- part cli "": Enter in configuration mode, then commit
+set snmp trap-group <COMMUNITY> version v2
+set snmp trap-group <COMMUNITY> destination-port 162
+set snmp trap-group <COMMUNITY> targets 192.0.2.10
+commit
+==== text
+! Enter in configuration mode, then commit
+set snmp trap-group <COMMUNITY> version v2
+set snmp trap-group <COMMUNITY> destination-port 162
+set snmp trap-group <COMMUNITY> targets 192.0.2.10
+commit

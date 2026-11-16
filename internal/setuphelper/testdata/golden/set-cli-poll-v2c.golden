@@ -1,0 +1,22 @@
+family: set-cli
+what: poll
+transport: v2c
+address: 192.0.2.10
+verification: reference
+reference: common set-style SNMP statements (set snmp community …, set snmp v3 …); RFC 3414 (USM) and RFC 3415 (VACM)
+does: Lets Woodshed poll the device's SNMP agent (SNMPv2c, read-only, from Woodshed's address only).
+check: Devices → Add polling → Test poll answers with the device's name and interfaces; after the first cycle the device page shows its graphs.
+placeholders: <COMMUNITY>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- Then add the device in Woodshed: Devices → Add polling, its address, SNMPv2c and the same community.
+---- part cli "": Enter in configuration mode, then commit
+set snmp community <COMMUNITY> authorization read-only
+set snmp community <COMMUNITY> clients 192.0.2.10/32
+commit
+==== text
+! Enter in configuration mode, then commit
+set snmp community <COMMUNITY> authorization read-only
+set snmp community <COMMUNITY> clients 192.0.2.10/32
+commit
