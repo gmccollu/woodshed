@@ -135,30 +135,30 @@ func TestFlowCommandLinux(t *testing.T) {
 	fw := withFirewall(t, "linux")
 	cfgPath, dataDir := testConfig(t, nil)
 	code, out, errOut := runCLI("flow", "on", "--config", cfgPath)
-	if code != 0 || !strings.Contains(out, "Turned the flow listener on (NetFlow UDP 2055, IPFIX UDP 4739)") ||
+	if code != 0 || !strings.Contains(out, "Turned the flow listener on (flow UDP 2055, IPFIX UDP 4739)") ||
 		!strings.Contains(out, "2055/udp") || !strings.Contains(out, "4739/udp") {
 		t.Fatalf("on: %d %q %q", code, out, errOut)
 	}
 	if c := loadCfg(t, cfgPath); !c.Listeners.Flow.Enabled {
 		t.Fatal("not enabled")
 	}
-	for _, rf := range []string{fwrule.FlowNetFlowRecordFile, fwrule.FlowIPFIXRecordFile} {
+	for _, rf := range []string{fwrule.FlowPortRecordFile, fwrule.FlowIPFIXRecordFile} {
 		if _, err := os.Stat(filepath.Join(dataDir, rf)); err != nil {
 			t.Errorf("record %s: %v", rf, err)
 		}
 	}
-	if code, out, _ := runCLI("flow", "on", "--ipfix-port", "0", "--config", cfgPath); code != 0 || !strings.Contains(out, "(NetFlow UDP 2055)") {
+	if code, out, _ := runCLI("flow", "on", "--ipfix-port", "0", "--config", cfgPath); code != 0 || !strings.Contains(out, "(flow UDP 2055)") {
 		t.Fatalf("ipfix off: %d %q", code, out)
 	}
-	if code, out, _ := runCLI("flow", "status", "--config", cfgPath); code != 0 || !strings.Contains(out, "on, NetFlow UDP 2055; template timeout 30m") {
+	if code, out, _ := runCLI("flow", "status", "--config", cfgPath); code != 0 || !strings.Contains(out, "on, flow UDP 2055; template timeout 30m") {
 		t.Fatalf("status: %d %q", code, out)
 	}
 	code, out, _ = runCLI("flow", "off", "--config", cfgPath)
 	if code != 0 || !strings.Contains(out, "Turned the flow listener off") || !strings.Contains(strings.Join(fw.calls, "\n"), "ufw delete allow 2055/udp") {
 		t.Fatalf("off: %d %q %v", code, out, fw.calls)
 	}
-	if code, _, errOut := runCLI("flow", "on", "--netflow-port", "0", "--ipfix-port", "0", "--config", cfgPath); code != 1 ||
-		!strings.Contains(errOut, "listeners.flow.netflow_port") {
+	if code, _, errOut := runCLI("flow", "on", "--flow-port", "0", "--ipfix-port", "0", "--config", cfgPath); code != 1 ||
+		!strings.Contains(errOut, "listeners.flow.flow_port") {
 		t.Fatalf("both off: %d %q", code, errOut)
 	}
 	if code, _, _ := runCLI("flow", "sideways", "--config", cfgPath); code != 2 {

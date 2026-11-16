@@ -224,20 +224,20 @@ interfaces at 60 s writes about 17 MB a day uncompressed and about 1.4 MB once t
 interface limit and the limit on polled devices (500), and the last hour's cycles, failures and skipped cycles. If
 cycles are skipped because polling couldn't keep up, a banner suggests a longer interval or more devices at once.
 
-### Collecting flows (NetFlow, IPFIX)
+### Collecting flows
 
-Woodshed can also collect flow records, NetFlow v5 and v9 and IPFIX, so "who talked to whom, on which ports, how
+Woodshed can also collect flow records, flow v5 and v9 (RFC 3954) and IPFIX (RFC 7011), so "who talked to whom, on which ports, how
 much, and what the firewall denied" around an outage sits beside the device's syslog, traps and polls. It's an
 evidence collector for a window of time, not long-term traffic analytics. It's off until you turn it on, so an
 upgrade opens no new port.
 
-1. In **Settings → Flows**, turn the listener on: UDP 2055 for NetFlow and 4739 for IPFIX by default (each port reads
+1. In **Settings → Flows**, turn the listener on: UDP 2055 for flow v5 and v9 and 4739 for IPFIX by default (each port reads
    every version, so an exporter pointed at the "wrong" one still works; set either to 0 to close it). On Windows,
    also run `woodshed flow on` once in an administrator prompt so the firewall lets exporters in (the rules
    "Woodshed flows (UDP 2055)" and "(UDP 4739)" are installed disabled). On a server without a browser,
    `sudo woodshed flow on` turns it on (see [the install guide](install.md#flows-firewall)).
 2. On each exporter (a router, a switch, a firewall, or `softflowd` on a Linux host), set the flow exporter or
-   collector to this computer and the port, NetFlow v9 or IPFIX if it offers them, v5 otherwise.
+   collector to this computer and the port, flow v9 or IPFIX if it offers them, v5 otherwise.
 3. Open **Events → Flows**. Exporters usually send templates every few minutes, so the first records of a v9 or IPFIX
    exporter can take that long to decode (they wait, and are decoded when the template arrives).
 
@@ -295,8 +295,8 @@ woodshed flows top --by dst-port --fw-event denied --last 24h                 # 
 woodshed flow status                                                          # each exporter's rate, templates, gaps
 ```
 
-To test from another computer, `woodshed send --proto ipfix --host 192.0.2.50 --count 1000` (or `netflow9`,
-`netflow5`) sends generated records, `--events` sends firewall-event records, and `woodshed bench --proto ipfix`
+To test from another computer, `woodshed send --proto ipfix --host 192.0.2.50 --count 1000` (or `flow-v9`,
+`flow-v5`) sends generated records, `--events` sends firewall-event records, and `woodshed bench --proto ipfix`
 measures the whole flow pipeline on this computer, in a temporary folder.
 
 ## 3. Watch

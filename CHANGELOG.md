@@ -7,12 +7,12 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 ## [2.0.0] - unreleased
 
 ### Added
-- A NetFlow v5/v9 and IPFIX collector, off until you turn it on in **Settings → Flows** or with `woodshed flow on`
-  (NetFlow on UDP 2055, IPFIX on UDP 4739; each port reads every version). Templates and options data per exporter
+- A flow collector (flow v5, flow v9 (RFC 3954) and IPFIX (RFC 7011)), off until you turn it on in **Settings → Flows** or with `woodshed flow on`
+  (flow v5 and v9 on UDP 2055, IPFIX on UDP 4739; each port reads every version). Templates and options data per exporter
   and observation domain, interface names from options data, variable-length and enterprise-specific fields (kept as
   they came), data that arrived before its template decoded when it comes (marked late), and malformed or undecodable
   data kept, never dropped silently. Sequence gaps (loss before Woodshed) and duplicates are counted per exporter. See
-  [docs/user-guide.md](docs/user-guide.md#collecting-flows-netflow-ipfix).
+  [docs/user-guide.md](docs/user-guide.md#collecting-flows).
 - Firewall-event, NAT and bidirectional records are first-class: `fw_event` (created, deleted, denied, …),
   `nat_event`, post-NAT addresses and ports, initiator and responder counters and RFC 5103 reverse counters are
   columns and filters, sums follow a no-double-count rule for event records, and a rule or ACL ID can be read from
@@ -25,7 +25,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   the histogram for the selected exporters. Device pages show their flow counts.
 - `woodshed search --type flow` (with `--src`, `--dst-port`, `--proto`, `--fw-event` and the other flow filters),
   `woodshed flows top`, `woodshed flow on|off|status`, a Flows row in `woodshed status`, `woodshed send --proto
-  netflow5|netflow9|ipfix` (with `--events` and `--biflow`) and `woodshed bench --proto ipfix`.
+  flow-v5|flow-v9|ipfix` (with `--events` and `--biflow`) and `woodshed bench --proto ipfix`.
 - Exports and incident bundles cover every data type: the UI's Export now defaults to all types (the API's default
   stays syslog), and bundles include flows when there are any in the window, as `flows/<device>/flows.csv`,
   `flows.ipfix` (an RFC 5655 IPFIX file) and, when there are undecoded sets, `raw.txt`. The bundle README gains a

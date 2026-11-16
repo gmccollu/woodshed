@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-// The flow listener (SPEC §13.1): NetFlow v5/v9 and IPFIX over UDP, off by
+// The flow listener (SPEC §13.1): flow v5/v9 and IPFIX over UDP, off by
 // default. Both ports read every version.
 const (
-	DefaultNetFlowPort        = 2055
+	DefaultFlowPort           = 2055
 	DefaultIPFIXPort          = 4739
 	DefaultTemplateTimeout    = Duration(30 * time.Minute)
 	DefaultFlowPendingBytes   = 32 << 20
@@ -26,7 +26,7 @@ const (
 	MaxFlowPendingBytes       = 1 << 30
 	flowRuleIDHint            = `must be "<enterprise number>:<element ID>", e.g. "32473:7"`
 	flowPortHint              = "must be 0 (off) or between 1 and 65535"
-	flowPortsOffHint          = "at least one of netflow_port and ipfix_port must be on while the flow listener is enabled"
+	flowPortsOffHint          = "at least one of flow_port and ipfix_port must be on while the flow listener is enabled"
 	flowSamePortHint          = "can't be the same as ipfix_port"
 	flowSyslogPortHint        = "can't be the same as the UDP syslog listener's port on the same address"
 	flowSNMPPortHint          = "can't be the same as the SNMP trap listener's port on the same address"
@@ -69,11 +69,11 @@ func ShortDuration(d time.Duration) string {
 	return s
 }
 
-// FlowListener is the NetFlow/IPFIX collector's listener (SPEC §13.1).
+// FlowListener is the flow collector (v5, v9, IPFIX)'s listener (SPEC §13.1).
 type FlowListener struct {
-	Enabled         bool         `toml:"enabled" json:"enabled" comment:"Flows: NetFlow v5/v9 and IPFIX over UDP (Settings → Listeners → \"Flows (NetFlow, IPFIX)\"). Off by default."`
+	Enabled         bool         `toml:"enabled" json:"enabled" comment:"Flows: flow v5/v9 and IPFIX over UDP (Settings → Flows). Off by default."`
 	Addr            string       `toml:"addr" json:"addr"`
-	NetFlowPort     int          `toml:"netflow_port" json:"netflow_port" comment:"NetFlow v5 and v9 (any version is accepted on either port); 0 turns this port off."`
+	FlowPort        int          `toml:"flow_port" json:"flow_port" comment:"flow v5 and v9 (any version is accepted on either port); 0 turns this port off."`
 	IPFIXPort       int          `toml:"ipfix_port" json:"ipfix_port" comment:"IPFIX; 0 turns this port off."`
 	TemplateTimeout FlowDuration `toml:"template_timeout" json:"template_timeout" comment:"A template not refreshed for this long expires (1m to 24h)."`
 	// RuleIDIEs names the IEs that carry a rule or ACL identifier, as
@@ -89,27 +89,27 @@ type FlowListener struct {
 
 // DefaultFlow is the flow listener's default configuration.
 func DefaultFlow() FlowListener {
-	return FlowListener{Addr: DefaultListenAddr, NetFlowPort: DefaultNetFlowPort, IPFIXPort: DefaultIPFIXPort,
+	return FlowListener{Addr: DefaultListenAddr, FlowPort: DefaultFlowPort, IPFIXPort: DefaultIPFIXPort,
 		TemplateTimeout: FlowDuration(DefaultTemplateTimeout), RuleIDIEs: []string{},
 		PendingBytes: DefaultFlowPendingBytes, QueueMessages: DefaultFlowQueueMessages, QueueBytes: DefaultFlowQueueBytes}
 }
 
-// Ports returns the flow listener's sockets: proto "netflow" and "ipfix" with
+// Ports returns the flow listener's sockets: proto "flow" and "ipfix" with
 // their ports, leaving out a port that's 0.
-func (f FlowListener) Ports() []FlowPort {
-	var out []FlowPort
-	if f.NetFlowPort != 0 {
-		out = append(out, FlowPort{Proto: "netflow", Port: f.NetFlowPort})
+func (f FlowListener) Ports() []FlowSocket {
+	var out []FlowSocket
+	if f.FlowPort != 0 {
+		out = append(out, FlowSocket{Proto: "flow", Port: f.FlowPort})
 	}
 	if f.IPFIXPort != 0 {
-		out = append(out, FlowPort{Proto: "ipfix", Port: f.IPFIXPort})
+		out = append(out, FlowSocket{Proto: "ipfix", Port: f.IPFIXPort})
 	}
 	return out
 }
 
-// FlowPort is one socket of the flow listener.
-type FlowPort struct {
-	Proto string // "netflow" or "ipfix"
+// FlowSocket is one socket of the flow listener.
+type FlowSocket struct {
+	Proto string // "flow" or "ipfix"
 	Port  int
 }
 
@@ -163,7 +163,7 @@ func checkFlowListener(e Errors, goos string, l Listeners) {
 	for _, p := range []struct {
 		key  string
 		port int
-	}{{"netflow_port", f.NetFlowPort}, {"ipfix_port", f.IPFIXPort}} {
+	}{{"flow_port", f.FlowPort}, {"ipfix_port", f.IPFIXPort}} {
 		if p.port < 0 || p.port > 65535 {
 			e[k+p.key] = flowPortHint
 			continue
@@ -191,11 +191,11 @@ func checkFlowListener(e Errors, goos string, l Listeners) {
 			e[k+"addr"] = msg
 		}
 	}
-	if f.NetFlowPort != 0 && f.NetFlowPort == f.IPFIXPort {
-		e[k+"netflow_port"] = flowSamePortHint
+	if f.FlowPort != 0 && f.FlowPort == f.IPFIXPort {
+		e[k+"flow_port"] = flowSamePortHint
 	}
-	if f.Enabled && f.NetFlowPort == 0 && f.IPFIXPort == 0 {
-		e[k+"netflow_port"] = flowPortsOffHint
+	if f.Enabled && f.FlowPort == 0 && f.IPFIXPort == 0 {
+		e[k+"flow_port"] = flowPortsOffHint
 	}
 	if d := time.Duration(f.TemplateTimeout); d < MinTemplateTimeout || d > MaxTemplateTimeout {
 		e[k+"template_timeout"] = flowTemplateTimeoutHint

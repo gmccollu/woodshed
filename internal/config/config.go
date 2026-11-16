@@ -68,8 +68,8 @@ type Listeners struct {
 	TLS TLSListener `toml:"tls" json:"tls" comment:"Syslog over TLS (RFC 5425), TCP 6514 by default. Off until you turn it on."`
 	// SNMP is the SNMP trap receiver (snmp.go), off by default.
 	SNMP SNMPListener `toml:"snmp" json:"snmp" comment:"SNMP traps and informs (v1, v2c, v3), UDP 162 by default. Off until you turn it on. v3 users and communities are set in Settings and kept in the data folder, not here."`
-	// Flow is the NetFlow/IPFIX collector (flow.go, SPEC §13.1), off by default.
-	Flow FlowListener `toml:"flow" json:"flow" comment:"Flows: NetFlow v5/v9 and IPFIX over UDP, 2055 and 4739 by default. Off until you turn it on."`
+	// Flow is the flow collector (v5, v9, IPFIX) (flow.go, SPEC §13.1), off by default.
+	Flow FlowListener `toml:"flow" json:"flow" comment:"Flows: flow v5/v9 and IPFIX over UDP, 2055 and 4739 by default. Off until you turn it on."`
 	// Allowlist holds IPs or CIDRs; empty accepts every sender.
 	Allowlist []string `toml:"allowlist" json:"allowlist" comment:"Accept messages only from these IPs or CIDRs, e.g. [\"192.0.2.0/24\", \"2001:db8::1\"]. Empty accepts everyone."`
 	// Blocklist holds IPs or CIDRs whose messages are refused; it wins over the

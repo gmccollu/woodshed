@@ -23,7 +23,7 @@ func flowServer(t *testing.T, edit func(*config.Config)) (*running, int, int) {
 	cfgPath := writeConfig(t, dir, freePort(t), 0, func(c *config.Config) {
 		c.Listeners.Flow.Enabled = true
 		c.Listeners.Flow.Addr = "127.0.0.1"
-		c.Listeners.Flow.NetFlowPort, c.Listeners.Flow.IPFIXPort = nf, ix
+		c.Listeners.Flow.FlowPort, c.Listeners.Flow.IPFIXPort = nf, ix
 		c.Listeners.Flow.RuleIDIEs = []string{loadgen.RuleIE(loadgen.ProtoIPFIX).String()}
 		if edit != nil {
 			edit(c)
@@ -54,7 +54,7 @@ func waitFlows(t *testing.T, r *running, q string, want int64) {
 	t.Fatalf("%s: %d flows, want %d", q, got, want)
 }
 
-// Flows end to end, in process: IPFIX event records and NetFlow v5 from the
+// Flows end to end, in process: IPFIX event records and flow v5 and v9 from the
 // generator to stored records, exactly once by sequence number; the flow
 // state, top-N (denied sources by flows), search paging, the timeline and the
 // templates; both ports read every version.
@@ -76,7 +76,7 @@ func TestFlowsEndToEndInProcess(t *testing.T) {
 	if err != nil || res.Records != 3000 {
 		t.Fatalf("send: %+v %v", res, err)
 	}
-	// NetFlow v5 on the IPFIX port: any version on either port.
+	// Flow v5 on the IPFIX port: any version on either port.
 	if _, err := loadgen.SendFlows(ctx, loadgen.FlowOptions{Proto: loadgen.ProtoNetFlow5, Addr: fmt.Sprintf("127.0.0.1:%d", ix), Count: 300,
 		Rate: 20000, RunID: "00001234", FirstSeq: 100000}, nil); err != nil {
 		t.Fatal(err)
@@ -220,7 +220,7 @@ func TestFlowsEndToEndInProcess(t *testing.T) {
 	r.do(t, "GET", "/api/status", nil, &status)
 	n := 0
 	for _, l := range status.Listeners {
-		if (l.Proto == "netflow" && l.Port == nf || l.Proto == "ipfix" && l.Port == ix) && l.OK {
+		if (l.Proto == "flow" && l.Port == nf || l.Proto == "ipfix" && l.Port == ix) && l.OK {
 			n++
 		}
 	}

@@ -46,7 +46,7 @@ the owner can still overrule them. Everything else is a proposal and can change.
 | Incident bundle and CLI search (1.2) | The bundle is an export (`kind: "bundle"`) with per-type folders, syslog kept in `logs/`; `woodshed search` and `woodshed bundle` read the data folder directly and read-only (§11.3, §11.4) **decided (coordinator, 2026-11-14, owner-delegated)** |
 | UDP queue (1.2) | A bounded queue per UDP socket (100,000 messages / 64 MiB), drops counted as `queue_full`; readers never touch the disk (§11.5) **decided (coordinator, 2026-11-14, owner-delegated)** |
 | SNMP poller (1.3) | A third data type `poll` (text lines in `logs/<device>/poll/`), rates computed at write time with raw counters kept; restarts and reboots from sysUpTime, hrSystemUptime and engineBoots; targets configured per device with credentials in the 1.2 store; graphs on the Events timeline and a device page panel; three CSVs per device in bundles (§12) **decided (coordinator, 2026-11-15, owner-delegated)** |
-| Flows (2.0) | NetFlow v5/v9 and IPFIX on UDP 2055/4739, off by default; a fourth data type `flow` in columnar segments (`logs/<device>/flows/<day>T<hour>.wsf`) with block indexes; flow-time queries, top-N with exported and scaled counts; a flow budget (40 % of the cap); CSV and IPFIX files in the zip; a setup helper named by syntax family, never by vendor (§13) **decided (coordinator, 2026-11-16, owner-delegated)** |
+| Flows (2.0) | Flow v5/v9 and IPFIX on UDP 2055/4739, off by default; a fourth data type `flow` in columnar segments (`logs/<device>/flows/<day>T<hour>.wsf`) with block indexes; flow-time queries, top-N with exported and scaled counts; a flow budget (40 % of the cap); CSV and IPFIX files in the zip; a setup helper named by syntax family, never by vendor (§13) **decided (coordinator, 2026-11-16, owner-delegated)** |
 | First run | Zero-config: listens immediately, and the UI opens on a welcome page **(decided)** |
 | Port 514 in use | The listener fails with a clear error; the UI still starts and explains the clash **(decided)** |
 | UI port | 8514 on localhost (§5) **(decided)** |
@@ -391,7 +391,7 @@ Designed in §12.
 
 ### 2.0
 Designed in §13.
-- **NetFlow v5/v9 and IPFIX collector** (UDP 2055/4739, configurable): template handling per exporter and
+- **Flow collector (flow v5, v9 and IPFIX)** (UDP 2055/4739, configurable): template handling per exporter and
   observation domain, compact columnar storage per device per hour, retention and the disk guard shared with
   syslog. Search by time, IPs, ports and protocol; simple top-talker and top-port views for a time window;
   windowed export (CSV or IPFIX file). No long-term flow analytics, baselining or anomaly detection.
@@ -401,7 +401,7 @@ Designed in §13.
 
 ### After 2.0 (candidates)
 - **sFlow** as a fifth data type: packet samples and counter samples, which many switches export instead of
-  NetFlow or IPFIX (§13.11).
+  flow v5/v9 or IPFIX (§13.11).
 
 ### Out of scope
 - SIEM features: correlation rules, threat detection, compliance reporting, case management.
@@ -2503,7 +2503,7 @@ Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
 
 ## 13. 2.0 design (draft, 2026-11-16)
 
-§9's 2.0 entry **(owner)**: a NetFlow v5/v9 and IPFIX collector, the export covering every data type, and the device
+§9's 2.0 entry **(owner)**: a flow collector (flow v5, flow v9 (RFC 3954) and IPFIX (RFC 7011)), the export covering every data type, and the device
 setup helper. The framing is the scope rule's: an evidence collector for troubleshooting, so "the flows around the
 outage window", not long-term flow analytics, baselining or anomaly detection. Owner decisions are marked
 **(owner)**; the calls made here are **decided (coordinator, 2026-11-16, owner-delegated)** and listed in §13.10. The
@@ -2517,9 +2517,9 @@ talkers and top ports for a window; windowed export as CSV or IPFIX file.
 
 ```toml
 [listeners.flow]
-enabled = false            # Settings → Listeners → "Flows (NetFlow, IPFIX)"; off by default
+enabled = false            # Settings → Flows; off by default
 addr = "0.0.0.0"
-netflow_port = 2055        # NetFlow v5 and v9 (any version is accepted on either port)
+flow_port = 2055           # flow v5 and v9 (any version is accepted on either port)
 ipfix_port = 4739          # IPFIX; 0 turns one port off
 template_timeout = "30m"   # a template not refreshed for this long expires
 pending_bytes = 33554432   # the buffer for data that arrived before its template (§13.1.3)
@@ -2529,7 +2529,7 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
 - **Off by default**, decided (coordinator, 2026-11-16, owner-delegated), like TLS, traps and polling: a 1.3 upgrade
   opens no port.
 - Both ports read every version (the header's version field says which), so an exporter pointed at the "wrong" port
-  still works. Each port shows in `/api/status.listeners` as `proto: "netflow"` and `proto: "ipfix"`, with the usual
+  still works. Each port shows in `/api/status.listeners` as `proto: "flow"` and `proto: "ipfix"`, with the usual
   `listener_bind` banner and Retry.
 - **Transport:** IPFIX over UDP only in 2.0. IPFIX over TCP (and over TLS, reusing §10.3) is a later 2.x item if a
   user asks for it; SCTP isn't planned (Windows has no native SCTP, and exporters rarely use it).
@@ -2542,9 +2542,9 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
   `woodshed flow on|off|status` flips the listener and the rules, ufw/firewalld on Linux.
 
 #### 13.1.1 Versions
-- **NetFlow v5:** the fixed 48-byte record; the header's `sampling_interval` (mode and 14-bit rate) is the records'
+- **Flow v5:** the fixed 48-byte record; the header's `sampling_interval` (mode and 14-bit rate) is the records'
   sampling; `unix_secs`, `unix_nsecs` and `sys_uptime` turn the records' uptime-relative times into UTC.
-- **NetFlow v9** (RFC 3954): template, options template and data FlowSets, per (exporter address, source ID).
+- **Flow v9** (RFC 3954): template, options template and data FlowSets, per (exporter address, source ID).
 - **IPFIX** (RFC 7011): template, options template and data sets, per (exporter address, observation domain ID),
   with variable-length fields, enterprise-specific IEs, and the RFC 7011 time IEs (seconds, milliseconds,
   microseconds, nanoseconds, deltas, and `systemInitTimeMilliseconds` from options data).
@@ -2644,10 +2644,10 @@ folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 
    length and CRC. Written when the segment closes (the hour ends, the part limit, a clean stop).
 
 #### 13.2.1 Firewall events, NAT and bidirectional flows
-A troubleshooting collector's main flow sources include firewalls exporting **event-style** NetFlow v9 and IPFIX:
+A troubleshooting collector's main flow sources include firewalls exporting **event-style** flow v9 and IPFIX:
 one record when a connection is created, one when it's torn down, and one for each denied connection, with the NAT
 translation. Their fields get **first-class columns and filters**, not extras, decided (coordinator, 2026-11-16,
-owner-delegated), using the standard IANA IEs (checked against the IANA IPFIX registry, 2026-11-16). NetFlow v9
+owner-delegated), using the standard IANA IEs (checked against the IANA IPFIX registry, 2026-11-16). Flow v9
 templates that use the same field type numbers are read the same way.
 
 | Column | IANA IE | Notes |
@@ -2832,7 +2832,7 @@ and the manifest's summary gains the same numbers as JSON.
 ### 13.5 Device setup helper
 **Owner (§9):** generated logging, trap and flow-export configuration per device. A **Setup → Send to Woodshed** page
 fills in this Woodshed's addresses, ports, CA certificate and the user's choices:
-- **What:** syslog (UDP, TCP or TLS), SNMP traps (v2c or v3), flows (NetFlow v9 or IPFIX), and the SNMP agent settings a
+- **What:** syslog (UDP, TCP or TLS), SNMP traps (v2c or v3), flows (flow v9 or IPFIX), and the SNMP agent settings a
   device needs so Woodshed can poll it (§12).
 - **Syntax family**, named by syntax, never by vendor or product, decided (coordinator, 2026-11-16, owner-delegated):
   - "Line-oriented CLI (global configuration mode)": `logging host …`, `snmp-server host …`, `flow exporter …`-style
@@ -2898,7 +2898,7 @@ the first bench, which records the measured numbers here:
 - **Unit and fuzz:** the v5, v9 and IPFIX decoders against hand-built and captured packets (every IE type and length,
   variable-length fields, enterprise IEs, padding, options records, template replacement, withdrawal and timeout,
   sequence gaps and duplicates, time conversion from uptime-relative, absolute and delta forms). Fuzz targets:
-  `FuzzNetFlow5`, `FuzzNetFlow9`, `FuzzIPFIX` (no panic, bounded memory, malformed counted not lost), `FuzzTemplates`
+  `FuzzFlowV5`, `FuzzFlowV9`, `FuzzIPFIX` (no panic, bounded memory, malformed counted not lost), `FuzzTemplates`
   (random sequences of templates, withdrawals and data against one cache: no stale decode after a replacement),
   `FuzzSegment` (any bytes as a segment file: recovery never panics and never keeps a block whose CRC fails) and
   `FuzzIPFIXFile` (re-read what the IPFIX file writer wrote).
@@ -2910,7 +2910,7 @@ the first bench, which records the measured numbers here:
   pmacct's `nfprobe` as a second exporter for IPFIX with options data (sampling and interface names). The IPFIX file
   Woodshed exports is read back by our decoder and by an independent IPFIX file reader in CI (tshark), and both must
   agree with the CSV.
-- **`woodshed send --proto netflow5|netflow9|ipfix`:** generators for the lab with exactly-once-checkable records.
+- **`woodshed send --proto flow-v5|flow-v9|ipfix`:** generators for the lab with exactly-once-checkable records.
   Each record carries the run ID and a sequence number: in v9 and IPFIX as an enterprise-specific IE under 32473
   (IANA's documentation enterprise number, as 1.2's trap generator uses), in v5 split across `src_as` and `dst_as`
   (16 bits each). Flags: `--rate` (records/s), `--records-per-packet`, `--domains`, `--sampling N`,

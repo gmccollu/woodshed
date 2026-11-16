@@ -24,7 +24,7 @@ import (
 
 // The flow interop test (SPEC §13.8, the CI job "flow-interop", Linux):
 // softflowd replays a small synthetic pcap (made here: no real traffic) to a
-// real server as NetFlow v5, v9 and IPFIX, and the stored records are
+// real server as flow v5, v9 and IPFIX, and the stored records are
 // compared with the pcap's flows computed here; pmacct's nfprobe is a second
 // IPFIX exporter when it's installed; and the flows.ipfix an export writes is
 // read back by our decoder and by tshark, and both agree with the CSV.

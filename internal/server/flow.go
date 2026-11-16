@@ -681,7 +681,7 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 	}
 	if goos == "windows" && cfg.Listeners.Flow.Enabled {
 		l := cfg.Listeners.Flow
-		state, rule := b.flowFirewall(l.NetFlowPort, l.IPFIXPort, now)
+		state, rule := b.flowFirewall(l.FlowPort, l.IPFIXPort, now)
 		if state != fwrule.StateOK && state != fwrule.StateUnknown {
 			out = append(out, api.Banner{Kind: "flow_firewall", Level: "warn", Text: fmt.Sprintf(
 				"The Windows firewall rule %q is %s, so exporters can't reach the flow listener. Run `woodshed flow on` as an administrator.",

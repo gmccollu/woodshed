@@ -766,7 +766,7 @@ func flowReadmeFiles(info Info) string {
 		b.WriteString(`flows/<device>/flows.ipfix
     The same records as an IPFIX file (RFC 5655), for flow tools: one
     observation domain per original domain, templates carrying every field
-    the records had, enterprise fields included; NetFlow v5 and v9 records
+    the records had, enterprise fields included; flow v5 and v9 records
     are written as their IPFIX fields. Woodshed wrote it from stored records
     (an options record in each domain says so); it wasn't captured off the
     wire. Not carried: the decode status, the exporter's source port and the

@@ -29,7 +29,7 @@ import (
 
 func cmdFlow(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("flow", "on|off|status", `
-The flow listener: NetFlow v5/v9 on UDP 2055 and IPFIX on UDP 4739 by default
+The flow listener: flows (v5, v9) on UDP 2055 and IPFIX on UDP 4739 by default
 (both ports read every version), for servers without a browser.
 
   on      turn the flow listener on. On Windows it also enables the firewall
@@ -43,7 +43,7 @@ The flow listener: NetFlow v5/v9 on UDP 2055 and IPFIX on UDP 4739 by default
 Run on and off as an administrator (sudo): they save the config, and a running
 service is restarted to use it.`, stderr)
 	cfgPath := configFlag(fs)
-	nfPort := fs.Int("netflow-port", -1, "with on: the UDP `port` for NetFlow (0 turns it off; default: keep the current one, 2055)")
+	nfPort := fs.Int("flow-port", -1, "with on: the UDP `port` for flows, v5 and v9 (0 turns it off; default: keep the current one, 2055)")
 	ixPort := fs.Int("ipfix-port", -1, "with on: the UDP `port` for IPFIX (0 turns it off; default: keep the current one, 4739)")
 	var mode string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -65,7 +65,7 @@ service is restarted to use it.`, stderr)
 		return 2
 	}
 	if (*nfPort >= 0 || *ixPort >= 0) && mode != "on" {
-		fmt.Fprintln(stderr, "woodshed flow: --netflow-port and --ipfix-port go with on")
+		fmt.Fprintln(stderr, "woodshed flow: --flow-port and --ipfix-port go with on")
 		return 2
 	}
 	cfg, err := readConfig(*cfgPath)
@@ -84,13 +84,13 @@ service is restarted to use it.`, stderr)
 	next := cfg.Clone()
 	next.Listeners.Flow.Enabled = mode == "on"
 	if *nfPort >= 0 {
-		next.Listeners.Flow.NetFlowPort = *nfPort
+		next.Listeners.Flow.FlowPort = *nfPort
 	}
 	if *ixPort >= 0 {
 		next.Listeners.Flow.IPFIXPort = *ixPort
 	}
 	if errs := next.Validate(&cfg); len(errs) > 0 {
-		for _, k := range []string{"listeners.flow.netflow_port", "listeners.flow.ipfix_port", "listeners.flow.addr"} {
+		for _, k := range []string{"listeners.flow.flow_port", "listeners.flow.ipfix_port", "listeners.flow.addr"} {
 			if msg, ok := errs[k]; ok {
 				return fail(stderr, "flow", fmt.Errorf("%s %s", k, msg))
 			}
@@ -99,7 +99,7 @@ service is restarted to use it.`, stderr)
 	}
 	was, now := cfg.Listeners.Flow, next.Listeners.Flow
 	ports := flowPortsText(now)
-	changed := was.Enabled != now.Enabled || was.NetFlowPort != now.NetFlowPort || was.IPFIXPort != now.IPFIXPort
+	changed := was.Enabled != now.Enabled || was.FlowPort != now.FlowPort || was.IPFIXPort != now.IPFIXPort
 	if changed {
 		if err := saveConfigKeepingOwner(abs, next); err != nil {
 			return fail(stderr, "flow", adminErr(err))
@@ -126,8 +126,8 @@ service is restarted to use it.`, stderr)
 
 func flowPortsText(l config.FlowListener) string {
 	var parts []string
-	if l.NetFlowPort != 0 {
-		parts = append(parts, fmt.Sprintf("NetFlow UDP %d", l.NetFlowPort))
+	if l.FlowPort != 0 {
+		parts = append(parts, fmt.Sprintf("flow UDP %d", l.FlowPort))
 	}
 	if l.IPFIXPort != 0 {
 		parts = append(parts, fmt.Sprintf("IPFIX UDP %d", l.IPFIXPort))
@@ -144,7 +144,7 @@ func flowFirewall(stdout, stderr io.Writer, on bool, l config.FlowListener, data
 			exe = installedExe()
 		}
 		if on {
-			err = fwrule.FlowWindowsEnable(fwRun, exe, l.NetFlowPort, l.IPFIXPort)
+			err = fwrule.FlowWindowsEnable(fwRun, exe, l.FlowPort, l.IPFIXPort)
 		} else {
 			err = fwrule.FlowWindowsDisable(fwRun)
 		}
@@ -153,16 +153,16 @@ func flowFirewall(stdout, stderr io.Writer, on bool, l config.FlowListener, data
 			return
 		}
 		if on {
-			fmt.Fprintf(stdout, "Enabled the Windows firewall rules %q and %q for %s.\n", fwrule.FlowNetFlowRuleName,
+			fmt.Fprintf(stdout, "Enabled the Windows firewall rules %q and %q for %s.\n", fwrule.FlowPortRuleName,
 				fwrule.FlowIPFIXRuleName, flowPortsText(l))
 		} else {
-			fmt.Fprintf(stdout, "Disabled the Windows firewall rules %q and %q.\n", fwrule.FlowNetFlowRuleName, fwrule.FlowIPFIXRuleName)
+			fmt.Fprintf(stdout, "Disabled the Windows firewall rules %q and %q.\n", fwrule.FlowPortRuleName, fwrule.FlowIPFIXRuleName)
 		}
 	case "linux":
 		var msg string
 		var err error
 		if on {
-			msg, err = fwrule.FlowLinuxOpen(fwRun, dataDir, l.NetFlowPort, l.IPFIXPort)
+			msg, err = fwrule.FlowLinuxOpen(fwRun, dataDir, l.FlowPort, l.IPFIXPort)
 		} else {
 			msg, err = fwrule.FlowLinuxClose(fwRun, dataDir)
 		}
@@ -191,7 +191,7 @@ func flowStatus(stdout io.Writer, cfg config.Config) {
 			running = true
 			fs = rs.Flows
 			for _, ln := range rs.Listeners {
-				if ln.Proto == "netflow" || ln.Proto == "ipfix" {
+				if ln.Proto == "flow" || ln.Proto == "ipfix" {
 					w.row("Listener", describeListener(ln))
 				}
 			}
@@ -205,14 +205,14 @@ func flowStatus(stdout io.Writer, cfg config.Config) {
 	}
 	if fwOS == "linux" && l.Enabled {
 		w.row("Firewall", "if exporters' flows don't arrive, open the ports:")
-		for _, line := range strings.Split(strings.TrimRight(fwrule.FlowLinuxCommands(l.NetFlowPort, l.IPFIXPort), "\n"), "\n") {
+		for _, line := range strings.Split(strings.TrimRight(fwrule.FlowLinuxCommands(l.FlowPort, l.IPFIXPort), "\n"), "\n") {
 			w.row("", strings.TrimSpace(line))
 		}
 	}
 	if fwOS == "windows" {
-		st, rule := fwrule.FlowWindowsState(fwRun, l.NetFlowPort, l.IPFIXPort)
+		st, rule := fwrule.FlowWindowsState(fwRun, l.FlowPort, l.IPFIXPort)
 		if rule == "" {
-			rule = fwrule.FlowNetFlowRuleName + " and " + fwrule.FlowIPFIXRuleName
+			rule = fwrule.FlowPortRuleName + " and " + fwrule.FlowIPFIXRuleName
 		}
 		w.row("Firewall", fmt.Sprintf("rules %q: %s", rule, st))
 	}

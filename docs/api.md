@@ -1156,24 +1156,24 @@ Any non-2xx returns `{"error": "human-readable message"}`.
 
 ## Flows
 
-Since 2.0 (SPEC §13): the flow listener (NetFlow v5/v9, IPFIX), `type=flow` in search, the summary, saved searches and
+Since 2.0 (SPEC §13): the flow listener (flow v5/v9, IPFIX), `type=flow` in search, the summary, saved searches and
 exports, and the flow routes. Everything is additive (SPEC §13.9).
 
 ### Flow listener and state
 
 **Settings:** `/api/settings` gains `listeners.flow` and `storage.flow_budget_bytes`:
 ```json
-{"listeners": {"flow": {"enabled": false, "addr": "0.0.0.0", "netflow_port": 2055, "ipfix_port": 4739,
+{"listeners": {"flow": {"enabled": false, "addr": "0.0.0.0", "flow_port": 2055, "ipfix_port": 4739,
                         "template_timeout": "30m", "rule_id_ies": []}},
  "storage": {"flow_budget_bytes": 0}}
 ```
-- Shown here as fragments of the settings object. `netflow_port` / `ipfix_port`: 0 (off) or 1–65535, not shared with
+- Shown here as fragments of the settings object. `flow_port` / `ipfix_port`: 0 (off) or 1–65535, not shared with
   another UDP listener on an overlapping address; at least one non-zero while enabled. `template_timeout` 1 min to
   24 h. `rule_id_ies`: up to 8 `"<enterprise number>:<element ID>"` strings naming the IEs that carry a rule or ACL
   identifier (there's no standard one; SPEC §13.2.1); the first one a record has fills `rule_id`.
 - `flow_budget_bytes`: 0 means 40 % of `storage.retention_bytes`; otherwise at least 1 GiB and at most 90 % of it
   (a `400` on the key otherwise). File-only: `listeners.flow.pending_bytes`, `queue_messages`, `queue_bytes`.
-- `/api/status.listeners` gains `{"proto": "netflow", …}` and `{"proto": "ipfix", …}` entries while enabled.
+- `/api/status.listeners` gains `{"proto": "flow", …}` and `{"proto": "ipfix", …}` entries while enabled.
 
 **Flow state:**
 
@@ -1311,7 +1311,7 @@ start:
 
 
 **CLI** (not HTTP): `woodshed search --type flow`, `woodshed flows top`, `woodshed flow on|off|status`, `woodshed send
---proto netflow5|netflow9|ipfix`, `woodshed bench --proto ipfix` and `woodshed reindex --flows-redecode`, as in SPEC
+--proto flow-v5|flow-v9|ipfix`, `woodshed bench --proto ipfix` and `woodshed reindex --flows-redecode`, as in SPEC
 §13.7 and §13.8.
 
 ## 2.0 (planned)
@@ -1333,7 +1333,7 @@ in a `###` heading or after a label, never at the start of a line in the usual "
 **Snippet:** `POST /api/setup/snippet` body `{"family": "rsyslog", "what": "syslog", "transport": "tls", "address":
 "logs-01.example.net"}` → `{"text": "…", "notes": ["…"], "placeholders": ["<CA-FILE>"], "verification": "tested"}`.
 - `address` defaults to the first of this Woodshed's addresses the Setup page lists; `transport` per `what`: syslog
-  `udp`, `tcp` or `tls`; trap `v2c` or `v3`; flow `netflow9` or `ipfix`; poll `v2c` or `v3`.
+  `udp`, `tcp` or `tls`; trap `v2c` or `v3`; flow `v9` or `ipfix`; poll `v2c` or `v3`.
 - Secrets are always placeholders; no stored community or key is ever put into a snippet. Nothing is changed on the
   server.
 

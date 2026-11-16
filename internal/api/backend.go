@@ -467,7 +467,7 @@ type StorageSettings struct {
 type FlowListenerSettings struct {
 	Enabled         bool     `json:"enabled"`
 	Addr            string   `json:"addr"`
-	NetFlowPort     int      `json:"netflow_port"`
+	FlowPort     int      `json:"flow_port"`
 	IPFIXPort       int      `json:"ipfix_port"`
 	TemplateTimeout string   `json:"template_timeout"`
 	RuleIDIEs       []string `json:"rule_id_ies"`

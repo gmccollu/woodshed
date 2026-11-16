@@ -18,7 +18,7 @@
     but disabled; `woodshed tls on` enables it. Upgrades and repairs keep its state.
   - Adds the rule "Woodshed SNMP traps (UDP 162)" (UDP 162 for woodshed.exe, all profiles) present
     but disabled; `woodshed snmp on` enables it. Upgrades and repairs keep its state.
-  - Adds the rules "Woodshed flows (UDP 2055)" and "Woodshed flows (UDP 4739)" (NetFlow and IPFIX
+  - Adds the rules "Woodshed flows (UDP 2055)" and "Woodshed flows (UDP 4739)" (flow v5/v9 and IPFIX
     for woodshed.exe, all profiles) present but disabled; `woodshed flow on` enables them. Upgrades
     and repairs keep their state.
   - Registers the "Woodshed" event source in the Application log, and a Start menu shortcut to the UI.
@@ -205,7 +205,7 @@
     <CustomAction Id="WoodshedSnmpFirewallRemove" BinaryRef="WoodshedAclFix"
                   ExeCommand="--snmp-firewall remove"
                   Execute="deferred" Impersonate="no" Return="ignore" />
-    <!-- The flow rules (SPEC §13.1): the same, one per port, UDP 2055 (NetFlow) and 4739 (IPFIX). -->
+    <!-- The flow rules (SPEC §13.1): the same, one per port, UDP 2055 (flow v5, v9) and 4739 (IPFIX). -->
     <CustomAction Id="WoodshedFlowFirewallEnsure" BinaryRef="WoodshedAclFix"
                   ExeCommand="--flow-firewall ensure &quot;[INSTALLFOLDER]woodshed.exe&quot;"
                   Execute="deferred" Impersonate="no" Return="ignore" />

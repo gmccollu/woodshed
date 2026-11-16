@@ -94,7 +94,7 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 	}
 
 	vars := map[string]string{"{agent_port}": strconv.Itoa(int(a1.Addr().Port())), "{agent_v3_port}": strconv.Itoa(int(a2.Addr().Port())),
-		"{flow_netflow_port}": strconv.Itoa(freeUDP(t)), "{flow_ipfix_port}": strconv.Itoa(freeUDP(t)),
+		"{flow_flow_port}": strconv.Itoa(freeUDP(t)), "{flow_ipfix_port}": strconv.Itoa(freeUDP(t)),
 		// A bundle's moment can't be in the future.
 		"{at}": time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second).Format(time.RFC3339)}
 	subst := func(s string) string {
@@ -106,7 +106,7 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 	// Ports are numbers: a quoted "{agent_port}" becomes the bare number.
 	substBody := func(b json.RawMessage) []byte {
 		s := string(b)
-		for _, k := range []string{"{agent_port}", "{agent_v3_port}", "{flow_netflow_port}", "{flow_ipfix_port}"} {
+		for _, k := range []string{"{agent_port}", "{agent_v3_port}", "{flow_flow_port}", "{flow_ipfix_port}"} {
 			s = strings.ReplaceAll(s, `"`+k+`"`, vars[k])
 		}
 		return []byte(subst(s))

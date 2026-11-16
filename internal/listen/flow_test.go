@@ -11,7 +11,7 @@ import (
 )
 
 func flowCfg() config.Listeners {
-	return config.Listeners{Flow: config.FlowListener{Enabled: true, Addr: "127.0.0.1", NetFlowPort: -1, IPFIXPort: -1},
+	return config.Listeners{Flow: config.FlowListener{Enabled: true, Addr: "127.0.0.1", FlowPort: -1, IPFIXPort: -1},
 		Blocklist: []string{"192.0.2.99"}, MaxMessageBytes: 2048} // syslog's limit; flow packets are never cut
 }
 
@@ -30,7 +30,7 @@ func TestFlowListener(t *testing.T) {
 		}
 	})
 	addrs := s.FlowAddrs()
-	if len(addrs) != 2 || addrs["netflow"].Port() == 0 || addrs["ipfix"].Port() == 0 || addrs["netflow"] == addrs["ipfix"] {
+	if len(addrs) != 2 || addrs["flow"].Port() == 0 || addrs["ipfix"].Port() == 0 || addrs["flow"] == addrs["ipfix"] {
 		t.Fatalf("addrs %v, status %+v", addrs, s.Status().Listeners)
 	}
 	if _, ok := ev.find(KindStart); !ok {
@@ -50,17 +50,17 @@ func TestFlowListener(t *testing.T) {
 		}
 		return c
 	}
-	nf := send("netflow", []byte("v5"), big)
+	nf := send("flow", []byte("v5"), big)
 	ix := send("ipfix", []byte("v10"))
 	waitUntil(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 3 })
 	mu.Lock()
 	var nfGot [][]byte
 	for _, p := range got {
 		switch p.Proto {
-		case "netflow":
+		case "flow":
 			nfGot = append(nfGot, p.Data)
 			if p.From.Port() != uint16(nf.LocalAddr().(*net.UDPAddr).Port) {
-				t.Errorf("netflow source port %v", p.From)
+				t.Errorf("flow port source %v", p.From)
 			}
 		case "ipfix":
 			if string(p.Data) != "v10" || p.From.Port() != uint16(ix.LocalAddr().(*net.UDPAddr).Port) {
@@ -72,12 +72,12 @@ func TestFlowListener(t *testing.T) {
 	}
 	mu.Unlock()
 	if len(nfGot) != 2 || string(nfGot[0]) != "v5" || len(nfGot[1]) != 9000 {
-		t.Fatalf("netflow packets in order and whole: %d", len(nfGot))
+		t.Fatalf("flow port packets in order and whole: %d", len(nfGot))
 	}
 	st := s.Status()
 	var listed, queued int
 	for _, l := range st.Listeners {
-		if (l.Proto == "netflow" || l.Proto == "ipfix") && l.OK {
+		if (l.Proto == "flow" || l.Proto == "ipfix") && l.OK {
 			listed++
 		}
 	}
@@ -97,8 +97,8 @@ func TestFlowListener(t *testing.T) {
 	if err := s.Reconfigure(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if a := s.FlowAddrs(); len(a) != 1 || a["netflow"].Port() == 0 {
-		t.Fatalf("netflow only: %v", a)
+	if a := s.FlowAddrs(); len(a) != 1 || a["flow"].Port() == 0 {
+		t.Fatalf("flow port only: %v", a)
 	}
 	cfg.Flow.Enabled = false
 	s.Reconfigure(cfg)
@@ -106,7 +106,7 @@ func TestFlowListener(t *testing.T) {
 		t.Fatalf("still running: %v", a)
 	}
 	for _, l := range s.Status().Listeners {
-		if l.Proto == "netflow" || l.Proto == "ipfix" {
+		if l.Proto == "flow" || l.Proto == "ipfix" {
 			t.Fatalf("disabled listener in status: %+v", l)
 		}
 	}
@@ -149,12 +149,12 @@ func TestFlowBindFailure(t *testing.T) {
 	defer hold.Close()
 	port := hold.LocalAddr().(*net.UDPAddr).Port
 	cfg := flowCfg()
-	cfg.Flow.NetFlowPort = port
+	cfg.Flow.FlowPort = port
 	s, _, _ := start(t, cfg, func(o *Options) { o.Flow = func(*FlowPacket) {} })
 	var bad, ok int
 	for _, l := range s.Status().Listeners {
 		switch {
-		case l.Proto == "netflow" && !l.OK && strings.Contains(l.Error, "in use"):
+		case l.Proto == "flow" && !l.OK && strings.Contains(l.Error, "in use"):
 			bad++
 		case l.Proto == "ipfix" && l.OK:
 			ok++
@@ -165,7 +165,7 @@ func TestFlowBindFailure(t *testing.T) {
 	}
 	hold.Close()
 	s.Retry()
-	if a := s.FlowAddrs(); a["netflow"].Port() != uint16(port) || a["ipfix"].Port() == 0 {
+	if a := s.FlowAddrs(); a["flow"].Port() != uint16(port) || a["ipfix"].Port() == 0 {
 		t.Fatalf("retry: %v %+v", a, s.Status().Listeners)
 	}
 }

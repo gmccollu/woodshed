@@ -10,14 +10,14 @@ import (
 func TestFlowWindowsRules(t *testing.T) {
 	f := &fakeWinRules{rules: map[string]*fakeWin{}}
 	exe := `C:\Program Files\Woodshed\woodshed.exe`
-	if st, rule := FlowWindowsState(f.run, 2055, 4739); st != StateMissing || rule != FlowNetFlowRuleName {
+	if st, rule := FlowWindowsState(f.run, 2055, 4739); st != StateMissing || rule != FlowPortRuleName {
 		t.Errorf("no rules: %s %s", st, rule)
 	}
 	created, err := FlowWindowsEnsure(f.run, exe)
 	if err != nil || len(created) != 2 {
 		t.Fatalf("ensure: %v %v", created, err)
 	}
-	nf, ix := f.rules[FlowNetFlowRuleName], f.rules[FlowIPFIXRuleName]
+	nf, ix := f.rules[FlowPortRuleName], f.rules[FlowIPFIXRuleName]
 	if !nf.present || nf.enabled || nf.port != "2055" || !ix.present || ix.enabled || ix.port != "4739" ||
 		!strings.Contains(strings.Join(nf.calls, " "), "protocol=UDP") {
 		t.Fatalf("after install: %+v %+v", nf, ix)
@@ -25,7 +25,7 @@ func TestFlowWindowsRules(t *testing.T) {
 	if st, _ := FlowWindowsState(f.run, 2055, 4739); st != StateDisabled {
 		t.Errorf("after install: %s", st)
 	}
-	// on with IPFIX off: NetFlow enabled on its port, IPFIX disabled and not checked.
+	// on with IPFIX off: the flow port enabled on its port, IPFIX disabled and not checked.
 	if err := FlowWindowsEnable(f.run, exe, 12055, 0); err != nil || !nf.enabled || nf.port != "12055" || ix.enabled {
 		t.Fatalf("enable: %v %+v %+v", err, nf, ix)
 	}
@@ -56,7 +56,7 @@ func TestFlowLinuxUfw(t *testing.T) {
 	if err != nil || !f.ufwRules["2055/udp"] || !f.ufwRules["4739/udp"] || !strings.Contains(msg, "4739/udp") {
 		t.Fatalf("open: %q %v %v", msg, err, f.ufwRules)
 	}
-	for _, rf := range []string{FlowNetFlowRecordFile, FlowIPFIXRecordFile} {
+	for _, rf := range []string{FlowPortRecordFile, FlowIPFIXRecordFile} {
 		if _, err := os.Stat(filepath.Join(dir, rf)); err != nil {
 			t.Errorf("record %s: %v", rf, err)
 		}

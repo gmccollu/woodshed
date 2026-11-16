@@ -10,7 +10,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/config"
 )
 
-// The flow listener (SPEC §13.1): up to two UDP sockets, NetFlow (2055) and
+// The flow listener (SPEC §13.1): up to two UDP sockets, the flow port (2055, v5 and v9) and
 // IPFIX (4739), that both read every version, feeding one receive queue of
 // the listener's own size (flow packets are larger and come in bursts) and
 // one drainer, which hands each packet in arrival order to Options.Flow. One
@@ -26,7 +26,7 @@ type FlowPacket struct {
 	Data     []byte
 	From     netip.AddrPort // the exporter's address and source port
 	Received time.Time      // UTC
-	Proto    string         // the socket it came in on: "netflow" or "ipfix"
+	Proto    string         // the socket it came in on: "flow" or "ipfix"
 }
 
 // FlowHandler handles one flow datagram (see Options.Flow).
@@ -99,7 +99,7 @@ func (s *Server) enqueueFlow(q *udpQueue, raw []byte, from netip.AddrPort, proto
 func (l *flowListener) drain(s *Server) {
 	defer close(l.drained)
 	s.drainQueueWith(l.q, func(e *queued) {
-		proto := "netflow"
+		proto := "flow"
 		if e.truncated {
 			proto = "ipfix"
 		}
@@ -212,7 +212,7 @@ func flowLabel(proto string) string {
 	if proto == "ipfix" {
 		return "IPFIX"
 	}
-	return "NetFlow"
+	return "Flow"
 }
 
 func (s *Server) stopFlow(ev *events) {
@@ -227,7 +227,7 @@ func (s *Server) stopFlow(ev *events) {
 	s.flow = nil
 }
 
-// FlowAddrs returns the bound flow ports by proto ("netflow", "ipfix").
+// FlowAddrs returns the bound flow ports by proto ("flow", "ipfix").
 func (s *Server) FlowAddrs() map[string]netip.AddrPort {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -242,7 +242,7 @@ func (s *Server) FlowAddrs() map[string]netip.AddrPort {
 
 // flowChanged reports whether the flow listener must be rebound.
 func flowChanged(a, b config.FlowListener) bool {
-	return a.Enabled != b.Enabled || a.Addr != b.Addr || a.NetFlowPort != b.NetFlowPort || a.IPFIXPort != b.IPFIXPort
+	return a.Enabled != b.Enabled || a.Addr != b.Addr || a.FlowPort != b.FlowPort || a.IPFIXPort != b.IPFIXPort
 }
 
 // flowStatus appends the flow listener's entries: each enabled port, bound

@@ -33,7 +33,7 @@
 //	woodshed-aclfix.exe --snmp-firewall ensure "C:\Program Files\Woodshed\woodshed.exe"
 //	woodshed-aclfix.exe --snmp-firewall remove
 //
-// The flow rules (fwrule.FlowNetFlowRuleName and FlowIPFIXRuleName, SPEC §13.1), UDP 2055 and 4739:
+// The flow rules (fwrule.FlowPortRuleName and FlowIPFIXRuleName, SPEC §13.1), UDP 2055 and 4739:
 //
 //	woodshed-aclfix.exe --flow-firewall ensure "C:\Program Files\Woodshed\woodshed.exe"
 //	woodshed-aclfix.exe --flow-firewall remove
@@ -179,7 +179,7 @@ func flowFirewall(args []string) int {
 			fmt.Fprintln(os.Stderr, "woodshed-aclfix: --flow-firewall remove:", err)
 			return 1
 		}
-		fmt.Printf("woodshed-aclfix: removed the firewall rules %q and %q\n", fwrule.FlowNetFlowRuleName, fwrule.FlowIPFIXRuleName)
+		fmt.Printf("woodshed-aclfix: removed the firewall rules %q and %q\n", fwrule.FlowPortRuleName, fwrule.FlowIPFIXRuleName)
 		return 0
 	}
 	fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix --flow-firewall ensure <woodshed.exe> | remove")

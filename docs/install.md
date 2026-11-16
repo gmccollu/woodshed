@@ -121,7 +121,7 @@ The installer:
 - adds Windows Firewall rules for woodshed.exe on UDP 514 and TCP 514 only. The UI port isn't opened. It also adds
   **Woodshed syslog (TLS 6514)** for syslog over TLS, turned off until `woodshed tls on` (see
   [TLS syslog](#tls-syslog-firewall-and-certificate)), and **Woodshed flows (UDP 2055)** and **Woodshed flows
-  (UDP 4739)** for NetFlow and IPFIX, turned off until `woodshed flow on` (see [Flows](#flows-firewall));
+  (UDP 4739)** for flows (v5, v9) and IPFIX, turned off until `woodshed flow on` (see [Flows](#flows-firewall));
 - resets the ACL of `C:\ProgramData\Woodshed` and everything already in it (owner Administrators; links inside are
   removed), and keeps only `SeChangeNotifyPrivilege` in the service's token;
 - adds a Start menu shortcut, **Woodshed**, that opens the UI.
@@ -356,13 +356,13 @@ service's account with DPAPI), both in the data folder. MIB files go in the `mib
 
 ## Flows: firewall
 
-The flow listener (NetFlow on UDP 2055, IPFIX on UDP 4739; each port reads every version) is off until you turn it on
+The flow listener (flow v5 and v9 on UDP 2055, IPFIX on UDP 4739; each port reads every version) is off until you turn it on
 in **Settings → Flows**, or with `woodshed flow on` as an administrator. A 1.3 upgrade leaves it off. Pointing
-exporters at it is in the [user guide](user-guide.md#collecting-flows-netflow-ipfix). The commands, all as an
+exporters at it is in the [user guide](user-guide.md#collecting-flows). The commands, all as an
 administrator; like `woodshed snmp`, they edit the config and restart a running service:
 
 ```sh
-woodshed flow on [--netflow-port 2055] [--ipfix-port 4739]   # 0 closes a port
+woodshed flow on [--flow-port 2055] [--ipfix-port 4739]   # 0 closes a port
 woodshed flow off                                            # turn it off and undo the firewall change; stored flows are kept
 woodshed flow status                                         # each exporter: records a second, templates, sampling, gaps
 ```
@@ -372,13 +372,13 @@ Both ports are above 1024, so no privilege is needed for them.
 **The firewall, per OS** (as for traps):
 - **Windows:** the MSI and `woodshed install` add the rules **Woodshed flows (UDP 2055)** and **Woodshed flows
   (UDP 4739)** (inbound UDP for woodshed.exe, every profile), turned off. `woodshed flow on` turns each on, on its
-  port (`listeners.flow.netflow_port` and `ipfix_port`; a port of 0 keeps its rule off), and `woodshed flow off` turns
+  port (`listeners.flow.flow_port` and `ipfix_port`; a port of 0 keeps its rule off), and `woodshed flow off` turns
   both off. Upgrades and repairs keep their state, and uninstalling removes them. While the listener is on and a rule
   is off, missing or on another port, a banner gives the command.
 - **macOS:** the application firewall allows or blocks the program, not ports: nothing to do.
 - **Linux:** the packages add nothing. `woodshed flow on` runs `ufw allow 2055/udp` and `ufw allow 4739/udp` when
   ufw is active, or `firewall-cmd --permanent --add-port=…/udp` and a reload when firewalld is running, and records
-  each in `flow-netflow-firewall.json` and `flow-ipfix-firewall.json` in the data folder; `woodshed flow off` removes
+  each in `flow-firewall.json` and `flow-ipfix-firewall.json` in the data folder; `woodshed flow off` removes
   only those. With neither active it changes nothing and prints the commands.
 
 Flow exporters often send in bursts. The listener has its own receive queue (50,000 packets or 128 MiB by default,
@@ -584,7 +584,7 @@ Or with icacls, which gives the same DACL (`M` is 0x1301bf) but leaves the owner
 | `snmp-engine.json` | Woodshed's own SNMP v3 engine ID and boot counter (mode 0600), made at the first start |
 | `snmp-users.json` (`snmp-users.dat` on Windows) | the SNMP v3 users and the v1/v2c communities: the names and protocols, and every secret in one protected part (mode 0600; DPAPI on Windows) |
 | `snmp-firewall.json` | Linux: what `woodshed snmp on` added to ufw or firewalld, so `snmp off` removes only that |
-| `flow-netflow-firewall.json`, `flow-ipfix-firewall.json` | Linux: what `woodshed flow on` added to ufw or firewalld, per port, so `flow off` removes only those |
+| `flow-firewall.json`, `flow-ipfix-firewall.json` | Linux: what `woodshed flow on` added to ufw or firewalld, per port, so `flow off` removes only those |
 | `mibs/` | MIB files for trap names (created at start; Reload MIBs in Settings reads them again) |
 | `exports/` | export zips, deleted after 24 hours |
 

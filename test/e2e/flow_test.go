@@ -72,7 +72,7 @@ func TestFlowsEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Listeners.Flow.Enabled, c.Listeners.Flow.Addr = true, "127.0.0.1"
-	c.Listeners.Flow.NetFlowPort, c.Listeners.Flow.IPFIXPort = 0, ipfixPort
+	c.Listeners.Flow.FlowPort, c.Listeners.Flow.IPFIXPort = 0, ipfixPort
 	c.Listeners.Flow.RuleIDIEs = []string{loadgen.RuleIE(loadgen.ProtoIPFIX).String()}
 	if err := config.Save(cfgPath, c); err != nil {
 		t.Fatal(err)

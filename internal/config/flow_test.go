@@ -30,10 +30,10 @@ func TestFlowValidation(t *testing.T) {
 		mod  func(c *Config)
 		key  string
 	}{
-		{"both ports off", func(c *Config) { c.Listeners.Flow.NetFlowPort, c.Listeners.Flow.IPFIXPort = 0, 0 }, "listeners.flow.netflow_port"},
-		{"same ports", func(c *Config) { c.Listeners.Flow.IPFIXPort = c.Listeners.Flow.NetFlowPort }, "listeners.flow.netflow_port"},
+		{"both ports off", func(c *Config) { c.Listeners.Flow.FlowPort, c.Listeners.Flow.IPFIXPort = 0, 0 }, "listeners.flow.flow_port"},
+		{"same ports", func(c *Config) { c.Listeners.Flow.IPFIXPort = c.Listeners.Flow.FlowPort }, "listeners.flow.flow_port"},
 		{"port out of range", func(c *Config) { c.Listeners.Flow.IPFIXPort = 70000 }, "listeners.flow.ipfix_port"},
-		{"syslog port", func(c *Config) { c.Listeners.Flow.NetFlowPort = c.Listeners.UDP.Port }, "listeners.flow.netflow_port"},
+		{"syslog port", func(c *Config) { c.Listeners.Flow.FlowPort = c.Listeners.UDP.Port }, "listeners.flow.flow_port"},
 		{"trap port", func(c *Config) { c.Listeners.Flow.IPFIXPort = c.Listeners.SNMP.Port }, "listeners.flow.ipfix_port"},
 		{"bad addr", func(c *Config) { c.Listeners.Flow.Addr = "nope" }, "listeners.flow.addr"},
 		{"timeout short", func(c *Config) { c.Listeners.Flow.TemplateTimeout = FlowDuration(30 * time.Second) }, "listeners.flow.template_timeout"},

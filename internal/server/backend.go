@@ -890,7 +890,7 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 
 func listenersEqual(a, b config.Listeners) bool {
 	fa, fb := a.Flow, b.Flow
-	if fa.Enabled != fb.Enabled || fa.Addr != fb.Addr || fa.NetFlowPort != fb.NetFlowPort || fa.IPFIXPort != fb.IPFIXPort ||
+	if fa.Enabled != fb.Enabled || fa.Addr != fb.Addr || fa.FlowPort != fb.FlowPort || fa.IPFIXPort != fb.IPFIXPort ||
 		fa.QueueMessages != fb.QueueMessages || fa.QueueBytes != fb.QueueBytes {
 		return false
 	}

@@ -107,11 +107,11 @@ See [Receiving SNMP traps](docs/user-guide.md#receiving-snmp-traps).
   second per sender. The only other packets it sends are the v3 Reports a device asks for to learn Woodshed's engine
 ID, as answers on the same socket; it never starts a connection to a device.
 
-## Does Woodshed collect NetFlow or IPFIX?
+## Does Woodshed collect flows (flow v5, v9, IPFIX)?
 
-Yes, since 2.0, when you turn it on in **Settings → Flows** (NetFlow on UDP 2055, IPFIX on UDP 4739): NetFlow v5 and
-v9 and IPFIX, firewall-event and NAT records included. See
-[Collecting flows](docs/user-guide.md#collecting-flows-netflow-ipfix).
+Yes, since 2.0, when you turn it on in **Settings → Flows** (flow v5 and v9 on UDP 2055, IPFIX on UDP 4739): flow v5 and
+v9 (RFC 3954) and IPFIX (RFC 7011), firewall-event and NAT records included. See
+[Collecting flows](docs/user-guide.md#collecting-flows).
 
 - **Is it a traffic analytics tool?** No. It keeps the flows around an incident, searchable and exportable beside
   the syslog: who talked to whom, on which ports, how much, and what was denied, for a window of time. There are no
