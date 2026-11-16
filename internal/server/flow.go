@@ -425,7 +425,8 @@ func (b *backend) FlowTop(ctx context.Context, r api.FlowTopRequest) (api.FlowTo
 // ToAPITop is a top-N result as /api/flows/top shows it (`woodshed flows top` too).
 func ToAPITop(by, metric string, q flowquery.Query, res flowquery.TopResult, took time.Duration) api.FlowTopPage {
 	t := res.Total
-	page := api.FlowTopPage{By: by, Metric: metric, From: q.From, To: q.To, Approx: res.Approx, Partial: res.Partial,
+	page := api.FlowTopPage{By: by, Metric: metric, From: q.From, To: q.To, Approx: res.Approx, ErrorBound: res.ErrorBound,
+		Partial:    res.Partial,
 		NextCursor: res.Cursor, Progress: toAPIProgress(res.Progress), ElapsedMS: took.Milliseconds(),
 		Total: api.FlowTopTotal{Flows: t.Flows, Connections: t.Connections, Bytes: t.Bytes, Packets: t.Packets,
 			BytesScaled: t.BytesScaled, PacketsScaled: t.PacketsScaled, ScaledComplete: t.Unknown == 0}}
@@ -438,7 +439,8 @@ func ToAPITop(by, metric string, q flowquery.Query, res flowquery.TopResult, too
 		}
 		page.Rows = append(page.Rows, api.FlowTopRow{Key: row.Key, Label: row.Label, Flows: row.Flows, Connections: row.Connections,
 			Bytes: row.Bytes, Packets: row.Packets, BytesScaled: row.BytesScaled, PacketsScaled: row.PacketsScaled,
-			ScaledLowerBound: row.Unknown > 0, Share: share, First: msTime(row.First), Last: msTime(row.Last)})
+			ScaledLowerBound: row.Unknown > 0, Share: share, First: msTime(row.First), Last: msTime(row.Last),
+			Approx: row.Approx, MaxError: row.Err})
 		rowsFlows += row.Flows
 		rowsBytes += row.Bytes
 	}

@@ -377,14 +377,17 @@ type FlowTopRequest struct {
 
 // FlowTopPage is GET /api/flows/top's body.
 type FlowTopPage struct {
-	By         string        `json:"by"`
-	Metric     string        `json:"metric"`
-	From       time.Time     `json:"from"`
-	To         time.Time     `json:"to"`
-	Total      FlowTopTotal  `json:"total"`
-	Rows       []FlowTopRow  `json:"rows"`
-	Other      FlowTopOther  `json:"other"`
-	Approx     bool          `json:"approx"`
+	By     string       `json:"by"`
+	Metric string       `json:"metric"`
+	From   time.Time    `json:"from"`
+	To     time.Time    `json:"to"`
+	Total  FlowTopTotal `json:"total"`
+	Rows   []FlowTopRow `json:"rows"`
+	Other  FlowTopOther `json:"other"`
+	Approx bool         `json:"approx"`
+	// ErrorBound: past the exact limit, a key not in rows has at most this
+	// much of the metric (0 while exact).
+	ErrorBound int64         `json:"error_bound"`
 	Progress   *FlowProgress `json:"progress"`
 	Partial    bool          `json:"partial"`
 	NextCursor string        `json:"next_cursor"`
@@ -416,6 +419,11 @@ type FlowTopRow struct {
 	Share            float64    `json:"share"`
 	First            *time.Time `json:"first"`
 	Last             *time.Time `json:"last"`
+	// Approx: the row was counted in the fixed-size approximate table. The
+	// ranked metric is an upper bound, at most MaxError over; the other
+	// counts cover the records since the key entered the table.
+	Approx   bool  `json:"approx"`
+	MaxError int64 `json:"max_error"`
 }
 
 // FlowTopOther is what the rows leave out.

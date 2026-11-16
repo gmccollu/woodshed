@@ -1246,9 +1246,9 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
            "bytes_scaled": 1900000000000, "packets_scaled": 2100000000, "scaled_complete": false, "connections": 51112},
  "rows": [{"key": "10.20.0.5", "label": "10.20.0.5", "flows": 40211, "bytes": 5642000000, "packets": 4100000,
            "bytes_scaled": 564200000000, "packets_scaled": 410000000, "scaled_lower_bound": false, "connections": 40000,
-           "share": 0.31, "first": "2026-11-16T09:00:02Z", "last": "2026-11-16T09:59:58Z"}],
+           "share": 0.31, "first": "2026-11-16T09:00:02Z", "last": "2026-11-16T09:59:58Z", "approx": false, "max_error": 0}],
  "other": {"flows": 1000000, "bytes": 9000000000},
- "approx": false,
+ "approx": false, "error_bound": 0,
  "progress": {"blocks_done": 1800, "blocks_total": 1800, "records_done": 1204332, "records_total": 1204332,
               "complete_from": "2026-11-16T09:00:00Z"},
  "partial": false, "next_cursor": "", "elapsed_ms": 2140}
@@ -1259,7 +1259,16 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
   whose records include any is a lower bound (`scaled_lower_bound: true`, shown with "≥").
 - "Top denied sources" is `by=src&fw_event=denied`. Totals follow SPEC §13.2.1's no-double-count rule for event
   records; `connections` counts `deleted` and `denied` events for event-style exporters.
-- `approx` is true when more than 1,000,000 distinct keys switched the count to a space-saving top-K.
+- Memory is bounded whatever the window (SPEC §13.6): keys are counted exactly up to 1,000,000 across the request's
+  workers and the server's shared query budget (`approx: false`, `error_bound: 0`). Past that, the keys already counted
+  stay exact and new ones go to a fixed-size space-saving table with a count-min check. `approx` is then true, and:
+  - a row from that table has `approx: true` and `max_error`. Its ranked metric is at most `max_error` over the true
+    value, and its other counts cover only the records since the key entered the table;
+  - a key not in `rows` has at most `error_bound` of the metric.
+
+  The totals stay exact.
+- A saved continuation holds its counts in the shared budget. When a new request needs room, the least recently used
+  continuation is dropped, and its `cursor` then gets `400 {"error": "This flow query expired; start it again."}`.
 - `progress.complete_from`: every block whose flows end after it has been read. A continuation with `next_cursor`
   returns running totals, not deltas.
 

@@ -129,6 +129,9 @@ export interface FlowTopRow {
   first: string;
   last: string;
   connections?: number;
+  /** From the approximate table: the ranked metric is at most max_error over. */
+  approx?: boolean;
+  max_error?: number;
 }
 
 export interface FlowTopResponse {
@@ -140,6 +143,8 @@ export interface FlowTopResponse {
   rows: FlowTopRow[];
   other: { flows: number; bytes: number; packets?: number; connections?: number };
   approx: boolean;
+  /** Past the exact limit, a key not listed has at most this of the metric. */
+  error_bound?: number;
   progress: FlowProgress;
   partial: boolean;
   next_cursor: string;
