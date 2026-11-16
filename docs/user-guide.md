@@ -201,8 +201,9 @@ OIDs aren't supported.
 since the last poll, worked out as each answer arrives, with the raw counters on the same line. A 32-bit counter
 that went down counts as a wrap only when the result is believable for the interface's speed; anything else (a
 counter reset, a renamed interface, a changed discontinuity time, an agent restart) leaves a gap rather than a spike,
-marked `disc=1`. When `sysUpTime` goes down (not its normal wrap after 497 days), the agent restarted; it's a
-**reboot** when `hrSystemUptime` went down too. Without HOST-RESOURCES the marker says "the device may have
+marked `disc=1`. When `sysUpTime` goes down (not its normal wrap after 497 days), or goes up clearly less than the
+time since the last poll (a second restart soon after the first), the agent restarted; it's a **reboot** when
+`hrSystemUptime` went down too. Without HOST-RESOURCES the marker says "the device may have
 rebooted". Restarts show on the device page, on the Events timeline and in incident bundles, where a coldStart trap
 within 2 minutes of a poll restart is the same reboot.
 

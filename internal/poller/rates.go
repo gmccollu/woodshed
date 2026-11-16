@@ -84,19 +84,34 @@ func octetBound(speedMbps uint64, secs float64) uint64 {
 // ticks to a small value, about an interval after the last one.
 const uptimeWrapWindow = 360000 // ticks (1 h)
 
-// uptimeDropped reports whether sysUpTime (or hrSystemUptime) went down from
-// prev to cur in elapsed: an agent restart, not the 497-day wrap.
+// uptimeSlack is how far an uptime may fall behind the time between two
+// samples without counting as a restart: agents update it coarsely, and the
+// two receive times stand for the agent's own reading times only to within a
+// round trip.
+func uptimeSlack(el uint64) uint64 { return max(500, el/50) } // 5 s, or 2 % of the interval
+
+// uptimeDropped reports whether sysUpTime (or hrSystemUptime) restarted
+// between two samples elapsed apart: it went down (but not by its 497-day
+// wrap), or it went up by clearly less than the time between them. The second
+// is a restart soon after the previous one (an agent up 6 s, restarted, and
+// polled again 7 s later reads 6.5 s: lower than it should be, not lower than
+// before), which a "went down" rule alone misses. An uptime that didn't move
+// at all is a stuck counter (macOS's snmpd reports hrSystemUptime as 0), not
+// a restart.
 func uptimeDropped(prev, cur uint64, elapsed time.Duration) bool {
-	if cur >= prev {
-		return false
-	}
-	if prev >= wrap32-uptimeWrapWindow {
+	el := uint64(max(elapsed, 0) / (10 * time.Millisecond))
+	if cur < prev && prev >= wrap32-uptimeWrapWindow {
 		// Where it could have got to: twice the elapsed time plus a minute
 		// (agents update uptime coarsely).
-		el := uint64(max(elapsed, 0) / (10 * time.Millisecond))
 		if reach := prev + 2*el + 6000; reach >= wrap32 && cur <= reach-wrap32 {
 			return false // the wrap
 		}
 	}
-	return true
+	switch {
+	case cur < prev:
+		return true
+	case cur == prev:
+		return false // a value that doesn't move is a stuck counter, not a restart
+	}
+	return cur+uptimeSlack(el) < prev+el
 }

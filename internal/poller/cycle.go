@@ -413,7 +413,9 @@ func (c *cycleRun) poll(ctx context.Context) error {
 	if restart {
 		rb := pollrec.New(pollrec.KindRestart, c.cycle)
 		reboot := "?"
-		if haveHr && havePrevHr {
+		// hrSystemUptime tells a reboot from an agent restart only when it
+		// moves; one stuck at a value (0 on some agents) can't.
+		if haveHr && havePrevHr && hr != prevHr {
 			reboot = "0"
 			if hrDrop {
 				reboot = "1"

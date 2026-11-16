@@ -363,6 +363,17 @@ func (a *Agent) Restart() {
 	_ = a.newEngine(a.engine.Boots+1, now)
 }
 
+// RestartKeepBoots is an agent restart that doesn't raise v3 engineBoots (an
+// agent that doesn't keep it across restarts): sysUpTime and the engine time
+// start again from 0, boots stay.
+func (a *Agent) RestartKeepBoots() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.opts.Clock()
+	a.sysStart, a.upOff = now, 0
+	_ = a.newEngine(a.engine.Boots, now)
+}
+
 // Reboot is a device reboot: Restart, and hrSystemUptime and every counter
 // start again from 0.
 func (a *Agent) Reboot() {

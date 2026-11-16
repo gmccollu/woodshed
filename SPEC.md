@@ -2164,8 +2164,10 @@ custom OIDs.
 
 #### 12.2.2 Restarts and reboots
 - `sysUpTime` is the **agent's** uptime. A lower `sysUpTime` than the last sample (other than its 497-day wrap: from
-  within an hour of 2³² ticks to a small value, about an interval after the last one) is an **agent restart**. A higher
-  v3 `engineBoots` is too.
+  within an hour of 2³² ticks to a small value, about an interval after the last one) is an **agent restart**. So is
+  one that went up by clearly less than the time since the last sample (more than 5 s or 2 % short): a restart soon
+  after the previous start reads higher than before, but lower than it should (§12.10, build 18). An uptime that
+  doesn't move at all is a stuck counter, not a restart. A higher v3 `engineBoots` is a restart too.
 - It's a **reboot** when `hrSystemUptime` (where supported) also went down. Without HOST-RESOURCES, the marker says
   "restart (the device may have rebooted)": it can't tell an agent restart from a reboot.
 - Either one writes a marker (`kind=restart` with `reboot=1|0|?`, §12.3), shows on the Events timeline and the device
@@ -2467,6 +2469,14 @@ Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
    written from the forms' own body builders (the web tests fail on drift; the mock replays it) and posted to a real
    in-process server by `internal/server`'s `TestUIRequestBodiesAgainstServer`, so the mock and the server can't
    drift (coordinator, 2026-11-15, after the 1.2 `key_ext` bug).
+18. **Restarts that don't lower the uptime** (build, 2026-11-16, from the first snmp-poll-interop run): an agent up
+   6.4 s, restarted, and polled 7.5 s later read 6.5 s, so "lower than the last sample" saw nothing, and that snmpd
+   didn't raise `engineBoots` either. A real device that reboots twice within a few intervals would have been missed
+   the same way. `sysUpTime` (and `hrSystemUptime` for the reboot test) now also counts as restarted when it went up
+   by less than the time between the samples (measured on the monotonic clock) minus the larger of 5 s and 2 % of
+   that time (agents update it coarsely; the receive times stand for the agent's reading times only to within a
+   round trip). A value that didn't move (macOS's snmpd keeps `hrSystemUptime` at 0) is neither a restart nor, for
+   `hrSystemUptime`, evidence either way (`reboot=?`).
 
 ### 12.11 Questions settled (1.3), decided (coordinator, 2026-11-15, owner-delegated)
 1. The `interfaces` preset also polls the HC packet counters in and out: unicast, multicast and broadcast

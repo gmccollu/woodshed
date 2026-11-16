@@ -62,6 +62,16 @@ func TestUptimeDropped(t *testing.T) {
 		{"497-day wrap", wrap32 - 3000, 3000, min, false},
 		{"wrap too far", wrap32 - 3000, 900000, min, true},
 		{"small but not near the top", 300000000, 10, min, true},
+		// A restart soon after the previous start: higher than before, but far
+		// less than the time since (the CI interop case, net-snmp up 6.4 s,
+		// restarted, read 6.5 s some 7.5 s later).
+		{"restart soon after a start", 640, 650, 7500 * time.Millisecond, true},
+		{"restart within the interval", 3000, 4000, min, true},
+		{"coarse update within the slack", 100000, 105600, min, false},
+		{"more than the time since (we were suspended)", 100000, 900000, min, false},
+		{"a second poll a moment later", 640, 645, 50 * time.Millisecond, false},
+		{"stuck at zero (hrSystemUptime on macOS)", 0, 0, min, false},
+		{"stuck", 5000, 5000, min, false},
 	}
 	for _, c := range cases {
 		if got := uptimeDropped(c.prev, c.cur, c.el); got != c.drop {

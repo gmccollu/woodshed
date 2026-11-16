@@ -755,3 +755,80 @@ func TestTestPoll(t *testing.T) {
 		t.Errorf("v3 wrong pass %+v", res)
 	}
 }
+
+// Restarts the sysUpTime rule must see even though the uptime didn't go down
+// (SPEC §12.2.2; the snmp-poll-interop CI failure of 2026-11-16): a restart
+// soon after the previous start, for v2c; and for v3, a restart that keeps
+// engineBoots (only sysUpTime tells) and one that raises it, where the first
+// request after it gets a notInTimeWindows Report.
+func TestRestartSoonAfterStart(t *testing.T) {
+	h := newHarness(t, agenttest.Options{Interfaces: twoIfs()}, defaultSettings())
+	h.cycle()
+	h.clock.Advance(30 * time.Second)
+	h.a.Restart()
+	h.clock.Advance(30 * time.Second)
+	if r := find(h.cycle(), pollrec.KindRestart, nil); r == nil || r.Value("uptime") != "3000" {
+		t.Fatalf("first restart %+v", r)
+	}
+	// Up 30 s: restarted, polled 60 s later at 40 s up. Higher than before,
+	// 20 s short of the time since.
+	h.a.Restart()
+	h.clock.Advance(40 * time.Second)
+	h.clock.Advance(20 * time.Second) // the agent restarted 20 s into the interval
+	ls := h.cycle()
+	r := find(ls, pollrec.KindRestart, nil)
+	if r == nil || r.Value("source") != "sysUpTime" || r.Value("prev_uptime") != "3000" {
+		t.Fatalf("a restart soon after a start: %+v (lines %+v)", r, ls)
+	}
+	// And a normal cycle after it: no marker.
+	h.clock.Advance(60 * time.Second)
+	if r := find(h.cycle(), pollrec.KindRestart, nil); r != nil {
+		t.Errorf("a marker without a restart: %+v", r)
+	}
+}
+
+func TestRestartV3BootsKeptOrRaised(t *testing.T) {
+	u := snmp.User{Name: "monitor", Auth: snmp.AuthSHA256, Priv: snmp.PrivAES128, AuthPass: []byte("maplesyrup-test"),
+		PrivPass: []byte("privpass-for-tests"), Level: snmp.AuthPriv}
+	s := defaultSettings()
+	s.Version, s.V3User = "3", "monitor"
+	for _, tc := range []struct {
+		name    string
+		restart func(a *agenttest.Agent)
+		source  string
+	}{
+		{"boots kept", (*agenttest.Agent).RestartKeepBoots, "sysUpTime"},
+		{"boots raised", (*agenttest.Agent).Restart, "sysUpTime,engineBoots"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, agenttest.Options{Interfaces: twoIfs()}, s, u)
+			h.cycle()
+			reports := h.a.Requests()["report"]
+			// The first restart, after an hour up: the session's idea of the
+			// engine time (and for "raised", boots) is stale, so the first request
+			// after it draws a notInTimeWindows Report the session resyncs from,
+			// and the cycle still answers.
+			tc.restart(h.a) // so it's been up only 20 s at the next cycle
+			h.clock.Advance(20 * time.Second)
+			ls := h.cycle()
+			if find(ls, pollrec.KindStatus, nil) != nil || find(ls, pollrec.KindRestart, nil) == nil {
+				t.Fatalf("the first restart: %+v", ls)
+			}
+			if h.a.Requests()["report"] <= reports {
+				t.Errorf("no notInTimeWindows Report after the restart: %v", h.a.Requests())
+			}
+			h.clock.Advance(5 * time.Second)
+			tc.restart(h.a)
+			h.clock.Advance(60 * time.Second)
+			ls = h.cycle()
+			if find(ls, pollrec.KindStatus, nil) != nil {
+				t.Fatalf("the cycle after the restart failed: %+v", ls)
+			}
+			r := find(ls, pollrec.KindRestart, nil)
+			// Up 60 s now against 20 s before: higher, but 25 s short of the time since.
+			if r == nil || r.Value("source") != tc.source || r.Value("prev_uptime") != "2000" || r.Value("uptime") != "6000" {
+				t.Fatalf("restart %+v, want source %s (lines %+v)", r, tc.source, ls)
+			}
+		})
+	}
+}
