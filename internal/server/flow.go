@@ -131,7 +131,7 @@ func (b *backend) openFlows(cfg config.Config) {
 			RuleIDIEs: ruleIEs(l), Clock: b.now}),
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
-	fs.eng = flowquery.New(flowquery.Options{DataDir: cfg.Storage.DataDir, Index: b.idx, Logger: b.log,
+	fs.eng = flowquery.New(flowquery.Options{DataDir: cfg.Storage.DataDir, Index: b.idx, Logger: b.log, RuleIDIEs: ruleIEs(l),
 		Open: func(ids []string) []flowquery.OpenSegment {
 			snaps := b.store.OpenFlowSegments(ids)
 			out := make([]flowquery.OpenSegment, len(snaps))

@@ -49,6 +49,8 @@ type Options struct {
 	Logger  *slog.Logger
 	// MaxExactKeys overrides DefaultExactKeys (tests).
 	MaxExactKeys int
+	// RuleIDIEs fill rule_id in raw sets decoded on read (as the collector does).
+	RuleIDIEs []flow.IEKey
 }
 
 // Engine runs flow queries. Safe for concurrent use.
@@ -132,6 +134,60 @@ type planned struct {
 	maxStart int64
 	minEnd   int64
 	maxEnd   int64
+	// raw: not a block but the segment's raw sets, decoded on read where the
+	// segment holds their template (SPEC §13.1.3); times bound by received.
+	raw bool
+}
+
+// rawSpan is how far before its received time a raw set's records may start.
+const rawSpan = time.Hour
+
+// rawRecords decodes a segment's raw sets kept for lack of a template, with the
+// segment's own templates, calling fn with each record (marked late).
+func rawRecords(r *flowseg.Reader, rules []flow.IEKey, fn func(i int, rec *flow.Record)) error {
+	ts := r.Templates()
+	i := 0
+	return r.Raw(func(rs *flow.RawSet) bool {
+		if rs.Status != flow.StatusNoTemplate {
+			return true
+		}
+		t := templateFor(ts, rs)
+		if t == nil {
+			return true
+		}
+		recs, err := flow.DecodeRawSet(t, rs, flow.RedecodeOptions{RuleIDIEs: rules})
+		if err != nil {
+			return true
+		}
+		for j := range recs {
+			recs[j].Status = flow.StatusLate
+			fn(i, &recs[j])
+			i++
+		}
+		return true
+	})
+}
+
+// templateFor picks the segment's template for a raw set: the same version,
+// exporter port, domain and ID, the first received after the set, else the
+// latest (as reindex --flows-redecode does).
+func templateFor(ts []*flow.Template, rs *flow.RawSet) *flow.Template {
+	var after, latest *flow.Template
+	for _, t := range ts {
+		if t.ID != rs.TemplateID || t.Domain != rs.Domain || t.ExporterPort != rs.ExporterPort || t.Version != rs.Version {
+			continue
+		}
+		if t.Received >= rs.Received && (after == nil || t.Received < after.Received) {
+			after = t
+		}
+		if latest == nil || t.Received > latest.Received {
+			latest = t
+		}
+	}
+	if after != nil {
+		return after
+	}
+	return latest
 }
 
 type segRef struct {
@@ -186,6 +242,12 @@ func (e *Engine) planFor(ctx context.Context, q *Query, asc bool) (*plan, error)
 			p.blocks = append(p.blocks, planned{seg: si, block: i, rows: b.Rows, minStart: b.MinStart, maxStart: b.MaxStart,
 				minEnd: b.MinEnd, maxEnd: b.MaxEnd})
 			p.rows += int64(b.Rows)
+		}
+		if f.RawStatus[flow.StatusNoTemplate] > 0 || (f.Raw > 0 && f.RawStatus == [4]int64{}) {
+			lo, hi := f.MinReceived-rawSpan.Milliseconds(), f.MaxReceived
+			if hi >= p.from && lo < p.to {
+				p.blocks = append(p.blocks, planned{seg: si, block: -1, raw: true, minStart: lo, maxStart: hi, minEnd: lo, maxEnd: hi})
+			}
 		}
 	}
 	for _, r := range rows {
@@ -319,6 +381,22 @@ func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, lo, hi int, f *
 			for bi := range jobs {
 				b := &p.blocks[bi]
 				r, err := rd.get(b.seg)
+				if err == nil && b.raw {
+					err = rawRecords(r, e.o.RuleIDIEs, func(i int, rec *flow.Record) {
+						s, en := flowseg.EffectiveTimes(rec)
+						if en >= p.from && s < p.to && f.Match(rec) {
+							fn(w, b, -1-i, rec)
+						}
+					})
+					if err != nil {
+						errMu.Lock()
+						if firstErr == nil {
+							firstErr = fmt.Errorf("flows: %s raw sets: %w", p.segs[b.seg].Rel, err)
+						}
+						errMu.Unlock()
+					}
+					continue
+				}
 				if err == nil && useIndex {
 					var info *flowseg.BlockInfo
 					if info, err = r.Block(b.block); err == nil && !f.BlockMay(info) {
@@ -748,6 +826,22 @@ func (e *Engine) Each(ctx context.Context, q Query, fn func(deviceID string, r *
 		if err != nil {
 			continue
 		}
+		if b.raw {
+			var ferr error
+			rerr := rawRecords(r, e.o.RuleIDIEs, func(_ int, rec *flow.Record) {
+				s, en := flowseg.EffectiveTimes(rec)
+				if ferr == nil && en >= p.from && s < p.to && f.Match(rec) {
+					ferr = fn(p.segs[b.seg].DeviceID, rec)
+				}
+			})
+			if ferr != nil {
+				return ferr
+			}
+			if rerr != nil {
+				e.o.Logger.Warn("flows: raw sets couldn't be read", "file", p.segs[b.seg].Rel, "err", rerr)
+			}
+			continue
+		}
 		if err := r.Decode(b.block, flowseg.ColAll, &blk); err != nil {
 			e.o.Logger.Warn("flows: a block couldn't be read; skipped", "file", p.segs[b.seg].Rel, "block", b.block, "err", err)
 			continue
@@ -779,7 +873,7 @@ func (e *Engine) Count(ctx context.Context, q Query) (map[string]int64, error) {
 		// Blocks wholly inside the window count without decoding.
 		var partial []planned
 		for _, b := range p.blocks {
-			if b.minEnd >= p.from && b.maxStart < p.to {
+			if !b.raw && b.minEnd >= p.from && b.maxStart < p.to {
 				out[p.segs[b.seg].DeviceID] += int64(b.rows)
 				continue
 			}
