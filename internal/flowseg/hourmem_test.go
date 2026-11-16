@@ -51,16 +51,17 @@ type hourCase struct {
 }
 
 type hourStats struct {
-	fixed     uint64 // an exporter's heap at the hour's start (its writer, one block written)
-	peak      uint64 // heap above the start, over the hour (part closes included)
-	closePeak uint64 // above the heap before the hour mark, while every exporter closes
-	grown     uint64 // live heap the hour added (after a GC, before the hour mark)
-	alloc     uint64 // bytes allocated over the hour
-	parts     int    // segments written
-	blocks    int    // blocks an exporter wrote
-	footer    int64  // the largest footer body
-	hdrLen    int64  // a block header's bytes
-	secLen    int64  // a block's bytes
+	fixed      uint64 // an exporter's heap at the hour's start (its writer, one block written)
+	peak       uint64 // heap above the start, over the hour (part closes included)
+	closePeak  uint64 // above the heap before the hour mark, while every exporter closes
+	closeAlloc uint64 // allocated by those closes in all (a sampled peak can miss a spike)
+	grown      uint64 // live heap the hour added (after a GC, before the hour mark)
+	alloc      uint64 // bytes allocated over the hour
+	parts      int    // segments written
+	blocks     int    // blocks an exporter wrote
+	footer     int64  // the largest footer body
+	hdrLen     int64  // a block header's bytes
+	secLen     int64  // a block's bytes
 }
 
 // hourExporter is one exporter's open segment.
@@ -196,9 +197,11 @@ func runHour(t *testing.T, c hourCase, gc int) hourStats {
 		s.grown = h - grownBase
 	}
 	s.closePeak, _ = peakDuring(func() {
+		a0 := heapAllocs()
 		for _, e := range exps {
 			e.close(t, &s)
 		}
+		s.closeAlloc = heapAllocs() - a0
 	})
 	runtime.KeepAlive(exps)
 	return s
@@ -253,6 +256,12 @@ func TestWriterHourHeapBounded(t *testing.T) {
 		}
 		if s.closePeak > 8<<20 {
 			t.Errorf("%s: %.1f MiB of heap at the hour mark", c.name, float64(s.closePeak)/(1<<20))
+		}
+		// A close allocates its summary and table section, not its directory
+		// or footer; the tail buffers come from a pool (refilled after a
+		// collection empties it).
+		if lim := uint64(c.exporters)*(64<<10) + 4*uint64(tailBufSize); s.closeAlloc > lim {
+			t.Errorf("%s: the closes at the hour mark allocated %d bytes, ceiling %d", c.name, s.closeAlloc, lim)
 		}
 		if c.exporters > 1 && s.parts != c.exporters {
 			t.Errorf("%s: %d segments, want one an exporter", c.name, s.parts)

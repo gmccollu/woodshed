@@ -133,9 +133,18 @@ func TestCloseHeapBounded(t *testing.T) {
 		hl := repeatBlock(t, w, n)
 		var foot *Footer
 		var err error
-		peak, base := peakDuring(func() { foot, err = w.Close() })
+		var alloc uint64
+		peak, base := peakDuring(func() {
+			a0 := heapAllocs()
+			foot, err = w.Close()
+			alloc = heapAllocs() - a0
+		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		// What Close allocated in all, which a sampled peak could miss.
+		if alloc > ceiling {
+			t.Fatalf("%d blocks: Close allocated %.1f MiB, over the %d MiB ceiling", n, float64(alloc)/(1<<20), ceiling>>20)
 		}
 
 		t.Logf("%d blocks, %d-byte headers (footer about %.1f MB): Close's peak heap %.2f MiB above %.1f MiB",
