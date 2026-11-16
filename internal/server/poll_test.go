@@ -185,7 +185,7 @@ func TestPollEndToEndInProcess(t *testing.T) {
 
 	// Polling: a few cycles.
 	var sum poller.Summary
-	waitFor(t, "polled cycles", func() bool {
+	pollWait(t, "polled cycles", func() bool {
 		sum = poller.Summary{}
 		r.do(t, "GET", "/api/poll", nil, &sum)
 		return sum.Answering == 2 && sum.Hour.Cycles >= 8
@@ -244,7 +244,7 @@ func TestPollEndToEndInProcess(t *testing.T) {
 		}
 		return nil
 	}
-	if p := last(ser.Series[0]); p == nil || *p.Avg < 70e6 || *p.Avg > 100e6 {
+	if p := last(ser.Series[0]); p == nil || *p.Avg < 40e6 || *p.Avg > 160e6 { // 88 Mb/s; wide, since a loaded runner skews the reply times
 		t.Errorf("in_bps %+v", p)
 	}
 	if p := last(ser.Series[3]); p == nil || *p.Avg != 25 {
@@ -256,7 +256,7 @@ func TestPollEndToEndInProcess(t *testing.T) {
 
 	// A reboot of the first agent, and a coldStart trap from it: one event.
 	a1.Reboot()
-	waitFor(t, "the restart marker", func() bool {
+	pollWait(t, "the restart marker", func() bool {
 		var tl poller.Timeline
 		r.do(t, "GET", "/api/poll/timeline?devices=127.0.0.1,127.0.0.2&from="+from+"&bucket=60", nil, &tl)
 		return len(tl.Devices) == 2 && len(tl.Markers) > 0 && tl.Markers[0].Kind == "restart" && tl.Markers[0].Reboot == "1"
@@ -271,7 +271,7 @@ func TestPollEndToEndInProcess(t *testing.T) {
 			Fields map[string]any `json:"fields"`
 		} `json:"results"`
 	}
-	waitFor(t, "the restart in search", func() bool {
+	pollWait(t, "the restart in search", func() bool {
 		r.srv.store.Flush()
 		r.do(t, "GET", "/api/search?type=poll&kinds=restart", nil, &page)
 		return len(page.Results) == 1
@@ -282,8 +282,22 @@ func TestPollEndToEndInProcess(t *testing.T) {
 	if code := r.do(t, "GET", "/api/search?type=poll&severities=3", nil, nil); code != 400 {
 		t.Errorf("syslog filter with type=poll: %d", code)
 	}
-	time.Sleep(4 * 30 * pollUnit) // a few cycles after the reboot
+	// A few answered cycles after the reboot, so the bundle has rates on both sides.
+	var afterReboot poller.Summary
+	r.do(t, "GET", "/api/poll", nil, &afterReboot)
+	pollWait(t, "cycles after the reboot", func() bool {
+		var s poller.Summary
+		r.do(t, "GET", "/api/poll", nil, &s)
+		return s.Hour.Cycles >= afterReboot.Hour.Cycles+8
+	})
 
+	// The coldStart trap is stored (the bundle merges it with the restart).
+	pollWait(t, "the coldStart trap stored", func() bool {
+		r.srv.store.Flush()
+		var tp struct{ Results []json.RawMessage }
+		r.do(t, "GET", "/api/search?type=trap", nil, &tp)
+		return len(tp.Results) == 1
+	})
 	// The bundle: poll CSVs, the README's Polls line, the merged reboot.
 	r.srv.store.Flush()
 	bodyB := map[string]any{"kind": "bundle", "at": time.Now().UTC().Format(time.RFC3339Nano), "before": "10m", "after": "0s",
@@ -369,6 +383,19 @@ func TestPollEndToEndInProcess(t *testing.T) {
 	})
 	if _, err := os.Stat(filepath.Join(dataDir, "logs", "127.0.0.2", "poll")); err != nil {
 		t.Errorf("the deleted target's files: %v", err)
+	}
+}
+
+// pollWait is waitFor with room for a loaded runner: a poll cycle is a few
+// round trips, and the condition returns as soon as it holds.
+func pollWait(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

@@ -91,7 +91,7 @@ func session(t *testing.T, a *agenttest.Agent, cfg snmp.SessionConfig) (*snmp.Se
 	t.Helper()
 	tr := newTransport(t, a.Addr())
 	if cfg.Timeout == 0 {
-		cfg.Timeout = 500 * time.Millisecond
+		cfg.Timeout = 3 * time.Second // generous: answers are what's tested; a loaded runner is slow
 	}
 	s, err := snmp.NewSession(cfg, tr)
 	if err != nil {
@@ -314,6 +314,7 @@ func TestSessionTooBigNoSuchSilence(t *testing.T) {
 	}
 	// Replies from another address are dropped (counted) and time out.
 	a.SetWrongSource(true)
+	s, tr = session(t, a, snmp.SessionConfig{Version: snmp.V2c, Community: []byte("c"), Timeout: 300 * time.Millisecond})
 	_, err = s.Get(ctx, []snmp.OID{snmp.OIDSysUpTime})
 	if snmp.FailStatus(err) != snmp.FailTimeout || tr.unmatched.Load() == 0 {
 		t.Errorf("wrong source: %v, unmatched %d", err, tr.unmatched.Load())
@@ -324,6 +325,7 @@ func TestSessionTooBigNoSuchSilence(t *testing.T) {
 		t.Errorf("silence: %v", err)
 	}
 	a.SetSilent(false)
+	s, _ = session(t, a, snmp.SessionConfig{Version: snmp.V2c, Community: []byte("c"), Retries: 1})
 	if _, err = s.Get(ctx, []snmp.OID{snmp.OIDSysUpTime}); err != nil {
 		t.Errorf("after silence: %v", err)
 	}

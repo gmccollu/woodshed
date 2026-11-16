@@ -103,7 +103,7 @@ const testComm = "test-community"
 
 func defaultSettings() Settings {
 	d := config.DefaultPoll()
-	return Settings{Address: "127.0.0.1", Enabled: true, Version: "2c", IntervalS: 60, TimeoutMS: 400, Retries: 0,
+	return Settings{Address: "127.0.0.1", Enabled: true, Version: "2c", IntervalS: 60, TimeoutMS: 3000, Retries: 1,
 		Presets: d.Presets, Interfaces: Interfaces{All: true}, MaxInterfaces: 64, DeviceID: "127.0.0.1"}
 }
 
@@ -414,7 +414,9 @@ func TestRestartsAndReboots(t *testing.T) {
 }
 
 func TestFailuresAndBackoff(t *testing.T) {
-	h := newHarness(t, agenttest.Options{Interfaces: twoIfs()}, defaultSettings())
+	quick := defaultSettings()
+	quick.TimeoutMS, quick.Retries = 200, 0 // silence: every cycle waits out the timeout
+	h := newHarness(t, agenttest.Options{Interfaces: twoIfs()}, quick)
 	h.a.SetSilent(true)
 	for i := 1; i <= 4; i++ {
 		ls := h.cycle()
@@ -525,9 +527,31 @@ func TestLeftOutInterfaces(t *testing.T) {
 	}
 }
 
-// TestSchedulerOverrunsAndPause uses the real clock: a slow agent makes the
-// next cycle due while one runs (an overrun), and a paused store stops
-// polling.
+// eventually waits for cond, failing after d (generous: a loaded runner is
+// slow, and a passing run returns as soon as cond holds).
+func eventually(t *testing.T, d time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (p *Poller) busy(id string) bool {
+	p.mu.Lock()
+	st := p.targets[id]
+	p.mu.Unlock()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.busy
+}
+
+// TestSchedulerOverrunsAndPause uses the real clock with a 100 ms interval: a
+// slow agent makes the next cycle due while one runs (an overrun), and a
+// paused store stops polling until it resumes.
 func TestSchedulerOverrunsAndPause(t *testing.T) {
 	a, err := agenttest.Start(agenttest.Options{Community: testComm, Interfaces: twoIfs()})
 	if err != nil {
@@ -535,33 +559,30 @@ func TestSchedulerOverrunsAndPause(t *testing.T) {
 	}
 	defer a.Close()
 	sink := &memSink{}
-	p := New(Options{Sink: sink, Creds: &memCreds{comm: map[string][]byte{"pt_1": []byte(testComm)}}})
+	p := New(Options{Sink: sink, Creds: &memCreds{comm: map[string][]byte{"pt_1": []byte(testComm)}}, IntervalUnit: 100 * time.Millisecond})
 	defer p.Close()
 	s := defaultSettings()
-	s.Port, s.IntervalS, s.TimeoutMS, s.Presets = int(a.Addr().Port()), 1, 3000, []string{config.PresetSystem}
-	a.SetDelay(1600 * time.Millisecond)
+	s.Port, s.IntervalS, s.TimeoutMS, s.Presets = int(a.Addr().Port()), 1, 10000, []string{config.PresetSystem}
+	a.SetDelay(300 * time.Millisecond) // three intervals per reply
 	p.SetTargets([]Target{{ID: "pt_1", Settings: s}})
-	time.Sleep(4500 * time.Millisecond)
-	if p.Overruns() == 0 {
-		t.Error("no overrun with a 1.6 s reply at a 1 s interval")
-	}
-	if find(sink.take(), pollrec.KindStatus, func(r *pollrec.Record) bool { return r.Value("status") == "overrun" }) == nil {
-		t.Error("no overrun record")
-	}
+	eventually(t, 30*time.Second, "an overrun", func() bool { return p.Overruns() > 0 })
+	eventually(t, 30*time.Second, "the overrun record", func() bool {
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		return find(sink.lines, pollrec.KindStatus, func(r *pollrec.Record) bool { return r.Value("status") == "overrun" }) != nil
+	})
 	a.SetDelay(0)
-	time.Sleep(2 * time.Second) // let the slow cycles drain
+	// Paused: once the running cycle ends (every request answered and
+	// counted), no request goes out.
 	sink.paused.Store(true)
-	time.Sleep(200 * time.Millisecond)
+	eventually(t, 30*time.Second, "the running cycle to end", func() bool { return !p.busy("pt_1") })
 	before := a.Requests()["get"]
-	time.Sleep(2500 * time.Millisecond)
+	time.Sleep(time.Second) // ten intervals: a window for a request that mustn't come
 	if after := a.Requests()["get"]; after != before {
 		t.Errorf("polled while paused: %d -> %d", before, after)
 	}
 	sink.paused.Store(false)
-	time.Sleep(2500 * time.Millisecond)
-	if a.Requests()["get"] == before {
-		t.Error("didn't resume")
-	}
+	eventually(t, 30*time.Second, "polling to resume", func() bool { return a.Requests()["get"] > before })
 }
 
 // With no targets the poller opens no socket (so it can send nothing), and
@@ -657,15 +678,10 @@ func TestTargetAddedLater(t *testing.T) {
 	s2 := s
 	s2.DeviceID = "127.0.0.2"
 	p.SetTargets([]Target{{ID: "pt_1", Settings: s}, {ID: "pt_2", Settings: s2}})
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	eventually(t, 60*time.Second, "both targets answering", func() bool {
 		st := p.States()
-		if st["pt_1"].Status == StateOK && st["pt_2"].Status == StateOK {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("states %+v", p.States())
+		return st["pt_1"].Status == StateOK && st["pt_2"].Status == StateOK
+	})
 }
 
 func TestTestPoll(t *testing.T) {
@@ -696,12 +712,14 @@ func TestTestPoll(t *testing.T) {
 		t.Error("exit code")
 	}
 	// No answer, and a wrong source.
-	res = StandaloneTest(context.Background(), s, []byte("wrong"), nil)
+	neg := s
+	neg.TimeoutMS, neg.Retries = 300, 0 // no answer is expected: don't wait long
+	res = StandaloneTest(context.Background(), neg, []byte("wrong"), nil)
 	if res.Exit != ExitNoAnswer || ExitCode(res.Exit) != 1 {
 		t.Errorf("wrong community %+v", res)
 	}
 	a.SetWrongSource(true)
-	res = StandaloneTest(context.Background(), s, []byte(testComm), nil)
+	res = StandaloneTest(context.Background(), neg, []byte(testComm), nil)
 	if res.Exit != ExitNoAnswer || res.Steps[len(res.Steps)-1].Step != "replies" {
 		t.Errorf("wrong source %+v", res)
 	}

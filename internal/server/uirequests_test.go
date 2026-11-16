@@ -154,8 +154,22 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 		}
 	}
 
-	// GET -> PUT round trips: Settings (whole object, with its ETag) and a
-	// poll target (its GET body, with its ETag).
+	// GET -> PUT round trips: an SNMP v3 user (its GET entry, read-only
+	// fields and all; the passphrases are kept), Settings (whole object, with
+	// its ETag) and a poll target (its GET body, with its ETag).
+	var users []map[string]any
+	if code := r.do(t, "GET", "/api/snmp/users", nil, &users); code != 200 || len(users) == 0 {
+		t.Fatalf("users: %d %v", code, users)
+	}
+	ub, _ := json.Marshal(users[0])
+	if code, _, b := r.doRaw(t, "PUT", "/api/snmp/users/"+users[0]["name"].(string), ub); code != 200 {
+		t.Errorf("SNMP user round trip: %d %s", code, b)
+	}
+	var after0 []map[string]any
+	r.do(t, "GET", "/api/snmp/users", nil, &after0)
+	if len(after0) == 0 || after0[0]["auth_set"] != true || after0[0]["priv_set"] != true {
+		t.Errorf("the user round trip lost a passphrase: %v", after0)
+	}
 	code, h, set := r.doRaw(t, "GET", "/api/settings", nil)
 	if code != 200 {
 		t.Fatal(code)
