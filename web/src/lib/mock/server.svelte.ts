@@ -1282,11 +1282,14 @@ function estimateFor(capBytes: number) {
 
 const QUEUE_CAP = 100_000;
 
-// The syslog UDP queue: a few hundred waiting at the busiest moment of each hour, scaled by the rate,
-// and with mock_queue_full a stall at the top of every sixth hour that fills it.
+// The UDP queues, one per enabled UDP listener (SPEC §11.5; flows' own, §13.10 decision 18). Syslog's: a few
+// hundred waiting at the busiest moment of each hour, scaled by the rate, and with mock_queue_full a stall at the
+// top of every sixth hour that fills it. The trap and flow queues stay calm.
+const FLOW_QUEUE_CAP = 50_000;
+
 function queueJSON(now: number): Stats['udp_queue'] {
   const u = settings.listeners.udp;
-  if (!u.enabled) return [];
+  const fl = settings.listeners.flow;
   const hours = Math.min(24, Math.floor(now / 3600_000) - Math.floor(STARTED / 3600_000) + 1);
   const nowHour = Math.floor(now / 3600_000);
   const scale = Math.max(1, mock.rate / 40);
@@ -1298,7 +1301,7 @@ function queueJSON(now: number): Stats['udp_queue'] {
   });
   const depth = mock.queueFull ? QUEUE_CAP - 40 : mock.paused ? 0 : Math.round(3 * scale);
   return [
-    {
+    ...(u.enabled ? [{
       listener: 'udp',
       port: u.port,
       capacity_messages: QUEUE_CAP,
@@ -1307,7 +1310,7 @@ function queueJSON(now: number): Stats['udp_queue'] {
       high_water_24h: Math.max(...by),
       dropped_24h: droppedByQueue,
       high_water_by_hour: by,
-    },
+    }] : []),
     ...(settings.listeners.snmp?.enabled
       ? [
           {
@@ -1321,6 +1324,21 @@ function queueJSON(now: number): Stats['udp_queue'] {
             high_water_by_hour: by.map((x, i) => Math.min(12, 1 + ((x + i) % 9))),
           },
         ]
+      : []),
+    ...(fl?.enabled && (fl.flow_port || fl.ipfix_port)
+      ? [
+          {
+            // Both flow ports feed one queue; port is the first one bound, as the server reports it.
+            listener: 'flow',
+            port: fl.flow_port || fl.ipfix_port,
+            capacity_messages: FLOW_QUEUE_CAP,
+            capacity_bytes: 128 * MiB,
+            depth: mock.paused ? 0 : 2,
+            high_water_24h: 0,
+            dropped_24h: 0,
+            high_water_by_hour: by.map((_, i) => 40 + ((i * 37) % 260)),
+          },
+        ].map((q) => ({ ...q, high_water_24h: Math.max(0, ...q.high_water_by_hour) }))
       : []),
   ];
 }
