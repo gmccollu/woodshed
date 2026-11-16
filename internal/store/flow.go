@@ -306,12 +306,14 @@ func (s *Store) flushFlowLocked(st *flowStream) error {
 }
 
 // queueFlowRows queues the stream's files and flow_segments rows (from the
-// writer's snapshot, or foot when closing) and its new minutes.
+// writer's summary, or foot when closing) and its new minutes. The rows use
+// only the footer's segment-level fields, so a flush never copies the block
+// directory.
 func (s *Store) queueFlowRows(st *flowStream, closed bool, foot *flowseg.Footer) {
 	mins := st.w.TakeMinutes()
 	size := st.w.Size()
 	if foot == nil {
-		foot = st.w.Snapshot()
+		foot = st.w.Summary()
 	} else if fi, err := os.Stat(st.abs); err == nil {
 		size = fi.Size()
 	}
@@ -336,7 +338,7 @@ func (s *Store) closeFlowLocked(st *flowStream, why string) {
 	if err != nil {
 		s.log.Warn("store: closing a flow segment failed; recovery finishes it at the next start", "file", st.rel, "err", err)
 		if foot == nil {
-			foot = st.w.Snapshot()
+			foot = st.w.Summary()
 		}
 	}
 	s.queueFlowRows(st, err == nil, foot)
