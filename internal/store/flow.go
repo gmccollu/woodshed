@@ -20,11 +20,11 @@ import (
 
 // Flows (SPEC §13.2): one columnar segment (package flowseg) per device per
 // received hour, logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf, a new part past
-// FlowPartBytes. The device side is the framework's: a flow exporter is
-// admitted, heard and counted (type_stats, by received minute) through its own
-// stream (flowTI), like any type. The segment writers live here, outside the
-// line streams, so a quiet exporter's device state can be evicted while its
-// hour's segment stays open until the hour ends.
+// FlowPartBytes or FlowPartBlocks. The device side is the framework's: a flow
+// exporter is admitted, heard and counted (type_stats, by received minute)
+// through its own stream (flowTI), like any type. The segment writers live
+// here, outside the line streams, so a quiet exporter's device state can be
+// evicted while its hour's segment stays open until the hour ends.
 //
 // Durability: the open block is written every FlushInterval (1 s) and the
 // segment fsynced every SyncInterval (5 s), as for lines. Closed segments are
@@ -44,6 +44,17 @@ import (
 
 // FlowPartBytes is the size at which a segment starts a numbered part.
 const FlowPartBytes = 256 << 20
+
+// FlowPartBlocks is the block count at which a segment starts a numbered
+// part (SPEC §13.10 decision 56). It bounds what one writer keeps for its
+// open segment (a 216-byte directory entry a block, at most 1.7 MiB), what a
+// query's snapshot of it copies (472 bytes a block, 3.9 MiB) and the footer
+// (every block's header again). An exporter writes about one block a second
+// (the 1 s rule and the store's 1 s flush), 3,600 an hour, and up to about
+// two a second when early flushes under FlowOpenBytesCap add some, so an
+// hour stays one part; a busy exporter's full blocks reach FlowPartBytes
+// first (about 200 blocks of 65,536 records).
+const FlowPartBlocks = 8192
 
 // FlowOpenBytesCap bounds the open blocks of every writer together; a writer
 // over its share flushes early (SPEC §13.6).
@@ -214,7 +225,7 @@ func (s *Store) flowStream(id string) *flowStream {
 // rotating it first (st.mu held).
 func (s *Store) appendFlowsLocked(st *flowStream, rec time.Time, b *FlowBatch) error {
 	hour := rec.Truncate(time.Hour)
-	if st.w != nil && (hour.After(st.hour) || st.w.Size() >= FlowPartBytes) {
+	if st.w != nil && (hour.After(st.hour) || st.w.Size() >= FlowPartBytes || st.w.Blocks() >= s.opts.FlowPartBlocks) {
 		s.closeFlowLocked(st, "")
 	}
 	if st.w == nil {
@@ -306,12 +317,14 @@ func (s *Store) flushFlowLocked(st *flowStream) error {
 }
 
 // queueFlowRows queues the stream's files and flow_segments rows (from the
-// writer's snapshot, or foot when closing) and its new minutes.
+// writer's summary, or foot when closing) and its new minutes. The rows use
+// only the footer's segment-level fields, so a flush never copies the block
+// directory.
 func (s *Store) queueFlowRows(st *flowStream, closed bool, foot *flowseg.Footer) {
 	mins := st.w.TakeMinutes()
 	size := st.w.Size()
 	if foot == nil {
-		foot = st.w.Snapshot()
+		foot = st.w.Summary()
 	} else if fi, err := os.Stat(st.abs); err == nil {
 		size = fi.Size()
 	}
@@ -332,11 +345,11 @@ func (s *Store) closeFlowLocked(st *flowStream, why string) {
 	if st.w == nil {
 		return
 	}
-	foot, err := st.w.Close()
+	foot, err := st.w.CloseSummary()
 	if err != nil {
 		s.log.Warn("store: closing a flow segment failed; recovery finishes it at the next start", "file", st.rel, "err", err)
 		if foot == nil {
-			foot = st.w.Snapshot()
+			foot = st.w.Summary()
 		}
 	}
 	s.queueFlowRows(st, err == nil, foot)

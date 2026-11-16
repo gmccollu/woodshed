@@ -257,3 +257,145 @@ func TestFlowMetadataInEverySegment(t *testing.T) {
 		}
 	}
 }
+
+// A segment starts a numbered part at the block limit, and every record is
+// still found: once in the parts' blocks, and in the index rows, kept and
+// rebuilt by a reindex.
+func TestFlowPartAtBlockLimit(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.FlowPartBlocks = 10 })
+	a := ip(9)
+	h := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	e.clock.Set(h.Add(time.Minute))
+	const batches, per = 35, 4 // one block each
+	for i := 0; i < batches; i++ {
+		e.writeFlows(a, per, i*per)
+		if err := e.s.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.Add(time.Second)
+	}
+	e.maintain()
+	got := e.flowFiles(a)
+	want := []string{"2026-11-10T12.001.wsf", "2026-11-10T12.002.wsf", "2026-11-10T12.003.wsf", "2026-11-10T12.wsf"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("files %v, want %v", got, want)
+	}
+	seen := map[string]int{} // a record's batch is in its source address, its place in the batch in its bytes
+	for _, name := range got {
+		path := filepath.Join(e.dir, "logs/192.0.2.9/flows", name)
+		r, err := flowseg.Open(path)
+		if name == "2026-11-10T12.003.wsf" {
+			// The open part: read as the CLI would, beside the writer.
+			if err == nil {
+				t.Fatal("the open part has a footer")
+			}
+			r, err = flowseg.OpenLive(path)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if wantBlocks := map[bool]int{true: 5, false: 10}[name == "2026-11-10T12.003.wsf"]; r.Blocks() != wantBlocks {
+			t.Fatalf("%s: %d blocks, want %d", name, r.Blocks(), wantBlocks)
+		}
+		for i := 0; i < r.Blocks(); i++ {
+			recs, err := r.ReadBlock(i, flowseg.ColAll, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, rec := range recs {
+				seen[fmt.Sprint(rec.Src, rec.Bytes)]++
+			}
+		}
+		r.Close()
+	}
+	for i := 0; i < batches*per; i++ {
+		seq := i / per * per
+		k := fmt.Sprint(netip.AddrFrom4([4]byte{10, 0, byte(seq >> 8), byte(seq)}), 100+i%per)
+		if seen[k] != 1 {
+			t.Fatalf("record %d (%s) read %d times", i, k, seen[k])
+		}
+	}
+	if len(seen) != batches*per {
+		t.Fatalf("%d records, want %d", len(seen), batches*per)
+	}
+	segs, err := e.idx.AllFlowSegments(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recs int64
+	closed := 0
+	for _, sg := range segs {
+		recs += sg.Records
+		if sg.Closed {
+			closed++
+		}
+	}
+	if len(segs) != 4 || closed != 3 || recs != batches*per {
+		t.Fatalf("index: %d segments (%d closed), %d records", len(segs), closed, recs)
+	}
+	tot, _ := e.idx.FlowDeviceTotals(bg, nil, h.UnixMilli(), h.Add(time.Hour).UnixMilli())
+	if tot["192.0.2.9"].Records != batches*per {
+		t.Fatalf("minutes %+v", tot)
+	}
+	// A reindex after the store has closed (the open part with it) lists
+	// every part again.
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.s = nil
+	if _, err := e.idx.Reindex(bg, e.dir); err != nil {
+		t.Fatal(err)
+	}
+	segs, err = e.idx.AllFlowSegments(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, closed = 0, 0
+	for _, sg := range segs {
+		recs += sg.Records
+		if sg.Closed {
+			closed++
+		}
+	}
+	if len(segs) != 4 || closed != 4 || recs != batches*per {
+		t.Fatalf("after a reindex: %d segments (%d closed), %d records", len(segs), closed, recs)
+	}
+}
+
+// At the real limit, an hour of one-second blocks (and some early flushes)
+// stays one segment. (The flushes skip the index's commit, which only costs
+// time here.)
+func TestFlowHourOfBlocksIsOnePart(t *testing.T) {
+	e := newEnv(t, nil)
+	a := ip(10)
+	h := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	e.clock.Set(h)
+	n := 0
+	for sec := 0; sec < 3600; sec++ {
+		e.writeFlows(a, 2, n)
+		n += 2
+		if sec%4 == 0 { // an extra block every few seconds
+			if err := e.s.flushFlows(e.clock.Now(), false); err != nil {
+				t.Fatal(err)
+			}
+			e.writeFlows(a, 1, n)
+			n++
+		}
+		if err := e.s.flushFlows(e.clock.Now(), false); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.Add(time.Second)
+	}
+	e.maintain() // the hour has ended: the segment closes
+	if got := e.flowFiles(a); len(got) != 1 || got[0] != "2026-11-10T12.wsf" {
+		t.Fatalf("files %v", got)
+	}
+	r, err := flowseg.Open(filepath.Join(e.dir, "logs/192.0.2.10/flows/2026-11-10T12.wsf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.Blocks() != 4500 || r.Footer().Totals.Records != int64(n) {
+		t.Fatalf("%d blocks, %d records (want 4,500, %d)", r.Blocks(), r.Footer().Totals.Records, n)
+	}
+}

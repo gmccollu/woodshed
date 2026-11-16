@@ -42,7 +42,7 @@ func Recover(path string) (RecoverResult, error) {
 		return RecoverResult{Clean: true, KeptBlocks: len(foot.Blocks), Footer: foot}, nil
 	}
 	s := scan(f, size, h)
-	foot, err := s.writeTail(f)
+	foot, err := s.writeTail(f, true)
 	if err != nil {
 		return RecoverResult{}, err
 	}

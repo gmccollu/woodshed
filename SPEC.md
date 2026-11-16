@@ -2609,8 +2609,8 @@ a second, 86 million a day.
   justify one; flows do.
 
 **Files:** `logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf`, one segment per device per received hour (UTC), so the day
-folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 MiB starts a numbered part
-(`…T09.001.wsf`), like log parts.
+folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 MiB or 8,192 blocks starts a numbered
+part (`…T09.001.wsf`), like log parts (§13.10 decision 56).
 
 **Segment format (version 1):** little-endian, every section with a CRC-32C.
 1. **Header** (32 bytes): magic `WSFLOW01`, format version, device ID length and bytes, the hour, the writer's
@@ -3159,10 +3159,31 @@ Made while building it, each **decided (build, 2026-11-16)**:
 55. **Still proportional to the window, and left as is (flagged):**
     - the plan: 64 bytes for each block the window touches, one block a second per exporter at most, about 5.5 MiB
       per exporter-day;
-    - the open segments' directories: 472 bytes a block, about 1.7 MiB per open exporter-hour.
+    - the open segments' directories: 472 bytes a block, about 1.7 MiB per open exporter-hour, copied per query
+      (the writer keeps 216 bytes a block since decision 56).
 
     A week over 50 exporters would plan about 1.9 GiB. Planning by segment instead of by block is the follow-up. The
-    writer still builds a closing segment's whole footer in memory (ingest side, at hour close).
+    writer's side, which built a closing segment's whole footer in memory, is decision 56.
+
+*Fourth round, writer memory (build, 2026-11-16):*
+
+56. **The segment writer's memory is bounded, at hour close too** (`internal/flowseg/state.go`,
+    `internal/store/flow.go`):
+    - Close writes the footer streamed: the template table, then the footer body through a 256 KiB buffer, each
+      block's header copied from the block itself with the CRC computed as it goes, then the section prefix and the
+      trailer. The format is unchanged (a test compares the bytes with the old in-memory encoder). Before, Close held
+      about four times the footer: 588 MiB for an exporter-hour of 3,600 one-second 50,000-record blocks (a 122 MB
+      footer), 83 MiB for one of 50 exporters at 3,000 records a second (22 MB), at the same hour mark for all 50. Now
+      0.4–4 MiB, most of it the directory Close returns: as Open reads it, entries only, the index loaded on demand.
+    - The store's index rows come from `Writer.Summary` (the footer-level fields), not a snapshot that copied the
+      block directory on every flush (about 3 GB of garbage per exporter-hour at one block a second).
+    - The writer keeps 216 bytes a block (602 before, with a 472-byte BlockInfo and a header span), sampling and
+      domain lists shared with the previous block's.
+    - A segment starts a new part at **8,192 blocks**, as at 256 MiB. One block a second is 3,600 an hour, and early
+      flushes add up to about one more a second, so an hour stays one part; full blocks of 65,536 records reach
+      256 MiB first (about 200 blocks at 20 bytes a record). At the limit a writer keeps at most 1.7 MiB, a query
+      snapshot copies 3.9 MiB, and the footer holds at most 8,192 headers.
+    - Fault injection (decision 50) covers every write of the streamed tail and a failed header read.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
