@@ -1669,7 +1669,9 @@ const SHOTS = [
     clip: 'section[aria-labelledby="updates"]',
     act: `__btn('Check now').click();`,
     after: 3500,
-    check: `document.querySelector('section[aria-labelledby="updates"]').innerText.includes('OK, 1.1.0 is the latest (checked just now)')`,
+    // The mock answers 1.2 s after the click and the page says "just now" for 2 s, so by the time of the check it may
+    // read "2 s ago": accept either, as long as it's this check's result.
+    check: `/OK, 1\\.1\\.0 is the latest \\(checked (just now|[1-9] s ago)\\)/.test(document.querySelector('section[aria-labelledby="updates"]').innerText)`,
   },
   {
     name: 'settings-updates-failed-light',
