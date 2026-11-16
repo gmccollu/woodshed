@@ -31,11 +31,11 @@ import (
 
 // FlowBenchOptions configures BenchFlows.
 type FlowBenchOptions struct {
-	Flow     FlowOptions   // the generator (Proto, Rate, Count or Duration, …); Addr is set by the bench
-	Settle   time.Duration // wait this long with nothing new arriving before giving up (default 10 s)
-	DataDir  string
-	Keep     bool
-	Logger   *slog.Logger
+	Flow    FlowOptions   // the generator (Proto, Rate, Count or Duration, …); Addr is set by the bench
+	Settle  time.Duration // wait this long with nothing new arriving before giving up (default 10 s)
+	DataDir string
+	Keep    bool
+	Logger  *slog.Logger
 	// SyslogRate sends UDP syslog at this many messages a second beside the
 	// flows (0: none).
 	SyslogRate float64
