@@ -16,9 +16,10 @@ import (
 // MaxBlockRows is a block's row limit (SPEC §13.2).
 const MaxBlockRows = 65536
 
-// flateLevel is the columns' DEFLATE level: BestSpeed is a few percent larger
-// than the default level and several times cheaper (bench_test.go).
-const flateLevel = flate.BestSpeed
+// flateLevel is the columns' DEFLATE level: on flow columns (near their
+// entropy already) levels 1–6 cost the same CPU, and 6 is 2 % smaller; 9 is
+// six times slower (bench_test.go).
+const flateLevel = flate.DefaultCompression
 
 // Column directory flags.
 const colDeflated = 1

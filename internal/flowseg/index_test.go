@@ -213,3 +213,34 @@ func TestMayHavePrefixForms(t *testing.T) {
 		t.Error("absent columns must rule a block out")
 	}
 }
+
+// Up to 64 distinct interfaces are listed exactly; more go in a Bloom filter.
+func TestInterfaceSets(t *testing.T) {
+	for _, n := range []int{10, 64, 65, 500} {
+		var recs []flow.Record
+		for i := 1; i <= n; i++ {
+			recs = append(recs, flow.Record{Has: flow.HasInIf, InIf: uint32(i * 3), Received: 1})
+		}
+		path, _ := writeSegment(t, t.TempDir(), recs, nil, 0)
+		rd, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := rd.Block(0)
+		if (b.inIfs.bloom.k > 0) != (n > maxIfList) {
+			t.Fatalf("%d interfaces: bloom %v", n, b.inIfs.bloom.k > 0)
+		}
+		for i := 1; i <= n; i++ {
+			if !b.MayHaveInIf(uint32(i * 3)) {
+				t.Fatalf("%d interfaces: misses %d", n, i*3)
+			}
+		}
+		if n <= maxIfList && (b.MayHaveInIf(4) || b.MayHaveInIf(0)) {
+			t.Fatalf("%d interfaces: list says 4 or 0", n)
+		}
+		if b.MayHaveOutIf(3) {
+			t.Fatal("no output interfaces, yet one may match")
+		}
+		rd.Close()
+	}
+}
