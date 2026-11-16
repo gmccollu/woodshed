@@ -3,7 +3,7 @@
 // the plain words for statuses and v3 protocols. No Svelte state and no imports with side
 // effects, so `npm test` can run it under Node.
 
-import type { FieldDescriptor, SavedQuery, TrapFields, TrapVarbind } from './api';
+import type { FieldDescriptor, SavedQuery, SnmpAuth, SnmpKeyExt, SnmpPriv, SnmpUserInput, TrapFields, TrapVarbind } from './api';
 
 export const SYSLOG = 'syslog';
 export const TRAP = 'trap';
@@ -190,6 +190,31 @@ export const isWeak = (proto: string) => proto === 'md5' || proto === 'sha' || p
 
 /** AES-192 and AES-256 come in two key-extension methods; each user picks one. */
 export const needsKeyExt = (priv: string) => priv === 'aes-192' || priv === 'aes-256';
+
+/**
+ * The body Settings → SNMP traps sends to POST /api/snmp/users and PUT /api/snmp/users/{name}
+ * (the form's fields; shared with the request fixture test). key_ext is the form's choice only
+ * for AES-192/256; otherwise "draft" (the default) is sent. Empty passphrases are left out (kept).
+ */
+export function userBody(f: {
+  name: string;
+  auth: SnmpAuth;
+  priv: SnmpPriv;
+  keyExt: SnmpKeyExt;
+  authPass: string;
+  privPass: string;
+  engineIds: string[];
+}): SnmpUserInput {
+  return {
+    name: f.name,
+    auth: f.auth,
+    priv: f.auth === 'none' ? ('none' as SnmpPriv) : f.priv,
+    key_ext: needsKeyExt(f.priv) ? f.keyExt : ('draft' as SnmpKeyExt),
+    engine_ids: f.engineIds,
+    ...(f.authPass ? { auth_pass: f.authPass } : {}),
+    ...(f.privPass ? { priv_pass: f.privPass } : {}),
+  };
+}
 
 /** The security level a user's protocols give. */
 export function levelOf(auth: string, priv: string): 'noAuthNoPriv' | 'authNoPriv' | 'authPriv' {

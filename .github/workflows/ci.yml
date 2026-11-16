@@ -205,6 +205,36 @@ jobs:
           WOODSHED_SNMP_INTEROP_REQUIRE: md5,sha,sha-224,sha-256,sha-384,sha-512,aes-128
         run: go test -count=1 -run '^TestServerInterop$' -v ./internal/server/
 
+  # SNMP poll interop (SPEC §12.8): the distribution's net-snmp snmpd, installed in
+  # CI only and never a dependency, is the polled agent, on a high port on
+  # loopback with a generated snmpd.conf (the community and the v3 users'
+  # passphrases are in that file, never on a command line). TestPollInterop polls
+  # it with v1, v2c and v3 (noAuthNoPriv, each auth with noPriv, each priv with
+  # SHA-256, MD5 with DES), checks discovery, real loopback counters with traffic
+  # and HOST-RESOURCES CPU and memory, then restarts snmpd and expects a restart
+  # marker with engineBoots up. Protocols the build lacks are skipped and listed
+  # in the job summary; the ones below must be there.
+  snmp-poll-interop:
+    name: snmp poll interop (net-snmp snmpd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: Install net-snmp's agent
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends snmpd
+          /usr/sbin/snmpd -v
+      - name: Poll interop (TestPollInterop)
+        env:
+          WOODSHED_SNMP_POLL_INTEROP: "1"
+          WOODSHED_SNMP_POLL_INTEROP_REQUIRE: md5,sha,sha-224,sha-256,sha-384,sha-512,aes-128,engineboots
+        run: PATH="$PATH:/usr/sbin" go test -count=1 -run '^TestPollInterop$' -v ./internal/poller/
+
   packaging:
     name: packaging (goreleaser, deb, rpm)
     runs-on: ubuntu-latest

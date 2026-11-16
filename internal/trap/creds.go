@@ -76,6 +76,9 @@ type credUser struct {
 type credSecrets struct {
 	Users       map[string]userSecret `json:"users"`
 	Communities []string              `json:"communities"`
+	// PollCommunities are the v1/v2c poll targets' communities, by target ID
+	// (SPEC §12.4). A 1.2 file has none.
+	PollCommunities map[string]string `json:"poll_communities,omitempty"`
 }
 
 type userSecret struct {
@@ -521,6 +524,87 @@ func (cs communitySet) allows(community []byte) bool {
 		ok = subtle.ConstantTimeCompare(h[:], x[:]) == 1 || ok
 	}
 	return ok
+}
+
+// ---- poll targets (SPEC §12.4) ----
+
+// pollCommunity is a poll target's community (nil: none stored, or the
+// secrets don't decrypt here).
+func (c *creds) pollCommunity(id string) []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.secrets.PollCommunities[id]
+	if !ok {
+		return nil
+	}
+	return []byte(v)
+}
+
+// setPollCommunity stores (or with nil, removes) a poll target's community.
+func (c *creds) setPollCommunity(id string, community []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev, had := c.secrets.PollCommunities[id]
+	if community == nil {
+		if !had {
+			return nil
+		}
+		delete(c.secrets.PollCommunities, id)
+	} else {
+		if had && prev == string(community) {
+			return nil
+		}
+		if c.secrets.PollCommunities == nil {
+			c.secrets.PollCommunities = map[string]string{}
+		}
+		c.secrets.PollCommunities[id] = string(community)
+	}
+	if err := c.saveLocked(); err != nil {
+		if had {
+			c.secrets.PollCommunities[id] = prev
+		} else {
+			delete(c.secrets.PollCommunities, id)
+		}
+		return err
+	}
+	return nil
+}
+
+// pollUser is a v3 user for polling: its protocols and secrets (passphrases,
+// or the keys stored for its engine IDs).
+func (c *creds) pollUser(name string) (snmp.User, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, cu := range c.users {
+		if cu.Name != name {
+			continue
+		}
+		sec, ok := c.secrets.Users[cu.Name]
+		if !ok {
+			return snmp.User{}, false
+		}
+		u, err := cu.snmpUser()
+		if err != nil {
+			return snmp.User{}, false
+		}
+		u.AuthPass, u.PrivPass = sec.AuthPass, sec.PrivPass
+		for _, k := range sec.Keys {
+			u.EngineKeys = append(u.EngineKeys, snmp.EngineKeys{EngineID: k.EngineID, Keys: snmp.Keys{Auth: k.Auth, Priv: k.Priv}})
+		}
+		return u, true
+	}
+	return snmp.User{}, false
+}
+
+func (c *creds) hasUser(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, cu := range c.users {
+		if cu.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- helpers ----

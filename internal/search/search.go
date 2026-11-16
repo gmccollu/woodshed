@@ -175,10 +175,11 @@ type Filter struct {
 	// default (Search: To = now, From = To - 24 h).
 	From, To time.Time
 	// Type is the data type ("" is syslog, SPEC §11.1). Severities through
-	// ExcludeHosts are syslog's filter; Trap is the trap type's (nil: none).
-	// Each type refuses the other's.
+	// ExcludeHosts are syslog's filter; Trap is the trap type's and Poll the
+	// poll type's (nil: none). Each type refuses the others'.
 	Type string
 	Trap *datatype.TrapFilter
+	Poll *datatype.PollFilter
 }
 
 // Query is one /api/search request.

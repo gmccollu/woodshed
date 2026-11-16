@@ -79,6 +79,7 @@
   import DevicePicker from '../components/DevicePicker.svelte';
   import FieldPanel from '../components/FieldPanel.svelte';
   import Histogram from '../components/Histogram.svelte';
+  import PollStrips from '../components/PollStrips.svelte';
   import Icon from '../components/Icon.svelte';
   import ModeSwitch from '../components/ModeSwitch.svelte';
   import SavedMenu from '../components/SavedMenu.svelte';
@@ -184,6 +185,8 @@
   // ----- the search behind the results (frozen, so "Load more" sends the same parameters) -----
   let active = $state<SearchParams | null>(null);
   let activeScope = $state<Scope>(allScope());
+  /** 1.3: the poll markers PollStrips found for the selected devices, drawn across the histogram too. */
+  let pollMarks = $state<{ left: number; title: string; kind: string }[]>([]);
   let activeMode = $state<Mode>('text');
   let activeExtras = $state<Extras>(noExtras());
   let activeType = $state<string>(SYSLOG);
@@ -202,8 +205,14 @@
 
   // ----- the field panel and histogram: one summary for the active search -----
   let schemas = $state<DataType[]>([]);
+  /**
+   * The types Events searches: syslog and traps. 1.3's poll lines are searchable through the API and
+   * the CLI, but Events shows polls as graphs, not as a tab (SPEC §12.3, §12.10 #8); any other type
+   * the server lists is ignored here too. Bundles still offer every type.
+   */
+  const eventSchemas = $derived(schemas.filter((t) => t.type === SYSLOG || t.type === TRAP));
   /** The field panel's fields: the schema of the type being searched. */
-  const schema = $derived(schemas.find((t) => t.type === dtype) ?? (dtype === SYSLOG ? (schemas.find((t) => t.default) ?? null) : null));
+  const schema = $derived(eventSchemas.find((t) => t.type === dtype) ?? (dtype === SYSLOG ? (eventSchemas.find((t) => t.default) ?? null) : null));
   /** The types the device list counts: the bundle's, or every type the server has. */
   const countTypes = $derived(bundle?.types.length ? schemas.filter((t) => bundle!.types.includes(t.type)) : schemas);
   let summary = $state.raw<SummaryResponse | null>(null);
@@ -773,7 +782,7 @@
     bundleTimer = window.setTimeout(() => {
       if (!bundle || JSON.stringify($state.snapshot(bundle)) === bundleKey) return;
       const only = bundle.types.length === 1 ? bundle.types[0] : '';
-      if (only && only !== dtype && schemas.some((t) => t.type === only)) setType(only);
+      if (only && only !== dtype && eventSchemas.some((t) => t.type === only)) setType(only);
       else run();
     }, 400);
   });
@@ -973,7 +982,7 @@
       </div>
       {#if showTypes}
         <div class="seg typesw" role="radiogroup" aria-label="Data type">
-          {#each schemas as t (t.type)}
+          {#each eventSchemas as t (t.type)}
             <button type="button" role="radio" aria-checked={dtype === t.type} onclick={() => setType(t.type)}>{t.label}</button>
           {/each}
         </div>
@@ -1156,6 +1165,15 @@
         cursorText={bundle ? 'Move it to' : 'Bundle around'}
         mark={bundle?.at ?? null}
         hint={bundle ? 'Drag across the bars to narrow the window; Back undoes it.' : undefined}
+        {pollMarks}
+      />
+      <PollStrips
+        hist={summary?.histogram ?? null}
+        from={active.from!}
+        to={active.to!}
+        scope={scopeParams(activeScope)}
+        utc={prefs.utc}
+        onmarkers={(m) => (pollMarks = m)}
       />
     {/if}
 

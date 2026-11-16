@@ -39,6 +39,8 @@ type RunState struct {
 	TLS *RunStateTLS `json:"tls,omitempty"`
 	// SNMP is the SNMP trap receiver (snmpstate.go).
 	SNMP *RunStateSNMP `json:"snmp,omitempty"`
+	// Poll is the SNMP poller, while any target is configured (poll.go).
+	Poll *RunStatePoll `json:"poll,omitempty"`
 }
 
 // RunStateUI is the UI server's state.

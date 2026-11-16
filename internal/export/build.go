@@ -212,13 +212,26 @@ func (b *builder) write(ctx context.Context, f *os.File, info Info, progress fun
 		flt := req.typeFilter(typ)
 		folder := FolderOf(typ)
 		for _, dev := range info.Devices {
-			sc, err := b.eng.NewScanner(ctx, dev, flt)
-			if err != nil {
-				return res, err
-			}
 			var ts *typeCount
 			if sums != nil {
 				ts = sums.of(dev, typ)
+			}
+			if typ == datatype.Poll {
+				// Polls go into the zip as CSV files (SPEC §12.6); each is
+				// read in its own pass, so progress counts a pass's share.
+				before := done
+				scanned, err := b.writePoll(ctx, zw, dev, flt, ts, &res, &files, func(s int64) {
+					progress(0.97 * float64(before+s/4) / float64(total))
+				})
+				done += scanned / 4
+				if err != nil {
+					return res, err
+				}
+				continue
+			}
+			sc, err := b.eng.NewScanner(ctx, dev, flt)
+			if err != nil {
+				return res, err
 			}
 			n := 0
 			for {
@@ -449,6 +462,7 @@ logs/<device>/<YYYY-MM-DD>.log
 `, "\n"))
 	}
 	b.WriteString(trapReadme(info))
+	b.WriteString(pollReadme(info))
 	b.WriteString(`manifest.json
     What was exported: the request (devices with their names and groups, the
     range and any filters), each log file's line count and SHA-256, and "gaps":
@@ -470,6 +484,10 @@ woodshed-events.log
 `)
 	if logs {
 		b.WriteString(`To check a file: sha256sum logs/<device>/<day>.log (or on Windows:
+certutil -hashfile <file> SHA256) and compare with manifest.json.
+`)
+	} else if ts := info.Filters.TypesOrSyslog(); len(ts) == 1 && ts[0] == datatype.Poll {
+		b.WriteString(`To check a file: sha256sum poll/<device>/system.csv (or on Windows:
 certutil -hashfile <file> SHA256) and compare with manifest.json.
 `)
 	} else {
@@ -557,6 +575,61 @@ func trapReadme(info Info) string {
     and in raw= the community's bytes are replaced by as many "*" bytes (the
     lengths are unchanged, so the datagram still decodes). A v3 message is
     kept exactly; its secrets are never in the packet.
+
+`
+}
+
+// pollReadme is README.txt's part about the poll folder and its CSV columns,
+// for a zip with polls (SPEC §12.6).
+func pollReadme(info Info) string {
+	if !slices.Contains(info.Filters.TypesOrSyslog(), datatype.Poll) {
+		return ""
+	}
+	return `poll/<device>/system.csv, interfaces.csv, oids.csv
+    What Woodshed's SNMP poller read from each device it polls, as CSV (a
+    header row, UTF-8, comma-separated, RFC 4180 quoting). Every time is UTC,
+    RFC 3339, when the answer arrived. An empty cell means "not measured" (no
+    earlier sample to compare with, a discontinuity, or the device doesn't
+    support it), never zero. A file is there only when it has rows. Rates
+    are worked out when the sample is stored, from the previous sample of
+    the same counter; the raw counters are beside them, so any rate can be
+    checked. No community or key is ever stored or exported.
+
+    system.csv, one row per cycle, failed cycle or restart:
+        time, cycle       when the answer came, and the cycle's number
+        uptime_s          sysUpTime in seconds (the SNMP agent's uptime)
+        hr_uptime_s       hrSystemUptime in seconds (the host's), if supported
+        cpu_pct           hrProcessorLoad averaged over the processors, %
+        mem_used_bytes,   RAM used and its size (hrStorageRam rows)
+        mem_total_bytes
+        rtt_ms            the cycle's round-trip time
+        status            ok; restart (a marker: detail names what reset);
+                          or why the cycle failed: timeout, unreachable,
+                          auth_failed, unknown_user, unknown_engine,
+                          not_in_time, decrypt_failed, error, overrun
+        detail            the failure's or restart's detail
+
+    interfaces.csv, one row per polled interface per cycle:
+        if_index, if_name, if_alias, speed_mbps   ifIndex, ifName (or ifDescr),
+                          ifAlias and ifHighSpeed
+        oper              ifOperStatus (up, down, testing, ...)
+        in_octets, out_octets                     the raw octet counters
+        in_bps, out_bps   bits per second since the previous cycle
+        in_errors, out_errors, in_discards, out_discards   raw counters
+        *_delta           the counter's increase since the previous cycle
+        discontinuity     1 when the counters jumped (the agent restarted,
+                          ifCounterDiscontinuityTime changed, or the index
+                          now names another interface): no rates that cycle
+
+    oids.csv, one row per custom OID (or walked row) per cycle:
+        oid, label        the configured OID and its label
+        row               a walk's row (the index after the OID); empty for
+                          a single value
+        type              int, str, hex, oid, ip, c32, g32, ticks, c64,
+                          opaque, null, nosuchobject, nosuchinstance,
+                          endofmibview
+        value             the value as text
+        rate              per second, for counters (c32, c64)
 
 `
 }

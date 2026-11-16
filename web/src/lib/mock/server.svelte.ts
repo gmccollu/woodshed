@@ -49,6 +49,8 @@
 //                      install; ok hides the snmp_firewall banner)
 //   mock_snmp_creds=1  one v3 user's credentials can't be decrypted here (snmp_credentials banner)
 //   mock_snmp_mibs=1   a file in the MIB folder failed to load (snmp_mibs banner)
+//   mock_poll_down=1   a polled device (branch-fw-07) hasn't answered for 2 h: backing off, poll_unreachable banner
+//   mock_poll_overrun=1 poll cycles were skipped in the last hour (poll_overrun banner)
 //   (at mock_rate=1284 the 20 GiB cap lasts about 13 days, so the size cap limits retention)
 
 import type {
@@ -79,6 +81,10 @@ import {
   trapStats, senderAt, type StoredTrap,
 } from './traps';
 import { createUser, deleteUser, failures as snmpFailures, listUsers, mibsJSON, snmpMock, snmpState, unreadableUsers, updateUser } from './snmp';
+import { POLL_SCHEMA, devicePoll, deviceRoute as pollDeviceRoute, pollBanners, pollDefaults, pollRoute, seriesRoute as pollSeriesRoute, setPollUsers, timelineRoute as pollTimelineRoute } from './poll';
+import { POLL_RANGES } from '../poll';
+
+setPollUsers(() => listUsers().map((u) => u.name));
 
 const P = new URLSearchParams(location.search);
 const n = (k: string, d: number) => {
@@ -197,6 +203,9 @@ const probe = {
   },
 };
 (window as unknown as { __woodshedMock: typeof probe }).__woodshedMock = probe;
+// The request fixture replay (screenshots.mjs, "ui-requests-mock") sends the UI's exact bodies through the mock.
+(window as unknown as { __woodshedMockFetch: (path: string, init?: RequestInit) => Promise<Response> }).__woodshedMockFetch = (path, init) =>
+  mockTransport.fetch(path, init);
 
 // mock_loggedin=1 starts with a session, as if this browser had logged in earlier: the mock
 // issues a secret and puts it where the UI keeps one.
@@ -501,6 +510,7 @@ let settings: Settings = {
   },
   quiet: { quiet_after_seconds: 300, offline_after_seconds: 3600 },
   updates: { check: (['ask', 'on', 'off'].includes(P.get('mock_updates') ?? '') ? P.get('mock_updates') : 'ask') as UpdateCheck },
+  poll: pollDefaults(),
 };
 
 // ---------- The update check (docs/api.md → Update check) ----------
@@ -745,6 +755,14 @@ function validate(s: Settings): Record<string, string> {
   if (!Number.isInteger(q.offline_after_seconds) || q.offline_after_seconds <= q.quiet_after_seconds)
     e['quiet.offline_after_seconds'] = 'Offline must come after quiet.';
   if (s.updates && !['ask', 'on', 'off'].includes(s.updates.check)) e['updates.check'] = 'Must be "ask", "on" or "off".';
+  if (s.poll) {
+    for (const [k, [lo, hi]] of Object.entries(POLL_RANGES)) {
+      const v = (s.poll as unknown as Record<string, number>)[k];
+      if (!Number.isInteger(v) || v < lo || v > hi) e[`poll.${k}`] = `Use ${lo.toLocaleString('en-US')} to ${hi.toLocaleString('en-US')}.`;
+    }
+    const known = ['system', 'system-info', 'interfaces'];
+    if (!Array.isArray(s.poll.presets) || s.poll.presets.some((x) => !known.includes(x))) e['poll.presets'] = 'Presets are system, system-info and interfaces.';
+  }
   return e;
 }
 
@@ -1083,6 +1101,7 @@ function deviceJSON(d: Dev, now: number): Device {
     bytes_on_disk: d.bytes,
     tls: deviceTls(d.def.ip, now),
     ...deviceTypes(d, now),
+    ...devicePoll(d.def.ip, now),
   };
 }
 
@@ -1165,6 +1184,7 @@ function statusJSON(): Status {
     });
   banners.push(...tlsBanners());
   banners.push(...snmpBanners());
+  banners.push(...pollBanners(Date.now()));
   if (mock.queueFull && l.udp.enabled)
     banners.push({
       kind: 'udp_queue_full',
@@ -1710,7 +1730,7 @@ function canonDuration(ms: number): string {
   return out;
 }
 
-const DATA_TYPES = ['syslog', 'trap'];
+const DATA_TYPES = ['syslog', 'trap', 'poll'];
 /** Syslog's filters in an export body (they're a 400 with types ["trap"]). */
 const SYSLOG_BODY_FILTERS = ['severities', 'app', 'host', 'facilities', 'exclude_app', 'exclude_host'] as const;
 const present = (v: unknown) => (Array.isArray(v) ? v.length > 0 : typeof v === 'string' ? v !== '' : v === true);
@@ -2215,6 +2235,7 @@ const SCHEMA = {
       ],
     },
     TRAP_SCHEMA,
+    POLL_SCHEMA,
   ],
 };
 const FIELD_KEYS = SCHEMA.types[0].fields.map((x) => x.key);
@@ -2679,7 +2700,7 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const restarting = wasLan !== s.ui.lan_mode || settings.ui.port !== s.ui.port;
     // A PUT without updates keeps it (docs/api.md).
     const check = s.updates?.check ?? settings.updates?.check ?? 'ask';
-    settings = structuredClone({ ...s, updates: settings.updates });
+    settings = structuredClone({ ...s, updates: settings.updates, poll: s.poll ?? settings.poll });
     // docs/api.md: a plain community is stored and comes back only as "#<hash8>" (the mock's hash isn't SHA-256).
     if (settings.listeners.snmp) {
       const prevSnmp = s.listeners.snmp ? undefined : structuredClone(prev.snmp);
@@ -2750,12 +2771,38 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     if (!wsCa) return err(404, "TLS hasn't been turned on yet, so there's no CA certificate.");
     return caDownload(caDl[1] as 'pem' | 'der');
   }
+  // 1.3: poll lines are searchable (the CLI and the API); the mock stores none, so a poll search finds nothing.
+  if (method === 'GET' && (p === '/api/search' || p === '/api/search/summary') && url.searchParams.get('type') === 'poll') {
+    const base = { next_cursor: '', partial: false, scanned_bytes: 0, scanned_files: 0, elapsed_ms: 1 };
+    if (p === '/api/search') return json({ results: [], ...base });
+    const from = url.searchParams.get('from') ?? new Date(now - 86_400_000).toISOString();
+    const to = url.searchParams.get('to') ?? new Date(now).toISOString();
+    return json({ type: 'poll', from, to, matched: 0, counted_from: from, fields: [], ...base });
+  }
   if (method === 'GET' && p === '/api/search' && url.searchParams.get('type') === 'trap') return trapSearchRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/search/summary' && url.searchParams.get('type') === 'trap') return trapSummaryRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/context' && /^t\d+$/.test(url.searchParams.get('ref') ?? '')) return trapContextRoute(url.searchParams, now);
   if (p.startsWith('/api/snmp')) {
     const r = snmpRoute(method, p, body, now);
     if (r) return r;
+  }
+  if (p === '/api/poll' || p.startsWith('/api/poll/')) {
+    const reply = (r: { status: number; body?: unknown; headers?: Record<string, string> }) =>
+      r.status === 204 ? new Response(null, { status: 204 }) : json(r.body, r.status, r.headers ?? {});
+    const u = url.searchParams;
+    if (method === 'GET' && p === '/api/poll/series') return reply(pollSeriesRoute(u, now));
+    if (method === 'GET' && p === '/api/poll/timeline') {
+      const list = listParam(u, 'devices');
+      const group = u.get('group');
+      const ug = u.get('ungrouped') === 'true';
+      const selected = (ip: string) =>
+        list.length ? list.includes(ip) : group ? groupOf(ip) === group : ug ? !groupOf(ip) : !hiddenNow(ip);
+      return reply(pollTimelineRoute(u, now, selected));
+    }
+    const dm = /^\/api\/poll\/device\/([^/]+)$/.exec(p);
+    if (method === 'GET' && dm) return reply(pollDeviceRoute(decodeURIComponent(dm[1]), u, now));
+    const r = pollRoute(method, p, body, ifMatch, settings.poll ?? pollDefaults(), now);
+    if (r) return reply(r);
   }
   if (method === 'GET' && p === '/api/search') return searchRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/search/schema') return json(SCHEMA);

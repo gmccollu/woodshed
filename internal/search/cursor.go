@@ -75,6 +75,9 @@ func (q *Query) binding() []byte {
 		if q.Trap != nil {
 			str(q.Trap.Bind())
 		}
+		if q.Poll != nil {
+			str(q.Poll.Bind())
+		}
 	}
 	return h.Sum(nil)[:bindLen]
 }

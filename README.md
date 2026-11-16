@@ -1,8 +1,8 @@
 # Woodshed
 
 A syslog and SNMP trap collector for the box on site. When something breaks, pick the moment and how far before and
-after, and get one zip with every device's logs and traps for that window: checksums, a summary per device (counts by
-severity, first and last message, reboots) and any gaps where Woodshed wasn't running. It installs in a minute on
+after, and get one zip with every device's logs, traps and polled counters for that window: checksums, a summary per
+device (counts by severity, first and last message, reboots) and any gaps where Woodshed wasn't running. It installs in a minute on
 Windows, macOS or Linux.
 
 Underneath, it keeps every message as plain text files (one folder per device, one file per day) within a disk
@@ -94,8 +94,10 @@ As of 1.2.0 (details in the [CHANGELOG](CHANGELOG.md)):
   (MD5, SHA-1 and SHA-2; DES and AES-128/192/256). Traps are stored decoded, one line each, with the raw packet,
   numeric OIDs and names from a folder of MIB files, next to the device's syslog. Communities are stored only as a
   hash; v3 passphrases are encrypted for the service's account (Windows) or readable only by it.
-- Plain files: one folder per device and one file per day (`logs/<ip>/<day>.log`, traps in `logs/<ip>/traps/`),
-  gzipped once closed. Read them with grep, an editor or any log tool.
+- Optional SNMP polling of the devices you choose (uptime, interface traffic and errors, CPU and memory), graphed
+  beside their logs, with reboots marked.
+- Plain files: one folder per device and one file per day (`logs/<ip>/<day>.log`, traps in `logs/<ip>/traps/`,
+  polls in `logs/<ip>/poll/`), gzipped once closed. Read them with grep, an editor or any log tool.
 - Doesn't fill the disk: retention by age and total size (30 days / 20 GiB by default), plus a low-disk guard. Every
   deletion is recorded and shown in Settings.
 - Dropped, truncated and refused messages are counted and shown. Where the OS hides kernel UDP drops (Windows,
@@ -179,6 +181,7 @@ everything to disk first.
 | `woodshed lan-mode on\|off [--port N]` | Turn LAN mode on or off from the shell; prints the addresses and the certificate's SHA-256 (run as administrator) |
 | `woodshed reset-password` | Forgot the UI password: remove it and turn LAN mode off (run as administrator) |
 | `woodshed search` | Search the stored logs (and traps) from a terminal, with the Events filters |
+| `woodshed poll test ADDRESS` | Test-poll one device over SNMP from here (secrets from files or the environment), step by step |
 | `woodshed bundle --at TIME` | Build an incident bundle (every record around a moment, with a summary) from the data folder |
 | `woodshed send` | Send numbered test messages to any syslog server |
 | `woodshed bench` | Measure sustained throughput on a temporary in-process server |

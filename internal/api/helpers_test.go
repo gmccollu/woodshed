@@ -104,6 +104,8 @@ func newFakeBackend() *fakeBackend {
 			UI:      UISettings{Port: 0}, // tests run on port 0; a different port here would restart the server onto it
 			Quiet:   QuietSettings{QuietAfterSeconds: 300, OfflineAfterSeconds: 3600},
 			Updates: &UpdatesSettings{Check: "ask"},
+			Poll: &PollSettings{IntervalS: 60, TimeoutMS: 2000, Retries: 1, Concurrency: 32, MaxInterfaces: 64, MaxTargets: 500,
+				Presets: []string{"system", "system-info", "interfaces"}},
 		},
 		updates: UpdateInfo{
 			Check: "ask", Available: true, URL: "https://releases.example/woodshed/releases.json", Current: "1.1.0",

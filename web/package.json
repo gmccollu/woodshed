@@ -10,7 +10,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "contrast": "node scripts/contrast.mjs",
     "screenshots": "node scripts/screenshots.mjs",
-    "test": "node --experimental-strip-types --no-warnings --test src/lib/logtext.test.ts src/lib/sse.test.ts src/lib/fields.test.ts src/lib/terms.test.ts src/lib/events.test.ts src/lib/tls.test.ts src/lib/traps.test.ts src/lib/bundle.test.ts"
+    "test": "node --experimental-strip-types --no-warnings --test src/lib/logtext.test.ts src/lib/sse.test.ts src/lib/fields.test.ts src/lib/terms.test.ts src/lib/events.test.ts src/lib/tls.test.ts src/lib/traps.test.ts src/lib/bundle.test.ts src/lib/poll.test.ts src/lib/fixtures/ui-requests.test.ts"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",

@@ -7,10 +7,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/peer"
+	"github.com/gmccollu/woodshed/internal/snmp/agenttest"
 	"github.com/gmccollu/woodshed/internal/updatecheck"
 	"github.com/gmccollu/woodshed/internal/updatecheck/uctest"
 )
@@ -72,8 +75,16 @@ type updServer struct {
 
 func startUpd(t *testing.T, cfgPath, version string, clock *uctest.FakeClock, fake *uctest.Server) *updServer {
 	t.Helper()
+	// No poll targets in these servers: the poller must send nothing.
+	return startUpdWith(t, cfgPath, version, clock, fake, func(ap netip.AddrPort) {
+		t.Errorf("an SNMP poll request to %s with no poll targets", ap)
+	})
+}
+
+func startUpdWith(t *testing.T, cfgPath, version string, clock *uctest.FakeClock, fake *uctest.Server, onSend func(netip.AddrPort)) *updServer {
+	t.Helper()
 	srv, err := Open(cfgPath, Options{Version: version, Commit: "abc1234", ReleasesURL: testReleases, Logger: quiet,
-		updateTesting: fake.Hooks(clock)})
+		updateTesting: fake.Hooks(clock), pollOnSend: onSend, pollUnit: pollUnit})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,6 +444,47 @@ func TestOnlyUpdateCheckDials(t *testing.T) {
 			}
 		})
 	}
+
+	// Since 1.3 (SPEC §12.4): with no poll targets the poller sends nothing
+	// (startUpd fails any send above); with one, its requests go only to the
+	// target's address and port, and the update check still dials nothing.
+	t.Run("poll_targets", func(t *testing.T) {
+		clock := newClock()
+		fake := uctest.NewServer(t, clock)
+		a, err := agenttest.Start(agenttest.Options{Community: "nodial-test-comm"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer a.Close()
+		var mu sync.Mutex
+		dst := map[netip.AddrPort]int{}
+		u := startUpdWith(t, newUpdConfig(t, "off"), "1.1.0", clock, fake, func(ap netip.AddrPort) {
+			mu.Lock()
+			dst[ap]++
+			mu.Unlock()
+		})
+		body := fmt.Sprintf(`{"address":"127.0.0.1","port":%d,"version":"2c","community":"nodial-test-comm"}`, a.Addr().Port())
+		if code, out := u.call(t, "POST", "/api/poll/targets", body); code != 201 {
+			t.Fatalf("add a target: %d %s", code, out)
+		}
+		waitFor(t, "a poll", func() bool { return a.Requests()["get"] > 0 })
+		mu.Lock()
+		for ap := range dst {
+			if ap != a.Addr() {
+				t.Errorf("a poll request to %s; the only target is %s", ap, a.Addr())
+			}
+		}
+		mu.Unlock()
+		if d := fake.Dials(); len(d) != 0 {
+			t.Errorf("dials %v", d)
+		}
+		for src := range a.Sources() {
+			if !src.Addr().IsLoopback() {
+				t.Errorf("a request from %s", src)
+			}
+		}
+		nh.check(t)
+	})
 }
 
 const proxyChildEnv = "WOODSHED_TEST_UPDATECHECK_PROXY_CHILD"

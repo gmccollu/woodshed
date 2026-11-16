@@ -93,6 +93,8 @@ type Filters struct {
 	// one type of traps, its filter (SPEC §11.1, docs/api.md).
 	Types []string             `json:"types,omitempty"`
 	Trap  *datatype.TrapFilter `json:"trap,omitempty"`
+	// 1.3: with one type of polls, its filter (SPEC §12.6).
+	Poll *datatype.PollFilter `json:"poll,omitempty"`
 	// 1.2: the incident bundle (SPEC §11.3): Kind "bundle", the moment and
 	// the spans before and after it, and whether the devices are the ones
 	// active in the window. A bundle's Types are resolved when it's created
@@ -137,13 +139,16 @@ func (r Request) typeFilter(typ string) search.Filter {
 			_ = r.Trap.Compile() // a filter read back from the entry's file
 			f.Trap = r.Trap
 		}
+		if r.Poll != nil && typ == datatype.Poll {
+			f.Poll = r.Poll
+		}
 		return f
 	}
 	return search.Filter{From: r.From, To: r.To, Type: typ}
 }
 
 // Folders maps the zip's folders to the data types (manifest.json).
-var Folders = map[string]string{"logs": datatype.Syslog, "traps": datatype.Trap}
+var Folders = map[string]string{"logs": datatype.Syslog, "traps": datatype.Trap, "poll": datatype.Poll}
 
 // FolderOf is a type's folder in the zip: syslog stays in logs/ as in 1.1;
 // another type gets its folder name ("traps/" for traps).
@@ -430,7 +435,8 @@ func (m *Manager) Estimate(ctx context.Context, r Request) (search.Estimate, err
 func (r Request) filtersEmpty() bool {
 	f := r.Filters
 	return f.Q == "" && f.Exclude == "" && f.Severities == 0 && f.Facilities == 0 && len(f.Apps) == 0 && len(f.Hosts) == 0 &&
-		len(f.ExcludeApps) == 0 && len(f.ExcludeHosts) == 0 && (f.Trap == nil || f.Trap.Empty())
+		len(f.ExcludeApps) == 0 && len(f.ExcludeHosts) == 0 && (f.Trap == nil || f.Trap.Empty()) &&
+		(f.Poll == nil || f.Poll.Empty())
 }
 
 // Create queues an export.

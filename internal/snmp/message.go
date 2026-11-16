@@ -158,7 +158,22 @@ type Message struct {
 	reportAuth  bool  // the Report is authenticated (notInTimeWindows)
 	reportReqID int64 // the request ID for a Report, when readable
 	user        *userState
+
+	// mode is who decodes: the trap receiver (the zero value), the requester
+	// reading a Response or Report (request.go), or a test agent reading a
+	// request (DecodeRequest).
+	mode    decodeMode
+	reqKeys func(engineID []byte) (Security, bool) // the requester's keys
 }
+
+// decodeMode says which PDUs a decode accepts.
+type decodeMode uint8
+
+const (
+	modeReceiver  decodeMode = iota // traps and informs (Decode)
+	modeRequester                   // Response and Report (DecodeResponse)
+	modeAgent                       // Get, GetNext and GetBulk (DecodeRequest)
+)
 
 func (m *Message) fail(s Status, format string, args ...any) {
 	m.Status = s
@@ -236,12 +251,20 @@ func (m *Message) decodeCommunity(b []byte, off int) {
 func (m *Message) setPDU(pt tlv, failStatus Status, prefix string) {
 	p, err := parsePDU(pt)
 	m.PDU = p
-	allowed := (m.Version == V1 && p.Type == PDUV1Trap) ||
-		(m.Version != V1 && (p.Type == PDUTrap || p.Type == PDUInform))
+	var allowed bool
+	switch m.mode {
+	case modeRequester:
+		allowed = p.Type == PDUResponse || (m.Version == V3 && p.Type == PDUReport)
+	case modeAgent:
+		allowed = p.Type == PDUGet || p.Type == PDUGetNext || (m.Version != V1 && p.Type == PDUGetBulk)
+	default:
+		allowed = (m.Version == V1 && p.Type == PDUV1Trap) ||
+			(m.Version != V1 && (p.Type == PDUTrap || p.Type == PDUInform))
+	}
 	switch {
 	case !allowed:
 		// Never answered; its contents are kept as far as they decode.
-		m.fail(StatusUnexpectedPDU, "%s PDUs aren't accepted in SNMPv%s (only %s)", p.Type, m.Version, allowedPDUs(m.Version))
+		m.fail(StatusUnexpectedPDU, "%s PDUs aren't accepted in SNMPv%s (only %s)", p.Type, m.Version, allowedPDUs(m.Version, m.mode))
 		if err != nil {
 			m.Err += "; " + err.Error()
 			p.Varbinds = nil
@@ -254,13 +277,25 @@ func (m *Message) setPDU(pt tlv, failStatus Status, prefix string) {
 		}
 	default:
 		m.Status, m.Err = StatusOK, ""
-		if p.Type == PDUInform {
+		if p.Type == PDUInform && m.mode == modeReceiver {
 			m.Reply = ReplyResponse
 		}
 	}
 }
 
-func allowedPDUs(v Version) string {
+func allowedPDUs(v Version, mode decodeMode) string {
+	switch mode {
+	case modeRequester:
+		if v == V3 {
+			return "Response and Report"
+		}
+		return "Response"
+	case modeAgent:
+		if v == V1 {
+			return "Get and GetNext"
+		}
+		return "Get, GetNext and GetBulk"
+	}
 	if v == V1 {
 		return "Trap-PDUs"
 	}
@@ -386,6 +421,10 @@ func (m *Message) decodeV3(b []byte, off int, u *USM, now time.Time) {
 		}
 	} else if m.data.tag != tagSequence {
 		m.fail(StatusMalformed, "msgData: want a scoped PDU (SEQUENCE), got tag 0x%02x", m.data.tag)
+		return
+	}
+	if m.mode == modeRequester {
+		m.processResponse()
 		return
 	}
 	u.process(m, now)

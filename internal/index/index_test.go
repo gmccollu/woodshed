@@ -431,8 +431,11 @@ func TestRollupAndCounts(t *testing.T) {
 	}
 }
 
-// dropV6 undoes migration 5 -> 6 (data types).
-const dropV6 = `DROP INDEX files_type_device_time; ALTER TABLE files DROP COLUMN type; ALTER TABLE deletions DROP COLUMN type;
+// dropV7 undoes migration 6 -> 7 (the poller's tables).
+const dropV7 = `DROP TABLE poll_targets; DROP TABLE poll_hourly; `
+
+// dropV6 undoes migrations 6 -> 7 and 5 -> 6 (data types).
+const dropV6 = dropV7 + `DROP INDEX files_type_device_time; ALTER TABLE files DROP COLUMN type; ALTER TABLE deletions DROP COLUMN type;
 	DROP TABLE type_stats; DROP TABLE type_stats_hourly; `
 
 // dropV4Indexes undoes migrations 5 -> 6, 4 -> 5 and 3 -> 4, for tests that rebuild an older schema.
@@ -447,7 +450,7 @@ func TestMigrateV3ToV4Indexes(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 6 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 7 {
 		t.Fatalf("version %d", v)
 	}
 	var n int

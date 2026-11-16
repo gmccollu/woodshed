@@ -333,6 +333,20 @@ func (r *Receiver) SetCommunities(in []string) error {
 	return nil
 }
 
+// PollCommunity is a poll target's stored community (nil: none).
+func (r *Receiver) PollCommunity(targetID string) []byte { return r.creds.pollCommunity(targetID) }
+
+// SetPollCommunity stores a poll target's community; nil removes it.
+func (r *Receiver) SetPollCommunity(targetID string, community []byte) error {
+	return r.creds.setPollCommunity(targetID, community)
+}
+
+// PollUser is a v3 user with its secrets, for polling.
+func (r *Receiver) PollUser(name string) (snmp.User, bool) { return r.creds.pollUser(name) }
+
+// HasUser reports whether a v3 user exists (its secrets readable or not).
+func (r *Receiver) HasUser(name string) bool { return r.creds.hasUser(name) }
+
 // ---- the datagrams ----
 
 // Handle decodes, stores and answers one datagram (listen.Options.Trap).

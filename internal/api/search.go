@@ -144,6 +144,8 @@ type SearchRequest struct {
 	// 1.2: the trap type's filter (Type "trap"; nil: none). Syslog's filters
 	// above stay empty for traps, and the trap filter nil for syslog.
 	Trap *datatype.TrapFilter
+	// 1.3: the poll type's filter (Type "poll"; nil: none).
+	Poll *datatype.PollFilter
 }
 
 // SearchLine is one search result or context line.
@@ -166,6 +168,17 @@ type SearchLine struct {
 // (bytes that aren't valid UTF-8 become U+FFFD). A trap line has its own
 // shape: type, ref, raw (the record) and fields.
 func (l SearchLine) MarshalJSON() ([]byte, error) {
+	if l.Type == datatype.Poll {
+		return json.Marshal(struct {
+			Received string              `json:"received"`
+			DeviceID string              `json:"device_id"`
+			Type     string              `json:"type"`
+			Ref      string              `json:"ref"`
+			Raw      string              `json:"raw"`
+			Fields   datatype.PollResult `json:"fields"`
+		}{l.Received.UTC().Format("2006-01-02T15:04:05.000Z07:00"), l.DeviceID, l.Type, l.Ref,
+			string(bytes.ToValidUTF8(l.Raw, []byte("�"))), datatype.PollResultOf(l.Raw)})
+	}
 	if l.Type != "" && l.Type != datatype.Syslog {
 		f := l.Trap
 		if f == nil {
@@ -241,6 +254,7 @@ type ExportRequest struct {
 	// builds the 1.1 zip) and, with one type, its filter (Trap for traps).
 	Types []string
 	Trap  *datatype.TrapFilter
+	Poll  *datatype.PollFilter // 1.3: the poll type's filter
 	// 1.2: the incident bundle (Kind "bundle"): the moment, the spans around
 	// it and the devices active in the window (docs/api.md "Exports"). From
 	// and To are left zero; the backend works the window out, cut at now.
@@ -279,6 +293,8 @@ type ExportFilters struct {
 	Kind  string     `json:"kind"`
 	Types []string   `json:"types"`
 	Trap  *TrapLists `json:"trap,omitempty"`
+	// 1.3: the poll type's filter.
+	Poll *PollLists `json:"poll,omitempty"`
 	// A bundle's moment and spans ("30m"), and whether its devices are the
 	// active ones; omitted for exports.
 	At            *time.Time `json:"at,omitempty"`
@@ -372,6 +388,51 @@ func (t *TrapLists) Filter() (*datatype.TrapFilter, error) {
 		return nil, nil
 	}
 	f, err := datatype.ParseTrapFilter(t.get)
+	if err != nil || f.Empty() {
+		return nil, err
+	}
+	return f, nil
+}
+
+// PollLists is a poll filter as JSON lists (saved searches, export bodies
+// and their echo): the parameters of docs/api.md "Poll lines in search".
+type PollLists struct {
+	Kinds      ValueList `json:"kinds,omitempty"`
+	Ifs        ValueList `json:"ifs,omitempty"`
+	ExcludeIfs ValueList `json:"exclude_ifs,omitempty"`
+	Oper       ValueList `json:"oper,omitempty"`
+	PollStatus ValueList `json:"poll_status,omitempty"`
+	Reboot     ValueList `json:"reboot,omitempty"`
+}
+
+// get is the lists as query parameters, for datatype.ParsePollFilter.
+func (p *PollLists) get(name string) string {
+	if p == nil {
+		return ""
+	}
+	m := map[string]ValueList{"kinds": p.Kinds, "ifs": p.Ifs, "exclude_ifs": p.ExcludeIfs, "oper": p.Oper,
+		"poll_status": p.PollStatus, "reboot": p.Reboot}
+	return strings.Join(m[name], ",")
+}
+
+// PollListsOf is a poll filter's JSON lists (nil for none).
+func PollListsOf(f *datatype.PollFilter) *PollLists {
+	if f == nil {
+		return nil
+	}
+	p := &PollLists{Kinds: f.Kinds, Ifs: f.Ifs, ExcludeIfs: f.ExcludeIfs, Oper: f.Oper, PollStatus: f.Status, Reboot: f.Reboot}
+	if f.Nothing && len(p.Kinds) == 0 && len(p.Oper) == 0 && len(p.PollStatus) == 0 && len(p.Reboot) == 0 {
+		p.Kinds = []string{"none"}
+	}
+	return p
+}
+
+// Filter parses the lists like the query parameters.
+func (p *PollLists) Filter() (*datatype.PollFilter, error) {
+	if p == nil {
+		return nil, nil
+	}
+	f, err := datatype.ParsePollFilter(p.get)
 	if err != nil || f.Empty() {
 		return nil, err
 	}
@@ -573,7 +634,7 @@ func parseFilters11(v url.Values, r *SearchRequest) error {
 		return err
 	}
 	r.ExcludeDevices, r.ExcludeApp, r.ExcludeHost = splitList(v.Get("exclude_devices")), splitList(v.Get("exclude_app")), splitList(v.Get("exclude_host"))
-	r.Trap, err = parseTypeFilter(r.Type, v.Get)
+	r.Trap, r.Poll, err = parseTypeFilter(r.Type, v.Get)
 	return err
 }
 
@@ -661,10 +722,11 @@ type exportBody struct {
 	ExcludeApp     []string   `json:"exclude_app"`
 	ExcludeHost    []string   `json:"exclude_host"`
 	// 1.2 (docs/api.md "Exports and the incident bundle"): the data types,
-	// the kind, and the trap filters as lists.
+	// the kind, and the trap filters as lists; 1.3 the poll filters.
 	Types []string `json:"types"`
 	Kind  string   `json:"kind"`
 	TrapLists
+	PollLists
 	// The incident bundle (kind "bundle").
 	At            string `json:"at"`
 	Before        string `json:"before"`
@@ -719,11 +781,14 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 	}
 	syslogFilters := len(b.Severities.Values) > 0 || b.Severities.None || len(b.Facilities.Values) > 0 || b.Facilities.None ||
 		len(req.App) > 0 || len(req.Host) > 0 || len(req.ExcludeApp) > 0 || len(req.ExcludeHost) > 0
-	tl := b.TrapLists
-	trapFilters := tl.get("snmp_versions")+tl.get("pdus")+tl.get("trap_oid")+tl.get("exclude_trap_oid")+tl.get("enterprise")+
-		tl.get("exclude_enterprise")+tl.get("generic")+tl.get("specific")+tl.get("exclude_specific")+tl.get("cred")+
-		tl.get("exclude_cred")+tl.get("status") != ""
-	if len(req.Types) > 1 && (syslogFilters || trapFilters || req.Q != "" || req.Exclude != "") {
+	lists := typeListsGet(&b.TrapLists, &b.PollLists)
+	typeFilters := false
+	for _, t := range []string{datatype.Trap, datatype.Poll} {
+		for _, p := range datatype.Get(t).FilterParams() {
+			typeFilters = typeFilters || lists(p) != ""
+		}
+	}
+	if len(req.Types) > 1 && (syslogFilters || typeFilters || req.Q != "" || req.Exclude != "") {
 		return bad("types: Filters apply to one data type; pick one, or leave the filters out.")
 	}
 	if len(req.Types) == 1 {
@@ -744,9 +809,9 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 			case "exclude_host":
 				return strings.Join(req.ExcludeHost, ",")
 			}
-			return tl.get(p)
+			return lists(p)
 		}
-		if req.Trap, err = parseTypeFilter(req.Type, get); err != nil {
+		if req.Trap, req.Poll, err = parseTypeFilter(req.Type, get); err != nil {
 			return bad(err.Error())
 		}
 	}
@@ -787,7 +852,7 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 // when sent, and no from or to: its window is at, before and after.
 func readBundle(b *exportBody, req *ExportRequest) string {
 	req.Kind = "bundle"
-	tl := b.TrapLists
+	lists := typeListsGet(&b.TrapLists, &b.PollLists)
 	for _, x := range []struct {
 		name string
 		set  bool
@@ -811,9 +876,11 @@ func readBundle(b *exportBody, req *ExportRequest) string {
 		}
 		return x.name + ": a bundle takes no filters: it's everything around the moment. Filter with a plain export instead."
 	}
-	for _, p := range datatype.Get(datatype.Trap).FilterParams() {
-		if tl.get(p) != "" {
-			return p + ": a bundle takes no filters: it's everything around the moment. Filter with a plain export instead."
+	for _, t := range []string{datatype.Trap, datatype.Poll} {
+		for _, p := range datatype.Get(t).FilterParams() {
+			if lists(p) != "" {
+				return p + ": a bundle takes no filters: it's everything around the moment. Filter with a plain export instead."
+			}
 		}
 	}
 	if b.At == "" {

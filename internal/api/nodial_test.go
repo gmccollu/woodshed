@@ -40,6 +40,10 @@ var forbidden = map[string][]string{
 	"golang.org/x/net/...": nil,
 }
 
+// sendMethods are datagram sends on an unconnected socket (no Dial needed);
+// keep them in step with internal/updatecheck's allowlist test.
+var sendMethods = map[string]bool{"WriteToUDP": true, "WriteToUDPAddrPort": true, "WriteMsgUDP": true, "WriteMsgUDPAddrPort": true}
+
 func TestNoClientNetworkAPIs(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -75,6 +79,9 @@ func TestNoClientNetworkAPIs(t *testing.T) {
 			sel, ok := n.(*ast.SelectorExpr)
 			if !ok {
 				return true
+			}
+			if sendMethods[sel.Sel.Name] {
+				t.Errorf("%s: sends a datagram with .%s", fset.Position(sel.Pos()), sel.Sel.Name)
 			}
 			id, ok := sel.X.(*ast.Ident)
 			if !ok {

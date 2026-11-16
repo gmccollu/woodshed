@@ -93,6 +93,8 @@ const pairs = [
   ['warn', ['card', 'card-strong'], UI],
   ['bad', ['card', 'card-strong'], UI],
   ['spark', ['card'], UI],
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((i) => [`chart-${i}`, ['card', 'card-strong'], UI]),
+  ['chart-mark', ['card', 'card-strong'], UI],
   ['input-border', ['card'], UI],
   ['link', ['card'], UI],
 ];

@@ -28,14 +28,21 @@ var forbidden = map[string][]string{
 	"net/http/cookiejar": nil,
 }
 
+// sendMethods are the datagram sends that need no Dial: a method call on an
+// unconnected UDP socket, which can send to any address. A package that calls
+// them sends packets on its own, so it's on the allowlist too (SPEC §12.4).
+var sendMethods = map[string]bool{"WriteToUDP": true, "WriteToUDPAddrPort": true, "WriteMsgUDP": true, "WriteMsgUDPAddrPort": true}
+
 // allowed are the packages (directories from the module root) that may use
 // them, and why. Adding one is a reviewed change (SPEC §10.2).
 var allowed = map[string]string{
 	"internal/updatecheck":        "the opt-in update check: the only package that connects to a host Woodshed picks itself",
 	"internal/updatecheck/uctest": "test support for the update check (local servers only); imported only by tests",
+	"internal/poller":             "SNMP polls to the devices the user configured",
+	"internal/snmp/agenttest":     "test support for the poller (a test SNMP agent answering on loopback); imported only by tests",
 	"internal/loadgen":            "woodshed send and bench: send to the address the user gives",
 	"internal/peer":               "loopback to another Woodshed on this machine",
-	"internal/listen":             "OS helpers (who holds a port)",
+	"internal/listen":             "OS helpers (who holds a port), and SNMP inform Responses and Reports on the trap socket",
 	"internal/service":            "OS helpers (the service manager)",
 	"internal/fwrule":             "OS helpers (the host firewall's own programs: netsh, ufw, firewall-cmd); no network",
 	"cmd/woodshed":                "the command line: OS helpers, and woodshed status asking the local server",
@@ -126,6 +133,9 @@ func TestClientNetworkAllowlist(t *testing.T) {
 				if !ok {
 					return true
 				}
+				if sendMethods[sel.Sel.Name] {
+					users[dir] = append(users[dir], fset.Position(sel.Pos()).String()+" sends with ."+sel.Sel.Name)
+				}
 				id, ok := sel.X.(*ast.Ident)
 				if !ok {
 					return true
@@ -169,8 +179,12 @@ func TestReleasesHostOnlyHere(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, imp := range file.Imports {
-				if p, _ := strconv.Unquote(imp.Path.Value); strings.HasSuffix(p, "/internal/updatecheck/uctest") {
+				p, _ := strconv.Unquote(imp.Path.Value)
+				if strings.HasSuffix(p, "/internal/updatecheck/uctest") {
 					t.Errorf("%s imports uctest outside a test", f)
+				}
+				if strings.HasSuffix(p, "/internal/snmp/agenttest") {
+					t.Errorf("%s imports the test SNMP agent outside a test", f)
 				}
 			}
 		}

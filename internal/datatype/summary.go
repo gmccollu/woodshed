@@ -101,7 +101,10 @@ func (c *Counts) UnmarshalJSON(b []byte) error {
 // Reboot is a record showing that the device restarted.
 type Reboot struct {
 	Time   time.Time `json:"time"`
-	Source string    `json:"source"` // what showed it: "coldStart trap"
+	Source string    `json:"source"` // what showed it: "coldStart trap", "poll", or both: "poll, coldStart trap"
+	// Detail is a poll restart's evidence ("sysUpTime and hrSystemUptime
+	// reset"); absent for a trap's.
+	Detail string `json:"detail,omitempty"`
 }
 
 // Thousands formats n with commas (12,408), as README.txt shows counts.

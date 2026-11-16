@@ -10,6 +10,8 @@
   import Logo from './components/Logo.svelte';
   import Banners from './components/Banners.svelte';
   import BlockUi from './components/BlockUi.svelte';
+  import PollForm from './components/PollForm.svelte';
+  import { closePollForm, pollUi } from './lib/pollui.svelte';
   import Welcome from './pages/Welcome.svelte';
   import Dashboard from './pages/Dashboard.svelte';
   import Devices from './pages/Devices.svelte';
@@ -17,6 +19,7 @@
   import Export from './pages/Export.svelte';
   import Settings from './pages/Settings.svelte';
   import About from './pages/About.svelte';
+  import DevicePage from './pages/Device.svelte';
 
   // Session first: in LAN mode every other route needs a login.
   loadSession().then(startPolling);
@@ -52,6 +55,7 @@
     export: 'Export',
     settings: 'Settings',
     about: 'About',
+    device: 'Device',
   };
 
   // First run: with no page in the URL and no message received yet, open on the welcome page.
@@ -122,7 +126,7 @@
     <div class="grid grid-cols-1 gap-5 md:grid-cols-[84px_minmax(0,1fr)]">
       <nav class="nav" aria-label="Pages">
         {#each NAV as n (n.r)}
-          <a href={href(n.r)} class="navi" aria-current={router.route === n.r ? 'page' : undefined}>
+          <a href={href(n.r)} class="navi" aria-current={router.route === n.r || (n.r === 'devices' && router.route === 'device') ? 'page' : undefined}>
             <span class="ico"><Icon name={n.icon} size={19} /></span>
             <span class="lab">{n.label}</span>
           </a>
@@ -135,6 +139,8 @@
           <Welcome />
         {:else if router.route === 'devices'}
           <Devices />
+        {:else if router.route === 'device'}
+          <DevicePage />
         {:else if router.route === 'events'}
           <Events />
         {:else if router.route === 'export'}
@@ -153,6 +159,18 @@
 </div>
 
 <BlockUi />
+{#if pollUi.form}
+  {#key pollUi.form}
+    <PollForm
+      target={pollUi.form.target}
+      address={pollUi.form.address}
+      device={pollUi.form.device}
+      defaults={pollUi.defaults}
+      onclose={() => closePollForm()}
+      onsaved={() => closePollForm(true)}
+    />
+  {/key}
+{/if}
 
 <style>
   .skip {

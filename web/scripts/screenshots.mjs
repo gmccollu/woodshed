@@ -11,7 +11,7 @@
 // and `noshot` entries are checks only, so this doubles as a UI smoke test. A `clip`
 // (a CSS selector) captures just that element, wherever it is on the page.
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2089,6 +2089,180 @@ const SHOTS = [
     report: `JSON.stringify({ body: window.__woodshedMock.lastExportBody, first: document.querySelector('li[data-id]')?.innerText })`,
     check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody); return b.types.join() === 'syslog,trap' && !('q' in b) && b.all_devices === true; })()
       && !document.querySelector('#exq') && document.querySelector('li[data-id]').innerText.includes('Syslog and SNMP traps')`,
+  },
+  // 1.3: the SNMP poller (SPEC §12.5). `npm run screenshots -- poll` takes only these.
+  ...both({
+    name: 'poll-device-panel',
+    url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',
+    wait: 3000,
+    check: `document.querySelectorAll('figure.chartcard').length === 5
+      && [...document.querySelectorAll('figure.chartcard path')].filter((p) => p.getAttribute('d')).length === 13
+      && document.querySelectorAll('figure.chartcard .mark.restart').length === 5
+      && document.querySelectorAll('figure.chartcard .mark.oper').length >= 5
+      && document.body.innerText.includes('rebooted')`,
+  }),
+  {
+    name: 'poll-device-charts-an-interface',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',
+    wait: 3000,
+    act: `[...document.querySelectorAll('.ift button.pick[aria-pressed=false]')][0].click(); await new Promise((r) => setTimeout(r, 1500));`,
+    check: `[...document.querySelectorAll('figure.chartcard path')].filter((p) => p.getAttribute('d')).length === 15
+      && document.querySelectorAll('.ift button.pick[aria-pressed=true]').length === 5`,
+  },
+  {
+    name: 'poll-device-left-out-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.1.0.10&r=24h',
+    wait: 3500,
+    check: `document.body.innerText.includes('8 interfaces aren’t polled') && document.querySelectorAll('.ift tbody tr').length === 64`,
+    maxh: 1500,
+  },
+  {
+    name: 'poll-device-32bit-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.8.0.1&r=7d',
+    wait: 3000,
+    check: `document.body.innerText.includes('32-bit counters: rates above') && document.body.innerText.includes('CPU and memory: not available on this device')
+      && document.body.innerText.includes('restarted')`,
+  },
+  ...both({
+    name: 'poll-events-strips',
+    url: '/?mock_panel=0#/events?dev=10.1.0.1&r=24h',
+    wait: 3500,
+    check: `document.querySelectorAll('.strips .strip').length === 3 && document.querySelectorAll('.hist .pmark.restart').length === 1
+      && document.querySelectorAll('.hist .pmark.oper').length === 2 && document.querySelectorAll('.strips .mark').length === 9`,
+    maxh: 1200,
+  }),
+  {
+    name: 'poll-events-strips-several-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=24h',
+    wait: 3500,
+    check: `document.querySelectorAll('.strips .strip').length === 4 && document.body.innerText.includes('Traffic in / out')`,
+    maxh: 1200,
+  },
+  {
+    name: 'poll-events-no-strips-unpolled',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?dev=10.1.0.2&r=1h',
+    wait: 3000,
+    check: `!document.querySelector('.strips') && !document.querySelector('.hist .pmark')`,
+  },
+  {
+    name: 'poll-events-no-polls-tab',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=poll&r=1h',
+    wait: 2500,
+    check: `[...document.querySelectorAll('.typesw button')].map((b) => b.textContent.trim()).join() === 'Syslog,SNMP traps'
+      && document.querySelector('.typesw button[aria-checked=true]').textContent.trim() === 'Syslog'`,
+  },
+  {
+    // The shared request fixture (src/lib/fixtures/ui-requests.json): every step the forms send, through the mock, must
+    // answer 2xx. Whole-object PUTs start from their GET (deep-merged), If-Match carries the GET's ETag. The mock already
+    // has a user "monitor", so it's deleted first.
+    name: 'ui-requests-mock',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_latency=0#/about',
+    wait: 1500,
+    act: `const fx = ${JSON.stringify(JSON.parse(readFileSync(new URL('../src/lib/fixtures/ui-requests.json', import.meta.url), 'utf8')))};
+      const f = window.__woodshedMockFetch; const vars = { '{agent_port}': 16161, '{agent_v3_port}': 16162 }; const out = [];
+      const sub = (x) => JSON.parse(JSON.stringify(x ?? null), (k, v) => (typeof v === 'string' && v in vars ? vars[v] : v));
+      const path = (p) => p.replace(/[{][a-z0-9_]+[}]/g, (m) => vars[m] ?? m);
+      const merge = (a, b) => { if (!b || typeof b !== 'object' || Array.isArray(b) || !a || typeof a !== 'object' || Array.isArray(a)) return b;
+        const o = { ...a }; for (const k of Object.keys(b)) o[k] = merge(a[k], b[k]); return o; };
+      await f('/api/snmp/users/monitor', { method: 'DELETE' });
+      for (const st of fx.steps) {
+        let body = sub(st.body); const headers = { 'Content-Type': 'application/json' };
+        if (st.merge_get) body = merge(await (await f(path(st.merge_get))).json(), body);
+        if (st.if_match) headers['If-Match'] = (await f(path(st.etag_get))).headers.get('ETag') ?? '';
+        const r = await f(path(st.path), { method: st.method, headers, body: body === null ? undefined : JSON.stringify(body) });
+        const txt = await r.text(); out.push(st.name + ' ' + r.status + (r.ok ? '' : ' ' + txt.slice(0, 200)));
+        if (st.capture && r.ok) vars['{' + st.capture + '}'] = JSON.parse(txt).id;
+      }
+      window.__fx = out;`,
+    after: 200,
+    report: `window.__fx.join(' | ')`,
+    check: `window.__fx.length === 11 && window.__fx.every((l) => / 20[014]$/.test(l))`,
+  },
+  ...both({
+    name: 'poll-devices-polled',
+    url: '/?mock_panel=0#/devices?view=polled',
+    wait: 2000,
+    check: `document.body.innerText.includes('not polled yet') && document.body.innerText.includes('becomes a device on its first answer')
+      && document.body.innerText.includes('32-bit counters') && document.querySelectorAll('tbody tr').length === 5`,
+  }),
+  {
+    name: 'poll-devices-column-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/devices',
+    wait: 2000,
+    check: `!!document.querySelector('a.poll.ok[href="#/device?id=10.1.0.1"]') && !!document.querySelector('button[aria-label="Add polling for edge-fw-02"]')`,
+    maxh: 1100,
+  },
+  {
+    name: 'poll-form-test-partial-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/devices?view=polled',
+    wait: 2000,
+    act: `document.querySelector('button[aria-label="Edit polling of 10.8.0.1"]').click(); await new Promise((r) => setTimeout(r, 600));
+      __btn('Test poll').click(); await new Promise((r) => setTimeout(r, 1200));`,
+    check: `document.querySelector('[role=dialog]').innerText.includes('Test poll: It answered, but some parts are not supported.')
+      && document.querySelector('[role=dialog]').innerText.includes('noSuchName') && document.querySelector('[role=dialog]').innerText.includes('set')`,
+    clip: '[role=dialog]',
+  },
+  {
+    name: 'poll-form-add-test-dark',
+    mode: 'dark',
+    url: '/?mock_panel=0#/devices',
+    wait: 2000,
+    act: `document.querySelector('button[aria-label="Add polling for edge-fw-02"]').click(); await new Promise((r) => setTimeout(r, 600));
+      __set(__field('Community'), 'not-a-real-one'); await __tick(); __btn('Test poll').click(); await new Promise((r) => setTimeout(r, 1200));`,
+    check: `document.querySelector('[role=dialog]').innerText.includes('Add polling for 10.1.0.2') && document.querySelector('[role=dialog]').innerText.includes('Test poll: No answer.')`,
+    clip: '[role=dialog]',
+  },
+  {
+    name: 'poll-form-add-saves',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/devices?view=polled',
+    wait: 1500,
+    act: `__btn('Add by address').click(); await new Promise((r) => setTimeout(r, 600));
+      __set(__field('Address'), '10.1.0.11'); __set(__field('Community'), 'not-a-real-one'); await __tick();
+      __btn('Start polling').click(); await new Promise((r) => setTimeout(r, 1500));`,
+    check: `!document.querySelector('[role=dialog]') && document.querySelectorAll('tbody tr').length === 6 && document.body.innerText.includes('10.1.0.11')
+      && !document.body.innerText.includes('not-a-real-one')`,
+  },
+  {
+    name: 'poll-form-refuses-names',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/devices?view=polled',
+    wait: 1500,
+    act: `__btn('Add by address').click(); await new Promise((r) => setTimeout(r, 600));
+      __set(__field('Address'), 'router.example'); await __tick(); __btn('Start polling').click(); await new Promise((r) => setTimeout(r, 400));`,
+    check: `document.querySelector('[role=dialog]').innerText.includes('names are not looked up') && document.querySelector('[role=dialog]').innerText.includes('Enter the community.')`,
+  },
+  ...both({
+    name: 'poll-settings',
+    url: '/?mock_panel=0#/settings?section=polling',
+    wait: 2500,
+    act: `__only('polling'); scrollTo(0, 0);`,
+    check: `document.body.innerText.includes('Last hour') && document.body.innerText.includes('Devices polled at once') && document.body.innerText.includes('answering')`,
+    maxh: 1100,
+  }),
+  {
+    name: 'poll-banners-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_poll_down=1&mock_poll_overrun=1#/devices?view=polled',
+    wait: 2500,
+    check: `document.body.innerText.includes('polled device isn’t answering: branch-fw-07 (10.7.0.1)') && document.body.innerText.includes('poll cycles were skipped')
+      && document.body.innerText.includes('backing off')`,
+    maxh: 1200,
   },
 ].filter((s) => s.name.includes(only));
 

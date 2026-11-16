@@ -140,6 +140,7 @@ func (b *backend) CreateSNMPUser(ctx context.Context, in api.SNMPUserInput) (api
 	u, err := b.snmp.rcv.PutUser(in, "")
 	if err == nil {
 		b.snmpEvent(fmt.Sprintf("SNMP v3 user %q added (%s)", u.Name, u.Level))
+		b.pollCredsChanged()
 	}
 	return u, err
 }
@@ -148,6 +149,7 @@ func (b *backend) UpdateSNMPUser(ctx context.Context, name string, in api.SNMPUs
 	u, err := b.snmp.rcv.PutUser(in, name)
 	if err == nil {
 		b.snmpEvent(fmt.Sprintf("SNMP v3 user %q changed (%s)", u.Name, u.Level))
+		b.pollCredsChanged()
 	}
 	return u, err
 }
@@ -156,6 +158,7 @@ func (b *backend) DeleteSNMPUser(ctx context.Context, name string) error {
 	err := b.snmp.rcv.DeleteUser(name)
 	if err == nil {
 		b.snmpEvent(fmt.Sprintf("SNMP v3 user %q deleted", name))
+		b.pollCredsChanged()
 	}
 	return err
 }

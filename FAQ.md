@@ -237,6 +237,9 @@ There's no telemetry. The version is on the **About** page, with a link to the r
 yourself. To decide for many machines at once, set `check = "off"` (or `"on"`) under `[updates]` in
 `woodshed.toml` before the first start. Versions before 1.1 have no update check and make no outbound connections.
 
+From 1.3, if you add devices under **Polling**, Woodshed also sends SNMP requests to those devices, and only to them.
+With no polled devices, it sends none.
+
 ## The "latest release" link gives a 404
 
 It works from 1.0.0 on. Before that every release was a prerelease, and GitHub's `releases/latest` (the page,

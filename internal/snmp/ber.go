@@ -1,8 +1,10 @@
-// Package snmp is Woodshed's SNMP codec for the trap receiver (SPEC §11.2): BER,
-// the v1, v2c and v3 messages a receiver sees, USM (RFC 3414, RFC 7860, RFC 3826
-// and the AES-192/256 drafts), the inform Response and the discovery Report, the
-// stored record line, and a MIB reader that takes only names, notifications and
-// integer enumerations.
+// Package snmp is Woodshed's SNMP codec for the trap receiver (SPEC §11.2) and
+// the poller (SPEC §12.2): BER, the v1, v2c and v3 messages a receiver sees, USM
+// (RFC 3414, RFC 7860, RFC 3826 and the AES-192/256 drafts), the inform Response
+// and the discovery Report, the stored record line, a MIB reader that takes only
+// names, notifications and integer enumerations, and the requester side
+// (request.go, session.go): Get, GetNext and GetBulk out, Response and Report
+// in, and v3 discovery and time synchronization as the non-authoritative engine.
 //
 // Decoding is lenient where real devices are sloppy (non-minimal lengths and
 // integers, unsigned values sent with the sign bit set, an IpAddress sent as an

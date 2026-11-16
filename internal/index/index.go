@@ -239,6 +239,37 @@ CREATE TABLE type_stats_hourly (
 ) WITHOUT ROWID;
 CREATE INDEX type_stats_hourly_hour ON type_stats_hourly (hour);
 `,
+	// 6 -> 7: the SNMP poller (SPEC §12.3, §12.9). poll_targets is user data
+	// (Reindex keeps it); poll_hourly is derived (Reindex rebuilds it from the
+	// poll files). Neither ever holds a secret.
+	`
+CREATE TABLE poll_targets (
+	id           TEXT PRIMARY KEY,
+	address      TEXT NOT NULL,
+	port         INTEGER NOT NULL,
+	device_id    TEXT NOT NULL,
+	settings     TEXT NOT NULL,
+	engine_id    TEXT NOT NULL DEFAULT '',
+	engine_boots INTEGER NOT NULL DEFAULT 0,
+	engine_time  INTEGER NOT NULL DEFAULT 0,
+	engine_at    INTEGER NOT NULL DEFAULT 0,
+	created      INTEGER NOT NULL,
+	updated      INTEGER NOT NULL,
+	version      INTEGER NOT NULL DEFAULT 1,
+	UNIQUE (address, port)
+);
+CREATE TABLE poll_hourly (
+	device_id TEXT NOT NULL,
+	series    TEXT NOT NULL,
+	hour      INTEGER NOT NULL,
+	min       REAL NOT NULL,
+	max       REAL NOT NULL,
+	sum       REAL NOT NULL,
+	count     INTEGER NOT NULL,
+	PRIMARY KEY (device_id, series, hour)
+) WITHOUT ROWID;
+CREATE INDEX poll_hourly_hour ON poll_hourly (hour);
+`,
 }
 
 // CurrentSchema is the schema version this build writes.

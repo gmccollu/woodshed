@@ -239,6 +239,7 @@ func (s *Server) apiRoutes() *http.ServeMux {
 		writeError(w, http.StatusNotFound, "No such API route: "+r.URL.Path)
 	}
 	s.snmpRoutes(mux)
+	s.pollRoutes(mux)
 	mux.HandleFunc("/api/", notFound)
 	mux.HandleFunc("/api", notFound)
 	return mux

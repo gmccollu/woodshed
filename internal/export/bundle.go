@@ -306,8 +306,10 @@ func BundleFileName(host string, at time.Time) string {
 // ---- the summary ----
 
 // SummaryNote says where the summary's numbers come from (manifest.json).
-const SummaryNote = "Per device: lines, first and last are the records in this zip, by type; by_severity and by_trap " +
-	"count them. reboots come from coldStart and warmStart traps (a retransmitted inform isn't counted again). gaps " +
+const SummaryNote = "Per device: lines, first and last are the records in this zip, by type (for polls, the CSV rows); " +
+	"by_severity, by_trap and by_kind count them. reboots come from coldStart and warmStart traps (a retransmitted inform " +
+	"isn't counted again) and from poll restarts (source \"poll\", with the detail); a trap and a poll restart within 2 " +
+	"minutes are one reboot naming both sources. poll sums up the device's polls (null: not measured). gaps " +
 	"are the bundle's (see gaps_note), the same for every device. dropped and truncated are Woodshed's own counts from " +
 	"its statistics, per minute (per hour past 24 hours), for the buckets that start inside the window, so a bucket " +
 	"that straddles an edge counts whole."
@@ -381,15 +383,17 @@ func (t *TypeSummary) UnmarshalJSON(b []byte) error {
 // DeviceSummary is one device's part of a bundle's summary (manifest.json
 // "summary", and README.txt).
 type DeviceSummary struct {
-	DeviceID  string                 `json:"device_id"`
-	IP        string                 `json:"ip"`
-	Name      string                 `json:"name"`
-	Group     string                 `json:"group"`
-	Types     map[string]TypeSummary `json:"types"`
-	Reboots   []datatype.Reboot      `json:"reboots"`
-	Gaps      []Gap                  `json:"gaps"`
-	Dropped   int64                  `json:"dropped"`
-	Truncated int64                  `json:"truncated"`
+	DeviceID string                 `json:"device_id"`
+	IP       string                 `json:"ip"`
+	Name     string                 `json:"name"`
+	Group    string                 `json:"group"`
+	Types    map[string]TypeSummary `json:"types"`
+	Reboots  []datatype.Reboot      `json:"reboots"`
+	// Poll is the device's polls in the window (a bundle with the poll type).
+	Poll      *datatype.PollStats `json:"poll,omitempty"`
+	Gaps      []Gap               `json:"gaps"`
+	Dropped   int64               `json:"dropped"`
+	Truncated int64               `json:"truncated"`
 	hidden    bool
 }
 
@@ -420,7 +424,7 @@ func (d DeviceSummary) Line(types []string) string {
 	for _, t := range types {
 		parts = append(parts, typeWord(t)+" "+datatype.Thousands(d.Types[t].Lines))
 	}
-	if slices.Contains(types, datatype.Trap) {
+	if slices.Contains(types, datatype.Trap) || slices.Contains(types, datatype.Poll) {
 		parts = append(parts, "reboots "+datatype.Thousands(int64(len(d.Reboots))))
 	}
 	parts = append(parts, "dropped "+datatype.Thousands(d.Dropped), "truncated "+datatype.Thousands(d.Truncated))
@@ -479,11 +483,16 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 			}
 			ds.Types[t] = ts
 			ds.Reboots = append(ds.Reboots, c.sum.Reboots()...)
+			if ps, ok := c.sum.(*datatype.PollSummary); ok {
+				st := ps.Stats()
+				ds.Poll = &st
+			}
 		}
 		sort.SliceStable(ds.Reboots, func(i, j int) bool { return ds.Reboots[i].Time.Before(ds.Reboots[j].Time) })
 		for i := range ds.Reboots {
 			ds.Reboots[i].Time = ds.Reboots[i].Time.UTC()
 		}
+		ds.Reboots = mergeReboots(ds.Reboots)
 		cnt, err := b.idx.Counts(ctx, []string{d.ID}, info.From, info.To)
 		if err != nil {
 			return nil, err
@@ -547,6 +556,70 @@ func lossNote() string {
 	return "Woodshed's own counts; kernel UDP drops aren't visible on this OS"
 }
 
+// rebootMerge is how close a coldStart or warmStart trap and a poll restart
+// must be to be one reboot (SPEC §12.2.2).
+const rebootMerge = 2 * time.Minute
+
+// mergeReboots joins each poll restart with the nearest trap reboot within
+// rebootMerge (each used once): one reboot at the earlier time, source "poll,
+// <trap>", with the poll's detail. rs is sorted by time.
+func mergeReboots(rs []datatype.Reboot) []datatype.Reboot {
+	used := make([]bool, len(rs))
+	out := []datatype.Reboot{}
+	for i, r := range rs {
+		if used[i] || r.Source != "poll" {
+			continue
+		}
+		best := -1
+		for j, o := range rs {
+			if used[j] || j == i || o.Source == "poll" {
+				continue
+			}
+			d := o.Time.Sub(r.Time)
+			if d < 0 {
+				d = -d
+			}
+			if d <= rebootMerge && (best < 0 || d < absDur(rs[best].Time.Sub(r.Time))) {
+				best = j
+			}
+		}
+		if best >= 0 {
+			used[best] = true
+			at := r.Time
+			if rs[best].Time.Before(at) {
+				at = rs[best].Time
+			}
+			rs[i] = datatype.Reboot{Time: at, Source: "poll, " + rs[best].Source, Detail: r.Detail}
+		}
+	}
+	for i, r := range rs {
+		if !used[i] {
+			out = append(out, r)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
+	return out
+}
+
+func absDur(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
+// rebootWords is a reboot in README.txt: "poll: sysUpTime and hrSystemUptime
+// reset; coldStart trap", "coldStart trap".
+func rebootWords(r datatype.Reboot) string {
+	parts := strings.Split(r.Source, ", ")
+	for i, p := range parts {
+		if p == "poll" && r.Detail != "" {
+			parts[i] = "poll: " + r.Detail
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // rebootLimit is how many reboots a README line lists.
 const rebootLimit = 5
 
@@ -591,6 +664,7 @@ func (b *builder) bundleReadme(info Info, sum []DeviceSummary) string {
 	}
 	fmt.Fprintf(&w, "Devices: %d, %s. Types: %s.\n", len(sum), how, tl)
 	hasTrap := slices.Contains(types, datatype.Trap)
+	hasPoll := slices.Contains(types, datatype.Poll)
 	if hasTrap {
 		w.WriteString("Communities in traps are shown as a hash prefix and masked in raw=, by design.\n")
 	}
@@ -612,15 +686,23 @@ func (b *builder) bundleReadme(info Info, sum []DeviceSummary) string {
 		}
 		for _, t := range types {
 			ts := d.Types[t]
+			label := datatype.Get(t).Label()
+			if t == datatype.Poll {
+				label = "Polls" // SPEC §12.6
+			}
 			if ts.Lines == 0 {
-				row(datatype.Get(t).Label(), "none")
+				row(label, "none")
 				continue
 			}
-			row(datatype.Get(t).Label(), ts.readme...)
+			row(label, ts.readme...)
 		}
 		switch {
-		case !hasTrap:
-			row("Reboots", "not known (no SNMP traps in this bundle)")
+		case !hasTrap && !hasPoll:
+			row("Reboots", "not known (no SNMP traps or polls in this bundle)")
+		case len(d.Reboots) == 0 && hasTrap && hasPoll:
+			row("Reboots", "none (no coldStart or warmStart trap, no restart in the polls)")
+		case len(d.Reboots) == 0 && hasPoll:
+			row("Reboots", "none (no restart in the polls)")
 		case len(d.Reboots) == 0:
 			row("Reboots", "none (no coldStart or warmStart trap)")
 		default:
@@ -630,7 +712,7 @@ func (b *builder) bundleReadme(info Info, sum []DeviceSummary) string {
 					rs = append(rs, fmt.Sprintf("and %d more", len(d.Reboots)-i))
 					break
 				}
-				rs = append(rs, tf.record(r.Time)+" ("+r.Source+")")
+				rs = append(rs, tf.record(r.Time)+" ("+rebootWords(r)+")")
 			}
 			row("Reboots", fmt.Sprintf("%d: %s", len(d.Reboots), strings.Join(rs, ", ")))
 		}

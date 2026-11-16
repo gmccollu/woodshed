@@ -1,0 +1,246 @@
+{
+  "notes": [
+    "Generated from src/lib/fixtures/ui-requests.ts (the forms' own body builders); npm test fails if this file and the builders differ.",
+    "Placeholders: {agent_port} and {agent_v3_port} are the test agents' UDP ports (JSON strings here; substitute numbers). {poll_id} and {poll_v3_id} are the ids returned by the steps with \"capture\".",
+    "if_match: the UI sends If-Match with the ETag from GET etag_get (the forms read it when they open).",
+    "Settings: the form PUTs the WHOLE settings object, rebuilt from GET /api/settings (fromForm(toForm(GET)) with the edits); body here is only the changed key (\"poll\"), to be deep-merged into the GET result (objects merge, arrays and scalars replace). The rebuild also drops read-only keys the GET returns (listeners.tls.password_set) and sends listeners.snmp.communities as their #hash8 values.",
+    "Poll target bodies carry every field (the form fills the Settings defaults in when it opens); community is sent only when typed, or on a new target; an edit that leaves it empty omits it (kept). pinned (SPEC §12.11 #3) is always sent, [] when none.",
+    "SNMP user: key_ext is \"draft\" unless priv is aes-192 or aes-256 (the form's choice is sent only then); empty passphrases are omitted (kept).",
+    "Test poll of an edited target that keeps its stored community is sent as {\"id\": …} (the UI can't resend a community it never sees)."
+  ],
+  "steps": [
+    {
+      "name": "snmp_user_add",
+      "method": "POST",
+      "path": "/api/snmp/users",
+      "if_match": false,
+      "body": {
+        "name": "monitor",
+        "auth": "sha-256",
+        "priv": "aes-128",
+        "key_ext": "draft",
+        "engine_ids": [],
+        "auth_pass": "fixture-auth-pass",
+        "priv_pass": "fixture-priv-pass"
+      }
+    },
+    {
+      "name": "snmp_user_edit_keep_passphrases",
+      "method": "PUT",
+      "path": "/api/snmp/users/monitor",
+      "if_match": false,
+      "body": {
+        "name": "monitor",
+        "auth": "sha-256",
+        "priv": "aes-128",
+        "key_ext": "draft",
+        "engine_ids": []
+      }
+    },
+    {
+      "name": "settings_poll_save",
+      "method": "PUT",
+      "path": "/api/settings",
+      "merge_get": "/api/settings",
+      "if_match": true,
+      "etag_get": "/api/settings",
+      "body": {
+        "poll": {
+          "interval_s": 30,
+          "timeout_ms": 1500,
+          "retries": 2,
+          "concurrency": 16,
+          "max_interfaces": 32,
+          "max_targets": 100,
+          "presets": [
+            "system",
+            "system-info",
+            "interfaces"
+          ]
+        }
+      }
+    },
+    {
+      "name": "poll_add_v2c",
+      "method": "POST",
+      "path": "/api/poll/targets",
+      "if_match": false,
+      "capture": "poll_id",
+      "body": {
+        "address": "127.0.0.1",
+        "port": "{agent_port}",
+        "device_id": "127.0.0.1",
+        "enabled": true,
+        "version": "2c",
+        "interval_s": 30,
+        "timeout_ms": 1500,
+        "retries": 2,
+        "presets": [
+          "system",
+          "system-info",
+          "interfaces"
+        ],
+        "interfaces": "all",
+        "max_interfaces": 32,
+        "pinned": [],
+        "custom": [],
+        "community": "fixture-community"
+      }
+    },
+    {
+      "name": "poll_add_v3",
+      "method": "POST",
+      "path": "/api/poll/targets",
+      "if_match": false,
+      "capture": "poll_v3_id",
+      "body": {
+        "address": "127.0.0.1",
+        "port": "{agent_v3_port}",
+        "device_id": "127.0.0.2",
+        "enabled": true,
+        "version": "3",
+        "interval_s": 30,
+        "timeout_ms": 1500,
+        "retries": 2,
+        "presets": [
+          "system",
+          "system-info",
+          "interfaces"
+        ],
+        "interfaces": "all",
+        "max_interfaces": 32,
+        "pinned": [],
+        "custom": [],
+        "v3_user": "monitor"
+      }
+    },
+    {
+      "name": "poll_edit",
+      "method": "PUT",
+      "path": "/api/poll/targets/{poll_id}",
+      "if_match": true,
+      "etag_get": "/api/poll/targets/{poll_id}",
+      "body": {
+        "address": "127.0.0.1",
+        "port": "{agent_port}",
+        "device_id": "127.0.0.1",
+        "enabled": true,
+        "version": "2c",
+        "interval_s": 60,
+        "timeout_ms": 1500,
+        "retries": 2,
+        "presets": [
+          "system",
+          "system-info",
+          "interfaces"
+        ],
+        "interfaces": "all",
+        "max_interfaces": 32,
+        "pinned": [],
+        "custom": [
+          {
+            "oid": "1.3.6.1.2.1.1.3.0",
+            "kind": "scalar",
+            "label": "uptime",
+            "max_rows": 0
+          },
+          {
+            "oid": "1.3.6.1.2.1.2.2.1.2",
+            "kind": "walk",
+            "label": "ifDescr",
+            "max_rows": 128
+          }
+        ]
+      }
+    },
+    {
+      "name": "poll_test_body",
+      "method": "POST",
+      "path": "/api/poll/test",
+      "if_match": false,
+      "body": {
+        "address": "127.0.0.1",
+        "port": "{agent_port}",
+        "device_id": "127.0.0.1",
+        "enabled": true,
+        "version": "2c",
+        "interval_s": 30,
+        "timeout_ms": 1500,
+        "retries": 2,
+        "presets": [
+          "system",
+          "system-info",
+          "interfaces"
+        ],
+        "interfaces": "all",
+        "max_interfaces": 32,
+        "pinned": [],
+        "custom": [],
+        "community": "fixture-community"
+      }
+    },
+    {
+      "name": "poll_test_id",
+      "method": "POST",
+      "path": "/api/poll/test",
+      "if_match": false,
+      "body": {
+        "id": "{poll_id}"
+      }
+    },
+    {
+      "name": "poll_pin",
+      "method": "PUT",
+      "path": "/api/poll/targets/{poll_id}",
+      "if_match": true,
+      "etag_get": "/api/poll/targets/{poll_id}",
+      "body": {
+        "address": "127.0.0.1",
+        "port": "{agent_port}",
+        "device_id": "127.0.0.1",
+        "enabled": true,
+        "version": "2c",
+        "interval_s": 60,
+        "timeout_ms": 1500,
+        "retries": 2,
+        "presets": [
+          "system",
+          "system-info",
+          "interfaces"
+        ],
+        "interfaces": "all",
+        "max_interfaces": 32,
+        "pinned": [
+          "eth1",
+          2
+        ],
+        "custom": [
+          {
+            "oid": "1.3.6.1.2.1.1.3.0",
+            "kind": "scalar",
+            "label": "uptime",
+            "max_rows": 0
+          },
+          {
+            "oid": "1.3.6.1.2.1.2.2.1.2",
+            "kind": "walk",
+            "label": "ifDescr",
+            "max_rows": 128
+          }
+        ]
+      }
+    },
+    {
+      "name": "poll_delete_v3",
+      "method": "DELETE",
+      "path": "/api/poll/targets/{poll_v3_id}",
+      "if_match": false
+    },
+    {
+      "name": "poll_delete",
+      "method": "DELETE",
+      "path": "/api/poll/targets/{poll_id}",
+      "if_match": false
+    }
+  ]
+}

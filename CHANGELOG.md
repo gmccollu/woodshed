@@ -4,6 +4,47 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [1.3.0] - unreleased
+
+### Added
+- SNMP polling of the devices you choose, off until you add one under **Devices → Polling** (**Add polling** on a
+  device, or **Add by address**): every 60 s by default (30 s to 10 min), Woodshed asks each device for its uptime,
+  its interfaces' traffic, packets (unicast, multicast, broadcast), errors, discards and up/down state, and CPU and
+  memory where it has the HOST-RESOURCES MIB, plus up to 32 custom OIDs or walks of your own. SNMPv1, v2c and v3
+  (every protocol the trap receiver has, as the non-authoritative side, with engine discovery). Only standard MIBs, so
+  it works the same on any vendor's gear. See [docs/user-guide.md](docs/user-guide.md#polling-devices-snmp).
+- Rates are worked out as each answer is stored, with the raw counters kept beside them: a 32-bit counter's wrap
+  counts only when the rate it gives is plausible, and a counter reset, a renamed interface or an agent restart
+  leaves a gap rather than a spike. Restarts are found from `sysUpTime` (and v3 `engineBoots`), and told apart from
+  reboots with `hrSystemUptime` where the device has it.
+- Each device gets a page with a **Polling** panel: uptime and the last restart, five small charts (CPU, memory,
+  total traffic, the four busiest interfaces, errors and discards), the interface table (click a row to chart it), and
+  restart and up/down markers. **Events** shows traffic, CPU and error strips under the histogram for the selected
+  polled devices, with the same markers across both.
+- **Test poll** (in the form, or `woodshed poll test ADDRESS` from a terminal) runs the device's poll once and says
+  step by step what answered and what's missing, without saving anything.
+- Poll records are a third data type, `poll`, in each device's `poll` folder, with the same rotation, compression,
+  retention and index as syslog and traps. `woodshed search --type poll --field kind=restart --last 7d` lists
+  restarts; exports and incident bundles get `poll/<device>/system.csv`, `interfaces.csv` and `oids.csv`, and the
+  bundle README gains a Polls line per device and merges a poll restart with a coldStart trap into one reboot.
+- **Settings → Polling** holds the defaults, how many devices are polled at once, and the last hour's cycles,
+  failures and skipped cycles. Banners say when polled devices stop answering or polling can't keep up.
+  `woodshed status` gains a Polling row.
+
+### Security
+- Polls are the second kind of outbound traffic (after the opt-in update check): SNMP `Get`, `GetNext` and `GetBulk`
+  only, only to the addresses and ports an administrator configured, from one ephemeral UDP socket that exists only
+  while a device is polled. With no polled devices nothing is sent. The poller can't build a `Set` (a test checks
+  it). Communities are kept in the SNMP credentials store, write-only, and appear in poll records only as a hash
+  prefix; replies are accepted only from the polled address and port.
+
+### Performance
+- Polling 500 devices with 64 interfaces each every 60 s (v2c) took 0.07 of a core and 129 MiB of memory for the
+  whole server, every cycle on time; with syslog at 10,000 msg/s beside it, 0.26 of a core, and 600,000 of 600,000
+  messages stored. 100 devices every 30 s with v3 authPriv (SHA-256, AES-128): 0.03 of a core (0.24 with the syslog
+  run, again with nothing lost). Measured in-process on a 14-core Apple M4 Pro with the test agents in another
+  process (`TestPollLoad`); the reference-spec (4 vCPU) runner and lab numbers will replace these before release.
+
 ## [1.2.0] - 2026-11-16
 
 ### Added

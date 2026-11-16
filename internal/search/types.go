@@ -39,18 +39,35 @@ func typeFilter(f Filter) (datatype.Type, datatype.Filter, bool, error) {
 		return nil, nil, false, &QueryError{Msg: "type: unknown data type \"" + f.Type + "\"."}
 	}
 	var tf datatype.Filter
+	syslogSet := f.Severities != 0 || f.Facilities != 0 || len(f.Apps) > 0 || len(f.Hosts) > 0 || len(f.ExcludeApps) > 0 || len(f.ExcludeHosts) > 0
 	switch dt.Name() {
 	case datatype.Syslog:
 		if f.Trap != nil {
 			return nil, nil, false, &QueryError{Msg: "trap filters don't apply to syslog."}
 		}
+		if f.Poll != nil {
+			return nil, nil, false, &QueryError{Msg: "poll filters don't apply to syslog."}
+		}
 		tf = datatype.NewSyslogFilter(f.Severities, f.Facilities, f.Apps, f.Hosts, f.ExcludeApps, f.ExcludeHosts)
 	case datatype.Trap:
-		if f.Severities != 0 || f.Facilities != 0 || len(f.Apps) > 0 || len(f.Hosts) > 0 || len(f.ExcludeApps) > 0 || len(f.ExcludeHosts) > 0 {
+		if syslogSet {
 			return nil, nil, false, &QueryError{Msg: "severities: not a filter for SNMP traps."}
+		}
+		if f.Poll != nil {
+			return nil, nil, false, &QueryError{Msg: "poll filters don't apply to SNMP traps."}
 		}
 		if f.Trap != nil {
 			tf = f.Trap
+		}
+	case datatype.Poll:
+		if syslogSet {
+			return nil, nil, false, &QueryError{Msg: "severities: not a filter for SNMP polls."}
+		}
+		if f.Trap != nil {
+			return nil, nil, false, &QueryError{Msg: "trap filters don't apply to SNMP polls."}
+		}
+		if f.Poll != nil {
+			tf = f.Poll
 		}
 	}
 	if tf == nil {

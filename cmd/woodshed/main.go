@@ -35,6 +35,7 @@ commands:
   lan-mode        turn LAN mode on or off (HTTPS on the network, with a login)
   tls             syslog over TLS: on, off, renew the certificate, status
   snmp            the SNMP trap receiver: on, off, status
+  poll            SNMP polling: test a device's poll from here
   update-check    turn the daily update check on or off (or back to asking)
   reset-password  remove the UI password and turn LAN mode off
   send            send test messages to a syslog server
@@ -66,6 +67,7 @@ func init() {
 		{"lan-mode", cmdLANMode},
 		{"tls", cmdTLS},
 		{"snmp", cmdSNMP},
+		{"poll", cmdPoll},
 		{"update-check", cmdUpdateCheck},
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},

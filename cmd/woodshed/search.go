@@ -105,8 +105,9 @@ from the same file, "--" between groups and "> " before each match. A summary
 
 Fields: --field KEY=V1,V2 keeps lines whose field KEY is one of the values, and
 --not-field KEY=V1,V2 drops them; KEY is any field of the type (syslog: device,
-severity, facility, host, app). --devices, --severities, --app and the others are
-shortcuts for the same filters.
+severity, facility, host, app; trap: version, pdu, trap_oid, enterprise, generic,
+specific, cred, status; poll: kind, if, oper, status, reboot). --devices,
+--severities, --app and the others are shortcuts for the same filters.
 
 Times: RFC 3339 (2026-11-14T09:30:00Z), local time (2026-11-14 09:30, or UTC with
 --utc), now, or a time back from now (-15m). The default range is --last 24h.
@@ -122,6 +123,7 @@ Examples:
   woodshed search --terms 'deny AND NOT 203.0.113.7' --app '%FW-*' --context 3
   woodshed search --from "2026-11-14 08:00" --to "2026-11-14 09:00" --json | jq .raw
   woodshed search --field host=edge-fw-01 --not-field severity=7 --count
+  woodshed search --type poll --field kind=restart --last 7d   restarts and reboots seen by polls
 
 Exit status: 0 when something matched, 1 when nothing did, 2 for a usage or query
 error, 3 when the data folder can't be read, 4 when there's no data folder or
@@ -134,7 +136,7 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&f.regex, "regex", false, "QUERY and --exclude are RE2 regular expressions")
 	fs.BoolVar(&f.caseSens, "case", false, "match case (QUERY and --exclude)")
 	fs.StringVar(&f.exclude, "exclude", "", "drop lines matching this `text` (like QUERY, with --terms, --regex and --case)")
-	fs.StringVar(&f.typ, "type", search.TypeSyslog, "data `type` to search")
+	fs.StringVar(&f.typ, "type", search.TypeSyslog, "data `type` to search: syslog, trap or poll")
 	fs.StringVar(&f.from, "from", "", "start `time` (default: --to minus 24h)")
 	fs.StringVar(&f.to, "to", "", "end `time`, not included (default: now)")
 	fs.StringVar(&f.last, "last", "", "the last `duration` (15m, 1h, 24h, 7d), instead of --from and --to (default 24h)")

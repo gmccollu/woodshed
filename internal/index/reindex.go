@@ -19,6 +19,8 @@ type ReindexResult struct {
 	TornBytes int64    // bytes in partial last lines, not indexed
 	BadLines  int64    // lines that didn't parse
 	Skipped   []string // files not indexed (for example a .log.gz whose .log is still there)
+	// PollRollups is the poll_hourly rows Reindex rebuilt.
+	PollRollups int
 }
 
 // Reindex rebuilds the files and checkpoints tables from the log files under dataDir,
@@ -29,8 +31,17 @@ type ReindexResult struct {
 //
 // The store must not be running on dataDir (use `woodshed reindex` with the service
 // stopped). Files are only read, never changed.
+//
+// It also rebuilds the poll rollups (poll_hourly) from the poll files; the
+// poll targets are user data and stay (SPEC §12.3).
 func (d *DB) Reindex(ctx context.Context, dataDir string) (ReindexResult, error) {
-	return d.rebuild(ctx, dataDir, true)
+	res, err := d.rebuild(ctx, dataDir, true)
+	if err != nil {
+		return res, err
+	}
+	n, err := d.RebuildPollHourly(ctx, dataDir)
+	res.PollRollups = n
+	return res, err
 }
 
 // Reconcile brings the index in line with the files on disk cheaply: rows for files
