@@ -4,6 +4,7 @@ what: poll
 transports: v2c, v3
 reference: net-snmp manual pages: snmpd.conf(5) (agentaddress, rocommunity, rocommunity6, createUser, rouser)
 verification: tested
+ci: CI starts from a distribution-style snmpd.conf (agentaddress 127.0.0.1,[::1]), replaces that line and adds the rest as the snippet says, then Woodshed polls real snmpd, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.
 */}}
 {{define "does"}}Lets Woodshed poll this machine's snmpd (SNMP{{.Transport}}, read-only{{if eq .Transport "v2c"}}, from Woodshed's address only{{end}}).{{end}}
 

@@ -100,6 +100,9 @@ func dump(s Snippet) string {
 	if s.CheckedOn != "" {
 		fmt.Fprintf(&b, "checked_on: %s\n", s.CheckedOn)
 	}
+	if s.VerificationDetail != "" {
+		fmt.Fprintf(&b, "verification_detail: %s\n", s.VerificationDetail)
+	}
 	fmt.Fprintf(&b, "reference: %s\ndoes: %s\ncheck: %s\nplaceholders: %s\naddresses: %s\n", s.Reference, s.Does, s.Check,
 		strings.Join(s.Placeholders, " "), strings.Join(s.Addresses, " "))
 	b.WriteString("notes:\n")
@@ -341,15 +344,18 @@ func TestTemplateHeaders(t *testing.T) {
 	body := "{{define \"does\"}}x{{end}}{{define \"parts\"}}\n@@part cli - t\nx\n{{end}}{{define \"notes\"}}{{end}}{{define \"check\"}}x{{end}}"
 	head := func(lines ...string) string { return "{{/*\n" + strings.Join(lines, "\n") + "\n*/}}\n" + body }
 	ok := []string{"family: rsyslog", "what: syslog", "transports: udp", "reference: r"}
+	tested := append(slices.Clone(ok), "verification: tested", "ci: c")
 	for _, c := range []struct {
 		name, src string
 	}{
 		{"rsyslog-syslog.tmpl", head(append(ok, "verification: sure")...)},
 		{"rsyslog-syslog.tmpl", head(append(ok, "verification: lab_checked")...)},
-		{"rsyslog-syslog.tmpl", head(append(ok, "verification: tested", "checked_on: 2026-11-16")...)},
-		{"rsyslog-syslog.tmpl", head("family: rsyslog", "what: syslog", "transports: v3", "reference: r", "verification: tested")},
-		{"rsyslog-syslog.tmpl", head("family: rsyslog", "what: syslog", "transports: udp", "verification: tested")},
-		{"rsyslog-trap.tmpl", head(append(ok, "verification: tested")...)},
+		{"rsyslog-syslog.tmpl", head(append(ok, "verification: tested", "ci: c", "checked_on: 2026-11-16")...)},
+		{"rsyslog-syslog.tmpl", head(append(ok, "verification: tested")...)},
+		{"rsyslog-syslog.tmpl", head(append(ok, "verification: reference", "ci: c")...)},
+		{"rsyslog-syslog.tmpl", head("family: rsyslog", "what: syslog", "transports: v3", "reference: r", "verification: tested", "ci: c")},
+		{"rsyslog-syslog.tmpl", head("family: rsyslog", "what: syslog", "transports: udp", "verification: tested", "ci: c")},
+		{"rsyslog-trap.tmpl", head(tested...)},
 		{"rsyslog-syslog.tmpl", body},
 	} {
 		if _, err := parseTemplate(c.name, c.src); err == nil {

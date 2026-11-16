@@ -4,6 +4,7 @@ what: syslog
 transports: udp, tcp, tls
 reference: rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425
 verification: tested
+ci: CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.
 */}}
 {{define "does"}}Forwards this machine's syslog{{if .Facility}} ({{.Facility}} only){{end}}, {{.Severity.Word}} and more severe, to Woodshed over {{if eq .Transport "udp"}}UDP{{else if eq .Transport "tcp"}}TCP{{else}}TLS{{end}}.{{end}}
 

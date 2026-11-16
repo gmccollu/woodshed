@@ -3,6 +3,7 @@ what: syslog
 transport: udp
 address: 192.0.2.10
 verification: tested
+verification_detail: CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.
 reference: rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425
 does: Forwards this machine's syslog, emergency and more severe, to Woodshed over UDP.
 check: On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.

@@ -3,6 +3,7 @@ what: flow
 transport: ipfix
 address: 192.0.2.10
 verification: tested
+verification_detail: CI runs real softflowd with these options, flow v9 and IPFIX, and IPFIX over IPv6, replaying a capture file with -r in place of -i <INTERFACE> (a CI runner has no traffic to watch), so the interface choice itself isn't exercised.
 reference: softflowd(8) manual page (-i, -n, -v, -t)
 does: Runs softflowd on <INTERFACE> and exports the flows it sees to Woodshed as IPFIX (RFC 7011).
 check: Woodshed's Flows view lists this machine as an exporter within a minute or two; `softflowctl statistics` shows the flows it has sent.

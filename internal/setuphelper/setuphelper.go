@@ -330,7 +330,10 @@ type Snippet struct {
 	Address      string `json:"address"`
 	Verification string `json:"verification"`
 	CheckedOn    string `json:"checked_on,omitempty"`
-	Reference    string `json:"reference"`
+	// VerificationDetail says, for a Tested snippet, what CI applies and
+	// what it can't.
+	VerificationDetail string `json:"verification_detail,omitempty"`
+	Reference          string `json:"reference"`
 	// Does is a short "what this does" line.
 	Does string `json:"does"`
 	// Text is every part, for one Copy.
@@ -373,6 +376,8 @@ type Template struct {
 	Reference    string
 	Verification string
 	CheckedOn    string
+	// CI says what CI applies, for a tested template (and what it can't).
+	CI string
 	// Source is the template file's text.
 	Source string
 
@@ -451,6 +456,8 @@ func parseTemplate(name, src string) (*Template, error) {
 			t.Verification = v
 		case "checked_on":
 			t.CheckedOn = v
+		case "ci":
+			t.CI = v
 		default:
 			return nil, fmt.Errorf("unknown header key %q", k)
 		}
@@ -475,6 +482,9 @@ func parseTemplate(name, src string) (*Template, error) {
 	}
 	if t.Reference == "" {
 		return nil, fmt.Errorf("no reference")
+	}
+	if (t.Verification == Tested) != (t.CI != "") {
+		return nil, fmt.Errorf("a tested template says what CI applies (ci:), and only a tested one")
 	}
 	switch t.Verification {
 	case Tested, Reference:
@@ -861,7 +871,7 @@ func Generate(s Server, r Request) (Snippet, error) {
 		return b.String(), nil
 	}
 	sn := Snippet{Family: r.Family, What: r.What, Transport: d.Transport, Address: d.Address, Verification: t.Verification,
-		CheckedOn: t.CheckedOn, Reference: t.Reference, Addresses: addrs, Notes: []string{}, Parts: []Part{}}
+		CheckedOn: t.CheckedOn, VerificationDetail: t.CI, Reference: t.Reference, Addresses: addrs, Notes: []string{}, Parts: []Part{}}
 	if sn.Addresses == nil {
 		sn.Addresses = []string{}
 	}

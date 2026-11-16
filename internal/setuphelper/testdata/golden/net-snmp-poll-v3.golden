@@ -3,6 +3,7 @@ what: poll
 transport: v3
 address: 192.0.2.10
 verification: tested
+verification_detail: CI starts from a distribution-style snmpd.conf (agentaddress 127.0.0.1,[::1]), replaces that line and adds the rest as the snippet says, then Woodshed polls real snmpd, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.
 reference: net-snmp manual pages: snmpd.conf(5) (agentaddress, rocommunity, rocommunity6, createUser, rouser)
 does: Lets Woodshed poll this machine's snmpd (SNMPv3, read-only).
 check: Devices → Add polling → Test poll answers with this machine's name and interfaces; after the first cycle the device page shows its graphs.
