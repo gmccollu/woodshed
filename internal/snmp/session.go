@@ -99,10 +99,13 @@ type SessionConfig struct {
 
 // Session is one agent's requester state.
 type Session struct {
-	cfg  SessionConfig
-	tr   Transport
-	now  func() time.Time
-	eng  EngineInfo
+	cfg SessionConfig
+	tr  Transport
+	now func() time.Time
+	eng EngineInfo
+	// pub is eng for readers on other goroutines (Engine): the session's own
+	// requests read and write eng; every write publishes a copy here.
+	pub  atomic.Pointer[EngineInfo]
 	keys Security // v3, localized to eng.ID
 	kfor []byte   // the engine ID keys is localized to
 	salt atomic.Uint64
@@ -137,6 +140,7 @@ func NewSession(cfg SessionConfig, tr Transport) (*Session, error) {
 		cfg.Retries = 0
 	}
 	s := &Session{cfg: cfg, tr: tr, now: cfg.Now, eng: cfg.Engine}
+	s.publishEngine()
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -148,7 +152,20 @@ func NewSession(cfg SessionConfig, tr Transport) (*Session, error) {
 func (s *Session) Version() Version { return s.cfg.Version }
 
 // Engine is the agent's engine as last learned (v3).
-func (s *Session) Engine() EngineInfo { return s.eng }
+// Safe to call from any goroutine.
+func (s *Session) Engine() EngineInfo {
+	if p := s.pub.Load(); p != nil {
+		return *p
+	}
+	return EngineInfo{}
+}
+
+// publishEngine makes eng visible to Engine.
+func (s *Session) publishEngine() {
+	e := s.eng
+	e.ID = append([]byte(nil), e.ID...)
+	s.pub.Store(&e)
+}
 
 // LastRTT is the last answered request's round trip.
 func (s *Session) LastRTT() time.Duration { return s.lastRTT }
@@ -302,6 +319,7 @@ func (s *Session) setEngine(e EngineInfo, prev EngineInfo) {
 		s.bootsUp = true
 	}
 	s.eng = e
+	s.publishEngine()
 }
 
 // reportFailure maps a Report's usmStats counter to a failure.
