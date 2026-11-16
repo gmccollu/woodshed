@@ -4,6 +4,56 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [2.0.0] - unreleased
+
+### Added
+- A NetFlow v5/v9 and IPFIX collector, off until you turn it on in **Settings → Flows** or with `woodshed flow on`
+  (NetFlow on UDP 2055, IPFIX on UDP 4739; each port reads every version). Templates and options data per exporter
+  and observation domain, interface names from options data, variable-length and enterprise-specific fields (kept as
+  they came), data that arrived before its template decoded when it comes (marked late), and malformed or undecodable
+  data kept, never dropped silently. Sequence gaps (loss before Woodshed) and duplicates are counted per exporter. See
+  [docs/user-guide.md](docs/user-guide.md#collecting-flows-netflow-ipfix).
+- Firewall-event, NAT and bidirectional records are first-class: `fw_event` (created, deleted, denied, …),
+  `nat_event`, post-NAT addresses and ports, initiator and responder counters and RFC 5103 reverse counters are
+  columns and filters, sums follow a no-double-count rule for event records, and a rule or ACL ID can be read from
+  the enterprise field an exporter uses (`listeners.flow.rule_id_ies`).
+- Sampling is kept per record and shown: counts exported and, where the rate is known, scaled, never scaled
+  silently.
+- **Events → Flows**: the results, the field panel, the histogram, and a **Top** panel (talkers, destination ports,
+  conversations, and **Denied**: top denied sources, destinations, ports and rules), each value a filter. Searches
+  use flow time (a record matches when its start-to-end overlaps the window). The other tabs get a flow strip under
+  the histogram for the selected exporters. Device pages show their flow counts.
+- `woodshed search --type flow` (with `--src`, `--dst-port`, `--proto`, `--fw-event` and the other flow filters),
+  `woodshed flows top`, `woodshed flow on|off|status`, a Flows row in `woodshed status`, `woodshed send --proto
+  netflow5|netflow9|ipfix` (with `--events` and `--biflow`) and `woodshed bench --proto ipfix`.
+- Exports and incident bundles cover every data type: the UI's Export now defaults to all types (the API's default
+  stays syslog), and bundles include flows when there are any in the window, as `flows/<device>/flows.csv`,
+  `flows.ipfix` (an RFC 5655 IPFIX file) and, when there are undecoded sets, `raw.txt`. The bundle README gains a
+  Flows block per device (top talkers, ports, conversations, firewall events, top denied sources and ports, NAT,
+  sequence gaps). **Leave flows out** is offered before building, pre-selected for a long window with large flows; a
+  zip holds at most 20 million flow records per device.
+
+### Changed
+- Woodshed now has a second, binary on-disk format beside its plain text files: flows are stored as compact columnar
+  segments (`logs/<device>/flows/*.wsf`, about 20 bytes a record), read through Events, `woodshed search`, or the
+  CSV and IPFIX exports. Syslog, trap and poll files are unchanged.
+- Retention: flows have their own budget, `storage.flow_budget_bytes`, 40 % of the storage cap by default. While they
+  exceed it the oldest flows are deleted first, fair-shared between exporters, before any other data; the low-disk
+  guard deletes flows first too. With no flows nothing changes.
+- The index migrates once (schema 8: `flow_segments`, `flow_minute`). Downgrading to 1.x keeps every syslog, trap and
+  poll file and loses access to flows.
+
+### Security
+- The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The
+  sender allowlist, blocklist and new-sender limits apply to exporters as to any sender.
+
+### Performance
+- IPFIX at 50,000 records a second for 20 s (30 records a packet, 2 domains) with UDP syslog at 5,000 msg/s beside
+  it: every record and message stored, 0.49 of a core and 116 MiB peak RSS for the whole pipeline, 20.4 bytes per
+  stored record. Measured in-process with `woodshed bench --proto ipfix --rate 50000 --syslog-rate 5000` (the sender
+  in a child process) on a 14-core Apple M4 Pro under other load; the reference-spec (4 vCPU) runner and the lab's
+  10-minute and 24-hour runs will replace these before release.
+
 ## [1.3.0] - unreleased
 
 ### Added

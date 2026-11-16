@@ -224,6 +224,80 @@ interfaces at 60 s writes about 17 MB a day uncompressed and about 1.4 MB once t
 interface limit and the limit on polled devices (500), and the last hour's cycles, failures and skipped cycles. If
 cycles are skipped because polling couldn't keep up, a banner suggests a longer interval or more devices at once.
 
+### Collecting flows (NetFlow, IPFIX)
+
+Woodshed can also collect flow records, NetFlow v5 and v9 and IPFIX, so "who talked to whom, on which ports, how
+much, and what the firewall denied" around an outage sits beside the device's syslog, traps and polls. It's an
+evidence collector for a window of time, not long-term traffic analytics. It's off until you turn it on, so an
+upgrade opens no new port.
+
+1. In **Settings → Flows**, turn the listener on: UDP 2055 for NetFlow and 4739 for IPFIX by default (each port reads
+   every version, so an exporter pointed at the "wrong" one still works; set either to 0 to close it). On Windows,
+   also run `woodshed flow on` once in an administrator prompt so the firewall lets exporters in (the rules
+   "Woodshed flows (UDP 2055)" and "(UDP 4739)" are installed disabled). On a server without a browser,
+   `sudo woodshed flow on` turns it on (see [the install guide](install.md#flows-firewall)).
+2. On each exporter (a router, a switch, a firewall, or `softflowd` on a Linux host), set the flow exporter or
+   collector to this computer and the port, NetFlow v9 or IPFIX if it offers them, v5 otherwise.
+3. Open **Events → Flows**. Exporters usually send templates every few minutes, so the first records of a v9 or IPFIX
+   exporter can take that long to decode (they wait, and are decoded when the template arrives).
+
+**What's kept.** Each record's addresses, ports, protocol, TCP flags, packets and bytes, interfaces (with names when
+the exporter sends them as options data), AS numbers, next hop, VLAN, its flow start and end, and for event-style
+firewall exporters the firewall event (`created`, `deleted`, `denied`, …), the NAT event, the post-NAT addresses and
+ports, the initiator and responder counters and RFC 5103 reverse counters. Fields Woodshed has no column for,
+enterprise-specific ones included, are kept as they came and shown as `pen:id=hex`. The exporter's source address is
+the device; the exporter's own address fields are kept but never used to pick the device.
+
+**Sampling is shown, never hidden.** Every record keeps the sampling rate in force when it arrived (`1` unsampled,
+`N` for 1 in N, `0` when the exporter said nothing). Counts are shown as exported and, where the rate is known,
+scaled: "312 MB exported (≈ 312 GB at 1:1000)". A total that includes records with unknown sampling is a lower bound,
+shown with "≥".
+
+**Firewall events without double counting.** Event-style exporters send a record when a connection is created, one
+when it's torn down (with its totals), and one for each denied connection. Byte and packet sums count totals only on
+the final record (`deleted`), so a connection isn't counted twice; `created`, `update` and `denied` records keep their
+counts but add nothing. **Top → Denied** ranks denied sources, destinations, ports and rules (by flows: denials carry
+no bytes).
+
+**Rule IDs.** No standard IPFIX field carries an ACL or rule ID; exporters that send one use an enterprise-specific
+field. **Settings → Flows** lists each exporter's template fields: find the one that holds the rule (its
+`<enterprise number>:<element ID>`), add it under **Rule ID fields**, and new records fill `rule_id` from it (filter
+with `rule_id=…`, or Top by rule).
+
+**Time.** Searches use flow time: a record matches a window when its start-to-end overlaps it, so "the flows around
+the outage" means when the traffic happened, not when the exporter got round to sending it. A record with only an
+event time (a denial) is at that moment. An exporter whose clock is more than an hour off has its records stamped
+with the time they arrived (its own times are kept), and a banner names it.
+
+**Waiting and broken data.** Data that arrives before its template waits (up to 32 MiB in all, 1 MiB per exporter,
+for the template timeout, 30 minutes) and is decoded with its original time, marked `late`. If the template never
+comes, the data is kept undecoded (`status=no_template`), and so are malformed packets (`status=malformed`), never
+dropped silently; `woodshed reindex --flows-redecode` (with the service stopped) decodes the kept sets whose template
+turned up later. Sequence numbers show loss between the exporter and Woodshed: **Settings → Flows** and
+`woodshed flow status` give each exporter's gaps, duplicates, late and undecoded counts.
+
+**Where it's kept.** Flows are a fourth kind of data, stored as compact columnar segments, one per device per hour
+(`logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf`), at about 20 bytes a record (an exporter sending 1,000 records a second
+writes about 1.7 GB a day). Unlike the other files they aren't plain text: read them through Events, `woodshed
+search --type flow`, or an export, whose `flows.csv` is plain text and whose `flows.ipfix` any IPFIX tool reads.
+Flows have their own **budget**, 40 % of the storage cap by default (`storage.flow_budget_bytes`): past it the oldest
+flows are deleted first, before any other data, and the low-disk guard deletes flows first too, so a busy exporter
+can't push out its own syslog. Settings says how many days the budget holds at the current rate.
+
+**From a terminal:**
+
+```sh
+woodshed search --type flow --src 10.20.0.0/16 --dst-port 443 --last 1h      # one CSV row per record
+woodshed search --type flow --fw-event denied --count --last 24h
+woodshed flows top --by src --last 1h                                         # top talkers, exported and scaled
+woodshed flows top --by dst-port --fw-event denied --last 24h                 # top denied ports
+woodshed flow status                                                          # each exporter's rate, templates, gaps
+```
+
+To test from another computer, `woodshed send --proto ipfix --host 192.0.2.50 --count 1000` (or `netflow9`,
+`netflow5`) sends generated records, `--events` sends firewall-event records, and `woodshed bench --proto ipfix`
+measures the whole flow pipeline on this computer, in a temporary folder.
+
 ## 3. Watch
 
 The **Dashboard** shows each device as a tile with a coloured dot (green: heard from in the last 5 minutes, amber:
