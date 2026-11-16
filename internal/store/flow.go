@@ -345,7 +345,7 @@ func (s *Store) closeFlowLocked(st *flowStream, why string) {
 	if st.w == nil {
 		return
 	}
-	foot, err := st.w.Close()
+	foot, err := st.w.CloseSummary()
 	if err != nil {
 		s.log.Warn("store: closing a flow segment failed; recovery finishes it at the next start", "file", st.rel, "err", err)
 		if foot == nil {

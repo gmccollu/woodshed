@@ -326,7 +326,16 @@ func (w *Writer) Sync() error {
 // Open would read it: blocks' directory entries only, their index not
 // loaded (Reader.Block loads one from the footer's copy). After an error the
 // file is closed anyway; Recover can finish it.
-func (w *Writer) Close() (*Footer, error) {
+func (w *Writer) Close() (*Footer, error) { return w.close(true) }
+
+// CloseSummary is Close returning only the footer's segment-level fields,
+// as Summary does (no block directory, raw chunks, templates or metadata),
+// so a close allocates nothing in proportion to the segment: the store, which
+// only needs those for the index rows, closes every exporter's segment at
+// the hour mark.
+func (w *Writer) CloseSummary() (*Footer, error) { return w.close(false) }
+
+func (w *Writer) close(dir bool) (*Footer, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
@@ -339,7 +348,7 @@ func (w *Writer) Close() (*Footer, error) {
 	}
 	var f *Footer
 	if err == nil {
-		f, err = w.st.writeTail(w.f)
+		f, err = w.st.writeTail(w.f, dir)
 	}
 	if cerr := w.f.Close(); err == nil {
 		err = cerr

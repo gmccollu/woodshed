@@ -6,6 +6,7 @@ import (
 	"hash/crc32"
 	"io"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/flow"
@@ -238,13 +239,14 @@ func (w *tailWriter) copyFrom(src io.ReaderAt, off, n int64) {
 // each block's header is copied from its span in the file through a bounded
 // buffer, so memory doesn't grow with the footer (SPEC §13.10 decision 56).
 // It returns the footer as Open reads it: directory entries only, each
-// pointing at its header's copy in the footer. On an error the file is cut
-// back to s.off.
-func (s *segState) writeTail(fl segFile) (*Footer, error) {
+// pointing at its header's copy in the footer; with dir false, the
+// segment-level fields only (summary's, no directory to build). On an error
+// the file is cut back to s.off.
+func (s *segState) writeTail(fl segFile, dir bool) (*Footer, error) {
 	if err := fl.Truncate(s.off); err != nil {
 		return nil, err
 	}
-	f, err := s.writeTailAt(fl)
+	f, err := s.writeTailAt(fl, dir)
 	if err != nil {
 		fl.Truncate(s.off)
 		return nil, err
@@ -255,7 +257,12 @@ func (s *segState) writeTail(fl segFile) (*Footer, error) {
 	return f, nil
 }
 
-func (s *segState) writeTailAt(fl segFile) (*Footer, error) {
+// tailBufs are the tail writers' buffers, so the store closing every
+// exporter's segment at the hour mark reuses a few instead of leaving one
+// each for the collector.
+var tailBufs sync.Pool
+
+func (s *segState) writeTailAt(fl segFile, dir bool) (*Footer, error) {
 	f := s.summary()
 	f.tableOff = s.off
 	table := section(magicTable, encodeTmplChunk(tmplChunk{templates: s.templates, meta: s.meta, hasMeta: true}))
@@ -265,20 +272,29 @@ func (s *segState) writeTailAt(fl segFile) (*Footer, error) {
 	// The footer's body goes after room for its prefix (its length and CRC
 	// are known only at the end).
 	start := s.off + int64(len(table)) + prefixLen
-	w := &tailWriter{f: fl, buf: make([]byte, 0, tailBufSize), off: start}
+	buf, _ := tailBufs.Get().(*[]byte)
+	if buf == nil || cap(*buf) != tailBufSize {
+		b := make([]byte, 0, tailBufSize)
+		buf = &b
+	}
+	defer tailBufs.Put(buf)
+	w := &tailWriter{f: fl, buf: (*buf)[:0], off: start}
 	b := appendFooterHead(nil, f, len(s.blocks))
 	w.write(b)
-	f.Blocks = make([]BlockInfo, len(s.blocks))
+	if dir {
+		f.Blocks = make([]BlockInfo, len(s.blocks))
+	}
 	for i := range s.blocks {
 		e := &s.blocks[i]
 		b = putUvarint(b[:0], uint64(e.off))
 		b = putUvarint(b, uint64(e.length))
 		b = putUvarint(b, uint64(e.hdrLen))
 		w.write(b)
-		bi := e.info()
-		bi.hdrOff = w.pos()
+		if dir {
+			f.Blocks[i] = e.info()
+			f.Blocks[i].hdrOff = w.pos()
+		}
 		w.copyFrom(fl, e.hdrOff, int64(e.hdrLen))
-		f.Blocks[i] = bi
 	}
 	b = putUvarint(b[:0], uint64(len(s.rawChunks)))
 	w.write(b)
@@ -313,6 +329,8 @@ func (s *segState) writeTailAt(fl segFile) (*Footer, error) {
 	if _, err := fl.WriteAt(tr[:], start+w.n); err != nil {
 		return nil, err
 	}
-	f.RawChunks, f.Templates, f.Meta = slices.Clone(s.rawChunks), slices.Clip(s.templates), s.meta
+	if dir {
+		f.RawChunks, f.Templates, f.Meta = slices.Clone(s.rawChunks), slices.Clip(s.templates), s.meta
+	}
 	return f, nil
 }

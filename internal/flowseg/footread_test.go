@@ -223,3 +223,39 @@ func encodeFooterRef(f *Footer, hdrs [][]byte) []byte {
 	}
 	return b
 }
+
+// CloseSummary writes the same segment as Close and returns Close's
+// segment-level fields with no directory, raw chunks, templates or
+// metadata (Summary's), so a close builds nothing per block.
+func TestCloseSummary(t *testing.T) {
+	r := rand.New(rand.NewPCG(5, 6))
+	recs := make([]flow.Record, 0, 2000)
+	for i := 0; i < cap(recs); i++ {
+		recs = append(recs, randRecord(r, testHour.UnixMilli()+int64(i)*13, i%3 == 0))
+	}
+	raws := []flow.RawSet{randRaw(r, testHour.UnixMilli()+5), randRaw(r, testHour.UnixMilli()+9000)}
+	pathA, full := writeSegment(t, t.TempDir(), recs, raws, 100)
+	pathB, sum := writeSegmentWith(t, t.TempDir(), recs, raws, 100, (*Writer).CloseSummary)
+	if sum.Blocks != nil || sum.RawChunks != nil || sum.Templates != nil || sum.Meta != nil {
+		t.Fatalf("CloseSummary returned %d blocks, %d raw chunks, %d templates, meta %q", len(sum.Blocks), len(sum.RawChunks),
+			len(sum.Templates), sum.Meta)
+	}
+	lite := *full
+	lite.Blocks, lite.RawChunks, lite.Templates, lite.Meta = nil, nil, nil, nil
+	if !reflect.DeepEqual(&lite, sum) || len(full.Blocks) < 20 || full.Raw != 2 {
+		t.Fatalf("CloseSummary %+v\nClose's fields %+v", sum, &lite)
+	}
+	a, err := Open(pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Open(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if !reflect.DeepEqual(a.Footer(), b.Footer()) || !reflect.DeepEqual(readAll(t, a), readAll(t, b)) {
+		t.Fatal("the segments differ")
+	}
+}
