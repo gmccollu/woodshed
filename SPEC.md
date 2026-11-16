@@ -2873,8 +2873,13 @@ the first bench, which records the measured numbers here:
     3,000,186 messages stored, 0.43 of a core, peak RSS 153 MiB (Go heap 90 MiB), 20.4 bytes per stored record (19.2
     in blocks, 20.0 for a closed segment in the format bench).
   - Queries over 18,000,000 records (the 1 h at 5,000/s case): top talkers (`woodshed flows top --by src`, bytes)
-    0.34–0.72 s, complete; a search for one source address, first 500, 0.10 s. The 180-million-record case wasn't run;
-    at this rate it would be about 4 s, inside the 10 s budget.
+    0.34–0.72 s, complete; a search for one source address, first 500, 0.10 s.
+  - Over 180,000,000 records (the 1 h at 50,000/s case; 3.4 GiB of segments, 20.2 bytes a record): top talkers 2.9–3.8 s
+    and top destination ports 2.4 s, complete in one response (inside the 10 s budget); top conversations, past the
+    1,000,000-key exact limit and so approximate, 28 s (inside the 60 s target); a search for one source address,
+    newest 500, 0.16 s. Memory: the `flows top` process peaks at about 480 MiB RSS for top talkers (mostly the 14
+    workers' block buffers) and 1.8 GiB for conversations past the exact limit, over the 256 MiB query-state target.
+    The reference box's 4 workers would need less; a hard cap is open.
   - A 150,000 records/s burst for 10 s: all 1,500,000 stored, nothing dropped by the queue, 0.33 of a core.
   - At 5,000 records/s a segment takes 21.9 bytes a record (the per-block index and the Bloom filter over random
     source ports weigh more in smaller blocks).
