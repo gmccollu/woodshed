@@ -564,3 +564,27 @@ func TestWeekPlanBounded(t *testing.T) {
 		t.Fatalf("4 times the blocks grew the peak by %.1f MiB", float64(d)/(1<<20))
 	}
 }
+
+// An open segment that closed between the listing and the plan reaching it
+// (its Snap gives nil) is read from its file, once.
+func TestOpenSegmentClosedSinceListing(t *testing.T) {
+	const n = 50_000
+	e := writeFlows(t, n, Options{}, func(r *flow.Record, i int) { r.Src, r.Dst = addrN(i%100), addrN(7) })
+	segs, _ := e.o.Index.FlowSegments(bg, nil, time.Time{}, time.Time{})
+	if len(segs) != 1 {
+		t.Fatalf("%d segments", len(segs))
+	}
+	calls := 0
+	e.o.Open = func([]string) []OpenSegment {
+		return []OpenSegment{{DeviceID: segs[0].DeviceID, Rel: segs[0].Path, Path: filepath.Join(e.o.DataDir, segs[0].Path),
+			Snap: func() *flowseg.Footer { calls++; return nil }}}
+	}
+	res, err := e.Top(bg, hourQuery(), "src", "flows", 5, time.Hour, "")
+	if err != nil || res.Total.Flows != n || res.Partial || calls != 1 {
+		t.Fatalf("flows %d partial %v snaps %d: %v", res.Total.Flows, res.Partial, calls, err)
+	}
+	c, err := e.Count(bg, hourQuery())
+	if err != nil || c[segs[0].DeviceID] != n {
+		t.Fatalf("count %v %v", c, err)
+	}
+}
