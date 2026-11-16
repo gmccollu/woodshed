@@ -32,6 +32,9 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   `woodshed status` gains a Polling row.
 
 ### Fixed
+- A sender on `::1`, or on an IPv4-compatible IPv6 address (`::a.b.c.d`), was stored but never listed as a device,
+  so nothing it sent could be found (since 1.1). It's listed now. To find what such a sender sent before the upgrade,
+  run `woodshed reindex` once.
 - The device page's Polling panel showed up/down changes only for the interfaces on its charts, so an interface that
   went down off the chart (often the one that matters) left no trace there. Every interface's changes, the restarts
   and the reboots now mark every chart and are listed under them, newest first, with **Chart** for an interface that
