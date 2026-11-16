@@ -183,13 +183,13 @@ func (s *Sums) add(r *flow.Record, conv bool) {
 	}
 	s.Bytes += int64(b)
 	s.Packets += int64(p)
+	// A record with unknown sampling adds nothing to the scaled sums, which
+	// are then a lower bound (as the segments' and flow_minute's totals).
 	if r.Sampling > 0 {
 		s.BytesScaled += int64(b) * int64(r.Sampling)
 		s.PacketsScaled += int64(p) * int64(r.Sampling)
 	} else {
 		s.Unknown++
-		s.BytesScaled += int64(b)
-		s.PacketsScaled += int64(p)
 	}
 	st, en := FlowStart(r), FlowEnd(r)
 	if s.First == 0 || st < s.First {

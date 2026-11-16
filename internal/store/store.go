@@ -127,6 +127,12 @@ type Options struct {
 	Manual bool
 
 	Logger *slog.Logger // default slog.Default()
+
+	// Version stamps the flow segments this store writes.
+	Version string
+	// FlowBudgetBytes is the flows' share of RetentionBytes (SPEC §13.2);
+	// 0 means DefaultFlowBudgetPercent of it.
+	FlowBudgetBytes int64
 }
 
 // Limits are the settings that can change while the store runs.
@@ -138,6 +144,10 @@ type Limits struct {
 	MaxDevices          int
 	NewDeviceBurst      int
 	NewDevicesPerMinute float64
+
+	// FlowBudgetBytes: see Options. In SetLimits 0 leaves it unchanged and a
+	// negative value goes back to the default share.
+	FlowBudgetBytes int64
 }
 
 // Store writes messages to log files. It is safe for concurrent use.
@@ -153,6 +163,9 @@ type Store struct {
 	retentionDays  atomic.Int64
 	retentionBytes atomic.Int64
 	partBytes      atomic.Int64
+	flowBudget     atomic.Int64
+
+	fl flows // flow segments (flow.go)
 
 	// A device's write state is per data type (SPEC §11.1): each *device is
 	// one sender's stream of one type, keyed by (address, type). Admission and
@@ -193,11 +206,12 @@ type Store struct {
 	openFiles int
 	maxOpen   int // high-water mark of openFiles, for tests
 
-	qMu     sync.Mutex
-	qOps    []index.FileOp
-	qAct    []index.Activity
-	qEvents []index.Event
-	applyMu sync.Mutex
+	qMu      sync.Mutex
+	qFlowMin []index.FlowMinute
+	qOps     []index.FileOp
+	qAct     []index.Activity
+	qEvents  []index.Event
+	applyMu  sync.Mutex
 
 	catMu    sync.Mutex
 	cat      map[string]*catEntry // closed files by rel path
@@ -354,6 +368,8 @@ func Open(opts Options) (*Store, error) {
 	s.retentionDays.Store(int64(opts.RetentionDays))
 	s.retentionBytes.Store(opts.RetentionBytes)
 	s.partBytes.Store(opts.PartBytes)
+	s.flowBudget.Store(max(opts.FlowBudgetBytes, 0))
+	s.fl.streams, s.fl.cat = map[string]*flowStream{}, map[string]*flowSeg{}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if err := os.MkdirAll(s.logsDir, 0o750); err != nil {
 		return nil, fmt.Errorf("store: %w", err)
@@ -403,6 +419,9 @@ func (s *Store) SetLimits(l Limits) {
 	if l.PartBytes > 0 {
 		s.partBytes.Store(l.PartBytes)
 	}
+	if l.FlowBudgetBytes != 0 {
+		s.flowBudget.Store(max(l.FlowBudgetBytes, 0))
+	}
 	s.devMu.Lock()
 	defer s.devMu.Unlock()
 	if l.MaxDevices > 0 {
@@ -432,6 +451,7 @@ func (s *Store) Limits() Limits {
 		MaxDevices:          s.maxDevices,
 		NewDeviceBurst:      s.burst,
 		NewDevicesPerMinute: s.perMinute,
+		FlowBudgetBytes:     s.flowBudget.Load(),
 	}
 }
 
@@ -744,7 +764,7 @@ func (s *Store) makeRoomLocked() bool {
 	if len(mark) == 0 {
 		return false
 	}
-	for ti := range logfile.DataTypes {
+	for ti := 0; ti <= int(flowTI); ti++ {
 		if o := s.devSet[streamKey{mark[0].addr, uint8(ti)}]; o != nil && o != mark[0] && !o.leaving.Load() {
 			mark = append(mark, o)
 		}
@@ -885,6 +905,9 @@ func (s *Store) Flush() error {
 	if serr := s.syncAll(); err == nil {
 		err = serr
 	}
+	if serr := s.syncFlows(); err == nil {
+		err = serr
+	}
 	if ierr := s.applyIndex(); err == nil {
 		err = ierr
 	}
@@ -916,6 +939,7 @@ func (s *Store) Close() error {
 		keep(d.closeFileLocked(true))
 		d.mu.Unlock()
 	}
+	s.closeFlows()
 	s.drainClose()
 	s.collectRefused(s.clock(), true)
 	s.reportDrops(s.clock(), true)
@@ -1054,8 +1078,8 @@ func (s *Store) applyIndex() error {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
 	s.qMu.Lock()
-	b := index.Batch{Files: s.qOps, Activity: s.qAct, Events: s.qEvents}
-	s.qOps, s.qAct, s.qEvents = nil, nil, nil
+	b := index.Batch{Files: s.qOps, Activity: s.qAct, Events: s.qEvents, FlowMinutes: s.qFlowMin}
+	s.qOps, s.qAct, s.qEvents, s.qFlowMin = nil, nil, nil, nil
 	s.qMu.Unlock()
 	if b.Empty() {
 		return nil
@@ -1071,6 +1095,10 @@ func (s *Store) applyIndex() error {
 	s.qOps = append(b.Files, s.qOps...)
 	s.qAct = append(b.Activity, s.qAct...)
 	s.qEvents = append(b.Events, s.qEvents...)
+	s.qFlowMin = append(b.FlowMinutes, s.qFlowMin...)
+	if len(s.qFlowMin) > maxQueued {
+		s.qFlowMin = s.qFlowMin[len(s.qFlowMin)-maxQueued:]
+	}
 	if len(s.qOps) > maxQueued {
 		s.qOps = s.qOps[len(s.qOps)-maxQueued:]
 	}

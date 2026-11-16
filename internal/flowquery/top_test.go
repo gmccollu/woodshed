@@ -21,7 +21,7 @@ func TestTopBySrcBytesAndScaled(t *testing.T) {
 	add("10.0.0.1", 50, 0)
 	add("10.0.0.2", 120, 1)
 	rows := top.Rows(10)
-	if len(rows) != 2 || rows[0].Key != "10.0.0.1" || rows[0].Bytes != 150 || rows[0].BytesScaled != 100050 ||
+	if len(rows) != 2 || rows[0].Key != "10.0.0.1" || rows[0].Bytes != 150 || rows[0].BytesScaled != 100000 ||
 		rows[0].Unknown != 1 || rows[1].Bytes != 120 || rows[1].BytesScaled != 120 || rows[1].Unknown != 0 {
 		t.Fatalf("rows %+v", rows)
 	}

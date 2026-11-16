@@ -357,3 +357,32 @@ func floorDiv(a, b int64) int64 {
 	}
 	return q
 }
+
+// TypeDeviceBytes sums a type's stored bytes per device over [from, to) from
+// type_stats and type_stats_hourly (a minute lives in one of the two).
+func (d *DB) TypeDeviceBytes(ctx context.Context, typ string, from, to time.Time) (map[string]int64, error) {
+	out := map[string]int64{}
+	for _, q := range []string{
+		`SELECT device_id, sum(bytes) FROM type_stats WHERE type = ? AND minute >= ? AND minute < ? GROUP BY device_id`,
+		`SELECT device_id, sum(bytes) FROM type_stats_hourly WHERE type = ? AND hour >= ? AND hour < ? GROUP BY device_id`,
+	} {
+		rows, err := d.db.QueryContext(ctx, q, typ, ms(from), ms(to))
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			var n int64
+			if err := rows.Scan(&id, &n); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[id] += n
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
