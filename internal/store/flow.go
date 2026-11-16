@@ -659,4 +659,6 @@ func (s *Store) flowHeld() int64 { return min(s.FlowBytes(), s.FlowBudget()) }
 
 // DropQueuedFlows is DropQueued for the flow listener's queue: the drops
 // count for the exporter's flow stream.
-func (s *Store) DropQueuedFlows(from netip.Addr, at time.Time, n int64) { s.dropQueued(flowTI, from, at, n) }
+func (s *Store) DropQueuedFlows(from netip.Addr, at time.Time, n int64) {
+	s.dropQueued(flowTI, from, at, n)
+}
