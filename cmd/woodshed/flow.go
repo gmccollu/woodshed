@@ -427,7 +427,9 @@ Examples:
 
 func printTop(w io.Writer, p api.FlowTopPage) {
 	tw := tabwriter.NewWriter(w, 2, 8, 2, ' ', 0)
-	sampled := p.Total.BytesScaled != p.Total.Bytes || p.Total.PacketsScaled != p.Total.Packets
+	// Scaled columns only when some rate above 1 is known (records of unknown
+	// sampling add nothing to the scaled sums).
+	sampled := p.Total.BytesScaled > p.Total.Bytes || p.Total.PacketsScaled > p.Total.Packets
 	head := []string{strings.ToUpper(strings.ReplaceAll(p.By, "_", " ")), "FLOWS", "BYTES", "PACKETS"}
 	if sampled {
 		head = append(head, "BYTES SCALED", "PACKETS SCALED")
