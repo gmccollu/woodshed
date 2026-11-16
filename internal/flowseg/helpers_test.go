@@ -168,6 +168,13 @@ func sameRecord(t *testing.T, want, got flow.Record, where string) {
 // writeSegment writes recs (flushing every flushEvery records) and closes it.
 func writeSegment(t testing.TB, dir string, recs []flow.Record, raws []flow.RawSet, flushEvery int) (string, *Footer) {
 	t.Helper()
+	return writeSegmentWith(t, dir, recs, raws, flushEvery, (*Writer).Close)
+}
+
+// writeSegmentWith is writeSegment closing with closeFn.
+func writeSegmentWith(t testing.TB, dir string, recs []flow.Record, raws []flow.RawSet, flushEvery int,
+	closeFn func(*Writer) (*Footer, error)) (string, *Footer) {
+	t.Helper()
 	path := filepath.Join(dir, NameFor(testHour).String())
 	w, err := Create(path, "10.1.0.1", testHour, "2.0.0-test")
 	if err != nil {
@@ -189,7 +196,7 @@ func writeSegment(t testing.TB, dir string, recs []flow.Record, raws []flow.RawS
 			}
 		}
 	}
-	f, err := w.Close()
+	f, err := closeFn(w)
 	if err != nil {
 		t.Fatal(err)
 	}

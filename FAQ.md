@@ -141,7 +141,7 @@ Woodshed's downloads aren't code-signed yet, so the first time you open one:
 
 - **Windows (SmartScreen):** your browser may say the file "isn't commonly downloaded"; choose **Keep**. When you open
   it, "Windows protected your PC" appears: click **More info**, then **Run anyway**.
-- **macOS (Gatekeeper):** it says the file "can't be opened" because Apple can't check it. Click **Done**, open
+- **macOS (Gatekeeper):** it says the file "can't be opened" because macOS can't check it. Click **Done**, open
   **System Settings → Privacy & Security**, scroll down to the message about Woodshed and click **Open Anyway**, then
   confirm. (Control-click → Open no longer skips this on current macOS.)
 

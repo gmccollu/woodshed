@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"path/filepath"
 	"runtime"
+	"runtime/metrics"
 	"slices"
 	"sort"
 	"sync"
@@ -37,6 +39,9 @@ import (
 type OpenSegment struct {
 	DeviceID, Rel, Path string
 	Footer              *flowseg.Footer
+	// Snap, when Footer is nil, takes the snapshot when the plan reaches the
+	// segment (nil: it closed since; it's read from its file).
+	Snap func() *flowseg.Footer
 }
 
 // Options configure an Engine.
@@ -44,12 +49,19 @@ type Options struct {
 	DataDir string
 	Index   *index.DB
 	// Open returns the open segments of deviceIDs (nil: all).
-	Open    func(deviceIDs []string) []OpenSegment
-	Workers int // default GOMAXPROCS
+	Open func(deviceIDs []string) []OpenSegment
+	// Workers read blocks in parallel, shared by every query on the engine
+	// (default GOMAXPROCS, at most DefaultWorkers): each holds a block's
+	// decode buffers (about 10 MiB).
+	Workers int
 	Clock   func() time.Time
 	Logger  *slog.Logger
 	// MaxExactKeys overrides DefaultExactKeys (tests).
 	MaxExactKeys int
+	// PoolBytes is the bytes all queries' exact top-N tables and summary
+	// values may take (default DefaultPoolBytes); saved states are dropped,
+	// least recently used first, to make room, then tables turn approximate.
+	PoolBytes int64
 	// RuleIDIEs fill rule_id in raw sets decoded on read (as the collector does).
 	RuleIDIEs []flow.IEKey
 }
@@ -60,6 +72,55 @@ type Engine struct {
 	mu     sync.Mutex
 	states map[string]*state
 	rules  atomic.Pointer[[]flow.IEKey] // RuleIDIEs in effect (SetRuleIDIEs)
+	pool   *Pool
+	slots  chan *slot
+
+	page, batch int // plan sizes, for tests (0: planPage, planBatch)
+
+	gcMu                  sync.Mutex
+	gcCycles, gcAllocBase uint64
+}
+
+// While a query holds a big exact table (at least gcNudgePool of the pool),
+// the engine runs a collection after any wave that follows gcNudgeBytes of
+// allocation. Go's pacer lets garbage reach the live heap's size before
+// collecting, so a long scan beside a 130 MiB table would otherwise peak
+// near twice that; the table holds no pointers, so a collection is cheap.
+const (
+	gcNudgePool  = 32 << 20
+	gcNudgeBytes = 16 << 20
+)
+
+var gcSamples = []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}, {Name: "/gc/cycles/total:gc-cycles"}}
+
+func (e *Engine) gcNudge() {
+	if e.pool.Used() < gcNudgePool {
+		return
+	}
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+	s := slices.Clone(gcSamples)
+	metrics.Read(s)
+	allocs, cycles := s[0].Value.Uint64(), s[1].Value.Uint64()
+	if cycles != e.gcCycles {
+		e.gcCycles, e.gcAllocBase = cycles, allocs // collected since: count from here
+		return
+	}
+	if allocs-e.gcAllocBase >= gcNudgeBytes {
+		runtime.GC()
+		metrics.Read(s)
+		e.gcAllocBase, e.gcCycles = s[0].Value.Uint64(), s[1].Value.Uint64()
+	}
+}
+
+// DefaultWorkers caps the default worker count (the reference box's 4
+// vCPU), which bounds the block buffers (SPEC §13.6).
+const DefaultWorkers = 4
+
+// slot is a worker's reusable decode buffers.
+type slot struct {
+	blk flowseg.Block
+	rec flow.Record
 }
 
 // SetRuleIDIEs changes the IEs that fill rule_id in raw sets decoded on read
@@ -92,7 +153,10 @@ var ErrCursor = errors.New("cursor: from another query; start again without it."
 // New returns an engine.
 func New(o Options) *Engine {
 	if o.Workers <= 0 {
-		o.Workers = runtime.GOMAXPROCS(0)
+		o.Workers = min(runtime.GOMAXPROCS(0), DefaultWorkers)
+	}
+	if o.PoolBytes <= 0 {
+		o.PoolBytes = DefaultPoolBytes
 	}
 	if o.Clock == nil {
 		o.Clock = time.Now
@@ -103,7 +167,11 @@ func New(o Options) *Engine {
 	if o.MaxExactKeys <= 0 {
 		o.MaxExactKeys = DefaultExactKeys
 	}
-	e := &Engine{o: o, states: map[string]*state{}}
+	e := &Engine{o: o, states: map[string]*state{}, pool: NewPool(o.PoolBytes), slots: make(chan *slot, o.Workers)}
+	for range o.Workers {
+		e.slots <- &slot{}
+	}
+	e.pool.full = e.evictOne
 	e.SetRuleIDIEs(o.RuleIDIEs)
 	return e
 }
@@ -208,154 +276,6 @@ func templateFor(ts []*flow.Template, rs *flow.RawSet) *flow.Template {
 	return latest
 }
 
-type segRef struct {
-	DeviceID, Rel, Path string
-	snap                *flowseg.Footer // nil: a closed segment
-	live                bool            // another process is writing it (OpenLive)
-}
-
-// openSeg opens a segment that has no snapshot: closed through its footer,
-// else (still being written, by another process) read-only up to its last
-// complete block.
-func openSeg(path string) (*flowseg.Reader, bool, error) {
-	r, err := flowseg.Open(path)
-	if errors.Is(err, flowseg.ErrNoFooter) {
-		r, err = flowseg.OpenLive(path)
-		return r, true, err
-	}
-	return r, false, err
-}
-
-type plan struct {
-	segs   []segRef
-	blocks []planned
-	asc    bool
-	from   int64
-	to     int64
-	rows   int64
-}
-
-// planFor lists the window's blocks, ordered.
-func (e *Engine) planFor(ctx context.Context, q *Query, asc bool) (*plan, error) {
-	rows, err := e.o.Index.FlowSegments(ctx, q.DeviceIDs, q.From, q.To)
-	if err != nil {
-		return nil, err
-	}
-	p := &plan{asc: asc, from: q.From.UnixMilli(), to: q.To.UnixMilli()}
-	open := map[string]OpenSegment{}
-	if e.o.Open != nil {
-		for _, os := range e.o.Open(q.DeviceIDs) {
-			open[os.Rel] = os
-		}
-	}
-	seen := map[string]bool{}
-	add := func(ref segRef, f *flowseg.Footer) {
-		si := len(p.segs)
-		p.segs = append(p.segs, ref)
-		for i := range f.Blocks {
-			b := &f.Blocks[i]
-			if b.Rows == 0 || !b.Overlaps(p.from, p.to-1) {
-				continue
-			}
-			p.blocks = append(p.blocks, planned{seg: si, block: i, rows: b.Rows, minStart: b.MinStart, maxStart: b.MaxStart,
-				minEnd: b.MinEnd, maxEnd: b.MaxEnd})
-			p.rows += int64(b.Rows)
-		}
-		if f.RawStatus[flow.StatusNoTemplate] > 0 || (f.Raw > 0 && f.RawStatus == [4]int64{}) {
-			lo, hi := f.MinReceived-rawSpan.Milliseconds(), f.MaxReceived
-			if hi >= p.from && lo < p.to {
-				p.blocks = append(p.blocks, planned{seg: si, block: -1, raw: true, minStart: lo, maxStart: hi, minEnd: lo, maxEnd: hi})
-			}
-		}
-	}
-	for _, r := range rows {
-		seen[r.Path] = true
-		if os, ok := open[r.Path]; ok {
-			add(segRef{DeviceID: os.DeviceID, Rel: os.Rel, Path: os.Path, snap: os.Footer}, os.Footer)
-			continue
-		}
-		path := filepath.Join(e.o.DataDir, filepath.FromSlash(r.Path))
-		rd, live, err := openSeg(path)
-		if err != nil {
-			continue // deleted by retention since
-		}
-		add(segRef{DeviceID: r.DeviceID, Rel: r.Path, Path: path, live: live}, rd.Footer())
-		rd.Close()
-	}
-	for rel, os := range open {
-		if !seen[rel] && os.Footer != nil && len(os.Footer.Blocks) > 0 {
-			add(segRef{DeviceID: os.DeviceID, Rel: os.Rel, Path: os.Path, snap: os.Footer}, os.Footer)
-		}
-	}
-	sort.SliceStable(p.blocks, func(i, j int) bool {
-		a, b := p.blocks[i], p.blocks[j]
-		if asc {
-			if a.minEnd != b.minEnd {
-				return a.minEnd < b.minEnd
-			}
-		} else if a.maxEnd != b.maxEnd {
-			return a.maxEnd > b.maxEnd
-		}
-		if a.seg != b.seg {
-			return p.segs[a.seg].Rel < p.segs[b.seg].Rel
-		}
-		return a.block < b.block
-	})
-	return p, nil
-}
-
-// frontier is complete_from after done blocks (descending plans): the max
-// end of the next unread block, at least the window's start.
-func (p *plan) frontier(done int) time.Time {
-	if done >= len(p.blocks) {
-		return time.UnixMilli(p.from).UTC()
-	}
-	return time.UnixMilli(max(p.blocks[done].maxEnd, p.from)).UTC()
-}
-
-// readers opens the segments a range of blocks needs, shared by the workers.
-type readers struct {
-	mu  sync.Mutex
-	p   *plan
-	rds map[int]*flowseg.Reader
-}
-
-func (r *readers) get(si int) (*flowseg.Reader, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if rd := r.rds[si]; rd != nil {
-		return rd, nil
-	}
-	s := r.p.segs[si]
-	var rd *flowseg.Reader
-	var err error
-	switch {
-	case s.snap != nil:
-		rd, err = flowseg.OpenSnapshot(s.Path, s.snap)
-	case s.live:
-		rd, err = flowseg.OpenLive(s.Path)
-	default:
-		rd, err = flowseg.Open(s.Path)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if r.rds == nil {
-		r.rds = map[int]*flowseg.Reader{}
-	}
-	r.rds[si] = rd
-	return rd, nil
-}
-
-func (r *readers) close() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, rd := range r.rds {
-		rd.Close()
-	}
-	r.rds = nil
-}
-
 // colsFor are the columns a task reads with filter f.
 func colsFor(f *Filter, extra flowseg.Cols) flowseg.Cols {
 	has, samp, st, dom := f.Cols()
@@ -380,74 +300,54 @@ type scanFn func(w int, b *planned, row int, r *flow.Record)
 // record that passes f and overlaps the window. It stops early when ctx is
 // done. It returns the number of records read (rows of blocks decoded or
 // ruled out by the index).
-func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, lo, hi int, f *Filter, cols flowseg.Cols, fn scanFn) error {
-	if lo >= hi {
+func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, blocks []planned, f *Filter, cols flowseg.Cols, fn scanFn) error {
+	if len(blocks) == 0 {
 		return nil
 	}
 	useIndex := !f.Empty()
-	jobs := make(chan int)
+	// The workers' buffers are the engine's, shared with other queries: wait
+	// for one, take any others free.
+	var got []*slot
+	select {
+	case sl := <-e.slots:
+		got = append(got, sl)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+more:
+	for len(got) < min(e.o.Workers, len(blocks)) {
+		select {
+		case sl := <-e.slots:
+			got = append(got, sl)
+		default:
+			break more
+		}
+	}
+	defer func() {
+		for _, sl := range got {
+			e.slots <- sl
+		}
+	}()
+	jobs := make(chan *planned)
 	var wg sync.WaitGroup
 	var firstErr error
 	var errMu sync.Mutex
-	workers := min(e.o.Workers, hi-lo)
-	for w := 0; w < workers; w++ {
+	for w := range got {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			var blk flowseg.Block
-			var rec flow.Record
-			for bi := range jobs {
-				b := &p.blocks[bi]
-				r, err := rd.get(b.seg)
-				if err == nil && b.raw {
-					err = rawRecords(r, e.ruleIEs(), func(i int, rec *flow.Record) {
-						s, en := flowseg.EffectiveTimes(rec)
-						if en >= p.from && s < p.to && f.Match(rec) {
-							fn(w, b, -1-i, rec)
-						}
-					})
-					if err != nil {
-						errMu.Lock()
-						if firstErr == nil {
-							firstErr = fmt.Errorf("flows: %s raw sets: %w", p.segs[b.seg].Rel, err)
-						}
-						errMu.Unlock()
-					}
-					continue
-				}
-				if err == nil && useIndex {
-					var info *flowseg.BlockInfo
-					if info, err = r.Block(b.block); err == nil && !f.BlockMay(info) {
-						continue
-					}
-				}
-				if err == nil {
-					err = r.Decode(b.block, cols, &blk)
-				}
-				if err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = fmt.Errorf("flows: %s block %d: %w", p.segs[b.seg].Rel, b.block, err)
-					}
-					errMu.Unlock()
-					continue
-				}
-				for row := 0; row < blk.Rows; row++ {
-					blk.Record(row, &rec)
-					s, en := flowseg.EffectiveTimes(&rec)
-					if en < p.from || s >= p.to || !f.Match(&rec) {
-						continue
-					}
-					fn(w, b, row, &rec)
-				}
+			blk, rec := &got[w].blk, &got[w].rec
+			for b := range jobs {
+				e.scanBlock(p, rd, b, w, blk, rec, useIndex, f, cols, fn, &errMu, &firstErr)
+				rd.done(b.seg)
 			}
 		}(w)
 	}
-	for bi := lo; bi < hi; bi++ {
+	for i := range blocks {
 		if ctx.Err() != nil {
 			break
 		}
-		jobs <- bi
+		jobs <- &blocks[i]
 	}
 	close(jobs)
 	wg.Wait()
@@ -455,6 +355,52 @@ func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, lo, hi int, f *
 		e.o.Logger.Warn("flows: a block couldn't be read; skipped", "err", firstErr)
 	}
 	return ctx.Err()
+}
+
+// scanBlock reads one planned block for a scan's worker w.
+func (e *Engine) scanBlock(p *plan, rd *readers, b *planned, w int, blk *flowseg.Block, rec *flow.Record, useIndex bool,
+	f *Filter, cols flowseg.Cols, fn scanFn, errMu *sync.Mutex, firstErr *error) {
+	fail := func(err error) {
+		errMu.Lock()
+		if *firstErr == nil {
+			*firstErr = err
+		}
+		errMu.Unlock()
+	}
+	r, err := rd.get(b.seg)
+	if err == nil && b.raw {
+		err = rawRecords(r, e.ruleIEs(), func(i int, rec *flow.Record) {
+			s, en := flowseg.EffectiveTimes(rec)
+			if en >= p.from && s < p.to && f.Match(rec) {
+				fn(w, b, -1-i, rec)
+			}
+		})
+		if err != nil {
+			fail(fmt.Errorf("flows: %s raw sets: %w", p.segs[b.seg].Rel, err))
+		}
+		return
+	}
+	if err == nil && useIndex {
+		var info *flowseg.BlockInfo
+		if info, err = r.Block(b.block); err == nil && !f.BlockMay(info) {
+			return
+		}
+	}
+	if err == nil {
+		err = r.Decode(b.block, cols, blk)
+	}
+	if err != nil {
+		fail(fmt.Errorf("flows: %s block %d: %w", p.segs[b.seg].Rel, b.block, err))
+		return
+	}
+	for row := 0; row < blk.Rows; row++ {
+		blk.Record(row, rec)
+		s, en := flowseg.EffectiveTimes(rec)
+		if en < p.from || s >= p.to || !f.Match(rec) {
+			continue
+		}
+		fn(w, b, row, rec)
+	}
 }
 
 // wave is how many blocks are read between budget checks.
@@ -469,9 +415,44 @@ type state struct {
 	plan     *plan
 	done     int // blocks done
 	recsDone int64
-	top      *Top
+	agg      aggregator // a top-N's
+	total    Sums
 	sum      *summaryAcc
 	mu       sync.Mutex
+}
+
+// free returns a state's pool bytes.
+func (st *state) free() {
+	if st.plan != nil {
+		st.plan.release()
+	}
+	if st.agg != nil {
+		st.agg.free()
+	}
+	if st.sum != nil {
+		st.sum.free()
+	}
+}
+
+// evictOne drops the least recently used saved state (the pool's full
+// hook) and reports whether there was one.
+func (e *Engine) evictOne() bool {
+	e.mu.Lock()
+	var old *state
+	for _, s := range e.states {
+		if old == nil || s.used.Before(old.used) {
+			old = s
+		}
+	}
+	if old != nil {
+		delete(e.states, old.id)
+	}
+	e.mu.Unlock()
+	if old == nil {
+		return false
+	}
+	old.free()
+	return true
 }
 
 func (e *Engine) newState(key string, p *plan) *state {
@@ -481,6 +462,12 @@ func (e *Engine) newState(key string, p *plan) *state {
 }
 
 func (e *Engine) saveState(st *state) {
+	var gone []*state
+	defer func() {
+		for _, s := range gone {
+			s.free()
+		}
+	}()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.o.Clock()
@@ -488,6 +475,7 @@ func (e *Engine) saveState(st *state) {
 	for id, s := range e.states {
 		if now.Sub(s.used) > StateTTL {
 			delete(e.states, id)
+			gone = append(gone, s)
 		}
 	}
 	e.states[st.id] = st
@@ -499,6 +487,7 @@ func (e *Engine) saveState(st *state) {
 			}
 		}
 		delete(e.states, old.id)
+		gone = append(gone, old)
 	}
 }
 
@@ -508,6 +497,9 @@ func (e *Engine) takeState(cursor, key string) (*state, error) {
 	st := e.states[cursor]
 	if st == nil || e.o.Clock().Sub(st.used) > StateTTL {
 		delete(e.states, cursor)
+		if st != nil {
+			go st.free() // not under e.mu
+		}
 		return nil, ErrExpired
 	}
 	if st.key != key {
@@ -521,12 +513,16 @@ func (e *Engine) takeState(cursor, key string) (*state, error) {
 
 // TopResult is a top-N answer.
 type TopResult struct {
-	Rows     []Row
-	Total    Sums
-	Approx   bool
-	Progress Progress
-	Partial  bool
-	Cursor   string
+	Rows   []Row
+	Total  Sums
+	Approx bool
+	// ErrorBound: a key in neither table has at most this of the metric (0
+	// while exact); any key not in Rows has at most the larger of it and the
+	// last row's. Each approximate row has its own Err.
+	ErrorBound int64
+	Progress   Progress
+	Partial    bool
+	Cursor     string
 }
 
 // Top ranks the window's records by by and metric, within budget.
@@ -539,71 +535,71 @@ func (e *Engine) Top(ctx context.Context, q Query, by, metric string, n int, bud
 			return TopResult{}, err
 		}
 	} else {
+		if !contains(ByKeys, by) {
+			return TopResult{}, fmt.Errorf("by: %q isn't one of %v", by, ByKeys)
+		}
+		if !contains(Metrics, metric) {
+			return TopResult{}, fmt.Errorf("metric: %q isn't one of %v", metric, Metrics)
+		}
 		p, err := e.planFor(ctx, &q, false)
 		if err != nil {
 			return TopResult{}, err
 		}
-		top, err := NewTop(by, metric)
-		if err != nil {
-			return TopResult{}, err
-		}
-		top.MaxExact = e.o.MaxExactKeys
 		st = e.newState(key, p)
-		st.top = top
+		st.agg = newAggregator(by, metric, aggOptions{maxKeys: e.o.MaxExactKeys, pool: e.pool, size: querySize})
 	}
+	saved := false
+	defer func() {
+		if !saved {
+			st.free()
+		}
+	}()
 	f := q.filter()
 	cols := colsFor(f, flowseg.Cols(KeyCols(by)|CounterCols)|flowseg.ColSampling)
-	// Each worker counts into its own table for the whole request; they're
-	// merged into the running counts once at the end (merging after every
-	// wave cost more than the scan when there are many distinct keys).
-	// A worker's table that reaches its share of the exact limit flushes into
-	// the running table at once, so memory stays bounded (about twice the
-	// limit's entries) while the running table is exact up to the limit.
-	share := max(e.o.MaxExactKeys/e.o.Workers, 1024)
-	newTop := func() *Top {
-		t, _ := NewTop(by, metric)
-		t.MaxExact = share + 1 // flushed before it would turn approximate
-		return t
+	// The workers share the state's one table (agg.go): each combines repeated
+	// keys locally and hands them over in batches, flushed before reading.
+	conv := by == "conversation"
+	locals := make([]local, e.o.Workers)
+	totals := make([]Sums, e.o.Workers)
+	for i := range locals {
+		locals[i] = st.agg.newLocal()
 	}
-	tops := make([]*Top, e.o.Workers)
-	for i := range tops {
-		tops[i] = newTop()
-	}
-	var mergeMu sync.Mutex
 	add := func(w int, _ *planned, _ int, r *flow.Record) {
-		t := tops[w]
-		t.Add(r)
-		if t.Keys() >= share {
-			mergeMu.Lock()
-			st.top.Merge(t)
-			mergeMu.Unlock()
-			tops[w] = newTop()
-		}
+		totals[w].add(r, conv)
+		locals[w].add(r)
 	}
 	deadline := time.Now().Add(budget)
-	rd := &readers{p: st.plan}
+	rd := newReaders(st.plan)
 	defer rd.close()
 	// At least one wave per request, so a continuation always progresses.
-	for first := true; st.done < len(st.plan.blocks) && (first || time.Now().Before(deadline)); first = false {
-		hi := min(st.done+e.wave(), len(st.plan.blocks))
+	for first := true; st.plan.more(ctx) && (first || time.Now().Before(deadline)); first = false {
+		blocks := st.plan.take(ctx, rd, e.wave())
+		if len(blocks) == 0 {
+			break
+		}
 		// A wave, once started, finishes (only the client's cancel stops it),
 		// so the counts always cover whole blocks.
-		if err := e.scan(ctx, st.plan, rd, st.done, hi, f, cols, add); err != nil {
+		if err := e.scan(ctx, st.plan, rd, blocks, f, cols, add); err != nil {
 			return TopResult{}, err
 		}
-		for _, b := range st.plan.blocks[st.done:hi] {
+		e.gcNudge()
+		for _, b := range blocks {
 			st.recsDone += int64(b.rows)
 		}
-		st.done = hi
+		st.done += len(blocks)
 	}
-	for _, t := range tops {
-		st.top.Merge(t)
+	if err := st.plan.err; err != nil {
+		return TopResult{}, err
 	}
-	res := TopResult{Rows: st.top.Rows(n), Total: st.top.Total, Approx: st.top.Approx(),
-		Progress: Progress{BlocksDone: int64(st.done), BlocksTotal: int64(len(st.plan.blocks)), RecordsDone: st.recsDone,
-			RecordsTotal: st.plan.rows, CompleteFrom: st.plan.frontier(st.done)}}
-	if st.done < len(st.plan.blocks) {
+	for i := range locals {
+		locals[i].flush()
+		st.total.merge(&totals[i])
+	}
+	res := TopResult{Rows: st.agg.rows(n), Total: st.total, Approx: st.agg.approx(), ErrorBound: st.agg.errorBound(),
+		Progress: st.plan.progress(ctx, int64(st.done), st.recsDone)}
+	if st.plan.more(ctx) {
 		res.Partial = true
+		saved = true
 		e.saveState(st)
 		res.Cursor = st.id
 	}
@@ -717,41 +713,56 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 	if err != nil {
 		return SearchResult{}, err
 	}
-	// Skip blocks wholly before the cursor.
+	defer p.release()
+	// Skip segments and blocks wholly before the cursor.
 	if after != nil {
-		kept := p.blocks[:0]
-		for _, b := range p.blocks {
-			if (!asc && b.minEnd > after.End) || (asc && b.maxEnd < after.End) {
-				p.rows -= int64(b.rows)
-				continue
-			}
-			kept = append(kept, b)
-		}
-		p.blocks = kept
+		p.skip = func(b *planned) bool { return (!asc && b.minEnd > after.End) || (asc && b.maxEnd < after.End) }
+		p.skipSeg = func(s *segRef) bool { return !s.open && ((!asc && s.start > after.End) || (asc && s.end < after.End)) }
 	}
 	f := q.filter()
 	cols := colsFor(f, flowseg.ColAll)
 	h := &hitHeap{asc: asc}
 	var mu sync.Mutex
 	deadline := time.Now().Add(budget)
-	rd := &readers{p: p}
+	rd := newReaders(p)
 	defer rd.close()
 	done := 0
 	var recs int64
-	certain := func() bool { // the page can't change: the next block can't beat the worst kept
-		if h.Len() < limit || done >= len(p.blocks) {
-			return done >= len(p.blocks)
+	certain := func() bool { // the page can't change: nothing unread can beat the worst kept
+		b, more := p.bound(ctx)
+		if !more || h.Len() < limit {
+			return !more
 		}
-		nb := p.blocks[done]
 		w := h.k[0].End
 		if asc {
-			return nb.minEnd > w
+			return b > w
 		}
-		return nb.maxEnd < w
+		return b < w
 	}
-	for first := true; !certain() && (first || time.Now().Before(deadline)); first = false {
-		hi := min(done+e.wave(), len(p.blocks))
-		err := e.scan(ctx, p, rd, done, hi, f, cols, func(_ int, b *planned, row int, r *flow.Record) {
+	// Past the budget, a page still reads until the bound of what's unread
+	// passes the cursor it started from (else a partial page's cursor, that
+	// bound, could repeat: the next unloaded segment's end bounds it, and
+	// several exporters' segments end alike).
+	progressed := func() bool {
+		b, more := p.bound(ctx)
+		switch {
+		case !more:
+			return true
+		case after == nil && asc:
+			return b > math.MinInt64
+		case after == nil:
+			return b < math.MaxInt64
+		case asc:
+			return b > after.End+1
+		}
+		return b < after.End-1
+	}
+	for first := true; !certain() && (first || time.Now().Before(deadline) || !progressed()); first = false {
+		blocks := p.take(ctx, rd, e.wave())
+		if len(blocks) == 0 {
+			break
+		}
+		err := e.scan(ctx, p, rd, blocks, f, cols, func(_ int, b *planned, row int, r *flow.Record) {
 			hit := &Hit{DeviceID: p.segs[b.seg].DeviceID, Rel: p.segs[b.seg].Rel, Block: b.block, Row: row, Record: *r}
 			k := keyOfHit(hit)
 			if after != nil && !after.before(k, asc) {
@@ -769,10 +780,13 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		if err != nil && ctx.Err() != nil {
 			return SearchResult{}, ctx.Err()
 		}
-		for _, b := range p.blocks[done:hi] {
+		for _, b := range blocks {
 			recs += int64(b.rows)
 		}
-		done = hi
+		done += len(blocks)
+	}
+	if p.err != nil {
+		return SearchResult{}, p.err
 	}
 	ps := make([]pair, h.Len())
 	for i := range ps {
@@ -784,16 +798,9 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		}
 		return 1
 	})
-	res := SearchResult{Progress: Progress{BlocksDone: int64(done), BlocksTotal: int64(len(p.blocks)), RecordsDone: recs,
-		RecordsTotal: p.rows, CompleteFrom: p.frontier(done)}}
-	complete := done >= len(p.blocks)
-	var bound int64 // hits strictly beyond it are certain: no unread block can beat them
-	if !complete {
-		bound = p.blocks[done].maxEnd
-		if asc {
-			bound = p.blocks[done].minEnd
-		}
-	}
+	res := SearchResult{Progress: p.progress(ctx, int64(done), recs)}
+	bound, more := p.bound(ctx) // hits strictly beyond it are certain: nothing unread can beat them
+	complete := !more
 	for _, x := range ps {
 		if !complete && ((!asc && x.k.End <= bound) || (asc && x.k.End >= bound)) {
 			break
@@ -813,9 +820,9 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		case len(res.Hits) > 0:
 			k = keyOfHit(&res.Hits[len(res.Hits)-1])
 		case asc:
-			k = hitKey{End: bound - 1, Dev: "\U0010ffff"}
+			k = hitKey{End: max(bound, math.MinInt64+1) - 1, Dev: "\U0010ffff"}
 		default:
-			k = hitKey{End: bound + 1, Dev: "\U0010ffff"}
+			k = hitKey{End: min(bound, math.MaxInt64-1) + 1, Dev: "\U0010ffff"}
 		}
 		res.Cursor = encodeCursor(k, qk, &q)
 	}
@@ -842,62 +849,106 @@ func hash(s string) string {
 // device at a time (deviceIDs order, or by device ID), oldest first by flow end
 // within each segment's block order. It reads every column.
 func (e *Engine) Each(ctx context.Context, q Query, fn func(deviceID string, r *flow.Record) error) error {
-	p, err := e.planFor(ctx, &q, true)
+	devs, err := e.flowDevices(ctx, &q)
 	if err != nil {
 		return err
 	}
-	sort.SliceStable(p.blocks, func(i, j int) bool {
-		a, b := p.segs[p.blocks[i].seg], p.segs[p.blocks[j].seg]
-		if a.DeviceID != b.DeviceID {
-			return a.DeviceID < b.DeviceID
-		}
-		return false
-	})
 	f := q.filter()
-	rd := &readers{p: p}
-	defer rd.close()
 	var blk flowseg.Block
 	var rec flow.Record
-	for _, b := range p.blocks {
-		if err := ctx.Err(); err != nil {
+	for _, dev := range devs {
+		qd := q
+		qd.DeviceIDs = []string{dev}
+		p, err := e.planFor(ctx, &qd, true)
+		if err != nil {
 			return err
 		}
-		r, err := rd.get(b.seg)
-		if err != nil {
-			continue
-		}
-		if b.raw {
-			var ferr error
-			rerr := rawRecords(r, e.ruleIEs(), func(_ int, rec *flow.Record) {
-				s, en := flowseg.EffectiveTimes(rec)
-				if ferr == nil && en >= p.from && s < p.to && f.Match(rec) {
-					ferr = fn(p.segs[b.seg].DeviceID, rec)
-				}
-			})
-			if ferr != nil {
-				return ferr
-			}
-			if rerr != nil {
-				e.o.Logger.Warn("flows: raw sets couldn't be read", "file", p.segs[b.seg].Rel, "err", rerr)
-			}
-			continue
-		}
-		if err := r.Decode(b.block, flowseg.ColAll, &blk); err != nil {
-			e.o.Logger.Warn("flows: a block couldn't be read; skipped", "file", p.segs[b.seg].Rel, "block", b.block, "err", err)
-			continue
-		}
-		for row := 0; row < blk.Rows; row++ {
-			blk.Record(row, &rec)
-			s, en := flowseg.EffectiveTimes(&rec)
-			if en < p.from || s >= p.to || !f.Match(&rec) {
-				continue
-			}
-			if err := fn(p.segs[b.seg].DeviceID, &rec); err != nil {
+		rd := newReaders(p)
+		one := func(b *planned) error {
+			defer rd.done(b.seg)
+			if err := ctx.Err(); err != nil {
 				return err
 			}
+			r, err := rd.get(b.seg)
+			if err != nil {
+				return nil
+			}
+			if b.raw {
+				var ferr error
+				rerr := rawRecords(r, e.ruleIEs(), func(_ int, rec *flow.Record) {
+					s, en := flowseg.EffectiveTimes(rec)
+					if ferr == nil && en >= p.from && s < p.to && f.Match(rec) {
+						ferr = fn(dev, rec)
+					}
+				})
+				if rerr != nil {
+					e.o.Logger.Warn("flows: raw sets couldn't be read", "file", p.segs[b.seg].Rel, "err", rerr)
+				}
+				return ferr
+			}
+			if err := r.Decode(b.block, flowseg.ColAll, &blk); err != nil {
+				e.o.Logger.Warn("flows: a block couldn't be read; skipped", "file", p.segs[b.seg].Rel, "block", b.block, "err", err)
+				return nil
+			}
+			for row := 0; row < blk.Rows; row++ {
+				blk.Record(row, &rec)
+				s, en := flowseg.EffectiveTimes(&rec)
+				if en < p.from || s >= p.to || !f.Match(&rec) {
+					continue
+				}
+				if err := fn(dev, &rec); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		for p.more(ctx) {
+			blocks := p.take(ctx, rd, e.batchBlocks())
+			if len(blocks) == 0 {
+				break
+			}
+			for i := range blocks {
+				if err := one(&blocks[i]); err != nil {
+					rd.close()
+					p.release()
+					return err
+				}
+			}
+		}
+		rd.close()
+		p.release()
+		if p.err != nil {
+			return p.err
 		}
 	}
 	return nil
+}
+
+// flowDevices is the devices with flows in q's window (q's, or every one),
+// sorted: the index's and those with an open segment.
+func (e *Engine) flowDevices(ctx context.Context, q *Query) ([]string, error) {
+	ids, err := e.o.Index.FlowDevices(ctx, q.DeviceIDs, q.From, q.To)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+	}
+	if e.o.Open != nil {
+		want := map[string]bool{}
+		for _, d := range q.DeviceIDs {
+			want[d] = true
+		}
+		for _, os := range e.o.Open(q.DeviceIDs) {
+			if !seen[os.DeviceID] && (q.DeviceIDs == nil || want[os.DeviceID]) {
+				seen[os.DeviceID] = true
+				ids = append(ids, os.DeviceID)
+			}
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // Count is the number of records Each would give (by reading the counted
@@ -907,30 +958,41 @@ func (e *Engine) Count(ctx context.Context, q Query) (map[string]int64, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer p.release()
 	f := q.filter()
 	out := map[string]int64{}
-	if f.Empty() {
-		// Blocks wholly inside the window count without decoding.
-		var partial []planned
-		for _, b := range p.blocks {
-			if !b.raw && b.minEnd >= p.from && b.maxStart < p.to {
-				out[p.segs[b.seg].DeviceID] += int64(b.rows)
-				continue
-			}
-			partial = append(partial, b)
-		}
-		p.blocks = partial
-	}
 	counts := make([]map[string]int64, e.o.Workers)
 	for i := range counts {
 		counts[i] = map[string]int64{}
 	}
-	rd := &readers{p: p}
+	rd := newReaders(p)
 	defer rd.close()
-	if err := e.scan(ctx, p, rd, 0, len(p.blocks), f, colsFor(f, 0), func(w int, b *planned, _ int, _ *flow.Record) {
-		counts[w][p.segs[b.seg].DeviceID]++
-	}); err != nil {
-		return nil, err
+	for p.more(ctx) {
+		blocks := p.take(ctx, rd, e.batchBlocks())
+		if len(blocks) == 0 {
+			break
+		}
+		if f.Empty() {
+			// Blocks wholly inside the window count without decoding.
+			partial := blocks[:0]
+			for _, b := range blocks {
+				if !b.raw && b.minEnd >= p.from && b.maxStart < p.to {
+					out[p.segs[b.seg].DeviceID] += int64(b.rows)
+					rd.done(b.seg)
+					continue
+				}
+				partial = append(partial, b)
+			}
+			blocks = partial
+		}
+		if err := e.scan(ctx, p, rd, blocks, f, colsFor(f, 0), func(w int, b *planned, _ int, _ *flow.Record) {
+			counts[w][p.segs[b.seg].DeviceID]++
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if p.err != nil {
+		return nil, p.err
 	}
 	for _, c := range counts {
 		for k, v := range c {
@@ -943,32 +1005,39 @@ func (e *Engine) Count(ctx context.Context, q Query) (map[string]int64, error) {
 // Raw calls fn with the raw sets of the window's segments whose received
 // time is in [from, to), for the devices.
 func (e *Engine) Raw(ctx context.Context, q Query, fn func(deviceID string, rs *flow.RawSet) error) error {
-	segs, err := e.o.Index.FlowSegmentsWithRaw(ctx, q.DeviceIDs)
-	if err != nil {
-		return err
-	}
 	from, to := q.From.UnixMilli(), q.To.UnixMilli()
-	for _, s := range segs {
-		rd, _, err := openSeg(filepath.Join(e.o.DataDir, filepath.FromSlash(s.Path)))
+	for after := ""; ; {
+		// A page of the window's segments at a time, so a bundle's raw.txt
+		// doesn't hold every raw-holding segment's row.
+		segs, err := e.o.Index.FlowSegmentsWithRaw(ctx, q.DeviceIDs, q.From, q.To, after, planPage)
 		if err != nil {
-			continue
+			return err
 		}
-		var ferr error
-		rd.Raw(func(rs *flow.RawSet) bool {
-			if rs.Received < from || rs.Received >= to {
-				return true
+		for _, s := range segs {
+			rd, _, err := openSeg(filepath.Join(e.o.DataDir, filepath.FromSlash(s.Path)))
+			if err != nil {
+				continue
 			}
-			if ferr = fn(s.DeviceID, rs); ferr != nil {
-				return false
+			var ferr error
+			rd.Raw(func(rs *flow.RawSet) bool {
+				if rs.Received < from || rs.Received >= to {
+					return true
+				}
+				if ferr = fn(s.DeviceID, rs); ferr != nil {
+					return false
+				}
+				return ctx.Err() == nil
+			})
+			rd.Close()
+			if ferr != nil {
+				return ferr
 			}
-			return ctx.Err() == nil
-		})
-		rd.Close()
-		if ferr != nil {
-			return ferr
 		}
+		if len(segs) < planPage || ctx.Err() != nil {
+			return ctx.Err()
+		}
+		after = segs[len(segs)-1].Path
 	}
-	return ctx.Err()
 }
 
 // RuleIDIEs returns the rule IEs in effect.

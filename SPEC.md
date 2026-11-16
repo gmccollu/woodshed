@@ -67,7 +67,7 @@ the owner can still overrule them. Everything else is a proposal and can change.
 | UDP buffer on macOS | macOS refuses (rather than caps) requests above `kern.ipc.maxsockbuf` (8 MiB), so the listener steps down to the largest size accepted. 10k msg/s passes with 8 MiB |
 | Rejected/drop counters | Hourly buckets; "24 h" is the current hour plus the 23 before it. A refused TCP connection counts once |
 | Live-tail sampling | Token bucket, 50 lines/s per subscriber; `sampled.rate` is that subscriber's matching rate |
-| Measured (M1, Apple M4 Pro) | 10k msg/s for 30 s over UDP, TCP-LF and TCP-octet: 300,000 sent, 300,000 on disk, 0 missing each. Zero loss up to 60k msg/s (UDP) and 100k (TCP) |
+| Measured (M1, a 14-core laptop) | 10k msg/s for 30 s over UDP, TCP-LF and TCP-octet: 300,000 sent, 300,000 on disk, 0 missing each. Zero loss up to 60k msg/s (UDP) and 100k (TCP) |
 
 ## 3. Architecture
 
@@ -262,8 +262,8 @@ configurable.
 - Builds run on GitHub Actions from a tag. GoReleaser OSS handles the binaries, nfpm (deb/rpm), Homebrew,
   Scoop and checksums. The MSI and `.pkg` are built in separate jobs on Windows and macOS runners (GoReleaser's
   MSI support is a paid feature).
-- Signing: none at first. Add an Apple Developer ID (notarization) and Windows signing (SignPath's free OSS
-  program, or Azure Trusted Signing) before promoting it widely. Until then the README documents the
+- Signing: none at first. Add macOS signing and notarization and Windows signing (a free open-source signing
+  program, or a cloud signing service) before promoting it widely. Until then the README documents the
   Gatekeeper and SmartScreen prompts.
 - Uninstall stops and removes the service but **keeps the logs** unless the user ticks "also delete logs".
 - Upgrade in place: the config and data folder are kept, and the index schema migrates on start.
@@ -1928,7 +1928,7 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
 34. The `udp_queue_full` banner names the limit that refused the latest drop (`udp_queue_bytes` with a size, or
     `udp_queue_messages` with a count); several UDP listeners share one banner with the counts summed.
 35. `woodshed bench` gains `--stall-every`, `--stall-for` and `--udp-queue-messages`, so §11.6's fake-slow-disk run
-    needs no test build. Measured on the build Mac (Apple M4 Pro, macOS, loopback), 10,000 msg/s for 130 s with a
+    needs no test build. Measured on the 14-core build laptop (macOS, loopback), 10,000 msg/s for 130 s with a
     3 s stall every minute: the default queue lost 0 of 1,300,000 (high-water 30,000); a 1,000-message queue lost
     57,998, all counted as `queue_full` by the listener and the store alike (sent = stored + counted).
 
@@ -1975,8 +1975,8 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
     too, for `generic` and `specific`).
 55. `woodshed bench --proto trap` gives its own in-process receiver reply limits of twice the bench rate: §11.6's 500
     informs a second from one sender would otherwise hit §11.2.3's 100 a second per source. The load and soak targets
-    for informs need several senders (or this bench); the limits have their own tests. Measured on the build Mac
-    (Apple M4 Pro, macOS, loopback, 30 s each, every trap read back): 2,000 v2c traps/s with 10 varbinds, 60,000 of
+    for informs need several senders (or this bench); the limits have their own tests. Measured on the 14-core build
+    laptop (macOS, loopback, 30 s each, every trap read back): 2,000 v2c traps/s with 10 varbinds, 60,000 of
     60,000 stored once (queue high-water 6); 1,000 v3 authPriv (SHA-256, AES-128) traps/s, 30,000 of 30,000;
     500 v3 authPriv informs/s, 15,000 of 15,000 stored and answered, Response p50 0.31 ms, p99 1.06 ms; and
     10,000 v2c traps/s for 10 s, 100,000 of 100,000 (high-water 13). The 10-minute runs beside 5,000 syslog
@@ -2367,7 +2367,7 @@ Simple and fast: every view reads the headline rollups or one device's poll file
   at 30 s, from many test agents on loopback addresses, with v2c and v3 authPriv: every cycle completes on time, the
   poller's CPU stays under half a core on the reference spec (4 cores), memory under 200 MiB, and syslog's 10,000
   msg/s bench beside it still loses nothing. The numbers go into the release notes like the syslog and trap benches.
-  **First measurement (build, 2026-11-15**, `TestPollLoad`, agents in a child process, a 14-core Apple M4 Pro, not
+  **First measurement (build, 2026-11-15**, `TestPollLoad`, agents in a child process, a 14-core laptop, not
   the reference spec): 500 × 64 at 60 s v2c, 0.071 cores and 129 MiB RSS for the whole server over 3 min, 1,500 of
   1,500 cycles, no failure or overrun; with 10,000 msg/s of syslog beside it for 1 min, 0.26 cores, 156 MiB, 600,000
   of 600,000 stored. 100 × 64 at 30 s v3 authPriv (SHA-256, AES-128): 0.031 cores, 56 MiB; 0.24 cores and 74 MiB with
@@ -2609,8 +2609,8 @@ a second, 86 million a day.
   justify one; flows do.
 
 **Files:** `logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf`, one segment per device per received hour (UTC), so the day
-folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 MiB starts a numbered part
-(`…T09.001.wsf`), like log parts.
+folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 MiB or 8,192 blocks starts a numbered
+part (`…T09.001.wsf`), like log parts (§13.10 decision 57).
 
 **Segment format (version 1):** little-endian, every section with a CRC-32C.
 1. **Header** (32 bytes): magic `WSFLOW01`, format version, device ID length and bytes, the hour, the writer's
@@ -2767,8 +2767,10 @@ rule_id, time_source, status, extras}}`. There's no `raw`: a record isn't a line
 - **Exact vs sampled:** exported counts are exact (what the exporter reported); scaled counts multiply each record by
   its own sampling rate. Both are shown whenever any record was sampled: "312 MB exported (≈ 312 GB at 1:1000)".
   Nothing is scaled silently, and `sampling: 0` records are never scaled.
-- Aggregation is exact (a hash table) up to 1,000,000 distinct keys per request; past that it switches to a
-  space-saving top-K for the rest and the response says `approx: true`.
+- Aggregation is exact up to 1,000,000 distinct keys per request (across its workers), within the server's shared
+  query budget; past that, the keys already counted stay exact, and new ones go to a fixed-size space-saving table
+  with a count-min check. The response says `approx: true`, each estimated row carries `approx` and `max_error`, and
+  `error_bound` caps any key not counted (§13.10 decision 51; docs/api.md).
 
 **Budget and partial semantics, like Events v2:** a search, a summary or a top-N request has the summary's 2 s
 default budget (at most 10 s) and continues with a cursor, keeping running totals on the server (§10.1.5's rules: 10
@@ -2864,11 +2866,12 @@ the first bench, which records the measured numbers here:
 - **Ingest:** 50,000 flow records/s sustained for 10 min (IPFIX, about 30 records a packet), 0 loss, while syslog runs
   at 5,000 msg/s; bursts of 150,000 records/s for 10 s absorbed by the queue. Under 2 cores at 50,000/s.
 - **Memory:** at most 16 MiB of templates and exporter metadata; `pending_bytes` 32 MiB; open blocks at most 64 MiB
-  across exporters (a block is flushed early to stay under it); the queue's bytes (128 MiB); query state at most
-  256 MiB. 512 MiB for flows in all at the targets.
+  across exporters (a block is flushed early to stay under it); the writers' directories at most 32 MiB across
+  exporters (a segment is closed early to stay under it, decision 58); the queue's bytes (128 MiB); query state at most
+  256 MiB, whatever the window's size or key count (decision 51). 512 MiB for flows in all at the targets.
 - **Disk:** 12–20 bytes per stored record (to be measured).
-- **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core Apple
-  M4 Pro under other load; the reference box and the lab runs replace these):
+- **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core laptop
+  under other load; the reference box and the lab runs replace these):
   - 50,000 records/s for 10 min (30 a packet, 2 domains) with UDP syslog at 5,000 msg/s: all 30,000,000 records and
     3,000,186 messages stored, 0.43 of a core, peak RSS 153 MiB (Go heap 90 MiB), 20.4 bytes per stored record (19.2
     in blocks, 20.0 for a closed segment in the format bench).
@@ -2880,6 +2883,42 @@ the first bench, which records the measured numbers here:
     newest 500, 0.16 s. Memory: the `flows top` process peaks at about 480 MiB RSS for top talkers (mostly the 14
     workers' block buffers) and 1.8 GiB for conversations past the exact limit, over the 256 MiB query-state target.
     The reference box's 4 workers would need less; a hard cap is open.
+  - **Bounded (build, 2026-11-16, third round;** decision 51; the same data regenerated, the same laptop under load
+    average 5–6): every query now uses at most 4 workers and a 128 MiB shared table budget. Peak RSS of the whole
+    `flows top` process, 3 runs each: top talkers 7.5–8.5 s, 99–102 MiB; top destination ports 6.4–7.0 s, 89–91 MiB;
+    top conversations (approximate past 1,000,000 keys) 14.4–15.1 s, 216–219 MiB, with the heaviest conversations
+    still counted exactly and `error_bound` 64.5 GB beside a top row of 287 GB. Top talkers are slower than with 14
+    workers (2.75–3.8 s) but stay inside the 10 s budget; the memory target comes first.
+  - Test ceilings (`internal/flowquery/mem_test.go`): a conversation top over 1.6 and 4.5 million distinct keys peaks
+    at 154 and 158 MiB of heap (ceiling 192 MiB, and the peak may not grow by more than 24 MiB with the key count).
+    Exact keys cost 131 bytes for a conversation, 115 for an address and 99 for a port, checked against the heap up to
+    1,000,000 keys.
+  - **Plans and the writer (build, 2026-11-16, fourth and fifth rounds;** decisions 56 and 57; peak heap measured by
+    the tests on the build machine):
+    - A week over 50 exporters (8,400 segments of 60 blocks, 504,000 blocks): a top-N 23 MiB, a search page 16 MiB,
+      against 20 and 16 MiB over its last day, 7 times fewer blocks (`TestWeekPlanBounded`, ceiling 192 MiB, and the
+      week may not add 16 MiB; batches are the same shape either way, so it holds beside CPU burners too). A minute's
+      window over 300 exporters' 3,600-block segments: 579 MiB → 19 MiB over closed segments, 730 → 21 MiB over open
+      ones (`TestNarrowWindowPlanBounded`, ceiling 64 MiB).
+    - The writer over an hour of ingest (`internal/flowseg/hourmem_test.go`: a simulated store, real headers of
+      loadgen's size, blocks as long as 20 bytes a record, so a busy exporter's hour is 14 or 53 parts of 256 MiB),
+      before → after, heap above the hour's start at GOGC 10 (at the default GOGC 100 in brackets, where the
+      collector's headroom over the open blocks adds to it):
+
+      | Case | Peak over the hour | At the hour mark (every segment closing) | Kept a block | Allocated an hour |
+      |---|---|---|---|---|
+      | 50,000/s, 1 exporter | 27.9 → 1.1 MiB (58.1 → 4.3) | 9.2 → 0.3 MiB | — | 1,246 → 5 MiB |
+      | 150,000/s, 1 exporter | 23.0 → 1.5 MiB (38.6 → 13.8) | 9.6 → 0.3 MiB | — | 3,802 → 16 MiB |
+      | 150,000/s, 50 exporters | 135 → 49 MiB (343 → 106) | 114 → 1.0 MiB (263 → 0.9) | 587 → 218 B | 147 GB → 221 MiB |
+
+      Closing one dense segment (1,000 blocks of 34 KB headers, a 34 MB footer): 166 → 0.7 MiB. Ceilings, on what
+      doesn't depend on how far the collector lags a starved CPU (the sampled peak over 50 exporters was 121 MiB on
+      one core against 49 on many, the same 37.5 MiB live): the live heap within the directories' 216 bytes a block
+      (×1.25) plus 8 MiB, allocation within 2 KiB a block plus 320 KiB a part, at most 300 bytes kept a block, and
+      under 8 MiB at the hour mark (`TestWriterHourHeapBounded`); 8 MiB of heap and of allocation for a 136 MB
+      footer's close (`TestCloseHeapBounded`).
+      Each exporter's open block (a record's 466 bytes in memory, under FlowOpenBytesCap) is outside these: 1.4 MiB
+      at 3,000 records a second, 23–29 MiB for a full 50,000–65,536-record block.
   - A 150,000 records/s burst for 10 s: all 1,500,000 stored, nothing dropped by the queue, 0.33 of a core.
   - At 5,000 records/s a segment takes 21.9 bytes a record (the per-block index and the Bloom filter over random
     source ports weigh more in smaller blocks).
@@ -2989,7 +3028,7 @@ Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
 8. A per-type flow budget, 40 % of the cap by default; flows go first under the budget and the low-disk guard; no
    2-day protection for flows (§13.2).
 9. `q` is a 400 for flows; flows have their own address, port and protocol filters (§13.3).
-10. Top-N is exact up to 1,000,000 keys, then approximate and flagged (§13.3).
+10. Top-N is exact up to 1,000,000 keys, then approximate and flagged (§13.3; bounded memory, decision 51).
 11. Partial flow answers report progress and `complete_from`, not `counted_from` (§13.3).
 12. Events gets a Flows tab and a flow strip on the other tabs (§13.3).
 13. Flows in the zip: CSV and an IPFIX file, both by default; at most 20 million records per device per zip (§13.4).
@@ -3115,49 +3154,160 @@ Made while building it, each **decided (build, 2026-11-16)**:
 50. The segment writer's cut-back after a failed write is tested by fault injection (every section kind, whole and
     short writes, a failing truncate, at Close); no writer bug was found.
 
+*Third round, query memory (build, 2026-11-16; the coordinator asked for a hard bound under §13.6's 256 MiB):*
+
+51. **Every flow query's memory is bounded, whatever the window's size or key count** (`internal/flowquery/agg.go`):
+    - One top-N table per request, shared by its workers and split in 64 shards by key hash. Each worker combines
+      repeated keys in a 1,024-entry cache and hands them to a shard 32 at a time.
+    - Exact up to 1,000,000 keys in all, not per worker, and within the engine's pool: 128 MiB shared by every running
+      query, saved continuation and summary. When a request needs room, the least recently used saved continuation
+      is dropped (its cursor expires).
+    - The exact table is a pointer-free slab with an extendible hash index that splits in place, so it leaves no
+      growth garbage. A key costs 131 bytes for a conversation, 115 for an address and 99 for a port; the pool charges
+      that, and a test checks it against the heap. 1,000,000 conversations fit in 128 MiB.
+    - A shard that can't take a new key keeps its exact keys and counts new ones in a fixed-size space-saving table
+      (256 entries a shard, 16,384 in all) with a count-min sketch (4 × 1,024 a shard), about 5 MiB in all, outside
+      the pool. A newcomer to a full table replaces the lightest entry only if the smaller of the lightest count and
+      its sketch count, plus its own, beats it. That estimate is the row's `max_error`.
+    - Rows admitted to a full table are always marked `approx`; their other counts cover only the records since they
+      entered. A key in neither table has at most `error_bound`. The totals stay exact.
+52. **The engine's workers are shared by every query** (the default is GOMAXPROCS, at most 4, the reference box's
+    vCPU), with their decode buffers reused, about 8 MiB each. Big queries queue for workers rather than add buffers.
+    While the pool holds 32 MiB or more, a collection runs after any wave that follows 16 MiB of allocation; without
+    it, Go's pacer let garbage grow to the live table's size beside a 130 MiB table.
+53. **A closed segment's footer is read streamed** (CRC checked as it goes). Only each block's directory entry is kept
+    (472 bytes), with where its header copy sits; a block's Bloom filter loads from there when a filtered scan needs
+    it and isn't kept. Before, every query held every one of its segments' whole footers, a few bytes a record. A
+    query closes a segment once its last block is read, and decoding reuses each column's inflate buffer and the
+    address dictionary.
+54. **Summary values come from the same pool.** Per-worker counts flush into the shared ones at 1,024 values a field,
+    and a field that once turns a value away takes no new ones, so a value can't miss its earlier counts. A bundle's
+    README top-N tables share one 64 MiB pool, with small approximate tables (1,024 entries).
+55. **Still proportional to the window, and left as is (flagged; since bounded by decisions 56 and 57):**
+    - the plan: 64 bytes for each block the window touches, one block a second per exporter at most, about 5.5 MiB
+      per exporter-day;
+    - the open segments' directories: 472 bytes a block, about 1.7 MiB per open exporter-hour.
+
+    A week over 50 exporters would plan about 1.9 GiB. The writer still built a closing segment's whole footer in
+    memory (ingest side, at hour close).
+
+*Fourth round, plans (build, 2026-11-16):*
+
+56. **A query's plan streams the window** (`internal/flowquery/plan.go`):
+    - Segments come from the index a page at a time (256 rows, `FlowSegmentsPage`: newest end first, or lowest start
+      first ascending, each a range on an `(end, path)` or `(start, path)` index) and load a batch at a time, sorted
+      within the batch. A batch stops at **16,384 directory
+      entries loaded or 256 segments**, always a whole segment: every block and raw chunk of a loaded segment counts,
+      in the window or not, since its footer (or snapshot) holds them all, and a segment counts one more for itself.
+      Counting only the window's blocks let a minute over 300 exporters' hour segments load 273 of them a batch
+      (579 MiB closed, 730 MiB open; 19 and 21 MiB now), and raw-only segments without limit. A closed segment with
+      nothing in the window closes its file as soon as it's planned; the others hold one until their blocks are read.
+    - A batch's bytes (472 a directory entry, 64 a planned block) are charged to decision 51's 128 MiB pool until the
+      next batch, or until the query or its saved state ends, so saved continuations' plans count with the tables. A
+      segment the pool can't fit (after dropping saved states) ends the batch, charged anyway: one segment over at most.
+    - **Open segments are listed once, when the plan starts, and never come from the pages**: the store moves an open
+      segment's row on every flush, so a row could jump past the page cursor and be missed, or land during the plan
+      and be read twice. Descending they load first (any end); ascending at their indexed start less an hour (read by
+      path; unindexed: first). The pages skip their rows.
+    - `complete_from` and a search page's certainty are the bound of everything unread: the batch's next block and
+      the next segment, an unread open one included. A search page past its budget reads on until that bound passes
+      its cursor, so pages always progress; segments behind a cursor are skipped in a loop.
+    - Progress counts the index's records until a segment loads, then its exact rows.
+    - Open segments are listed without their snapshots (`store.OpenFlowList`); a plan takes each when its batch
+      reaches it (472 bytes a block, at most 3.9 MiB at the part limit), and one closed since is read from its file.
+      `OpenSnapshot` doesn't copy the snapshot's block list.
+    - `Each` (exports) goes a device at a time with its own plan; Count streams batches. `Raw` (a bundle's raw.txt)
+      pages the window's raw-holding segments, 256 rows at a time.
+
+*Fifth round, writer memory (build, 2026-11-16):*
+
+57. **The segment writer's memory is bounded, at hour close too** (`internal/flowseg/state.go`,
+    `internal/store/flow.go`):
+    - Close writes the footer streamed: the template table, then the footer body through a 256 KiB buffer (pooled),
+      each block's header copied from the block itself with the CRC computed as it goes, then the section prefix, an
+      fsync, and the trailer. The format is unchanged (a test compares the bytes with the old in-memory encoder at
+      five buffer sizes). The fsync keeps a crash from leaving a trailer over a torn body, which Open would call
+      corrupt rather than unfinished, so the store's recovery would skip it. Before, Close held about five times the
+      footer (166 MiB for a 34 MB one); now 0.7 MiB, most of it the directory Close returns.
+    - The store closes with `CloseSummary`, which returns Summary's fields and builds no directory, so 50 exporters
+      closing at the hour mark add 1 MiB of heap, not 114 MiB (§13.6).
+    - The store's index rows come from `Writer.Summary` (the footer-level fields), not a snapshot that copied the
+      block directory on every flush: 147 GB of garbage an hour over 50 exporters at one block a second, 221 MiB now.
+    - The writer keeps 216 bytes a block (587 before, a 472-byte BlockInfo and a header span), sampling and domain
+      lists shared with the previous block's.
+    - A segment starts a new part at **8,192 blocks**, as at 256 MiB (`store.Options.FlowPartBlocks`). One block a
+      second is 3,600 an hour, and early flushes add up to about one more a second, so an hour stays one part; a busy
+      exporter reaches 256 MiB first (about 270 blocks of 50,000 records at 20 bytes a record). At the limit a writer
+      keeps at most 1.7 MiB, a snapshot copies 3.9 MiB, and the footer holds 8,192 headers. Queries, a reindex and a
+      bundle see every part (tests at a 10-block limit).
+    - Fault injection (decision 50) covers every write of the streamed tail and a failed header read.
+
+58. **The writers' directories have one budget across exporters, decided (coordinator, 2026-11-16):** 32 MiB by
+    default (`store.Options.FlowDirBudget`). Uncapped, 216 bytes a block is about 0.8 MiB per exporter-hour at one
+    block a second (the 1 s flush makes one even for a quiet exporter): about 37 MiB by the hour's end over 50
+    exporters and 220 MiB over 300, which with the 128 MiB query pool breaks the process's 256 MiB.
+    - Each writer's `DirBytes` (its blocks' and raw chunks' entries) is added to one total as it writes. After every
+      maintenance pass's flush (each second), while the total is over the budget, the segments whose writers keep the
+      most are closed, largest first, until it's back under. Their exporters' next records start the hour's next part
+      (`…T09.001.wsf`): a part roll, nothing dropped. The total can pass the budget by one second's blocks.
+    - `/api/stats` `flow_parts_early` counts these closes since the server started; the log says so at most once an
+      hour.
+    - Measured at 150,000 records a second (each exporter writes one block a second at both rates: the open-block
+      cap's early flushes don't trigger), a simulated second hour after the first filled the budget: 50 exporters at
+      3,000 a second make 1.16 parts an exporter-hour (8 early parts an hour in all), 300 at 500 a second make 4.15
+      (945 early parts an hour). An hour stays one part up to about 43 exporters at one block a second.
+    - Tested (`TestFlowDirBudget`): 300 exporters for 10 simulated minutes under a third of their uncapped
+      directories. The total never passes the budget by more than a block an exporter, live heap grows 20–28 MiB
+      (ceiling: the budget, 24 KiB an exporter and 16 MiB; uncapped would be about 45), and every record is read
+      exactly once from the parts' files, the index, a query and a reindex; a bundle over budget-rolled parts is
+      checked in `internal/export`.
+59. **Left open (flagged):** an open segment's snapshot still copies 472 bytes a block per query that reaches it
+    (bounded by the part limit and the plan's batch). Sharing the writer's append-only entries without a copy is the
+    follow-up if it shows up.
+
 **Setup helper build decisions** (the setup-helper build agent, 2026-11-16, for the owner's review; branch
 `feat-setup-helper`):
-51. **Routes:** `POST /api/setup/snippet` as the contract says, plus `GET /api/setup/snippet?…` with the same fields
+60. **Routes:** `POST /api/setup/snippet` as the contract says, plus `GET /api/setup/snippet?…` with the same fields
     as query parameters (`type` accepted for `what`) for scripts. The CLI is `woodshed setup snippet --family …
     --what …` with `--type` as an alias, and `woodshed setup families`; the snippet goes to stdout, its notes to
     stderr.
-52. **Additive response fields:** a snippet also has `family`, `what`, `transport`, `address`, `reference`, `does`
+61. **Additive response fields:** a snippet also has `family`, `what`, `transport`, `address`, `reference`, `does`
     (the "what this does" line), `check`, `parts` (each a `file`, `command`, `cli` or `steps` with its own Copy) and
     `addresses` (the list the page offers). A family also has `transports`, `choices` and `notes`, with every data
     type as a key (`[]` where the family has no template), so the shape is fixed.
-53. **Template format:** `text/template` files in `internal/setuphelper/templates/`, one per family and data type,
+62. **Template format:** `text/template` files in `internal/setuphelper/templates/`, one per family and data type,
     each with a header (family, what, transports, reference, verification, `checked_on` for lab_checked) and
     `does`, `parts`, `notes` and `check` blocks; parts are split on `@@part` marker lines. Golden files pin every
     family, type and transport.
-54. **Coverage:** the line-oriented CLI and the web UI checklist cover all four types; the set-style CLI covers
+63. **Coverage:** the line-oriented CLI and the web UI checklist cover all four types; the set-style CLI covers
     syslog, traps and polling, with no flow template, because flow export statements differ too much between
     set-style devices to give one that's useful (a family note says so). rsyslog covers syslog; net-snmp traps and
     polling; softflowd flows.
-55. **Verification:** rsyslog and net-snmp are Tested by the CI job `setup-snippets` (TestSetupSnippets in
+64. **Verification:** rsyslog and net-snmp are Tested by the CI job `setup-snippets` (TestSetupSnippets in
     internal/server, against a real running server, each record exactly once). softflowd is Tested too since the
     flow listener merged: the runner replays the flow interop test's synthetic pcap with `-r` in place of the
     snippet's `-i <INTERFACE>` (a CI runner has no traffic to watch), every other option as generated, and each flow
     must be stored once with the pcap's packet and byte counts, for v9 and IPFIX. TestSetupTestedTemplatesHaveCI and
     the deny-list test both fail a Tested template no unskipped case applies.
-56. **Choices:** source interface (line-oriented CLI), the interface softflowd watches, severity (RFC 5424 keywords,
+65. **Choices:** source interface (line-oriented CLI), the interface softflowd watches, severity (RFC 5424 keywords,
     default `info`), facility (`local0`–`local7` or the device's default), SNMPv3 user, SHA-256 (default) or SHA-1,
     AES-128 (the protocols most devices and net-snmp share; the notes say to match both sides), and the polled
     agent's port. Values are checked against strict patterns, so nothing a user types can add a line to a snippet.
-57. **Filled from live state:** the listener's own address when it's bound to one, else the host's addresses, then the
+66. **Filled from live state:** the listener's own address when it's bound to one, else the host's addresses, then the
     TLS certificate's DNS names and `ui.extra_hostnames`; each listener's port and whether it's on (a note says how to
     turn it on, first); for TLS, the name a client should check (the address when it's a name on the certificate,
     else its first DNS name that isn't `localhost`; rsyslog and many devices check names, not IP addresses) and the
     CA's fingerprint.
-58. **rsyslog:** one omfwd action in `/etc/rsyslog.d/60-woodshed.conf`, RFC 5424 format, octet-counted framing for
+67. **rsyslog:** one omfwd action in `/etc/rsyslog.d/60-woodshed.conf`, RFC 5424 format, octet-counted framing for
     TCP and TLS, an in-memory queue that retries while Woodshed is down, and for TLS the gtls driver with
     `x509/name` and the action-level `StreamDriver.CAFile` (rsyslog 8.2108 or later), so it never touches the main
     config's `global()`. **net-snmp:** `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start), the
     test trap's secrets in `~/.snmp/snmp.conf` rather than the command line, and `rocommunity` limited to Woodshed's
     address for polling.
-59. **The page:** "Set up a device" at `#/device-setup`, **Connect** in the navigation (the existing **Setup** label
+68. **The page:** "Set up a device" at `#/device-setup`, **Connect** in the navigation (the existing **Setup** label
     stays the Welcome page, which now links to it). The mock answers from `web/src/lib/mock/setup-fixture.json`,
     which a Go test generates from the real templates, so it can't drift.
-60. **Vendor-neutral:** the deny list (network, security and log-product vendors, their OS and product names, and
+69. **Vendor-neutral:** the deny list (network, security and log-product vendors, their OS and product names, and
     desktop and server OS names) is in `internal/setuphelper/denylist_test.go` only. It runs over the templates, the
     families, every rendered snippet, the page and the docs' setup sections. **(owner, 2026-11-16)** no trademarked
     flow-protocol name anywhere in the setup helper: it says "flow v9 (RFC 3954)" and "IPFIX (RFC 7011)", the flow

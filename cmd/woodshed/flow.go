@@ -437,7 +437,11 @@ func printTop(w io.Writer, p api.FlowTopPage) {
 	head = append(head, "SHARE")
 	fmt.Fprintln(tw, strings.Join(head, "\t"))
 	for _, r := range p.Rows {
-		row := []string{r.Label, fmt.Sprint(r.Flows), fmt.Sprint(r.Bytes), fmt.Sprint(r.Packets)}
+		label := r.Label
+		if r.Approx {
+			label = "~ " + label
+		}
+		row := []string{label, fmt.Sprint(r.Flows), fmt.Sprint(r.Bytes), fmt.Sprint(r.Packets)}
 		if sampled {
 			ge := ""
 			if r.ScaledLowerBound {
@@ -451,7 +455,8 @@ func printTop(w io.Writer, p api.FlowTopPage) {
 	tw.Flush()
 	note := fmt.Sprintf("%d flows, %d bytes, %d packets in the window", p.Total.Flows, p.Total.Bytes, p.Total.Packets)
 	if p.Approx {
-		note += " (over 1,000,000 keys: approximate)"
+		note += fmt.Sprintf(" (too many keys to count exactly: approximate; a key not listed has at most %d %s, and a row marked ~ is at most its error over)",
+			p.ErrorBound, p.Metric)
 	}
 	fmt.Fprintln(w, note)
 }

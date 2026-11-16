@@ -569,6 +569,7 @@ func (b *backend) Stats(ctx context.Context) (api.Stats, error) {
 	st.Devices = api.DeviceCounts{Total: on + quiet + off, Online: on, Quiet: quiet, Offline: off}
 
 	u := b.store.Usage()
+	st.FlowPartsEarly = u.FlowPartsEarly
 	st.Disk = api.Disk{UsedBytes: u.BytesOnDisk, CapBytes: u.CapBytes, FreeBytes: int64(u.FreeBytes), DaysKept: u.DaysKept}
 	if u.Files == 0 {
 		st.Disk.DaysKept = 0

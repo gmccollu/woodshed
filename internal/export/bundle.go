@@ -489,10 +489,14 @@ type summaries struct {
 
 func newSummaries(devs, types []string) *summaries {
 	s := &summaries{m: map[[2]string]*typeCount{}, flows: map[string]*flowCount{}}
+	var pool *flowquery.Pool
 	for _, d := range devs {
 		for _, t := range types {
 			if t == datatype.Flow {
-				s.flows[d] = newFlowCount()
+				if pool == nil {
+					pool = flowquery.NewPool(summaryPoolBytes)
+				}
+				s.flows[d] = newFlowCount(pool)
 				continue
 			}
 			s.m[[2]string{d, t}] = &typeCount{sum: datatype.Get(t).NewSummary()}

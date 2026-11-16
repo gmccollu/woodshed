@@ -271,6 +271,10 @@ type Stats struct {
 	// started, so across a restart it can sum to less than Dropped24h.
 	DroppedByReason DroppedByReason `json:"dropped_by_reason"`
 	UDPQueue        []UDPQueue      `json:"udp_queue"` // one per enabled UDP listener
+	// FlowPartsEarly counts flow segments closed before their hour or size
+	// limit to keep every writer's memory under its budget, since the server
+	// started (SPEC §13.10 decision 58).
+	FlowPartsEarly int64 `json:"flow_parts_early"`
 }
 
 // DroppedByReason is /api/stats dropped_by_reason (last 24 hours).

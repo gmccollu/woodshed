@@ -68,16 +68,15 @@ func OpenSnapshot(path string, snap *Footer) (*Reader, error) {
 		f.Close()
 		return nil, err
 	}
-	foot := *snap
-	foot.Blocks = slices.Clone(snap.Blocks)
+	foot := *snap // the blocks are shared: a reader never changes them (Block doesn't cache)
 	return &Reader{f: f, size: st.Size(), h: h, foot: &foot}, nil
 }
 
 // Close closes the file.
 func (r *Reader) Close() error { return r.f.Close() }
 
-// Footer returns the segment's footer (shared; don't modify it). Its blocks'
-// index fields are loaded for a closed segment; use Block for a snapshot's.
+// Footer returns the segment's footer (shared; don't modify it). Its blocks
+// carry their directory fields only; Block loads one's index.
 func (r *Reader) Footer() *Footer { return r.foot }
 
 // Templates is the segment's template table; Meta its exporter metadata.
@@ -87,14 +86,29 @@ func (r *Reader) Meta() []byte                { return r.foot.Meta }
 // Blocks is the number of blocks.
 func (r *Reader) Blocks() int { return len(r.foot.Blocks) }
 
-// Block returns block i's directory entry with its index loaded (read from
-// the block itself for a snapshot's blocks).
+// Block returns block i's directory entry with its index loaded, read from
+// the file (the footer's copy of its header, or the block itself) and not
+// kept, so a scan's memory doesn't grow with the blocks it checks.
 func (r *Reader) Block(i int) (*BlockInfo, error) {
+	if i < 0 || i >= len(r.foot.Blocks) {
+		return nil, ErrCorrupt
+	}
 	bi := &r.foot.Blocks[i]
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if bi.loaded {
 		return bi, nil
+	}
+	full := BlockInfo{Offset: bi.Offset, Length: bi.Length}
+	if bi.hdrLen > 0 && bi.hdrLen <= bi.Length && bi.hdrOff > 0 && bi.hdrOff+bi.hdrLen <= r.size {
+		hdr := make([]byte, bi.hdrLen)
+		if _, err := r.f.ReadAt(hdr, bi.hdrOff); err == nil {
+			hd := &dec{b: hdr}
+			readHeader(hd, &full)
+			if hd.err == nil && len(hd.b) == 0 && full.Rows == bi.Rows && full.MinReceived == bi.MinReceived {
+				full.hdrOff, full.hdrLen = bi.hdrOff, bi.hdrLen
+				return &full, nil
+			}
+		}
+		full = BlockInfo{Offset: bi.Offset, Length: bi.Length}
 	}
 	magic, body, ok := readSection(r.f, bi.Offset, min(r.size, bi.Offset+bi.Length), nil)
 	if !ok || magic != magicBlock {
@@ -103,15 +117,13 @@ func (r *Reader) Block(i int) (*BlockInfo, error) {
 	d := &dec{b: body}
 	hl := d.limit(uint64(len(body)))
 	hdr := d.next(int(hl))
-	full := BlockInfo{Offset: bi.Offset, Length: bi.Length}
 	hd := &dec{b: hdr}
 	readHeader(hd, &full)
 	if d.err != nil || hd.err != nil || len(hd.b) != 0 {
 		return nil, ErrCorrupt
 	}
 	full.hdr = slices.Clone(hdr)
-	*bi = full
-	return bi, nil
+	return &full, nil
 }
 
 // Decode decodes block i's columns cols into b (reused). The block's CRC is

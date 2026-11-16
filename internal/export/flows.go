@@ -484,8 +484,15 @@ type flowCount struct {
 	malformed   int64
 }
 
-func newFlowCount() *flowCount {
-	mk := func(by, metric string) *flowquery.Top { t, _ := flowquery.NewTop(by, metric); return t }
+// summaryPoolBytes bounds a bundle's summary top-N tables, every device's
+// together (past it they turn approximate; the README shows top 3s).
+const summaryPoolBytes = 64 << 20
+
+func newFlowCount(pool *flowquery.Pool) *flowCount {
+	mk := func(by, metric string) *flowquery.Top {
+		t, _ := flowquery.NewTopWith(by, metric, flowquery.TopOptions{Pool: pool, Small: true})
+		return t
+	}
 	return &flowCount{domains: map[uint32]map[uint32]bool{}, talkers: mk("src", "bytes"), ports: mk("dst_port", "bytes"),
 		convs: mk("conversation", "bytes"), denSrc: mk("src", "flows"), denPort: mk("dst_port", "flows"), nat: mk("post_nat_src", "flows")}
 }

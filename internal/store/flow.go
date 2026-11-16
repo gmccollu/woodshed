@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/flow"
@@ -20,11 +21,11 @@ import (
 
 // Flows (SPEC §13.2): one columnar segment (package flowseg) per device per
 // received hour, logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf, a new part past
-// FlowPartBytes. The device side is the framework's: a flow exporter is
-// admitted, heard and counted (type_stats, by received minute) through its own
-// stream (flowTI), like any type. The segment writers live here, outside the
-// line streams, so a quiet exporter's device state can be evicted while its
-// hour's segment stays open until the hour ends.
+// FlowPartBytes or FlowPartBlocks. The device side is the framework's: a flow
+// exporter is admitted, heard and counted (type_stats, by received minute)
+// through its own stream (flowTI), like any type. The segment writers live
+// here, outside the line streams, so a quiet exporter's device state can be
+// evicted while its hour's segment stays open until the hour ends.
 //
 // Durability: the open block is written every FlushInterval (1 s) and the
 // segment fsynced every SyncInterval (5 s), as for lines. Closed segments are
@@ -44,6 +45,26 @@ import (
 
 // FlowPartBytes is the size at which a segment starts a numbered part.
 const FlowPartBytes = 256 << 20
+
+// FlowPartBlocks is the block count at which a segment starts a numbered
+// part (SPEC §13.10 decision 57). It bounds what one writer keeps for its
+// open segment (a 216-byte directory entry a block, at most 1.7 MiB), what a
+// query's snapshot of it copies (472 bytes a block, 3.9 MiB) and the footer
+// (every block's header again). An exporter writes about one block a second
+// (the 1 s rule and the store's 1 s flush), 3,600 an hour, and up to about
+// two a second when early flushes under FlowOpenBytesCap add some, so an
+// hour stays one part; a busy exporter's full blocks reach FlowPartBytes
+// first (about 200 blocks of 65,536 records).
+const FlowPartBlocks = 8192
+
+// DefaultFlowDirBudget bounds what every open segment's writer keeps for
+// the blocks it has written (flowseg.Writer.DirBytes, 216 bytes a block),
+// all exporters together (SPEC §13.10 decision 58). Past it, the maintenance
+// pass closes the segments with the most, largest first, until it's back
+// under: their exporters' next records start a new part. One block a second
+// is 0.8 MiB an exporter-hour, so the budget holds an hour in one part for
+// about 43 exporters at that rate (300 make about 4 parts an exporter-hour).
+const DefaultFlowDirBudget = 32 << 20
 
 // FlowOpenBytesCap bounds the open blocks of every writer together; a writer
 // over its share flushes early (SPEC §13.6).
@@ -77,8 +98,9 @@ type flowStream struct {
 	rel, abs    string
 	hour        time.Time // the segment's received hour
 	first, last time.Time
-	dirty       bool // flushed since the last fsync
-	pending     bool // appended to since the last flush
+	dirBytes    int64 // the writer's DirBytes as last added to flows.dirBytes
+	dirty       bool  // flushed since the last fsync
+	pending     bool  // appended to since the last flush
 	failed      time.Time
 	meta        []byte    // the exporter's latest metadata blob, given to every segment it opens
 	lastWrite   time.Time // the latest batch's received time (the stream is forgotten an hour after it)
@@ -94,6 +116,81 @@ type flows struct {
 	streams  map[string]*flowStream // by device ID
 	cat      map[string]*flowSeg    // closed segments by rel path
 	catBytes int64
+
+	dirBytes   atomic.Int64 // every open writer's DirBytes
+	partsEarly atomic.Int64 // segments closed early for the budget, since Open
+	earlyLog   time.Time    // the last log line about them (mu)
+	earlyLast  int64        // partsEarly then
+}
+
+// noteFlowDirLocked brings flows.dirBytes up to date with the stream's
+// writer (st.mu held).
+func (s *Store) noteFlowDirLocked(st *flowStream) {
+	n := int64(0)
+	if st.w != nil {
+		n = st.w.DirBytes()
+	}
+	if d := n - st.dirBytes; d != 0 {
+		s.fl.dirBytes.Add(d)
+		st.dirBytes = n
+	}
+}
+
+// FlowDirBytes is what every open flow writer keeps for its written blocks.
+func (s *Store) FlowDirBytes() int64 { return s.fl.dirBytes.Load() }
+
+// keepFlowDirBudget closes open segments, the writer keeping the most
+// first, while every writer's directory together is over FlowDirBudget
+// (SPEC §13.10 decision 58). It runs in the maintenance pass, one stream lock
+// at a time.
+func (s *Store) keepFlowDirBudget(now time.Time) {
+	budget := s.opts.FlowDirBudget
+	if s.fl.dirBytes.Load() <= budget {
+		return
+	}
+	s.fl.mu.Lock()
+	streams := make([]*flowStream, 0, len(s.fl.streams))
+	for _, st := range s.fl.streams {
+		streams = append(streams, st)
+	}
+	s.fl.mu.Unlock()
+	type held struct {
+		st *flowStream
+		n  int64
+	}
+	hs := make([]held, 0, len(streams))
+	for _, st := range streams {
+		st.mu.Lock()
+		if st.w != nil {
+			hs = append(hs, held{st, st.dirBytes})
+		}
+		st.mu.Unlock()
+	}
+	sort.Slice(hs, func(i, j int) bool {
+		if hs[i].n != hs[j].n {
+			return hs[i].n > hs[j].n
+		}
+		return hs[i].st.id < hs[j].st.id
+	})
+	for _, h := range hs {
+		if s.fl.dirBytes.Load() <= budget {
+			break
+		}
+		h.st.mu.Lock()
+		if h.st.w != nil {
+			s.closeFlowLocked(h.st, "")
+			s.fl.partsEarly.Add(1)
+		}
+		h.st.mu.Unlock()
+	}
+	s.fl.mu.Lock()
+	if now.Sub(s.fl.earlyLog) >= time.Hour {
+		n := s.fl.partsEarly.Load()
+		s.log.Info("store: flow segments closed early to keep the writers' memory under its budget; their exporters continue in new parts",
+			"since_last", n-s.fl.earlyLast, "total", n, "budget_bytes", budget)
+		s.fl.earlyLog, s.fl.earlyLast = now, n
+	}
+	s.fl.mu.Unlock()
 }
 
 // FlowBudget returns the flow budget in effect.
@@ -180,6 +277,7 @@ func (s *Store) WriteFlows(addr netip.Addr, b FlowBatch) error {
 	st := s.flowStream(d.id)
 	st.mu.Lock()
 	err := s.appendFlowsLocked(st, rec, &b)
+	s.noteFlowDirLocked(st)
 	st.mu.Unlock()
 
 	d.mu.Lock()
@@ -214,7 +312,7 @@ func (s *Store) flowStream(id string) *flowStream {
 // rotating it first (st.mu held).
 func (s *Store) appendFlowsLocked(st *flowStream, rec time.Time, b *FlowBatch) error {
 	hour := rec.Truncate(time.Hour)
-	if st.w != nil && (hour.After(st.hour) || st.w.Size() >= FlowPartBytes) {
+	if st.w != nil && (hour.After(st.hour) || st.w.Size() >= FlowPartBytes || st.w.Blocks() >= s.opts.FlowPartBlocks) {
 		s.closeFlowLocked(st, "")
 	}
 	if st.w == nil {
@@ -302,16 +400,19 @@ func (s *Store) flushFlowLocked(st *flowStream) error {
 	err := st.w.Flush()
 	st.dirty, st.pending = true, false
 	s.queueFlowRows(st, false, nil)
+	s.noteFlowDirLocked(st)
 	return err
 }
 
 // queueFlowRows queues the stream's files and flow_segments rows (from the
-// writer's snapshot, or foot when closing) and its new minutes.
+// writer's summary, or foot when closing) and its new minutes. The rows use
+// only the footer's segment-level fields, so a flush never copies the block
+// directory.
 func (s *Store) queueFlowRows(st *flowStream, closed bool, foot *flowseg.Footer) {
 	mins := st.w.TakeMinutes()
 	size := st.w.Size()
 	if foot == nil {
-		foot = st.w.Snapshot()
+		foot = st.w.Summary()
 	} else if fi, err := os.Stat(st.abs); err == nil {
 		size = fi.Size()
 	}
@@ -332,11 +433,11 @@ func (s *Store) closeFlowLocked(st *flowStream, why string) {
 	if st.w == nil {
 		return
 	}
-	foot, err := st.w.Close()
+	foot, err := st.w.CloseSummary()
 	if err != nil {
 		s.log.Warn("store: closing a flow segment failed; recovery finishes it at the next start", "file", st.rel, "err", err)
 		if foot == nil {
-			foot = st.w.Snapshot()
+			foot = st.w.Summary()
 		}
 	}
 	s.queueFlowRows(st, err == nil, foot)
@@ -359,6 +460,7 @@ func (s *Store) closeFlowLocked(st *flowStream, why string) {
 	}
 	st.w = nil
 	st.dirty, st.pending = false, false
+	s.noteFlowDirLocked(st)
 }
 
 // flushFlows writes every open block; with rotate set (the maintenance pass)
@@ -393,6 +495,7 @@ func (s *Store) flushFlows(now time.Time, rotate bool) error {
 			s.fl.mu.Unlock()
 		}
 	}
+	s.keepFlowDirBudget(now)
 	return first
 }
 
@@ -439,6 +542,44 @@ type FlowSnapshot struct {
 	Rel      string
 	Path     string
 	Footer   *flowseg.Footer
+	// Snap (OpenFlowList) takes the snapshot when called; nil once the
+	// segment has closed (read it from its file then).
+	Snap func() *flowseg.Footer
+}
+
+// OpenFlowList lists the open segments (deviceIDs nil: all) without taking
+// their snapshots: a query takes each when its plan reaches it, so a query
+// over many exporters doesn't copy every open segment's directory at once.
+func (s *Store) OpenFlowList(deviceIDs []string) []FlowSnapshot {
+	want := map[string]bool{}
+	for _, id := range deviceIDs {
+		want[id] = true
+	}
+	s.fl.mu.Lock()
+	streams := make([]*flowStream, 0, len(s.fl.streams))
+	for id, st := range s.fl.streams {
+		if deviceIDs == nil || want[id] {
+			streams = append(streams, st)
+		}
+	}
+	s.fl.mu.Unlock()
+	var out []FlowSnapshot
+	for _, st := range streams {
+		st.mu.Lock()
+		if st.w != nil {
+			st, rel := st, st.rel
+			out = append(out, FlowSnapshot{DeviceID: st.id, Rel: rel, Path: st.abs, Snap: func() *flowseg.Footer {
+				st.mu.Lock()
+				defer st.mu.Unlock()
+				if st.w == nil || st.rel != rel {
+					return nil
+				}
+				return st.w.Snapshot()
+			}})
+		}
+		st.mu.Unlock()
+	}
+	return out
 }
 
 // OpenFlowSegments returns the open segments' snapshots (deviceIDs nil: all),

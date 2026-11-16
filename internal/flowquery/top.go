@@ -1,10 +1,8 @@
 package flowquery
 
 import (
-	"container/heap"
 	"fmt"
 	"net/netip"
-	"sort"
 	"strconv"
 
 	"github.com/gmccollu/woodshed/internal/flow"
@@ -16,12 +14,9 @@ var (
 	Metrics = []string{"bytes", "packets", "flows", "connections"}
 )
 
-// DefaultExactKeys is how many distinct keys a top-N counts exactly before it
-// switches to a space-saving top-K for the rest (SPEC §13.3).
+// DefaultExactKeys is how many distinct keys a top-N counts exactly (in all
+// its workers) before it turns approximate (SPEC §13.3, agg.go).
 const DefaultExactKeys = 1_000_000
-
-// spaceSavingSize is the space-saving table's size past the exact limit.
-const spaceSavingSize = 10_000
 
 // FlowStart and FlowEnd are a record's flow-time range (the received time for
 // a record that has none, which the decoder never stores, but a raw-decoded
@@ -200,6 +195,20 @@ func (s *Sums) add(r *flow.Record, conv bool) {
 	}
 }
 
+// addMetric adds v to the counter metric ranks by.
+func (s *Sums) addMetric(metric string, v int64) {
+	switch metric {
+	case "packets":
+		s.Packets += v
+	case "flows":
+		s.Flows += v
+	case "connections":
+		s.Connections += v
+	default:
+		s.Bytes += v
+	}
+}
+
 func (s *Sums) merge(o *Sums) {
 	s.Flows += o.Flows
 	s.Connections += o.Connections
@@ -229,25 +238,51 @@ func (s *Sums) Metric(m string) int64 {
 	return s.Bytes
 }
 
-// Top aggregates records by one key. Not safe for concurrent use: merge
-// per-goroutine Tops with Merge.
+// Top aggregates records by one key (agg.go). Not safe for concurrent use;
+// the engine's workers share one aggregation instead.
 type Top struct {
 	By, Metric string
-	MaxExact   int
 	Total      Sums
-	exact      map[key]*Sums
-	ss         *spaceSaving
+	conv       bool
+	agg        aggregator
+	l          local
+}
+
+// DefaultPoolBytes is a standalone Top's pool when TopOptions names none.
+const DefaultPoolBytes = 128 << 20
+
+// TopOptions configure a standalone Top.
+type TopOptions struct {
+	MaxKeys int   // exact keys at most (default DefaultExactKeys)
+	Pool    *Pool // shared with other Tops (default: its own of DefaultPoolBytes)
+	// Small keeps the approximate tables small (1,024 entries), for a few
+	// rows (a bundle README's top 3s).
+	Small bool
 }
 
 // NewTop starts a top-N by by, ranked by metric.
-func NewTop(by, metric string) (*Top, error) {
+func NewTop(by, metric string) (*Top, error) { return NewTopWith(by, metric, TopOptions{}) }
+
+// NewTopWith starts a top-N with options.
+func NewTopWith(by, metric string, o TopOptions) (*Top, error) {
 	if !contains(ByKeys, by) {
 		return nil, fmt.Errorf("by: %q isn't one of %v", by, ByKeys)
 	}
 	if !contains(Metrics, metric) {
 		return nil, fmt.Errorf("metric: %q isn't one of %v", metric, Metrics)
 	}
-	return &Top{By: by, Metric: metric, MaxExact: DefaultExactKeys, exact: map[key]*Sums{}}, nil
+	if o.MaxKeys <= 0 {
+		o.MaxKeys = DefaultExactKeys
+	}
+	if o.Pool == nil {
+		o.Pool = NewPool(DefaultPoolBytes)
+	}
+	size := querySize
+	if o.Small {
+		size = smallSize
+	}
+	a := newAggregator(by, metric, aggOptions{maxKeys: o.MaxKeys, pool: o.Pool, size: size})
+	return &Top{By: by, Metric: metric, conv: by == "conversation", agg: a, l: a.newLocal()}, nil
 }
 
 func contains(l []string, s string) bool {
@@ -261,159 +296,45 @@ func contains(l []string, s string) bool {
 
 // Add counts a record (already filtered and in the window).
 func (t *Top) Add(r *flow.Record) {
-	conv := t.By == "conversation"
-	t.Total.add(r, conv)
-	k := keyOf(t.By, r)
-	if !k.ok {
-		return
-	}
-	if s := t.exact[k]; s != nil {
-		s.add(r, conv)
-		return
-	}
-	if len(t.exact) < t.MaxExact {
-		s := &Sums{}
-		s.add(r, conv)
-		t.exact[k] = s
-		return
-	}
-	if t.ss == nil {
-		t.ss = newSpaceSaving(spaceSavingSize, t.Metric)
-	}
-	var s Sums
-	s.add(r, conv)
-	t.ss.add(k, &s)
+	t.Total.add(r, t.conv)
+	t.l.add(r)
 }
 
-// Merge adds o's counts into t (same by and metric).
-func (t *Top) Merge(o *Top) {
-	t.Total.merge(&o.Total)
-	for k, s := range o.exact {
-		if x := t.exact[k]; x != nil {
-			x.merge(s)
-			continue
-		}
-		if len(t.exact) < t.MaxExact {
-			c := *s
-			t.exact[k] = &c
-			continue
-		}
-		if t.ss == nil {
-			t.ss = newSpaceSaving(spaceSavingSize, t.Metric)
-		}
-		t.ss.add(k, s)
-	}
-	if o.ss != nil {
-		if t.ss == nil {
-			t.ss = newSpaceSaving(spaceSavingSize, t.Metric)
-		}
-		for _, e := range o.ss.items {
-			t.ss.add(e.k, &e.s)
-		}
-	}
+// Approx reports whether some keys were counted approximately.
+func (t *Top) Approx() bool {
+	t.l.flush()
+	return t.agg.approx()
 }
 
-// Approx reports whether the key count passed the exact limit.
-func (t *Top) Approx() bool { return t.ss != nil }
+// ErrorBound is the most a key that isn't in the approximate tables can
+// have of the metric (0 while exact).
+func (t *Top) ErrorBound() int64 {
+	t.l.flush()
+	return t.agg.errorBound()
+}
 
 // Keys is the number of distinct keys counted exactly.
-func (t *Top) Keys() int { return len(t.exact) }
+func (t *Top) Keys() int {
+	t.l.flush()
+	return t.agg.keys()
+}
+
+// Free returns the Top's pool bytes; it's unusable after.
+func (t *Top) Free() { t.agg.free() }
 
 // Row is one top-N row.
 type Row struct {
 	Key, Label string
 	Sums
+	// Approx: the row comes from an approximate table. Its ranked metric is
+	// an upper bound, at most Err over; its other counts cover the records
+	// since the key entered the table (lower bounds).
+	Approx bool
+	Err    int64
 }
 
 // Rows returns the top n rows by the metric, ties by key.
 func (t *Top) Rows(n int) []Row {
-	rows := make([]Row, 0, len(t.exact))
-	for k, s := range t.exact {
-		kk, l := keyLabel(t.By, k)
-		rows = append(rows, Row{Key: kk, Label: l, Sums: *s})
-	}
-	if t.ss != nil {
-		for _, e := range t.ss.items {
-			kk, l := keyLabel(t.By, e.k)
-			rows = append(rows, Row{Key: kk, Label: l, Sums: e.s})
-		}
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		a, b := rows[i].Metric(t.Metric), rows[j].Metric(t.Metric)
-		if a != b {
-			return a > b
-		}
-		return rows[i].Key < rows[j].Key
-	})
-	if len(rows) > n {
-		rows = rows[:n]
-	}
-	return rows
-}
-
-// spaceSaving is a space-saving top-K (Metwally et al.): a full table
-// replaces its smallest entry, which the newcomer inherits as its count.
-type spaceSaving struct {
-	metric string
-	max    int
-	items  []*ssItem
-	pos    map[key]*ssItem
-}
-
-type ssItem struct {
-	k   key
-	s   Sums
-	idx int
-}
-
-func newSpaceSaving(n int, metric string) *spaceSaving {
-	return &spaceSaving{metric: metric, max: n, pos: map[key]*ssItem{}}
-}
-
-func (h *spaceSaving) Len() int { return len(h.items) }
-func (h *spaceSaving) Less(i, j int) bool {
-	return h.items[i].s.Metric(h.metric) < h.items[j].s.Metric(h.metric)
-}
-func (h *spaceSaving) Swap(i, j int) {
-	h.items[i], h.items[j] = h.items[j], h.items[i]
-	h.items[i].idx, h.items[j].idx = i, j
-}
-func (h *spaceSaving) Push(x any) {
-	it := x.(*ssItem)
-	it.idx = len(h.items)
-	h.items = append(h.items, it)
-}
-func (h *spaceSaving) Pop() any {
-	it := h.items[len(h.items)-1]
-	h.items = h.items[:len(h.items)-1]
-	return it
-}
-
-func (h *spaceSaving) add(k key, s *Sums) {
-	if it := h.pos[k]; it != nil {
-		it.s.merge(s)
-		heap.Fix(h, it.idx)
-		return
-	}
-	if len(h.items) < h.max {
-		it := &ssItem{k: k, s: *s}
-		heap.Push(h, it)
-		h.pos[k] = it
-		return
-	}
-	min := h.items[0]
-	delete(h.pos, min.k)
-	inherited := min.s
-	min.k = k
-	min.s = *s
-	// The newcomer inherits the evicted count as its possible overestimate.
-	min.s.Flows += inherited.Flows
-	min.s.Connections += inherited.Connections
-	min.s.Bytes += inherited.Bytes
-	min.s.Packets += inherited.Packets
-	min.s.BytesScaled += inherited.BytesScaled
-	min.s.PacketsScaled += inherited.PacketsScaled
-	min.s.Unknown += inherited.Unknown
-	h.pos[k] = min
-	heap.Fix(h, 0)
+	t.l.flush()
+	return t.agg.rows(n)
 }

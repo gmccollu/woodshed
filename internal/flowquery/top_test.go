@@ -66,8 +66,7 @@ func TestTopNoDoubleCount(t *testing.T) {
 // Past the exact limit, the rest go to the space-saving table, the heavy
 // hitter still ranks first, and the response is approximate.
 func TestTopApprox(t *testing.T) {
-	top, _ := NewTop("src", "flows")
-	top.MaxExact = 100
+	top, _ := NewTopWith("src", "flows", TopOptions{MaxKeys: 100})
 	heavy := netip.MustParseAddr("192.0.2.200")
 	for i := 0; i < 50000; i++ {
 		r := rec()
@@ -87,16 +86,14 @@ func TestTopApprox(t *testing.T) {
 	}
 }
 
-func TestTopKeysAndMerge(t *testing.T) {
+func TestTopKeys(t *testing.T) {
 	a, _ := NewTop("dst_port", "packets")
-	b, _ := NewTop("dst_port", "packets")
 	r := rec()
 	a.Add(r)
-	b.Add(r)
+	a.Add(r)
 	r2 := rec()
 	r2.Proto, r2.DstPort = 17, 53
-	b.Add(r2)
-	a.Merge(b)
+	a.Add(r2)
 	rows := a.Rows(10)
 	if len(rows) != 2 || rows[0].Key != "tcp/443" || rows[0].Packets != 20 || rows[1].Key != "udp/53" {
 		t.Fatalf("rows %+v", rows)

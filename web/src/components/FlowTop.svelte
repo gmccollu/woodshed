@@ -138,7 +138,11 @@
         <h4>
           {t.label}
           <span class="by">by {unitOf(m)}</span>
-          {#if r?.res?.approx}<span class="approx" title="More than 1,000,000 distinct keys: the counts past them are a space-saving estimate">approximate</span>{/if}
+          {#if r?.res?.approx}<span
+              class="approx"
+              title="Too many distinct keys to count them all exactly. Rows marked ≈ are estimates, at most their error over; a key not listed has at most {valueText(m, { bytes: r.res.error_bound ?? 0, packets: r.res.error_bound ?? 0, flows: r.res.error_bound ?? 0, connections: r.res.error_bound ?? 0 }, null, false)}."
+              >approximate</span
+            >{/if}
         </h4>
         {#if r?.status === 'error'}
           <p class="err" role="alert">{r.error}</p>
@@ -152,7 +156,9 @@
               <li title="{row.label}: {range(row.first, row.last)}">
                 <span class="meter" style:width="{Math.max(1.5, row.share * 100)}%" aria-hidden="true"></span>
                 <button type="button" class="k" onclick={() => pick(t, row.key)} title="Add {row.label} to the filters">{row.label}{row.label !== row.key && t.by !== 'conversation' ? ` (${row.key})` : ''}</button>
-                <span class="v">{valueText(m, { ...row, connections: rowValue(row, 'connections') }, rowScaled(row, m), row.scaled_lower_bound)}</span>
+                <span class="v" title={row.approx ? `An estimate: at most ${valueText(m, { bytes: row.max_error ?? 0, packets: row.max_error ?? 0, flows: row.max_error ?? 0, connections: row.max_error ?? 0 }, null, false)} over` : undefined}
+                  >{row.approx ? '≈ ' : ''}{valueText(m, { ...row, connections: rowValue(row, 'connections') }, rowScaled(row, m), row.scaled_lower_bound)}</span
+                >
                 <span class="s">{shareText(row.share)}</span>
               </li>
             {/each}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/flow"
@@ -21,6 +22,14 @@ var FieldKeys = []string{"proto", "dst_port", "src_port", "src", "dst", "in_if",
 
 // MaxDistinct is how many values a field tracks before new ones count as other.
 const MaxDistinct = 10000
+
+// localDistinct is how many values a field's per-worker counts hold before
+// the worker hands them to the shared counts.
+const localDistinct = 1024
+
+// valueCost is a summary value's pool bytes beyond its strings: the map
+// entry, the *valAcc and the strings' headers.
+const valueCost = 160
 
 // fieldValue is a record's value of a field: the filter value, its label,
 // and whether the record has it.
@@ -138,8 +147,12 @@ type fieldAcc struct {
 	capped      bool
 }
 
-// summaryAcc is a summary's running counts.
+// summaryAcc is a summary's running counts: the shared ones (pool set,
+// merged into under mu) or a worker's.
 type summaryAcc struct {
+	mu      sync.Mutex
+	pool    *Pool
+	resv    int64
 	fields  []string
 	accs    []*fieldAcc
 	hist    bool
@@ -184,11 +197,6 @@ func (a *summaryAcc) add(r *flow.Record) {
 		}
 		va := fa.vals[v]
 		if va == nil {
-			if len(fa.vals) >= MaxDistinct {
-				fa.other++
-				fa.capped = true
-				continue
-			}
 			va = &valAcc{label: l}
 			fa.vals[v] = va
 		}
@@ -237,7 +245,44 @@ func (a *summaryAcc) at(k int64) *Bucket {
 	return b
 }
 
+// full reports whether a worker's counts should go to the shared ones.
+func (a *summaryAcc) full() bool {
+	for _, fa := range a.accs {
+		if len(fa.vals) >= localDistinct {
+			return true
+		}
+	}
+	return false
+}
+
+// reset empties a worker's counts after a merge.
+func (a *summaryAcc) reset() {
+	a.matched = 0
+	for _, fa := range a.accs {
+		*fa = fieldAcc{vals: map[string]*valAcc{}}
+	}
+	clear(a.buckets)
+}
+
+// free returns the shared counts' pool bytes.
+func (a *summaryAcc) free() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pool != nil {
+		a.pool.release(a.resv)
+		a.resv = 0
+		a.pool = nil
+		for _, fa := range a.accs {
+			fa.vals = nil
+		}
+	}
+}
+
+// merge adds a worker's counts into the shared ones (a), within MaxDistinct
+// and the pool.
 func (a *summaryAcc) merge(o *summaryAcc) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.matched += o.matched
 	for i, fa := range o.accs {
 		x := a.accs[i]
@@ -247,11 +292,15 @@ func (a *summaryAcc) merge(o *summaryAcc) {
 		for v, va := range fa.vals {
 			y := x.vals[v]
 			if y == nil {
-				if len(x.vals) >= MaxDistinct {
+				cost := int64(valueCost + len(v) + len(va.label))
+				// Once a field turns a value away, it takes no new ones: a value
+				// taken later would miss its earlier counts.
+				if x.capped || x.vals == nil || len(x.vals) >= MaxDistinct || a.pool == nil || !a.pool.reserve(cost) {
 					x.other += va.count
 					x.capped = true
 					continue
 				}
+				a.resv += cost
 				y = &valAcc{label: va.label}
 				x.vals[v] = y
 			}
@@ -331,39 +380,61 @@ func (e *Engine) Summary(ctx context.Context, q Query, sq SummaryQuery, budget t
 		}
 		st = e.newState(key, p)
 		st.sum = newSummaryAcc(sq.Fields, sq.Histogram, bucket, sq.Origin.UnixMilli())
+		st.sum.pool = e.pool
 	}
+	saved := false
+	defer func() {
+		if !saved {
+			st.free()
+		}
+	}()
 	f := q.filter()
 	extra := fieldCols(sq.Fields) | flowseg.Cols(CounterCols) | flowseg.ColSampling
 	cols := colsFor(f, extra)
-	// Per-worker counts for the whole request, merged once at its end.
+	// Per-worker counts, handed to the shared ones when a field's values fill
+	// up (localDistinct) and at the request's end.
 	accs := make([]*summaryAcc, e.o.Workers)
 	for i := range accs {
 		accs[i] = newSummaryAcc(sq.Fields, sq.Histogram, bucket, sq.Origin.UnixMilli())
 	}
 	deadline := time.Now().Add(budget)
-	rd := &readers{p: st.plan}
+	rd := newReaders(st.plan)
 	defer rd.close()
-	for first := true; st.done < len(st.plan.blocks) && (first || time.Now().Before(deadline)); first = false {
-		hi := min(st.done+e.wave(), len(st.plan.blocks))
-		if err := e.scan(ctx, st.plan, rd, st.done, hi, f, cols, func(w int, _ *planned, _ int, r *flow.Record) { accs[w].add(r) }); err != nil {
+	for first := true; st.plan.more(ctx) && (first || time.Now().Before(deadline)); first = false {
+		blocks := st.plan.take(ctx, rd, e.wave())
+		if len(blocks) == 0 {
+			break
+		}
+		if err := e.scan(ctx, st.plan, rd, blocks, f, cols, func(w int, _ *planned, _ int, r *flow.Record) {
+			a := accs[w]
+			a.add(r)
+			if a.full() {
+				st.sum.merge(a)
+				a.reset()
+			}
+		}); err != nil {
 			return SummaryResult{}, err
 		}
-		for _, b := range st.plan.blocks[st.done:hi] {
+		e.gcNudge()
+		for _, b := range blocks {
 			st.recsDone += int64(b.rows)
 		}
-		st.done = hi
+		st.done += len(blocks)
+	}
+	if err := st.plan.err; err != nil {
+		return SummaryResult{}, err
 	}
 	for _, a := range accs {
 		st.sum.merge(a)
 	}
 	res := SummaryResult{Fields: st.sum.result(max(sq.Top, 1)), Matched: st.sum.matched, Buckets: map[int64]Bucket{},
-		Progress: Progress{BlocksDone: int64(st.done), BlocksTotal: int64(len(st.plan.blocks)), RecordsDone: st.recsDone,
-			RecordsTotal: st.plan.rows, CompleteFrom: st.plan.frontier(st.done)}}
+		Progress: st.plan.progress(ctx, int64(st.done), st.recsDone)}
 	for k, b := range st.sum.buckets {
 		res.Buckets[k] = *b
 	}
-	if st.done < len(st.plan.blocks) {
+	if st.plan.more(ctx) {
 		res.Partial = true
+		saved = true
 		e.saveState(st)
 		res.Cursor = st.id
 	}

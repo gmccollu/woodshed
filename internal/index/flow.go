@@ -74,6 +74,8 @@ CREATE TABLE flow_segments (
 	closed          INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
 CREATE INDEX flow_segments_device_time ON flow_segments (device_id, end, start);
+CREATE INDEX flow_segments_end ON flow_segments (end, path);
+CREATE INDEX flow_segments_start ON flow_segments (start, path);
 CREATE TABLE flow_minute (
 	device_id      TEXT NOT NULL,
 	minute         INTEGER NOT NULL,
@@ -170,7 +172,17 @@ func scanFlowSegment(r interface{ Scan(...any) error }) (FlowSegment, error) {
 // time [start, end] overlaps [from, to] (zero bounds are open), newest end
 // first. Segments with no records yet are left out.
 func (d *DB) FlowSegments(ctx context.Context, deviceIDs []string, from, to time.Time) ([]FlowSegment, error) {
-	q := `SELECT ` + flowSegCols + ` FROM flow_segments WHERE records > 0`
+	where, args, ok := flowSegWhere(deviceIDs, from, to)
+	if !ok {
+		return nil, nil
+	}
+	return d.queryFlowSegments(ctx, `SELECT `+flowSegCols+` FROM flow_segments WHERE `+where+` ORDER BY end DESC, path DESC`, args...)
+}
+
+// flowSegWhere is FlowSegments' condition; ok is false for an empty device
+// list (no rows).
+func flowSegWhere(deviceIDs []string, from, to time.Time) (string, []any, bool) {
+	q := `records > 0`
 	var args []any
 	if !to.IsZero() {
 		q += ` AND start <= ?`
@@ -182,14 +194,101 @@ func (d *DB) FlowSegments(ctx context.Context, deviceIDs []string, from, to time
 	}
 	if deviceIDs != nil {
 		if len(deviceIDs) == 0 {
-			return nil, nil
+			return "", nil, false
 		}
 		in, inArgs := inList(deviceIDs)
 		q += ` AND device_id IN ` + in
 		args = append(args, inArgs...)
 	}
-	q += ` ORDER BY end DESC, path DESC`
+	return q, args, true
+}
+
+// FlowSegCursor is a FlowSegmentsPage position: the last row's order key
+// (its end, or its start for an ascending page) and path.
+type FlowSegCursor struct {
+	Key  int64
+	Path string
+}
+
+// FlowSegmentsPage returns at most limit of FlowSegments' rows after c (nil:
+// from the first): newest end first, or with asc lowest start first. A flow
+// query plans a window in pages, so its memory doesn't grow with the window.
+func (d *DB) FlowSegmentsPage(ctx context.Context, deviceIDs []string, from, to time.Time, asc bool, c *FlowSegCursor,
+	limit int) ([]FlowSegment, error) {
+	q, args, ok := flowSegPageSQL(deviceIDs, from, to, asc, c, limit)
+	if !ok {
+		return nil, nil
+	}
 	return d.queryFlowSegments(ctx, q, args...)
+}
+
+// flowSegPageSQL is FlowSegmentsPage's query. Without a device list it walks
+// flow_segments_end or flow_segments_start in order, so a page costs its own
+// rows, not a sort of the table.
+func flowSegPageSQL(deviceIDs []string, from, to time.Time, asc bool, c *FlowSegCursor, limit int) (string, []any, bool) {
+	where, args, ok := flowSegWhere(deviceIDs, from, to)
+	if !ok {
+		return "", nil, false
+	}
+	order := ` ORDER BY end DESC, path DESC`
+	if asc {
+		order = ` ORDER BY start ASC, path ASC`
+	}
+	if c != nil {
+		// Row values, so the order index serves the cursor as a range.
+		if asc {
+			where += ` AND (start, path) > (?, ?)`
+		} else {
+			where += ` AND (end, path) < (?, ?)`
+		}
+		args = append(args, c.Key, c.Path)
+	}
+	args = append(args, limit)
+	return `SELECT ` + flowSegCols + ` FROM flow_segments WHERE ` + where + order + ` LIMIT ?`, args, true
+}
+
+// FlowSegmentsCount is how many rows FlowSegments would return and their
+// records.
+func (d *DB) FlowSegmentsCount(ctx context.Context, deviceIDs []string, from, to time.Time) (n, records int64, err error) {
+	where, args, ok := flowSegWhere(deviceIDs, from, to)
+	if !ok {
+		return 0, 0, nil
+	}
+	err = d.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(records), 0) FROM flow_segments WHERE `+where, args...).
+		Scan(&n, &records)
+	return n, records, err
+}
+
+// FlowDevices is the device IDs with segments in FlowSegments' range, sorted.
+func (d *DB) FlowDevices(ctx context.Context, deviceIDs []string, from, to time.Time) ([]string, error) {
+	where, args, ok := flowSegWhere(deviceIDs, from, to)
+	if !ok {
+		return nil, nil
+	}
+	rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT device_id FROM flow_segments WHERE `+where+` ORDER BY device_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// FlowSegmentsByPath returns the rows of the segments at paths that exist,
+// by path (a flow plan's open segments: their rows change while it pages).
+func (d *DB) FlowSegmentsByPath(ctx context.Context, paths []string) ([]FlowSegment, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	in, args := inList(paths)
+	return d.queryFlowSegments(ctx, `SELECT `+flowSegCols+` FROM flow_segments WHERE path IN `+in+` ORDER BY path`, args...)
 }
 
 // AllFlowSegments returns every flow_segments row, by path.
@@ -197,17 +296,34 @@ func (d *DB) AllFlowSegments(ctx context.Context) ([]FlowSegment, error) {
 	return d.queryFlowSegments(ctx, `SELECT `+flowSegCols+` FROM flow_segments ORDER BY path`)
 }
 
-// FlowSegmentsWithRaw returns the segments of deviceIDs (nil: all) holding raw
-// sets, with any received time; the raw sets' times are read from the files.
-func (d *DB) FlowSegmentsWithRaw(ctx context.Context, deviceIDs []string) ([]FlowSegment, error) {
-	q := `SELECT ` + flowSegCols + ` FROM flow_segments WHERE raw > 0`
-	var args []any
+// FlowSegmentsWithRaw returns at most limit segments of deviceIDs (nil: all)
+// holding raw sets whose received times (their files row's, which cover the
+// raw sets') overlap [from, to) (zero bounds are open), by path after after
+// (a page's last path; "" from the first). The raw sets' times are read from
+// the files.
+func (d *DB) FlowSegmentsWithRaw(ctx context.Context, deviceIDs []string, from, to time.Time, after string,
+	limit int) ([]FlowSegment, error) {
+	q := `SELECT ` + flowSegCols + ` FROM flow_segments WHERE raw > 0 AND path > ?`
+	args := []any{after}
+	if !from.IsZero() || !to.IsZero() {
+		q += ` AND path IN (SELECT path FROM files WHERE 1`
+		if !to.IsZero() {
+			q += ` AND first_received < ?`
+			args = append(args, ms(to))
+		}
+		if !from.IsZero() {
+			q += ` AND last_received >= ?`
+			args = append(args, ms(from))
+		}
+		q += `)`
+	}
 	if deviceIDs != nil {
 		in, inArgs := inList(deviceIDs)
 		q += ` AND device_id IN ` + in
 		args = append(args, inArgs...)
 	}
-	return d.queryFlowSegments(ctx, q+` ORDER BY path`, args...)
+	args = append(args, limit)
+	return d.queryFlowSegments(ctx, q+` ORDER BY path LIMIT ?`, args...)
 }
 
 func (d *DB) queryFlowSegments(ctx context.Context, q string, args ...any) ([]FlowSegment, error) {

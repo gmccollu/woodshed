@@ -100,6 +100,9 @@ func newFixture(t *testing.T, n int) *fixture {
 		}
 	}
 	fx.eng = New(Options{DataDir: dir, Index: idx, Open: func([]string) []OpenSegment { return open }, Workers: 3})
+	// Tiny plan pages and batches, so every query here crosses both (the
+	// defaults run in mem_test.go and the other packages).
+	fx.eng.page, fx.eng.batch = 2, 7
 	return fx
 }
 

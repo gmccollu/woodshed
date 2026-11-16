@@ -553,7 +553,7 @@ export function flowTop(u: URLSearchParams, now: number, devicePasses: (ip: stri
   const rows = all.slice(0, top).map((a) => ({
     key: a.key, label: a.label, flows: a.flows, bytes: a.bytes, packets: a.packets, connections: a.conns,
     bytes_scaled: a.bytes_scaled, packets_scaled: a.packets_scaled, scaled_lower_bound: a.scaled_lower_bound,
-    share: val(a) / totalVal, first: iso(a.firstMs), last: iso(a.lastMs),
+    share: val(a) / totalVal, first: iso(a.firstMs), last: iso(a.lastMs), approx: false, max_error: 0,
   }));
   const rest = all.slice(top);
   const partial = cut !== null;
@@ -564,7 +564,7 @@ export function flowTop(u: URLSearchParams, now: number, devicePasses: (ip: stri
       total: { ...tot, bytes_scaled: tot.bytes_scaled, packets_scaled: tot.packets_scaled },
       rows,
       other: { flows: rest.reduce((s, a) => s + a.flows, 0), bytes: rest.reduce((s, a) => s + a.bytes, 0), packets: rest.reduce((s, a) => s + a.packets, 0), connections: rest.reduce((s, a) => s + a.conns, 0) },
-      approx: false,
+      approx: false, error_bound: 0,
       progress: clean(progressOf(done, total, f.from, f.to, cut)),
       partial, next_cursor: partial ? 'ft.1' : '', elapsed_ms: partial ? 2000 : 320,
     },

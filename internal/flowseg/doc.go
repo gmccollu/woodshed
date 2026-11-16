@@ -87,6 +87,14 @@
 // template table's offset, every block's offset, length and a copy of its
 // header (the index repeated), and the raw chunk directory.
 //
+// The footer repeats every block's header, a few kilobytes a block (most of
+// it the Bloom filter), so it's never held whole. The writer keeps a 216-byte
+// directory entry a block and, at close, writes the footer body through a
+// bounded buffer, copying each header from the block itself and computing the
+// CRC as it goes, then the section prefix (now that the length and CRC are
+// known) and the trailer. Readers read it streamed too (readFooterStream) and
+// keep the directory only; Reader.Block loads one block's index on demand.
+//
 // # Crash safety
 //
 // A segment being written has no footer. Recover reads its sections in
