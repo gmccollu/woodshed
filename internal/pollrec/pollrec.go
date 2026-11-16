@@ -426,3 +426,43 @@ func IfName(r *Record) string {
 // Text is the part of a record q matches: the whole record (it holds no
 // base64 or secrets).
 func Text(line []byte) []byte { return line }
+
+// RestartReasons are a restart line's reasons in words, for markers, the
+// bundle README and the CSV: "sysUpTime and hrSystemUptime reset", "sysUpTime
+// rose less than the time since the last poll" (an agent that restarted soon
+// after its previous start reads higher than before, but lower than it should:
+// SPEC §12.2.2), "engineBoots went up". Empty when the line names no source.
+func RestartReasons(r *Record) []string {
+	var reset, rose []string
+	boots := false
+	for _, s := range strings.Split(r.Value("source"), ",") {
+		switch s = strings.TrimSpace(s); s {
+		case "":
+		case "engineBoots":
+			boots = true
+		default:
+			cur, prev := "uptime", "prev_uptime"
+			if s == "hrSystemUptime" {
+				cur, prev = "hr_uptime", "prev_hr_uptime"
+			}
+			c, ok1 := r.Uint(cur)
+			p, ok2 := r.Uint(prev)
+			if ok1 && ok2 && c > p {
+				rose = append(rose, s)
+			} else {
+				reset = append(reset, s)
+			}
+		}
+	}
+	var out []string
+	if len(reset) > 0 {
+		out = append(out, strings.Join(reset, " and ")+" reset")
+	}
+	if len(rose) > 0 {
+		out = append(out, strings.Join(rose, " and ")+" rose less than the time since the last poll")
+	}
+	if boots {
+		out = append(out, "engineBoots went up")
+	}
+	return out
+}

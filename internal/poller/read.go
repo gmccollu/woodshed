@@ -358,19 +358,10 @@ func (f *cycleFeed) flush() {
 
 // restartMarker builds a restart line's marker.
 func restartMarker(dev string, at time.Time, rec *pollrec.Record) Marker {
-	src := strings.Split(rec.Value("source"), ",")
-	var parts []string
-	for _, s := range src {
-		if s != "" {
-			parts = append(parts, s)
-		}
-	}
+	// The same reasons, in the same words, as the bundle README (datatype.RestartDetail).
 	detail := "agent restart"
-	if len(parts) > 0 {
-		detail = strings.Join(parts, " and ") + " reset"
-		if len(parts) == 1 && parts[0] == "engineBoots" {
-			detail = "engineBoots went up"
-		}
+	if parts := pollrec.RestartReasons(rec); len(parts) > 0 {
+		detail = strings.Join(parts, ", ")
 	}
 	if rec.Value("reboot") == "?" {
 		detail += " (the device may have rebooted)"
