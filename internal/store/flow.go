@@ -46,7 +46,7 @@ import (
 const FlowPartBytes = 256 << 20
 
 // FlowPartBlocks is the block count at which a segment starts a numbered
-// part (SPEC §13.10 decision 56). It bounds what one writer keeps for its
+// part (SPEC §13.10 decision 57). It bounds what one writer keeps for its
 // open segment (a 216-byte directory entry a block, at most 1.7 MiB), what a
 // query's snapshot of it copies (472 bytes a block, 3.9 MiB) and the footer
 // (every block's header again). An exporter writes about one block a second

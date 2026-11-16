@@ -237,7 +237,7 @@ func (w *tailWriter) copyFrom(src io.ReaderAt, off, n int64) {
 // writeTail writes the template table, the footer and the trailer at s.off,
 // cutting the file there first, then fsyncs. The footer goes out streamed:
 // each block's header is copied from its span in the file through a bounded
-// buffer, so memory doesn't grow with the footer (SPEC §13.10 decision 56).
+// buffer, so memory doesn't grow with the footer (SPEC §13.10 decision 57).
 // It returns the footer as Open reads it: directory entries only, each
 // pointing at its header's copy in the footer; with dir false, the
 // segment-level fields only (summary's, no directory to build). On an error
