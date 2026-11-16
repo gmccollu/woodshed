@@ -49,7 +49,7 @@ func (c *Collector) expireAt(now int64, raw func(*RawSet)) {
 	}
 	cutoff := now - c.set.Load().timeout.Milliseconds()
 	c.pend.expired(cutoff, func(s *pendSet) {
-		rs := &RawSet{Received: s.received, ExporterPort: s.key.k.port, Domain: s.key.k.domain, Version: s.key.k.version,
+		rs := &RawSet{Received: s.received, Exporter: s.key.e.addr, ExporterPort: s.key.k.port, Domain: s.key.k.domain, Version: s.key.k.version,
 			TemplateID: s.key.tid, Status: StatusNoTemplate, Header: s.header, Data: s.data}
 		s.key.e.count(now, Counts{NoTemplate: 1})
 		if raw != nil {
@@ -81,7 +81,7 @@ func clone(b []byte) []byte { return append([]byte(nil), b...) }
 func (ds *decState) malformed(data []byte, version uint8, header []byte, domain uint32) {
 	ds.counts.Malformed++
 	if ds.raw != nil {
-		ds.raw(&RawSet{Received: ds.received, ExporterPort: ds.port, Domain: domain, Version: version,
+		ds.raw(&RawSet{Received: ds.received, Exporter: ds.e.addr, ExporterPort: ds.port, Domain: domain, Version: version,
 			Status: StatusMalformed, Header: clone(header), Data: clone(data)})
 	}
 }
@@ -482,7 +482,7 @@ func (ds *decState) dataSet(m *msg, tid uint16, body []byte) bool {
 		if c.pend.bytes+n > c.opts.PendingBytes || int(ds.e.pending.Load())+n > c.opts.PendingPerExporter {
 			ds.counts.NoTemplate++
 			if ds.raw != nil {
-				ds.raw(&RawSet{Received: ds.received, ExporterPort: ds.port, Domain: m.domain, Version: m.version,
+				ds.raw(&RawSet{Received: ds.received, Exporter: ds.e.addr, ExporterPort: ds.port, Domain: m.domain, Version: m.version,
 					TemplateID: tid, Status: StatusNoTemplate, Header: s.header, Data: s.data})
 			}
 			return true
@@ -548,7 +548,7 @@ func (ds *decState) decodeSet(m *msg, te *tmplEntry, body []byte, status Status,
 	}
 	ds.counts.Malformed++
 	if ds.raw != nil {
-		ds.raw(&RawSet{Received: received, ExporterPort: ds.port, Domain: m.domain, Version: m.version, TemplateID: t.ID,
+		ds.raw(&RawSet{Received: received, Exporter: ds.e.addr, ExporterPort: ds.port, Domain: m.domain, Version: m.version, TemplateID: t.ID,
 			Status: StatusMalformed, Header: clone(m.header), Data: clone(body)})
 	}
 	m.unknown = true

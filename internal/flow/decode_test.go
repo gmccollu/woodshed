@@ -405,7 +405,8 @@ func TestPendingLateExpireAndFull(t *testing.T) {
 		t.Fatal("expired before the timeout")
 	}
 	c.Expire(t0.Add(time.Minute+10*time.Minute+time.Millisecond), s.raw)
-	if len(s.raws) != 1 || s.raws[0].Status != StatusNoTemplate || s.raws[0].TemplateID != 256 || s.raws[0].Received != t0.Add(time.Minute).UnixMilli() {
+	if len(s.raws) != 1 || s.raws[0].Status != StatusNoTemplate || s.raws[0].TemplateID != 256 || s.raws[0].Received != t0.Add(time.Minute).UnixMilli() ||
+		s.raws[0].Exporter != exp1.Addr() || s.raws[0].ExporterPort != exp1b.Port() {
 		t.Fatalf("raws %+v", s.raws)
 	}
 	// The per-exporter limit: a set too big goes raw at once.
@@ -520,7 +521,7 @@ func TestMalformed(t *testing.T) {
 	for i, p := range cases {
 		s.recs, s.raws = nil, nil
 		s.decode(c, p, exp1, t0.Add(time.Duration(i)*time.Second))
-		if len(s.raws) != 1 || s.raws[0].Status != StatusMalformed {
+		if len(s.raws) != 1 || s.raws[0].Status != StatusMalformed || s.raws[0].Exporter != exp1.Addr() {
 			t.Errorf("case %d: raws %+v", i, s.raws)
 		}
 	}

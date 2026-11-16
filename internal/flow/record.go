@@ -438,7 +438,10 @@ type Template struct {
 // whose template never arrived, or a malformed packet with what came after the
 // break.
 type RawSet struct {
-	Received     int64
+	Received int64
+	// Exporter is the exporter's source address (unmapped): the device the
+	// set belongs to.
+	Exporter     netip.Addr
 	ExporterPort uint16
 	Domain       uint32
 	Version      uint8
