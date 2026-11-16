@@ -32,6 +32,11 @@
 //
 //	woodshed-aclfix.exe --snmp-firewall ensure "C:\Program Files\Woodshed\woodshed.exe"
 //	woodshed-aclfix.exe --snmp-firewall remove
+//
+// The flow rules (fwrule.FlowNetFlowRuleName and FlowIPFIXRuleName, SPEC §13.1), UDP 2055 and 4739:
+//
+//	woodshed-aclfix.exe --flow-firewall ensure "C:\Program Files\Woodshed\woodshed.exe"
+//	woodshed-aclfix.exe --flow-firewall remove
 package main
 
 import (
@@ -54,6 +59,9 @@ func main() {
 	}
 	if len(os.Args) >= 3 && os.Args[1] == "--snmp-firewall" {
 		os.Exit(snmpFirewall(os.Args[2:]))
+	}
+	if len(os.Args) >= 3 && os.Args[1] == "--flow-firewall" {
+		os.Exit(flowFirewall(os.Args[2:]))
 	}
 	if len(os.Args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix <data folder>")
@@ -147,5 +155,33 @@ func snmpFirewall(args []string) int {
 		return 0
 	}
 	fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix --snmp-firewall ensure <woodshed.exe> | remove")
+	return 2
+}
+
+// flowFirewall is --flow-firewall ensure <exe> | remove.
+func flowFirewall(args []string) int {
+	switch {
+	case len(args) == 2 && args[0] == "ensure":
+		created, err := fwrule.FlowWindowsEnsure(fwrule.Exec, args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "woodshed-aclfix: --flow-firewall ensure:", err)
+			return 1
+		}
+		for _, name := range created {
+			fmt.Printf("woodshed-aclfix: added the firewall rule %q, disabled\n", name)
+		}
+		if len(created) == 0 {
+			fmt.Println("woodshed-aclfix: the flow firewall rules exist; left as they are")
+		}
+		return 0
+	case len(args) == 1 && args[0] == "remove":
+		if err := fwrule.FlowWindowsRemove(fwrule.Exec); err != nil {
+			fmt.Fprintln(os.Stderr, "woodshed-aclfix: --flow-firewall remove:", err)
+			return 1
+		}
+		fmt.Printf("woodshed-aclfix: removed the firewall rules %q and %q\n", fwrule.FlowNetFlowRuleName, fwrule.FlowIPFIXRuleName)
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "usage: woodshed-aclfix --flow-firewall ensure <woodshed.exe> | remove")
 	return 2
 }
