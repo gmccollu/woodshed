@@ -432,7 +432,11 @@ func TestRollupAndCounts(t *testing.T) {
 }
 
 // dropV7 undoes migration 6 -> 7 (the poller's tables).
-const dropV7 = `DROP TABLE poll_targets; DROP TABLE poll_hourly; `
+// dropV8 undoes migration 7 -> 8 (flows).
+const dropV8 = `DROP TABLE flow_segments; DROP TABLE flow_minute; `
+
+// dropV7 undoes migrations 7 -> 8 and 6 -> 7 (polls).
+const dropV7 = dropV8 + `DROP TABLE poll_targets; DROP TABLE poll_hourly; `
 
 // dropV6 undoes migrations 6 -> 7 and 5 -> 6 (data types).
 const dropV6 = dropV7 + `DROP INDEX files_type_device_time; ALTER TABLE files DROP COLUMN type; ALTER TABLE deletions DROP COLUMN type;
@@ -450,7 +454,7 @@ func TestMigrateV3ToV4Indexes(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 7 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 8 {
 		t.Fatalf("version %d", v)
 	}
 	var n int
