@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/server"
 	"github.com/gmccollu/woodshed/internal/store"
 )
 
@@ -161,5 +163,31 @@ func TestFlowCommandLinux(t *testing.T) {
 	}
 	if code, _, _ := runCLI("flow", "sideways", "--config", cfgPath); code != 2 {
 		t.Fatal("bad mode")
+	}
+}
+
+// The Flows row of `woodshed status` and the exporter rows of `flow status`.
+func TestFlowStatusRows(t *testing.T) {
+	days := 4.8
+	fs := &api.FlowState{Enabled: true, Budget: api.FlowBudget{Bytes: 8 << 30, UsedBytes: 2 << 30, EstimatedDays: &days},
+		Exporters: []api.FlowExporter{{DeviceID: "10.1.0.1", RecordsPerSec: 1180.5, Domains: []api.FlowDomain{{ID: 1, Sampling: 1000, Templates: 6}},
+			Counts24h: api.FlowCounts{Records: 100, SequenceGaps: 3}, TimeSource: "received", ClockSkewMS: 4000000}}}
+	var b strings.Builder
+	statusFlowRows(&tabw{w: &b}, &server.RunState{Flows: fs})
+	if got := b.String(); !strings.Contains(got, "Flows:      on; 1 exporter, 1180 records/s; budget 25 % used (2.0 GiB of 8.0 GiB)") {
+		t.Fatalf("status row %q", got)
+	}
+	b.Reset()
+	flowStateRows(&tabw{w: &b}, fs)
+	for _, want := range []string{"about 4.8 days", "10.1.0.1: 1180.5 records/s; domain 1: 6 templates, 1 in 1000", "3 sequence gaps",
+		"its clock is 4000000 ms off"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("flow status lacks %q:\n%s", want, b.String())
+		}
+	}
+	b.Reset()
+	statusFlowRows(&tabw{w: &b}, &server.RunState{})
+	if b.Len() != 0 {
+		t.Fatalf("no flows: %q", b.String())
 	}
 }
