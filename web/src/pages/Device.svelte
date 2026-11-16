@@ -10,6 +10,7 @@
   import { openPollForm, pollUi } from '../lib/pollui.svelte';
   import type { PollTarget } from '../lib/poll';
   import PollPanel from '../components/PollPanel.svelte';
+  import FlowDevicePanel from '../components/FlowDevicePanel.svelte';
   import StatusDot from '../components/StatusDot.svelte';
 
   const RANGES = [
@@ -81,11 +82,14 @@
           {#if device}
             <a class="ghost-btn" href="#/events?dev={encodeURIComponent(id)}&r=24h">Syslog in Events</a>
             {#if device.types?.includes('trap')}<a class="ghost-btn" href="#/events?type=trap&dev={encodeURIComponent(id)}&r=24h">SNMP traps</a>{/if}
+            {#if device.types?.includes('flow')}<a class="ghost-btn" href="#/events?type=flow&dev={encodeURIComponent(id)}&r=1h">Flows</a>{/if}
           {/if}
         </div>
       </div>
       {#if loadError}<p class="mb-0 text-bad-fg" role="alert">{loadError}</p>{/if}
     </section>
+
+    <FlowDevicePanel {id} {device} />
 
     {#if target}
       <div class="flex flex-wrap items-center gap-3">

@@ -24,9 +24,11 @@
   import UpdatesSettings from '../components/UpdatesSettings.svelte';
   import PollStatePanel from '../components/PollStatePanel.svelte';
   import { PRESETS as POLL_PRESETS, pollSettingsBody, pollSettingsForm, type PollSettingsForm } from '../lib/poll';
+  import FlowStatePanel from '../components/FlowStatePanel.svelte';
+  import { budgetOf, flowBudgetBody, flowFormErrors, flowListenerBody, flowSettingsForm, ruleIesOf, type FlowSettingsForm } from '../lib/flows';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
-  interface Form extends PollSettingsForm {
+  interface Form extends PollSettingsForm, FlowSettingsForm {
     udpEnabled: boolean;
     udpAddr: string;
     udpPort: number;
@@ -145,6 +147,7 @@
       quietMin: round(s.quiet.quiet_after_seconds / 60),
       offlineMin: round(s.quiet.offline_after_seconds / 60),
       ...pollSettingsForm(s.poll),
+      ...flowSettingsForm(s.listeners.flow, s.storage.flow_budget_bytes),
     };
   }
 
@@ -183,6 +186,8 @@
               },
             }
           : {}),
+        // Sent only to a server that has flows (2.0 and later).
+        ...(saved?.listeners.flow ? { flow: flowListenerBody(f) } : {}),
         allowlist: parseAllowlist(f.allowlist),
         blocklist: parseAllowlist(f.blocklist),
         max_devices: n(f.maxDevices),
@@ -194,6 +199,7 @@
         retention_days: n(f.retentionDays),
         retention_bytes: Math.round(n(f.retentionGiB) * GiB),
         part_bytes: Math.round(n(f.partMiB) * MiB),
+        ...(saved?.storage.flow_budget_bytes !== undefined ? { flow_budget_bytes: flowBudgetBody(f) } : {}),
       },
       ui: {
         lan_mode: f.lanMode,
@@ -308,7 +314,7 @@
   // tls or tls-failures. Each new link scrolls once, also when this page is already open.
   let scrolledFor = '';
   $effect(() => {
-    const m = /section=(limits|blocklist|storage|updates|tls-failures|tls|snmp-users|snmp-mibs|snmp-failures|snmp|polling)\b/.exec(router.query);
+    const m = /section=(limits|blocklist|storage|updates|tls-failures|tls|snmp-users|snmp-mibs|snmp-failures|snmp|polling|flows)\b/.exec(router.query);
     if (!form || !m || scrolledFor === router.query) return;
     scrolledFor = router.query;
     const id = m[1] === 'limits' ? 'sender-limits' : m[1];
@@ -375,6 +381,13 @@
     pollMaxIf: 'Interfaces per device',
     pollMaxTargets: 'Most polled devices',
     pollPresets: 'Default presets',
+    flowEnabled: 'Flows',
+    flowAddr: 'Flow bind address',
+    flowNetflowPort: 'NetFlow port',
+    flowIpfixPort: 'IPFIX port',
+    flowTimeout: 'Template timeout',
+    flowRuleIes: 'Rule ID fields',
+    flowBudgetGiB: 'Flow budget (GiB)',
   };
   const shown = (v: unknown): string => {
     if (typeof v === 'boolean') return v ? 'on' : 'off';
@@ -458,6 +471,13 @@
     'poll.max_interfaces',
     'poll.max_targets',
     'poll.presets',
+    'listeners.flow.enabled',
+    'listeners.flow.addr',
+    'listeners.flow.netflow_port',
+    'listeners.flow.ipfix_port',
+    'listeners.flow.template_timeout',
+    'listeners.flow.rule_id_ies',
+    'storage.flow_budget_bytes',
   ];
 
   /**
@@ -490,6 +510,18 @@
     errors = {};
     formError = '';
     const body = fromForm(form);
+    // The flow form's own checks first, so a typo in a rule ID field is named before anything is sent.
+    if (saved?.listeners.flow) {
+      const fe = flowFormErrors(form, body.storage.retention_bytes);
+      if (Object.keys(fe).length) {
+        errors = fe;
+        formError = `${Object.keys(fe).length === 1 ? 'One setting needs' : 'Some settings need'} fixing before saving.`;
+        busy = false;
+        await Promise.resolve();
+        (document.querySelector('[aria-invalid="true"]') as HTMLElement | null)?.focus();
+        return;
+      }
+    }
     sentLists = {
       'listeners.allowlist': body.listeners.allowlist,
       'listeners.blocklist': body.listeners.blocklist,
@@ -497,6 +529,7 @@
       'listeners.snmp.communities': (body.listeners.snmp?.communities ?? []).map((c) => (isCommunityHash(c) ? c : 'new community')),
       'ui.extra_hostnames': body.ui.extra_hostnames,
       'ui.trusted_hosts': body.ui.trusted_hosts,
+      'listeners.flow.rule_id_ies': body.listeners.flow?.rule_id_ies ?? [],
     };
     const prevSettings = saved ? $state.snapshot(saved) : null;
     const failingBefore = failingNow();
@@ -1004,6 +1037,76 @@
 
         <div class="mt-4">
           <SnmpPanel enabled={saved.listeners.snmp.enabled} port={saved.listeners.snmp.port} reload={saves} />
+        </div>
+      </section>
+    {/if}
+
+    {#if saved?.listeners.flow}
+      <section class="card" id="flows">
+        <h2 class="sec">Flows</h2>
+        <p class="hint mt-0">
+          NetFlow v5, v9 and IPFIX from routers, switches and firewalls, kept beside their logs: who talked to whom, on which ports, how much, and the
+          firewall's created, deleted and denied connections with their NAT. Both ports accept every version. Flows are searched in
+          <a class="text-link underline" href="#/events?type=flow&r=1h">Events → Flows</a>.
+        </p>
+        <fieldset class="grid gap-4 sm:grid-cols-4">
+          <legend class="sr-only">Flow listener</legend>
+          <label class="flex items-center gap-2 font-semibold sm:col-span-4">
+            <input type="checkbox" bind:checked={form.flowEnabled} aria-invalid={!!err('listeners.flow.enabled')} aria-describedby="err-listeners.flow.enabled" />
+            Flows (NetFlow, IPFIX)
+          </label>
+          <label class="lbl">
+            <span>Bind address</span>
+            <input class="field font-mono" bind:value={form.flowAddr} spellcheck="false" aria-invalid={!!err('listeners.flow.addr')} aria-describedby="err-listeners.flow.addr" />
+            {@render fieldError('listeners.flow.addr')}
+          </label>
+          <label class="lbl">
+            <span>NetFlow port</span>
+            <input class="field" type="number" min="0" max="65535" bind:value={form.flowNetflowPort} aria-invalid={!!err('listeners.flow.netflow_port')} aria-describedby="err-listeners.flow.netflow_port" />
+            {@render fieldError('listeners.flow.netflow_port')}
+          </label>
+          <label class="lbl">
+            <span>IPFIX port</span>
+            <input class="field" type="number" min="0" max="65535" bind:value={form.flowIpfixPort} aria-invalid={!!err('listeners.flow.ipfix_port')} aria-describedby="err-listeners.flow.ipfix_port" />
+            {@render fieldError('listeners.flow.ipfix_port')}
+          </label>
+          <label class="lbl">
+            <span>Template timeout</span>
+            <input class="field font-mono" bind:value={form.flowTimeout} spellcheck="false" aria-invalid={!!err('listeners.flow.template_timeout')} aria-describedby="err-listeners.flow.template_timeout hint-ftt" />
+            {@render fieldError('listeners.flow.template_timeout')}
+            <span class="hint" id="hint-ftt">A template not refreshed for this long expires (1m to 24h).</span>
+          </label>
+          <span class="hint sm:col-span-4">
+            Defaults 2055 for NetFlow and 4739 for IPFIX; 0 turns one port off. The Windows installer adds the firewall rules "Woodshed flows (UDP 2055)"
+            and "Woodshed flows (UDP 4739)" turned off; <code>woodshed flow on</code>, in an administrator prompt{isWindows ? '' : ' or with sudo'}, turns
+            them on with the listener, and on Linux opens the ports in ufw or firewalld when one is active.
+          </span>
+          {@render fieldError('listeners.flow.enabled')}
+        </fieldset>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="lbl">
+            <span>Rule ID fields</span>
+            <textarea id="flow-rule-ies" class="field font-mono" rows="3" bind:value={form.flowRuleIes} spellcheck="false" placeholder="32473:7"
+              aria-invalid={!!err('listeners.flow.rule_id_ies')} aria-describedby="err-listeners.flow.rule_id_ies hint-frid"></textarea>
+            {@render fieldError('listeners.flow.rule_id_ies')}
+            <span class="hint" id="hint-frid">
+              Up to 8, one per line, as enterprise number:element ID. The first one a record has becomes its rule ID, which you can filter on and rank in
+              Top. There's no standard field for it; find your exporter's below.
+            </span>
+          </label>
+          <label class="lbl">
+            <span>Flow budget (GiB)</span>
+            <input class="field" type="number" min="0" step="any" bind:value={form.flowBudgetGiB} aria-invalid={!!err('storage.flow_budget_bytes')} aria-describedby="err-storage.flow_budget_bytes hint-fbud" />
+            {@render fieldError('storage.flow_budget_bytes')}
+            <span class="hint" id="hint-fbud">
+              0 keeps the default, 40 % of the disk cap ({bytes(budgetOf(0, Math.round(n(form.retentionGiB) * GiB)))} now). Flows over their budget are
+              deleted first, oldest first, so they never push your other logs out; at most 90 % of the cap.
+              {#if n(form.flowBudgetGiB)}This budget: {bytes(budgetOf(Math.round(n(form.flowBudgetGiB) * GiB), 0))}.{/if}
+            </span>
+          </label>
+        </div>
+        <div class="mt-4">
+          <FlowStatePanel reload={saves} ruleIes={ruleIesOf(form.flowRuleIes)} onuse={(k) => form && (form.flowRuleIes = [...ruleIesOf(form.flowRuleIes), k].join('\n'))} />
         </div>
       </section>
     {/if}
