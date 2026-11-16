@@ -2867,6 +2867,16 @@ the first bench, which records the measured numbers here:
   across exporters (a block is flushed early to stay under it); the queue's bytes (128 MiB); query state at most
   256 MiB. 512 MiB for flows in all at the targets.
 - **Disk:** 12–20 bytes per stored record (to be measured).
+- **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core Apple
+  M4 Pro under other load; the reference box and the lab runs replace these):
+  - 50,000 records/s for 20 s (30 a packet, 2 domains) with UDP syslog at 5,000 msg/s: every record and message
+    stored, 0.49 of a core, peak RSS 116 MiB, 20.4 bytes per stored record (19.2 in blocks, 20.0 for a closed segment
+    in the format bench).
+  - A 150,000 records/s burst for 10 s: all 1,500,000 stored, nothing dropped by the queue, 0.33 of a core.
+  - At 5,000 records/s a segment takes 21.9 bytes a record (the per-block index and the Bloom filter over random
+    source ports weigh more in smaller blocks).
+  - The format alone: encoding about 440 ns a record (2.2 % of a core at 50,000/s); decoding the source and bytes
+    columns 38–40 M records/s on one core, every column about 5.4 M/s.
 - **Queries:** top talkers (`by=src`, bytes) over 1 h at 5,000 records/s (18 million records) in under 3 s,
   complete in one response; at 50,000/s (180 million) partial within the 10 s budget and complete within 60 s.
   A filtered search for one address over 1 h at 5,000/s returns its first page in under 1 s.
@@ -2973,6 +2983,101 @@ Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
 16. The performance targets in §13.6.
 17. The major version is a milestone and an operator-visible change (the binary format, the flow budget), not an API
     break (§13.9).
+
+Made while building it, each **decided (build, 2026-11-16)**:
+
+*Collector (§13.1):*
+
+18. Both flow ports feed one receive queue (shown as `flow` in `udp_queues`) and one drainer, so the collector's
+    template state stays single-threaded; there's no inline fast path for flows (exporters send steadily, and a
+    packet carries ~30 records).
+19. A v5 header sampling interval of 0 or 1 is unsampled. Domain-level sampling comes from options data without a
+    sampler ID (v9 scope System, IPFIX scope observationDomainId); sampler tables from 48/302 with 34, 50, 305/306,
+    309/310 or 311.
+20. `rule_id`: a fixed-length field of 1–8 bytes is a big-endian unsigned integer in decimal; a variable-length or
+    longer one is printable ASCII as text (trailing NULs trimmed), else hex. The IE also stays in extras.
+21. An exporter clock more than 1 h off: end = received, start = received − duration, event time = received,
+    `time_source=received`; the exporter's own times are kept as extras 152, 153 and 323.
+22. Totals (85/86, initiator and responder) fill bytes and packets (with the totals mark) only when the record has no
+    delta counter; otherwise they go to extras. With several forms of one time, the most precise absolute form wins.
+23. Duplicates are counted and still stored. Sequence numbers: v9 counts packets (records lost ≈ gap × the average
+    records per packet), v5 and IPFIX records; undecodable sets make the next number unknown (resync, no gap); a jump
+    back of more than 100,000 is an exporter restart.
+24. A break in the header or set structure stores the whole packet raw; a break inside a data set stores the rest of
+    that set raw, after the records decoded before it.
+25. Interface names are resolved per record at decode (the domain's names, else any of the exporter's domains; ifName
+    wins over ifDescription; at most 256 bytes) and stored with the record, so a record keeps the names in force when
+    it arrived.
+26. Bounds: 1,024 fields per template, 12 MiB of templates and decode plans, 4 MiB of metadata, 20,000 exporters
+    (least recently heard out first).
+
+*Storage (§13.2):*
+
+27. The segment header is 32 fixed bytes, then the device ID and the writer version, with a header length (a long
+    IPv6 device ID doesn't fit in 32). Raw sets and templates are written as chunks with each flush, templates before
+    the block that uses them, so a crashed segment still decodes on its own; at close come the whole template table,
+    the footer and a 16-byte trailer. One address dictionary per block serves every address column; DEFLATE level 6,
+    and a column that doesn't shrink is stored raw.
+28. Post-NAT addresses and ports are in each block's Bloom filter, so `post_nat_*` and `ip_any` can skip blocks.
+29. Effective flow time: end is the flow end, else the event time, else the received time; start is the flow start,
+    else the end (never after it). The `flow_minute` rule: a record counts once, in its end's minute; its bytes and
+    packets spread evenly over at most 120 minutes (a longer flow's start is clamped). `flow_minute` rows are kept per
+    segment, so deleting a segment removes its minutes.
+30. Scaled sums leave out records of unknown sampling (they're then a lower bound, marked), everywhere: segments,
+    `flow_minute`, Top and the summary.
+31. A segment's hour is the received hour of the datagram that opens it; late-decoded records go into the open
+    segment. Queries pick segments by their flow-time range (`flow_segments`), so no received-hour widening is needed.
+    After a restart within the hour, recovery closes the segment and the exporter's next records start a new part: a
+    closed segment is never reopened.
+32. The other types' cap is the storage cap less what flows hold (at most their budget). The fair-share weight is each
+    exporter's flow datagram bytes over 7 days (`type_stats`); `type_stats` counts flow records as messages and their
+    datagrams' bytes as bytes. The low-disk guard deletes every closed flow segment, oldest first, before any other
+    data.
+33. Readers outside the writer's process (`woodshed search`, `flows top`, `bundle`) read a segment still being written
+    up to its last complete block, read-only (`flowseg.OpenLive`).
+34. `woodshed reindex --flows-redecode` rewrites a segment with its raw sets decoded by the segment's own template of
+    that exporter port, domain and ID (the first received after the set, else the latest), the records marked late.
+
+*Query and API (§13.3):*
+
+35. Top-N and summaries read in waves of blocks; a wave once started finishes, and every request reads at least one,
+    so a continuation always progresses and its counts cover whole blocks. A search page that runs out of budget
+    returns only the records no unread block can beat, and a cursor past every block read. A continued query whose
+    range was the default keeps its first request's range.
+36. A flow summary gives `progress` and sets `counted_from` to `complete_from`; bucket counts hold the `metric`
+    (flows by default) with `bytes` and `bytes_scaled` beside; field values are filter values (protocols by name,
+    ports as numbers labelled `tcp/443`).
+37. `GET /api/flows/templates?device=` lists an exporter's cached templates with IE names, for Settings → Flows.
+    `/api/context` refuses a flow ref. Bundles' active devices count a flow segment by its received range.
+38. In JSON bodies (saved searches, exports) the flow filters are top-level lists; `status` is shared with the trap
+    lists' key. A parameter two types share is each one's own (`CheckParams`); messages say "flows".
+39. `woodshed search --type flow` prints the bundle CSV's columns after a device column, oldest flow end first; the
+    flow filters are flags named like their parameters (`--dst-port`).
+
+*Export (§13.4):*
+
+40. `raw.txt` lines: `<received, RFC 3339 UTC ms> <status> v<version> domain=<id> template=<id> <base64 of the set>`.
+41. The estimate's bytes are 225 B a record for the CSV and 95 B for the IPFIX file, uncompressed (measured 205–242
+    and 92–95 on the fixtures). The 20,000,000 cap is checked at create, when a bundle resolves, and while writing.
+42. The bundle README's sequence gaps are the collector's last-24-hour counts and say so (only the running collector
+    keeps them; `woodshed bundle` says they aren't known). The firewall-event, denied and NAT lines appear only with
+    something to count; scaled figures only when a rate above 1 is known, with "≥" when some sampling is unknown;
+    top lists hold 3 entries; "translated connections" count NAT create events.
+43. `flows.ipfix` writes columns as their IANA IEs at fixed lengths (the received time as
+    collectionTimeMilliseconds, 258), extras as they came, interface names as options data before the records that
+    use them, and opens each domain with an options record whose observationDomainName says "Written by Woodshed
+    <version> from stored flow records; not captured off the wire." It doesn't carry the late status, the exporter
+    port or the original version and template IDs; a record too big for one message has its trailing extras cut
+    (counted).
+
+*Generators and tests (§13.8):*
+
+44. Generator IDs: IPFIX PEN 32473 IE 1 is the run, 2 the sequence, 3 the rule, 10 and up the fillers; v9 (no
+    enterprise numbers) uses field types 40001–40003 and 40010 up; v5 puts the sequence in `src_as` (high 16 bits) and
+    `dst_as` (low 16), and the run's last 4 hex digits in engine type and ID. `--sampled-domains` sets how many domains
+    are sampled; `--biflow` is IPFIX only.
+45. `woodshed bench --proto ipfix` runs the sender in a child process (`woodshed send`), so the CPU it reports is the
+    pipeline's.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
