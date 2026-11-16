@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -238,8 +237,10 @@ func (s *stmts) activity(a Activity) error {
 	} else if _, err := s.exec(upsertTypeStatsSQL, a.DeviceID, t, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
 		return err
 	}
-	if strings.HasPrefix(a.DeviceID, "_") {
-		return nil // a synthetic stats id (RefusedDeviceID): no devices row
+	if a.DeviceID == RefusedDeviceID {
+		// The synthetic stats id: no devices row. (Not any id starting with
+		// "_": a sender on ::1 or ::a.b.c.d has the device id "__1".)
+		return nil
 	}
 	first, last := a.FirstHeard, a.LastHeard
 	if first.IsZero() {
