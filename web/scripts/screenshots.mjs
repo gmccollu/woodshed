@@ -1242,7 +1242,7 @@ const SHOTS = [
     name: 'export-estimate',
     url: '/?mock_panel=0#/export',
     wait: 1800,
-    check: `/Up to [\\d,]+ lines from [\\d,]+ files?, about/.test(document.body.innerText)`,
+    check: `/Up to [\\d,]+ lines( and records)? from [\\d,]+ files?, about/.test(document.body.innerText)`,
   }),
   {
     name: 'export-building-light',
@@ -1894,7 +1894,7 @@ const SHOTS = [
     after: 3500,
     report: `JSON.stringify({ rows: document.querySelectorAll('[aria-label="Devices in the bundle"] li').length, est: document.querySelector('[data-bundle-estimate]')?.innerText, body: window.__woodshedMock.lastExportBody })`,
     check: `!!document.querySelector('[data-bundle-preview]') && document.querySelectorAll('[aria-label="Devices in the bundle"] li').length >= 8
-      && /Up to [\\d,]+ lines from [\\d,]+ files?/.test(document.querySelector('[data-bundle-estimate]').innerText)
+      && /Up to [\\d,]+ lines( and records)? from [\\d,]+ files?/.test(document.querySelector('[data-bundle-estimate]').innerText)
       && document.querySelector('[data-bundle-preview]').innerText.includes('Bundle around') && /Window .+ → .+ · 40 min/.test(document.querySelector('[data-bundle-preview]').innerText)
       && /\\d+ syslog/.test(document.querySelector('[aria-label="Devices in the bundle"]').innerText)
       && !!document.querySelector('.hist .mark') && document.querySelectorAll('.logline.clickable').length > 50
@@ -2078,17 +2078,19 @@ const SHOTS = [
       && document.body.innerText.includes('trap oid: linkDown')`,
   },
   {
-    name: 'bundle-trap-export-both-types',
+    // 2.0: "Both" became "Every type" (SPEC §13.4, the default): every type the server has, without filters.
+    name: 'bundle-trap-export-every-type',
     noshot: true,
     mode: 'light',
     url: '/?mock_panel=0&mock_export_secs=2#/export',
     wait: 1500,
-    act: `__set(document.querySelector('#exq'), 'deny'); await __tick(); __btn('Both').click(); await new Promise((r) => setTimeout(r, 1200));
+    act: `__btn('Syslog').click(); await __tick(); __set(document.querySelector('#exq'), 'deny'); await __tick(); __btn('Every type').click();
+      await new Promise((r) => setTimeout(r, 1200));
       if (/Filters apply|Up to/.test(document.body.innerText) === false) throw new Error('no estimate'); __btn('Build the zip').click();`,
     after: 4000,
     report: `JSON.stringify({ body: window.__woodshedMock.lastExportBody, first: document.querySelector('li[data-id]')?.innerText })`,
-    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody); return b.types.join() === 'syslog,trap' && !('q' in b) && b.all_devices === true; })()
-      && !document.querySelector('#exq') && document.querySelector('li[data-id]').innerText.includes('Syslog and SNMP traps')`,
+    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody); return b.types.join() === 'syslog,trap,poll,flow' && !('q' in b) && b.all_devices === true; })()
+      && !document.querySelector('#exq') && document.querySelector('li[data-id]').innerText.includes('Syslog, SNMP traps, SNMP polls and flows')`,
   },
   // 1.3: the SNMP poller (SPEC §12.5). `npm run screenshots -- poll` takes only these.
   ...both({
@@ -2157,7 +2159,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/events?type=poll&r=1h',
     wait: 2500,
-    check: `[...document.querySelectorAll('.typesw button')].map((b) => b.textContent.trim()).join() === 'Syslog,SNMP traps'
+    check: `[...document.querySelectorAll('.typesw button')].map((b) => b.textContent.trim()).join() === 'Syslog,SNMP traps,Flows'
       && document.querySelector('.typesw button[aria-checked=true]').textContent.trim() === 'Syslog'`,
   },
   {
@@ -2170,7 +2172,7 @@ const SHOTS = [
     url: '/?mock_panel=0&mock_latency=0#/about',
     wait: 1500,
     act: `const fx = ${JSON.stringify(JSON.parse(readFileSync(new URL('../src/lib/fixtures/ui-requests.json', import.meta.url), 'utf8')))};
-      const f = window.__woodshedMockFetch; const vars = { '{agent_port}': 16161, '{agent_v3_port}': 16162 }; const out = [];
+      const f = window.__woodshedMockFetch; const vars = { '{agent_port}': 16161, '{agent_v3_port}': 16162, '{flow_netflow_port}': 12055, '{flow_ipfix_port}': 14739, '{at}': new Date(Date.now() - 30 * 60_000).toISOString().replace(/[.][0-9]+Z$/, 'Z') }; const out = [];
       const sub = (x) => JSON.parse(JSON.stringify(x ?? null), (k, v) => (typeof v === 'string' && v in vars ? vars[v] : v));
       const path = (p) => p.replace(/[{][a-z0-9_]+[}]/g, (m) => vars[m] ?? m);
       const merge = (a, b) => { if (!b || typeof b !== 'object' || Array.isArray(b) || !a || typeof a !== 'object' || Array.isArray(a)) return b;
@@ -2184,10 +2186,10 @@ const SHOTS = [
         const txt = await r.text(); out.push(st.name + ' ' + r.status + (r.ok ? '' : ' ' + txt.slice(0, 200)));
         if (st.capture && r.ok) vars['{' + st.capture + '}'] = JSON.parse(txt).id;
       }
-      window.__fx = out;`,
+      window.__fx = out; window.__fxn = fx.steps.length;`,
     after: 200,
     report: `window.__fx.join(' | ')`,
-    check: `window.__fx.length === 11 && window.__fx.every((l) => / 20[014]$/.test(l))`,
+    check: `window.__fx.length === window.__fxn && window.__fx.every((l) => / 20[0-4]$/.test(l))`,
   },
   ...both({
     name: 'poll-devices-polled',
@@ -2263,6 +2265,171 @@ const SHOTS = [
     check: `document.body.innerText.includes('polled device isn’t answering: branch-fw-07 (10.7.0.1)') && document.body.innerText.includes('poll cycles were skipped')
       && document.body.innerText.includes('backing off')`,
     maxh: 1200,
+  },
+
+  // 2.0: flows (SPEC §13.3–13.4). `npm run screenshots -- flows` takes only these.
+  ...both({
+    name: 'flows-tab',
+    url: '/?mock_panel=0#/events?type=flow&r=1h',
+    wait: 3500,
+    check: `document.querySelectorAll('.fres .frow:not(.head)').length > 50 && !!document.querySelector('[data-flow-top] [data-top-by=src] li')
+      && document.body.innerText.includes('Counted every flow record in the window') && !document.getElementById('sq')
+      && [...document.querySelectorAll('.fp h3')].some((h) => h.textContent.startsWith('Firewall event'))`,
+  }),
+  ...both({
+    name: 'flows-top-denied',
+    url: '/?mock_panel=0#/events?type=flow&r=1h&top=denied',
+    wait: 3500,
+    act: `document.querySelector('[data-flow-top]').scrollIntoView({ block: 'start' });`,
+    check: `document.querySelectorAll('[data-flow-top] .tbl').length === 4 && document.body.innerText.includes('Top denied sources')
+      && document.querySelector('[data-flow-top] [data-top-by=src] li')?.textContent.includes('203.0.113.50')
+      && document.querySelector('[data-flow-top] [data-top-by=rule_id] li')?.textContent.includes('2001')`,
+    clip: '[data-flow-top]',
+  }),
+  {
+    name: 'flows-top-sampled-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=flow&r=1h&dev=10.1.0.10',
+    wait: 3500,
+    check: `/B\\s≈ [0-9.]+ [kMG]B/.test(document.querySelector('.fres .frow:not(.head)')?.textContent ?? '')
+      && document.querySelector('[data-flow-top] .tot')?.textContent.includes('scaled')`,
+    clip: '[data-flow-top]',
+  },
+  {
+    name: 'flows-top-click-filters',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=flow&r=1h&top=ports',
+    wait: 3500,
+    act: `document.querySelector('[data-flow-top] [data-top-by=dst_port] li .k').click(); await new Promise((r) => setTimeout(r, 1500));`,
+    check: `/proto=tcp/.test(location.hash) && /dst_port=443/.test(location.hash) && [...document.querySelectorAll('.fres .frow:not(.head)')].every((r) => r.textContent.includes(':443'))`,
+    report: `location.hash`,
+  },
+  {
+    name: 'flows-record-detail-dark',
+    mode: 'dark',
+    url: '/?mock_panel=0#/events?type=flow&r=1h&dev=10.1.0.1&fw_event=deleted',
+    wait: 3500,
+    act: `document.querySelector('.fres .frow:not(.head)').click();`,
+    check: `document.querySelector('[role=dialog]')?.innerText.includes('32473:7=') && document.querySelector('[role=dialog]').innerText.includes('Post-NAT source')
+      && document.querySelector('[role=dialog]').innerText.includes('Initiator bytes')`,
+  },
+  {
+    name: 'flows-filter-typo',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=flow&r=1h',
+    wait: 2500,
+    act: `__set(document.querySelector('[data-flow-filter=src]'), '10.20.0.0/16, nope'); await __tick(); document.querySelector('form[role=search] button[type=submit]').click(); await __tick();`,
+    check: `document.querySelector('#fb-src')?.textContent.includes('"nope" isn\\'t an address') && !location.hash.includes('nope')`,
+  },
+  {
+    name: 'flows-partial-continues',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_flow_partial=1#/events?type=flow&r=1h',
+    wait: 5000,
+    check: `document.body.innerText.includes('Counted every flow record in the window') && !document.querySelector('[data-flow-top] .prog')`,
+  },
+  {
+    name: 'flows-type-switch',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?r=1h',
+    wait: 2500,
+    act: `__btn('Flows').click(); await new Promise((r) => setTimeout(r, 2000));`,
+    check: `location.hash.includes('type=flow') && document.querySelectorAll('.fres .frow').length > 10`,
+  },
+  ...both({
+    name: 'flows-strip-syslog-tab',
+    url: '/?mock_panel=0#/events?r=1h&dev=10.1.0.1,10.1.0.10,10.8.0.1',
+    wait: 3500,
+    check: `document.querySelectorAll('[data-flow-strip] .fstrip').length === 3 && document.querySelector('[data-flow-strip]').innerText.includes('scaled')`,
+    clip: 'section[aria-label=Results]',
+  }),
+  ...both({
+    name: 'flows-settings',
+    url: '/?mock_panel=0#/settings?section=flows',
+    wait: 3000,
+    act: `__only('flows'); scrollTo(0, 0);`,
+    check: `document.body.innerText.includes('Woodshed flows (UDP 2055)') && document.body.innerText.includes('sourceIPv4Address')
+      && document.body.innerText.includes('32473:7') && /about [0-9.]+ days of flows/.test(document.body.innerText)`,
+    maxh: 1800,
+  }),
+  {
+    name: 'flows-settings-rule-ie-check',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings?section=flows',
+    wait: 2500,
+    act: `__set(document.getElementById('flow-rule-ies'), '32473:7 acl'); await __tick(); __btn('Save').click(); await new Promise((r) => setTimeout(r, 800));`,
+    check: `document.getElementById('err-listeners.flow.rule_id_ies')?.textContent.includes('"acl"')`,
+  },
+  ...both({
+    name: 'flows-bundle-readme',
+    url: `/?mock_panel=0#/events?bundle=${new Date(Date.now() - 10 * 60_000).toISOString().slice(0, 19)}Z&bb=30m&ba=10m&type=flow`,
+    wait: 6000,
+    check: `document.querySelector('[data-flow-readme]')?.innerText.includes('top talkers by bytes:') && document.querySelector('[data-flow-readme]').innerText.includes('firewall events:')
+      && document.querySelector('[data-flow-readme]').innerText.includes('sampled 1 in 1,000 on domain 256')`,
+    clip: '[data-flow-readme]',
+  }),
+  ...both({
+    name: 'flows-export-all-types',
+    url: '/?mock_panel=0#/export',
+    wait: 3000,
+    check: `document.querySelector('[role=radiogroup][aria-label="Data types"] [aria-checked=true]')?.textContent.includes('Every type')
+      && document.body.innerText.includes('Leave flows out') && /[0-9.]+( k| M)? flow records/.test(document.body.innerText)`,
+  }),
+  {
+    name: 'flows-export-leave-out-preselected-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_flow_huge=1#/export',
+    wait: 2500,
+    act: `__btn('24 h').click(); await new Promise((r) => setTimeout(r, 2000));`,
+    check: `document.getElementById('leave-flows')?.checked === true && document.body.innerText.includes('Pre-selected: the window is over 4 hours')`,
+  },
+  {
+    name: 'flows-export-too-many-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_flow_huge=1#/export',
+    wait: 2500,
+    act: `__btn('7 d').click(); await new Promise((r) => setTimeout(r, 2000)); const c = document.getElementById('leave-flows'); if (c.checked) c.click(); await new Promise((r) => setTimeout(r, 1500));`,
+    check: `document.body.innerText.includes('Too many flow records for one zip') && document.body.innerText.includes('narrow the window or add a flow filter')`,
+  },
+  {
+    name: 'flows-export-these-results',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=flow&r=1h&dst_port=443&proto=tcp',
+    wait: 3000,
+    act: `__btn('Export these results').click(); await new Promise((r) => setTimeout(r, 1500)); __btn('Build the zip').click(); await new Promise((r) => setTimeout(r, 800));`,
+    check: `(() => { const b = JSON.parse(window.__woodshedMock.lastExportBody || '{}');
+      return location.hash.startsWith('#/export?') && JSON.stringify(b.types) === '["flow"]' && JSON.stringify(b.dst_port) === '["443"]' && JSON.stringify(b.proto) === '["tcp"]'; })()`,
+    report: `window.__woodshedMock.lastExportBody`,
+  },
+  ...both({
+    name: 'flows-device-page',
+    url: '/?mock_panel=0#/device?id=10.1.0.10',
+    wait: 3000,
+    check: `document.querySelector('[data-flow-device]')?.innerText.includes('1:1,000') && document.querySelector('[data-flow-device]').innerText.includes('records a second')`,
+    maxh: 1400,
+  }),
+  {
+    name: 'flows-banners-light',
+    mode: 'light',
+    url: '/?mock_panel=0&mock_flow_banners=1#/dashboard',
+    wait: 2500,
+    check: `['flow_budget', 'flow_templates', 'flow_clock'].every((k) => document.querySelector('[data-kind=' + k + ']'))`,
+    report: `[...document.querySelectorAll('[data-kind]')].map((x) => x.dataset.kind).join(',')`,
+    maxh: 1100,
+  },
+  {
+    name: 'flows-off-no-tab',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_flows=0#/events?r=1h',
+    wait: 2500,
+    check: `!__btn('Flows')`,
   },
 ].filter((s) => s.name.includes(only));
 
