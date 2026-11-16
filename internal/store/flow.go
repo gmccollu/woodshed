@@ -56,9 +56,6 @@ const FlowPartBytes = 256 << 20
 // first (about 200 blocks of 65,536 records).
 const FlowPartBlocks = 8192
 
-// flowPartBlocks is FlowPartBlocks (tests lower it).
-var flowPartBlocks = FlowPartBlocks
-
 // FlowOpenBytesCap bounds the open blocks of every writer together; a writer
 // over its share flushes early (SPEC §13.6).
 const FlowOpenBytesCap = 64 << 20
@@ -228,7 +225,7 @@ func (s *Store) flowStream(id string) *flowStream {
 // rotating it first (st.mu held).
 func (s *Store) appendFlowsLocked(st *flowStream, rec time.Time, b *FlowBatch) error {
 	hour := rec.Truncate(time.Hour)
-	if st.w != nil && (hour.After(st.hour) || st.w.Size() >= FlowPartBytes || st.w.Blocks() >= flowPartBlocks) {
+	if st.w != nil && (hour.After(st.hour) || st.w.Size() >= FlowPartBytes || st.w.Blocks() >= s.opts.FlowPartBlocks) {
 		s.closeFlowLocked(st, "")
 	}
 	if st.w == nil {

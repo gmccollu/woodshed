@@ -259,12 +259,10 @@ func TestFlowMetadataInEverySegment(t *testing.T) {
 }
 
 // A segment starts a numbered part at the block limit, and every record is
-// still found: once in the parts' blocks, and in the index rows.
+// still found: once in the parts' blocks, and in the index rows, kept and
+// rebuilt by a reindex.
 func TestFlowPartAtBlockLimit(t *testing.T) {
-	old := flowPartBlocks
-	flowPartBlocks = 10
-	t.Cleanup(func() { flowPartBlocks = old })
-	e := newEnv(t, nil)
+	e := newEnv(t, func(o *Options) { o.FlowPartBlocks = 10 })
 	a := ip(9)
 	h := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 	e.clock.Set(h.Add(time.Minute))
@@ -338,6 +336,29 @@ func TestFlowPartAtBlockLimit(t *testing.T) {
 	tot, _ := e.idx.FlowDeviceTotals(bg, nil, h.UnixMilli(), h.Add(time.Hour).UnixMilli())
 	if tot["192.0.2.9"].Records != batches*per {
 		t.Fatalf("minutes %+v", tot)
+	}
+	// A reindex after the store has closed (the open part with it) lists
+	// every part again.
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.s = nil
+	if _, err := e.idx.Reindex(bg, e.dir); err != nil {
+		t.Fatal(err)
+	}
+	segs, err = e.idx.AllFlowSegments(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, closed = 0, 0
+	for _, sg := range segs {
+		recs += sg.Records
+		if sg.Closed {
+			closed++
+		}
+	}
+	if len(segs) != 4 || closed != 4 || recs != batches*per {
+		t.Fatalf("after a reindex: %d segments (%d closed), %d records", len(segs), closed, recs)
 	}
 }
 

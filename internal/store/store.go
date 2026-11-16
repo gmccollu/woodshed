@@ -65,6 +65,7 @@ type Options struct {
 	Index   *index.DB // required; the store doesn't close it
 
 	PartBytes      int64 // close the active file at this size (uncompressed)
+	FlowPartBlocks int   // start a flow segment's next part at this many blocks (tests lower it)
 	RetentionDays  int   // delete compressed files older than this
 	RetentionBytes int64 // delete the oldest compressed files while all logs exceed this
 	// Low-disk guard reserve: keep max(MinFreeBytes, min(MinFreePercent of the
@@ -311,6 +312,7 @@ func Open(opts Options) (*Store, error) {
 		return nil, errors.New("store: Index is required")
 	}
 	setDefault(&opts.PartBytes, DefaultPartBytes)
+	setDefault(&opts.FlowPartBlocks, FlowPartBlocks)
 	setDefault(&opts.RetentionDays, DefaultRetentionDays)
 	setDefault(&opts.RetentionBytes, DefaultRetentionBytes)
 	setDefault(&opts.MinFreeBytes, DefaultMinFreeBytes)
