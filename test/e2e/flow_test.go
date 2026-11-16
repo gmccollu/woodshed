@@ -196,7 +196,9 @@ func TestFlowsEndToEnd(t *testing.T) {
 	}
 
 	// The bundle around the middle phase.
-	half := w1.Sub(w0) / 2
+	// Whole milliseconds, so "before" and "after" cover [w0, w1) exactly (an odd
+	// window would lose half a millisecond at each end).
+	half := (w1.Sub(w0) / 2).Truncate(time.Millisecond)
 	at := w0.Add(half)
 	body := map[string]any{"kind": "bundle", "at": at.Format(time.RFC3339Nano), "before": fmt.Sprintf("%dms", half.Milliseconds()),
 		"after": fmt.Sprintf("%dms", (w1.Sub(w0) - half).Milliseconds()), "active_devices": true}
