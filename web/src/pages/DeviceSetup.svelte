@@ -10,6 +10,7 @@
     VERIFICATION_LABEL,
     WHAT_LABEL,
     activeChoices,
+    formErrors,
     formQuery,
     newSetupForm,
     snippetBody,
@@ -30,12 +31,26 @@
   let snippetError = $state('');
   let errorField = $state('');
   let loading = $state(false);
-  /** The address picker: one of the server's addresses, or "other" for the text box. */
+  /** The address picker: one of the server's addresses, or "other" for the text box. Until the
+   *  user picks one, the request leaves the address out and the picker follows the server's default. */
   let addrPick = $state('');
   let otherAddr = $state('');
+  let addrChosen = $state(false);
 
   const fam = $derived(families.find((f) => f.id === form?.family));
   const choices = $derived(form ? activeChoices(fam, form) : []);
+  const localErrors = $derived(form ? formErrors(fam, form) : {});
+  /** The field with an error, the form's own first, else the server's. */
+  const badField = $derived((Object.keys(localErrors)[0] as string | undefined) ?? errorField);
+  const describedBy = (field: string) => (badField === field ? (field in localErrors ? `setup-err-${field}` : 'setup-error') : undefined);
+  /** A short line for screen readers when the snippet changes (the card itself isn't a live region). */
+  const status = $derived(
+    snippetError
+      ? `Couldn't make the snippet: ${snippetError}`
+      : snippet && fam
+        ? `Snippet for ${fam.label.replaceAll('`', '')}, ${WHAT_LABEL[snippet.what]}, ${TRANSPORT_LABEL[snippet.transport] ?? snippet.transport}: ${VERIFICATION_LABEL[snippet.verification]}.`
+        : '',
+  );
 
   // Open on the family and type in the URL (#/device-setup?family=rsyslog&what=syslog), else the first.
   getSetupFamilies()
@@ -78,7 +93,7 @@
 
   $effect(() => {
     if (!form) return;
-    form.address = addrPick === 'other' ? otherAddr : addrPick;
+    form.address = addrChosen ? (addrPick === 'other' ? otherAddr : addrPick) : '';
   });
 
   // Ask for the snippet whenever the form changes (typing is debounced).
@@ -86,6 +101,7 @@
     if (!form) return;
     const body = snippetBody(fam, form);
     setQuery(formQuery(form));
+    if (Object.keys(formErrors(fam, form)).length) return; // fixed in the form first
     const ctl = new AbortController();
     const timer = setTimeout(async () => {
       loading = true;
@@ -94,7 +110,7 @@
         snippet = s;
         snippetError = '';
         errorField = '';
-        if (!addrPick) addrPick = s.address;
+        if (!addrChosen) addrPick = s.address; // the server's default, which follows the family and transport
       } catch (e) {
         if ((e as Error).name === 'AbortError') return;
         snippetError = (e as Error).message;
@@ -134,15 +150,18 @@
     <section class="card text-muted">Loading…</section>
   {:else}
     <section class="card">
-      <h2 class="card-title">How the device is configured</h2>
-      <div class="fams" role="radiogroup" aria-label="Configuration style">
-        {#each families as f (f.id)}
-          <button type="button" role="radio" aria-checked={form.family === f.id} class="fam" onclick={() => pickFamily(f)}>
-            <span class="font-semibold">{f.label.replaceAll('`', '')}</span>
-            <span class="badge {badgeClass[f.verification]}">{VERIFICATION_LABEL[f.verification]}</span>
-          </button>
-        {/each}
-      </div>
+      <fieldset class="m-0 border-0 p-0">
+        <legend class="card-title">How the device is configured</legend>
+        <div class="fams">
+          {#each families as f (f.id)}
+            <label class="fam" class:on={form.family === f.id}>
+              <input class="sr-only" type="radio" name="setup-family" value={f.id} checked={form.family === f.id} onchange={() => pickFamily(f)} />
+              <span class="font-semibold">{f.label.replaceAll('`', '')}</span>
+              <span class="badge {badgeClass[f.verification]}">{VERIFICATION_LABEL[f.verification]}</span>
+            </label>
+          {/each}
+        </div>
+      </fieldset>
       <ul class="mt-3 mb-0 list-none space-y-1 p-0 text-[13px] text-muted">
         {#each fam.notes as n (n)}<li>{@render rich(n)}</li>{/each}
       </ul>
@@ -150,28 +169,32 @@
 
     <section class="card">
       <div class="grid gap-4 md:grid-cols-2">
-        <div>
-          <h2 class="card-title">What to set up</h2>
-          <div class="seg" role="radiogroup" aria-label="Data type">
+        <fieldset class="m-0 border-0 p-0">
+          <legend class="card-title">What to set up</legend>
+          <div class="seg">
             {#each fam.what as w (w)}
-              <button type="button" role="radio" aria-checked={form.what === w} onclick={() => pickWhat(w)}>{WHAT_LABEL[w]}</button>
+              <label class:on={form.what === w}>
+                <input class="sr-only" type="radio" name="setup-what" value={w} checked={form.what === w} onchange={() => pickWhat(w)} />{WHAT_LABEL[w]}
+              </label>
             {/each}
           </div>
-        </div>
-        <div>
-          <h2 class="card-title">{form.what === 'syslog' || form.what === 'flow' ? 'Transport' : 'SNMP version'}</h2>
-          <div class="seg" role="radiogroup" aria-label="Transport">
+        </fieldset>
+        <fieldset class="m-0 border-0 p-0">
+          <legend class="card-title">{form.what === 'syslog' || form.what === 'flow' ? 'Transport' : 'SNMP version'}</legend>
+          <div class="seg">
             {#each fam.transports[form.what] ?? [] as tr (tr)}
-              <button type="button" role="radio" aria-checked={form.transport === tr} onclick={() => (form!.transport = tr)}>{TRANSPORT_LABEL[tr] ?? tr}</button>
+              <label class:on={form.transport === tr}>
+                <input class="sr-only" type="radio" name="setup-transport" value={tr} checked={form.transport === tr} onchange={() => (form!.transport = tr)} />{TRANSPORT_LABEL[tr] ?? tr}
+              </label>
             {/each}
           </div>
-        </div>
+        </fieldset>
       </div>
 
       <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label class="lab">
           <span>Woodshed's address, as the device reaches it</span>
-          <select class="field" bind:value={addrPick} aria-invalid={errorField === 'address'}>
+          <select class="field" bind:value={addrPick} onchange={() => (addrChosen = true)} aria-invalid={badField === 'address'} aria-describedby={describedBy('address')}>
             {#each snippet?.addresses ?? [] as a (a)}<option value={a}>{a}</option>{/each}
             <option value="other">Another address or name…</option>
           </select>
@@ -179,19 +202,19 @@
         {#if addrPick === 'other'}
           <label class="lab">
             <span>Address or DNS name</span>
-            <input class="field font-mono" bind:value={otherAddr} placeholder="192.0.2.10" spellcheck="false" aria-invalid={errorField === 'address'} />
+            <input class="field font-mono" bind:value={otherAddr} placeholder="192.0.2.10" spellcheck="false" aria-invalid={badField === 'address'} aria-describedby={describedBy('address')} />
           </label>
         {/if}
         {#if choices.includes('source_interface')}
           <label class="lab">
             <span>Device's source interface (optional)</span>
-            <input class="field font-mono" bind:value={form.sourceInterface} placeholder="e.g. mgmt0" spellcheck="false" aria-invalid={errorField === 'source_interface'} />
+            <input class="field font-mono" bind:value={form.sourceInterface} placeholder="e.g. mgmt0" spellcheck="false" aria-invalid={badField === 'source_interface'} aria-describedby={describedBy('source_interface')} />
           </label>
         {/if}
         {#if choices.includes('interface')}
           <label class="lab">
             <span>Interface to watch</span>
-            <input class="field font-mono" bind:value={form.iface} placeholder="e.g. eth0" spellcheck="false" aria-invalid={errorField === 'interface'} />
+            <input class="field font-mono" bind:value={form.iface} placeholder="e.g. eth0" spellcheck="false" aria-invalid={badField === 'interface'} aria-describedby={describedBy('interface')} />
           </label>
         {/if}
         {#if choices.includes('severity')}
@@ -214,13 +237,14 @@
         {#if choices.includes('agent_port')}
           <label class="lab">
             <span>Agent port</span>
-            <input class="field font-mono" bind:value={form.agentPort} placeholder="161" inputmode="numeric" aria-invalid={errorField === 'agent_port'} />
+            <input class="field font-mono" bind:value={form.agentPort} placeholder="161" inputmode="numeric" aria-invalid={badField === 'agent_port'} aria-describedby={describedBy('agent_port')} />
+            {#if localErrors.agent_port}<span class="err" id="setup-err-agent_port">{localErrors.agent_port}</span>{/if}
           </label>
         {/if}
         {#if choices.includes('v3_user')}
           <label class="lab">
             <span>SNMPv3 user name</span>
-            <input class="field font-mono" bind:value={form.v3User} placeholder="&lt;V3-USER&gt;" spellcheck="false" aria-invalid={errorField === 'v3_user'} />
+            <input class="field font-mono" bind:value={form.v3User} placeholder="&lt;V3-USER&gt;" spellcheck="false" aria-invalid={badField === 'v3_user'} aria-describedby={describedBy('v3_user')} />
           </label>
         {/if}
         {#if choices.includes('auth')}
@@ -242,9 +266,12 @@
       </div>
     </section>
 
-    <section class="card" aria-live="polite" aria-busy={loading}>
-      {#if snippetError}
-        <p class="m-0 text-bad-fg" role="alert">{snippetError}</p>
+    <p class="sr-only" role="status">{status}</p>
+    <section class="card" aria-busy={loading}>
+      {#if Object.keys(localErrors).length}
+        <p class="m-0 text-muted">Fix the field marked above to see the snippet.</p>
+      {:else if snippetError}
+        <p class="m-0 text-bad-fg" id="setup-error">{snippetError}</p>
       {:else if snippet}
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div class="min-w-0">
@@ -254,6 +281,7 @@
               </span>
               <span class="text-[13px] text-muted">{verificationText(snippet.verification, snippet.checked_on)}</span>
             </div>
+            {#if snippet.verification_detail}<p class="mt-1 mb-0 max-w-3xl text-[13px] text-muted">{snippet.verification_detail}</p>{/if}
             <p class="mt-2 mb-0 text-[15px] font-semibold">{snippet.does}</p>
           </div>
           <CopyButton text={snippet.text} label="Copy all" name="Copy the whole snippet" />
@@ -316,7 +344,16 @@
     font-size: 14px;
     cursor: pointer;
   }
-  .fam[aria-checked='true'] {
+  .fam:has(input:focus-visible),
+  .seg label:has(input:focus-visible) {
+    outline: 2px solid var(--link);
+    outline-offset: 2px;
+  }
+  .err {
+    font-size: 12.5px;
+    color: var(--bad-fg);
+  }
+  .fam.on {
     background: var(--chip);
     border-color: var(--link);
     box-shadow: var(--shadow-chip);
@@ -354,7 +391,7 @@
     border-radius: 999px;
     padding: 3px;
   }
-  .seg button {
+  .seg label {
     border: 0;
     background: transparent;
     color: var(--fg);
@@ -364,7 +401,7 @@
     font-size: 13.5px;
     cursor: pointer;
   }
-  .seg button[aria-checked='true'] {
+  .seg label.on {
     background: var(--chip);
     font-weight: 600;
     box-shadow: var(--shadow-chip);

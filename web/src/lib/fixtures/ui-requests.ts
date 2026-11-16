@@ -70,15 +70,15 @@ function withPlaceholders<T>(b: T): T {
 
 /** The families the setup page's form needs (only the fields it reads), as GET /api/setup/families serves them. */
 const SETUP_FAMILIES: SetupFamily[] = [
-  { id: 'line-cli', label: '', what: ['syslog', 'trap', 'poll', 'flow'], verification: 'reference', reference: '', notes: [],
-    transports: { syslog: ['udp', 'tcp', 'tls'], trap: ['v2c', 'v3'], poll: ['v2c', 'v3'], flow: ['v9', 'ipfix'] },
-    choices: { syslog: ['source_interface', 'severity', 'facility'], trap: ['source_interface', 'v3_user', 'auth', 'priv'], poll: ['v3_user', 'auth', 'priv'], flow: ['source_interface'] } },
+  { id: 'line-cli', label: '', what: ['syslog', 'trap', 'poll'], verification: 'reference', reference: '', notes: [],
+    transports: { syslog: ['udp', 'tcp', 'tls'], trap: ['v2c', 'v3'], poll: ['v2c', 'v3'], flow: [] },
+    choices: { syslog: ['source_interface', 'severity', 'facility'], trap: ['source_interface', 'v3_user', 'auth', 'priv'], poll: ['v3_user', 'auth', 'priv'], flow: [] } },
   { id: 'rsyslog', label: '', what: ['syslog'], verification: 'tested', reference: '', notes: [],
     transports: { syslog: ['udp', 'tcp', 'tls'] }, choices: { syslog: ['severity', 'facility'] } },
   { id: 'net-snmp', label: '', what: ['trap', 'poll'], verification: 'tested', reference: '', notes: [],
     transports: { trap: ['v2c', 'v3'], poll: ['v2c', 'v3'] },
     choices: { trap: ['v3_user', 'auth', 'priv'], poll: ['agent_port', 'v3_user', 'auth', 'priv'] } },
-  { id: 'softflowd', label: '', what: ['flow'], verification: 'reference', reference: '', notes: [],
+  { id: 'softflowd', label: '', what: ['flow'], verification: 'tested', reference: '', notes: [],
     transports: { flow: ['v9', 'ipfix'] }, choices: { flow: ['interface'] } },
 ];
 

@@ -2212,7 +2212,7 @@ const SHOTS = [
     url: '/?mock_panel=0#/device-setup?family=line-cli&what=syslog&transport=tcp',
     wait: 1500,
     check: `!!document.querySelector('[data-verification=reference]') && document.body.innerText.includes("Reference only: not tested on a device; check your device's documentation.")
-      && document.body.innerText.includes('permit traffic when the log host is down') && document.body.innerText.includes('logging host 10.1.0.50 transport tcp port 514')`,
+      && document.body.innerText.includes('permit traffic when the log host is down') && document.body.innerText.includes('logging host 10.1.0.50 <TCP-OPTION>')`,
   }),
   {
     name: 'device-setup-pick-family',
@@ -2220,10 +2220,28 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/device-setup',
     wait: 1500,
-    act: `[...document.querySelectorAll('button[role=radio]')].find((b) => b.textContent.includes('net-snmp')).click(); await __tick(); await __tick(); await __tick();
-      [...document.querySelectorAll('button[role=radio]')].find((b) => b.textContent.trim() === 'SNMPv3').click();`,
+    act: `[...document.querySelectorAll('label.fam')].find((b) => b.textContent.includes('net-snmp')).click(); await __tick(); await __tick(); await __tick();
+      [...document.querySelectorAll('.seg label')].find((b) => b.textContent.trim() === 'SNMPv3').click();`,
     after: 600,
-    check: `document.body.innerText.includes('trapsess -v 3') && location.hash.includes('family=net-snmp') && !!document.querySelector('[data-verification=tested]')`,
+    // Native radio groups (arrow keys and one tab stop each come with them), a status line rather than a live card.
+    check: `document.body.innerText.includes('trapsess -v 3') && location.hash.includes('family=net-snmp') && !!document.querySelector('[data-verification=tested]')
+      && document.querySelectorAll('input[type=radio][name=setup-family]').length === 6 && document.querySelector('input[name=setup-family]:checked')?.value === 'net-snmp'
+      && ![...document.querySelectorAll('section.card')].some((c) => c.hasAttribute('aria-live')) && document.querySelector('p[role=status]')?.textContent.includes('SNMPv3: Tested')
+      && document.body.innerText.includes('SHA-1 with another user name')`,
+    report: `JSON.stringify({ status: document.querySelector('p[role=status]')?.textContent, radios: document.querySelectorAll('input[name=setup-family]').length,
+      checked: document.querySelector('input[name=setup-family]:checked')?.value, hash: location.hash, trapsess: document.body.innerText.includes('trapsess -v 3') })`,
+  },
+  {
+    name: 'device-setup-agent-port-typo',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device-setup?family=net-snmp&what=poll&transport=v2c',
+    wait: 1500,
+    act: `const inp = document.querySelector('input[inputmode=numeric]'); __set(inp, '16x1');`,
+    after: 800,
+    check: `(() => { const inp = document.querySelector('input[inputmode=numeric]'); const id = inp.getAttribute('aria-describedby');
+      return inp.getAttribute('aria-invalid') === 'true' && id && document.getElementById(id)?.textContent.includes('1 to 65535')
+        && document.body.innerText.includes('Fix the field marked above') && !document.body.innerText.includes('agentaddress udp:161'); })()`,
   },
   {
     // The shared request fixture (src/lib/fixtures/ui-requests.json): every step the forms send, through the mock, must

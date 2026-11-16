@@ -50,6 +50,8 @@ export interface Snippet {
   address: string;
   verification: Verification;
   checked_on?: string;
+  /** Tested snippets: what CI applies, and what it can't. */
+  verification_detail?: string;
   reference: string;
   does: string;
   text: string;
@@ -139,6 +141,16 @@ export function activeChoices(f: SetupFamily | undefined, form: SetupForm): Choi
   return cs.filter((c) => form.transport === 'v3' || !['v3_user', 'auth', 'priv'].includes(c));
 }
 
+/** The form's own errors, by request field, before anything is sent (the server checks the rest). */
+export function formErrors(f: SetupFamily | undefined, form: SetupForm): Partial<Record<Choice | 'address', string>> {
+  const errs: Partial<Record<Choice | 'address', string>> = {};
+  const p = form.agentPort.trim();
+  if (activeChoices(f, form).includes('agent_port') && p !== '' && !(/^\d+$/.test(p) && Number(p) >= 1 && Number(p) <= 65535)) {
+    errs.agent_port = 'The agent port is a number from 1 to 65535.';
+  }
+  return errs;
+}
+
 /** The request body: only the choices that apply, and only when set. */
 export function snippetBody(f: SetupFamily | undefined, form: SetupForm): SnippetBody {
   const b: SnippetBody = { family: form.family, what: form.what };
@@ -152,7 +164,8 @@ export function snippetBody(f: SetupFamily | undefined, form: SetupForm): Snippe
   if (on.has('v3_user') && form.v3User.trim()) b.v3_user = form.v3User.trim();
   if (on.has('auth') && form.auth) b.auth = form.auth;
   if (on.has('priv') && form.priv) b.priv = form.priv;
-  if (on.has('agent_port') && form.agentPort.trim()) b.agent_port = Number(form.agentPort.trim());
+  // Only a valid port is sent (formErrors reports the rest); never a typo turned into the default.
+  if (on.has('agent_port') && form.agentPort.trim() && !formErrors(f, form).agent_port) b.agent_port = Number(form.agentPort.trim());
   return b;
 }
 
