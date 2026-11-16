@@ -19,7 +19,7 @@ import (
 
 func TestFlowSendProto(t *testing.T) {
 	for args, want := range map[string]string{
-		"--proto ipfix --count 3": "ipfix", "--proto=NetFlow9": "netflow9", "-proto netflow5": "netflow5",
+		"--proto ipfix --count 3": "ipfix", "--proto=Flow-V9": "flow-v9", "-proto flow-v5": "flow-v5",
 		"--proto udp": "", "--count 3": "", "-- --proto ipfix": "",
 	} {
 		if got := flowSendProto(strings.Fields(args)); got != want {
@@ -28,7 +28,7 @@ func TestFlowSendProto(t *testing.T) {
 	}
 }
 
-// TestSendFlowCommand sends with `woodshed send --proto netflow9 --events` to
+// TestSendFlowCommand sends with `woodshed send --proto flow-v9 --events` to
 // the test's own socket, and checks the log against what arrived.
 func TestSendFlowCommand(t *testing.T) {
 	ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -55,12 +55,12 @@ func TestSendFlowCommand(t *testing.T) {
 		}
 	}()
 	var out, errb bytes.Buffer
-	code := cmdSend([]string{"--proto", "netflow9", "--port", strconv.Itoa(port), "--count", strconv.Itoa(n), "--events",
+	code := cmdSend([]string{"--proto", "flow-v9", "--port", strconv.Itoa(port), "--count", strconv.Itoa(n), "--events",
 		"--rate", "3000", "--run", "0badcafe", "--log", logPath}, &out, &errb)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	if !strings.Contains(out.String(), "Sent 150 NETFLOW9 records") || !strings.Contains(out.String(), "run 0badcafe") {
+	if !strings.Contains(out.String(), "Sent 150 FLOW-V9 records") || !strings.Contains(out.String(), "run 0badcafe") {
 		t.Errorf("output %q", out.String())
 	}
 	f, err := os.Open(logPath)
@@ -80,7 +80,7 @@ func TestSendFlowCommand(t *testing.T) {
 	if len(logged) != n {
 		t.Fatalf("%d log lines", len(logged))
 	}
-	c := flow.NewCollector(flow.Options{RuleIDIEs: []flow.IEKey{loadgen.RuleIE(loadgen.ProtoNetFlow9)}})
+	c := flow.NewCollector(flow.Options{RuleIDIEs: []flow.IEKey{loadgen.RuleIE(loadgen.ProtoFlowV9)}})
 	seen := 0
 	for seen < n {
 		select {
@@ -99,7 +99,7 @@ func TestSendFlowCommand(t *testing.T) {
 		}
 	}
 	// Usage errors exit 2.
-	if code := cmdSend([]string{"--proto", "netflow5", "--events"}, &out, &errb); code != 2 {
+	if code := cmdSend([]string{"--proto", "flow-v5", "--events"}, &out, &errb); code != 2 {
 		t.Errorf("--events with v5: exit %d", code)
 	}
 }

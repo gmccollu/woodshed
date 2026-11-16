@@ -17,17 +17,17 @@ import (
 	"github.com/gmccollu/woodshed/internal/flow"
 )
 
-// The flow generators behind `woodshed send --proto netflow5|netflow9|ipfix`
+// The flow generators behind `woodshed send --proto flow-v5|flow-v9|ipfix`
 // (SPEC §13.8). Every record carries the run ID and a sequence number, so a
 // test can check that each was stored exactly once:
 //   - IPFIX: enterprise IEs under 32473 (IANA's documentation enterprise
 //     number, as the trap generator's OIDs): FlowRunIE (4 bytes, the run ID's
 //     8 hex digits), FlowSeqIE (8 bytes), FlowRuleIE (4 bytes, --events);
 //     --enterprise-ies adds fillers FlowFillerIE+i (4 bytes each).
-//   - NetFlow v9 has no enterprise numbers, so the same values go in field
+//   - flow v9 has no enterprise numbers, so the same values go in field
 //     types from the vendor range: V9RunType, V9SeqType, V9RuleType and
 //     V9FillerType+i (decided (build, 2026-11-16)).
-//   - NetFlow v5: the sequence number's high 16 bits in src_as and its low 16
+//   - flow v5: the sequence number's high 16 bits in src_as and its low 16
 //     bits in dst_as, and the run ID's last 4 hex digits in the header's
 //     engine_type and engine_id (v5 has no room for the whole run ID).
 // Addresses are from 10/8 and the documentation ranges.
@@ -47,17 +47,17 @@ const (
 
 // Flow protocols.
 const (
-	ProtoNetFlow5 = "netflow5"
-	ProtoNetFlow9 = "netflow9"
-	ProtoIPFIX    = "ipfix"
+	ProtoFlowV5 = "flow-v5"
+	ProtoFlowV9 = "flow-v9"
+	ProtoIPFIX  = "ipfix"
 )
 
 // IsFlowProto reports whether p is one of the flow protocols.
-func IsFlowProto(p string) bool { return p == ProtoNetFlow5 || p == ProtoNetFlow9 || p == ProtoIPFIX }
+func IsFlowProto(p string) bool { return p == ProtoFlowV5 || p == ProtoFlowV9 || p == ProtoIPFIX }
 
 // FlowOptions configures a flow generator.
 type FlowOptions struct {
-	Proto  string // ProtoNetFlow5, ProtoNetFlow9 or ProtoIPFIX
+	Proto  string // ProtoFlowV5, ProtoFlowV9 or ProtoIPFIX
 	Addr   string // host:port (SendFlows)
 	Source string // local IP to send from (SendFlows)
 
@@ -105,9 +105,9 @@ type FlowResult struct {
 
 func (o *FlowOptions) defaults() error {
 	switch o.Proto {
-	case ProtoNetFlow5, ProtoNetFlow9, ProtoIPFIX:
+	case ProtoFlowV5, ProtoFlowV9, ProtoIPFIX:
 	default:
-		return fmt.Errorf("loadgen: flow proto must be %s, %s or %s, not %q", ProtoNetFlow5, ProtoNetFlow9, ProtoIPFIX, o.Proto)
+		return fmt.Errorf("loadgen: flow proto must be %s, %s or %s, not %q", ProtoFlowV5, ProtoFlowV9, ProtoIPFIX, o.Proto)
 	}
 	if o.RunID == "" {
 		o.RunID = NewRunID()
@@ -118,8 +118,8 @@ func (o *FlowOptions) defaults() error {
 	if o.RecordsPerPacket <= 0 {
 		o.RecordsPerPacket = 30
 	}
-	if o.Proto == ProtoNetFlow5 && o.RecordsPerPacket > 30 {
-		return errors.New("loadgen: NetFlow v5 carries at most 30 records a packet")
+	if o.Proto == ProtoFlowV5 && o.RecordsPerPacket > 30 {
+		return errors.New("loadgen: flow v5 carries at most 30 records a packet")
 	}
 	if o.RecordsPerPacket > 1000 {
 		return errors.New("loadgen: at most 1000 records a packet")
@@ -130,7 +130,7 @@ func (o *FlowOptions) defaults() error {
 	if o.Domains > 1000 {
 		return errors.New("loadgen: at most 1000 domains")
 	}
-	if o.Sampling < 0 || o.Sampling > 1<<14-1 && o.Proto == ProtoNetFlow5 {
+	if o.Sampling < 0 || o.Sampling > 1<<14-1 && o.Proto == ProtoFlowV5 {
 		return errors.New("loadgen: v5 sampling is at most 16383")
 	}
 	if o.SampledDomains <= 0 || o.SampledDomains > o.Domains {
@@ -142,8 +142,8 @@ func (o *FlowOptions) defaults() error {
 	if o.EnterpriseIEs < 0 || o.EnterpriseIEs > 100 {
 		return errors.New("loadgen: enterprise IEs are 0 to 100")
 	}
-	if (o.Events || o.EnterpriseIEs > 0) && o.Proto == ProtoNetFlow5 {
-		return errors.New("loadgen: --events and --enterprise-ies need netflow9 or ipfix")
+	if (o.Events || o.EnterpriseIEs > 0) && o.Proto == ProtoFlowV5 {
+		return errors.New("loadgen: --events and --enterprise-ies need flow-v9 or ipfix")
 	}
 	if o.Biflow && o.Proto != ProtoIPFIX {
 		return errors.New("loadgen: --biflow needs ipfix (RFC 5103 uses enterprise IEs)")
@@ -226,7 +226,7 @@ func NewFlowGen(o FlowOptions, start time.Time) (*FlowGen, error) {
 		g.dom = append(g.dom, d)
 	}
 	switch o.Proto {
-	case ProtoNetFlow9:
+	case ProtoFlowV9:
 		g.b = flow.NewBuilder(flow.V9)
 	case ProtoIPFIX:
 		g.b = flow.NewBuilder(flow.IPFIX)
@@ -268,7 +268,7 @@ func (g *FlowGen) Next(now time.Time) ([]byte, []Expected) {
 	g.nextDom = (g.nextDom + 1) % len(g.dom)
 	d := &g.dom[di]
 	n := min(g.o.RecordsPerPacket, g.o.Count-g.sent)
-	if g.o.Proto == ProtoNetFlow5 {
+	if g.o.Proto == ProtoFlowV5 {
 		return g.v5(now, d, n)
 	}
 	tmplDue := now.Sub(g.start) >= g.o.TemplateFirstDelay && (!d.tmplSent || d.packets%g.o.TemplateEvery == 0)
@@ -290,7 +290,7 @@ func (g *FlowGen) Next(now time.Time) ([]byte, []Expected) {
 	h := flow.Header{ExportTime: uint32(now.Unix()), Seq: d.hdrSeq, Domain: d.id,
 		SysUptime: uint32(now.Truncate(time.Second).Sub(g.boot).Milliseconds())}
 	pkt := g.b.Message(h)
-	if g.o.Proto == ProtoNetFlow9 {
+	if g.o.Proto == ProtoFlowV9 {
 		d.hdrSeq++
 	} else {
 		d.hdrSeq += uint32(n + optRecs)
@@ -299,7 +299,7 @@ func (g *FlowGen) Next(now time.Time) ([]byte, []Expected) {
 	return pkt, exp
 }
 
-func (g *FlowGen) v9() bool { return g.o.Proto == ProtoNetFlow9 }
+func (g *FlowGen) v9() bool { return g.o.Proto == ProtoFlowV9 }
 
 // ie is a generator field: the IPFIX enterprise IE, or the v9 vendor type.
 func (g *FlowGen) ie(id uint16, n uint16) flow.TemplateField {
@@ -601,7 +601,7 @@ func (g *FlowGen) ruleExtra(rule uint32) flow.Extra {
 // RuleIE is the IE the generator's rule IDs are in, as listeners.flow.rule_id_ies
 // takes it ("32473:3" for IPFIX, "0:40003" for v9).
 func RuleIE(proto string) flow.IEKey {
-	if proto == ProtoNetFlow9 {
+	if proto == ProtoFlowV9 {
 		return flow.IEKey{ID: V9RuleType}
 	}
 	return flow.IEKey{PEN: flow.PENDocumentation, ID: FlowRuleIE}

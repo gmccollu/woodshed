@@ -5,7 +5,7 @@ import (
 	"net/netip"
 )
 
-// Builder assembles NetFlow v9 and IPFIX messages, for `woodshed send` and
+// Builder assembles flow v9 and IPFIX messages, for `woodshed send` and
 // tests: templates, options templates, withdrawals and data records, in the
 // order they're added, each run of one kind in one set.
 type Builder struct {
@@ -161,7 +161,7 @@ func (b *Builder) Message(h Header) []byte {
 	return m
 }
 
-// V5Header is a NetFlow v5 header's values.
+// V5Header is a flow v5 header's values.
 type V5Header struct {
 	SysUptime        uint32
 	UnixSecs, Nsecs  uint32
@@ -171,7 +171,7 @@ type V5Header struct {
 	SamplingInterval uint16 // mode in the top 2 bits, interval below
 }
 
-// V5Record is one NetFlow v5 record's values.
+// V5Record is one flow v5 record's values.
 type V5Record struct {
 	Src, Dst, NextHop netip.Addr // IPv4
 	In, Out           uint16
@@ -184,7 +184,7 @@ type V5Record struct {
 	SrcMask, DstMask  uint8
 }
 
-// EncodeV5 builds a NetFlow v5 packet.
+// EncodeV5 builds a flow v5 packet.
 func EncodeV5(h V5Header, recs []V5Record) []byte {
 	b := make([]byte, v5Header, v5Header+len(recs)*v5Record)
 	binary.BigEndian.PutUint16(b, V5)

@@ -64,7 +64,7 @@ type flowLogLine struct {
 
 func cmdSendFlow(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("send", "", `
-Send test flow records (NetFlow v5, NetFlow v9 or IPFIX over UDP) to a flow
+Send test flow records (flow v5, flow v9 (RFC 3954) or IPFIX (RFC 7011) over UDP) to a flow
 collector (Woodshed or any other). Every record carries the run ID and a
 sequence number: in IPFIX as enterprise IEs under 32473 (IANA's documentation
 number), in v9 as field types 40001 and 40002, in v5 in src_as and dst_as
@@ -73,13 +73,13 @@ digits). Addresses are from 10/8 and the documentation ranges.
 
 Examples:
   woodshed send --proto ipfix --count 1000                1,000 IPFIX records to 127.0.0.1:4739
-  woodshed send --proto netflow9 --port 12055 --rate 5000 --duration 60s
+  woodshed send --proto flow-v9 --port 12055 --rate 5000 --duration 60s
   woodshed send --proto ipfix --domains 2 --sampling 100 --sampled-domains 1
   woodshed send --proto ipfix --events --deny-ratio 0.2   firewall-event records (created, deleted, denied)
   woodshed send --proto ipfix --template-first-delay 5s   data before its template (it waits, then decodes late)`, stderr)
 	host := fs.String("host", "127.0.0.1", "collector `host` name or IP")
-	port := fs.Int("port", 0, "collector `port` (default 2055 for netflow5 and netflow9, 4739 for ipfix)")
-	proto := fs.String("proto", "", "`protocol`: netflow5, netflow9 or ipfix")
+	port := fs.Int("port", 0, "collector `port` (default 2055, the flow port, for flow-v5 and flow-v9; 4739 for ipfix)")
+	proto := fs.String("proto", "", "`protocol`: flow-v5, flow-v9 or ipfix")
 	count := fs.Int("count", 0, "`number` of records (default 1, or rate x duration)")
 	rate := fs.Float64("rate", 0, "`records` per second (0: as fast as possible)")
 	duration := fs.Duration("duration", 0, "send at --rate for this `duration`, instead of --count")
@@ -106,7 +106,7 @@ Examples:
 	}
 	*proto = strings.ToLower(*proto)
 	if !loadgen.IsFlowProto(*proto) {
-		return usageErr(fmt.Errorf("--proto must be netflow5, netflow9 or ipfix, not %q", *proto))
+		return usageErr(fmt.Errorf("--proto must be flow-v5, flow-v9 or ipfix, not %q", *proto))
 	}
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })

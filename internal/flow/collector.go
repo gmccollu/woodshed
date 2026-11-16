@@ -114,6 +114,9 @@ type domainState struct {
 	samplers     map[uint32]uint32 // sampler or selector ID -> rate
 	seq          seqState
 	avgPerPkt    float64 // records per packet (v9 loss estimate)
+	// opts are the options records kept raw (options.go), by template and
+	// scope values, oldest version first.
+	opts map[string][]*OptionsData
 }
 
 // exporter is one exporter address's state.
@@ -122,9 +125,13 @@ type exporter struct {
 	domains map[tkey]*domainState
 	ifNames map[uint64]string // (domain<<32 | ifindex) -> name
 	meta    int               // metadata bytes held
+	rawOpt  int               // of those, raw options bytes (also counted in Collector.rawOptBytes)
 	elem    *list.Element     // in Collector.expLRU
+	metaVer atomic.Uint64     // rises with every metadata change (Metadata)
 
-	pending atomic.Int64 // bytes waiting for templates
+	pending    atomic.Int64         // bytes waiting for templates
+	pendOldest atomic.Int64         // received time (unix ms) of the oldest of them; 0 when none
+	pkeys      map[pendKey]struct{} // the pending buffer's keys of this exporter (Decode's goroutine)
 
 	cmu       sync.Mutex // counts and the 24 h ring
 	counts    Counts
@@ -174,7 +181,7 @@ func (e *exporter) count(at int64, c Counts) {
 	e.cmu.Unlock()
 }
 
-// Collector decodes NetFlow v5, v9 and IPFIX datagrams. Decode and Expire
+// Collector decodes flow v5, v9 and IPFIX datagrams. Decode and Expire
 // must be called from one goroutine; Stats, Templates and SetOptions are safe
 // from any.
 type Collector struct {
@@ -188,6 +195,8 @@ type Collector struct {
 	nTmpl     int
 	tmplBytes int
 	metaBytes int
+	// rawOptBytes are the raw options records' bytes (within maxRawOptBytes).
+	rawOptBytes int
 
 	pend      pendingBuf
 	scratch   Record
@@ -248,6 +257,7 @@ func (c *Collector) dropExporterLocked(e *exporter) {
 		}
 	}
 	c.metaBytes -= e.meta
+	c.rawOptBytes -= e.rawOpt
 	c.pend.dropExporter(e)
 	c.expLRU.Remove(e.elem)
 	delete(c.exporters, e.addr)
@@ -385,6 +395,7 @@ func (c *Collector) setIfName(e *exporter, domain, ifindex uint32, name string) 
 		delete(e.ifNames, k)
 		e.meta -= len(old) + 32
 		c.metaBytes -= len(old) + 32
+		e.metaVer.Add(1)
 		return
 	}
 	if c.metaBytes+delta > maxMetaBytes {
@@ -393,6 +404,7 @@ func (c *Collector) setIfName(e *exporter, domain, ifindex uint32, name string) 
 	e.ifNames[k] = name
 	e.meta += delta
 	c.metaBytes += delta
+	e.metaVer.Add(1)
 }
 
 // ifName returns the name of an interface: the domain's own, else any
@@ -491,7 +503,31 @@ func (p *pendingBuf) add(s *pendSet) {
 	p.byKey[s.key] = append(p.byKey[s.key], s)
 	n := p.size(s)
 	p.bytes += n
-	s.key.e.pending.Add(int64(n))
+	e := s.key.e
+	e.pending.Add(int64(n))
+	if e.pkeys == nil {
+		e.pkeys = map[pendKey]struct{}{}
+	}
+	e.pkeys[s.key] = struct{}{}
+	if o := e.pendOldest.Load(); o == 0 || s.received < o {
+		e.pendOldest.Store(max(s.received, 1))
+	}
+}
+
+// oldestOf recomputes an exporter's oldest pending received time.
+func (p *pendingBuf) oldestOf(e *exporter) {
+	var o int64
+	for k := range e.pkeys {
+		for _, x := range p.byKey[k] {
+			if o == 0 || x.received < o {
+				o = x.received
+			}
+		}
+	}
+	if o != 0 {
+		o = max(o, 1)
+	}
+	e.pendOldest.Store(o)
 }
 
 func (p *pendingBuf) remove(s *pendSet) {
@@ -511,8 +547,12 @@ func (p *pendingBuf) remove(s *pendSet) {
 	}
 	if len(l) == 0 {
 		delete(p.byKey, s.key)
+		delete(s.key.e.pkeys, s.key)
 	} else {
 		p.byKey[s.key] = l
+	}
+	if e := s.key.e; max(s.received, 1) <= e.pendOldest.Load() || len(e.pkeys) == 0 {
+		p.oldestOf(e)
 	}
 }
 
@@ -575,11 +615,16 @@ type ExporterStats struct {
 	Addr         netip.Addr    `json:"-"`
 	Domains      []DomainStats `json:"domains"`
 	PendingBytes int64         `json:"pending_bytes"`
-	Counts       Counts        `json:"counts"`     // since the collector started
-	Counts24h    Counts        `json:"counts_24h"` // the last 24 hours (by hour)
-	ClockSkewMs  int64         `json:"clock_skew_ms"`
-	TimeSource   string        `json:"time_source"` // "exporter" or "received"
-	LastHeard    time.Time     `json:"-"`
+	// PendingOldest is the received time of the oldest data still waiting
+	// for its template (zero when none), for the flow_templates banner.
+	PendingOldest time.Time `json:"pending_oldest"`
+	// OptionsRaw counts the options records kept raw (Options).
+	OptionsRaw  int       `json:"options_raw"`
+	Counts      Counts    `json:"counts"`     // since the collector started
+	Counts24h   Counts    `json:"counts_24h"` // the last 24 hours (by hour)
+	ClockSkewMs int64     `json:"clock_skew_ms"`
+	TimeSource  string    `json:"time_source"` // "exporter" or "received"
+	LastHeard   time.Time `json:"-"`
 }
 
 // Stats returns every exporter's state, by address.
@@ -594,6 +639,9 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 		if e.skewed.Load() {
 			st.TimeSource = TimeReceived.String()
 		}
+		if o := e.pendOldest.Load(); o > 0 && st.PendingBytes > 0 {
+			st.PendingOldest = time.UnixMilli(o).UTC()
+		}
 		byID := map[uint32]*DomainStats{}
 		for _, d := range e.domains {
 			ds := byID[d.key.domain]
@@ -602,6 +650,9 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 				byID[d.key.domain] = ds
 			}
 			ds.Templates += len(d.templates)
+			for _, h := range d.opts {
+				st.OptionsRaw += len(h)
+			}
 			if d.lastTemplate > 0 && time.UnixMilli(d.lastTemplate).After(ds.LastTemplate) {
 				ds.LastTemplate = time.UnixMilli(d.lastTemplate).UTC()
 			}

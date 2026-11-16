@@ -1,4 +1,4 @@
-// Package flow is Woodshed's NetFlow v5, NetFlow v9 and IPFIX collector
+// Package flow is Woodshed's flow v5, flow v9 (RFC 3954) and IPFIX (RFC 7011) collector
 // (SPEC §13.1): the decoders, the template cache, the exporter metadata from
 // options data, the buffer for data that arrives before its template, and the
 // record every other part of the flow type works with (this file).
