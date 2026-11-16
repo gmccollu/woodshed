@@ -2894,9 +2894,9 @@ the first bench, which records the measured numbers here:
     1,000,000 keys.
   - **Plans and the writer (build, 2026-11-16, fourth and fifth rounds;** decisions 56 and 57; peak heap measured by
     the tests on the build machine):
-    - A week over 50 exporters (8,400 segments; 126,000 and 504,000 blocks): a top-N 23–30 MiB, a search page
-      16–24 MiB (`TestWeekPlanBounded`, ceiling 192 MiB, and 4 times the blocks may not add 16 MiB). A minute's
-      window over 300 exporters' 3,600-block segments: 579 MiB → 15 MiB over closed segments, 730 → 28 MiB over open
+    - A week over 50 exporters (8,400 segments; 126,000 and 504,000 blocks): a top-N 10–23 MiB, a search page
+      6–16 MiB (`TestWeekPlanBounded`, ceiling 192 MiB, and 4 times the blocks may not add 16 MiB). A minute's
+      window over 300 exporters' 3,600-block segments: 579 MiB → 19 MiB over closed segments, 730 → 21 MiB over open
       ones (`TestNarrowWindowPlanBounded`, ceiling 64 MiB).
     - The writer over an hour of ingest (`internal/flowseg/hourmem_test.go`: a simulated store, real headers of
       loadgen's size, blocks as long as 20 bytes a record, so a busy exporter's hour is 14 or 53 parts of 256 MiB),
@@ -3195,7 +3195,7 @@ Made while building it, each **decided (build, 2026-11-16)**:
       entries loaded or 256 segments**, always a whole segment: every block and raw chunk of a loaded segment counts,
       in the window or not, since its footer (or snapshot) holds them all, and a segment counts one more for itself.
       Counting only the window's blocks let a minute over 300 exporters' hour segments load 273 of them a batch
-      (579 MiB closed, 730 MiB open; 15 and 28 MiB now), and raw-only segments without limit. A closed segment with
+      (579 MiB closed, 730 MiB open; 19 and 21 MiB now), and raw-only segments without limit. A closed segment with
       nothing in the window closes its file as soon as it's planned; the others hold one until their blocks are read.
     - A batch's bytes (472 a directory entry, 64 a planned block) are charged to decision 51's 128 MiB pool until the
       next batch, or until the query or its saved state ends, so saved continuations' plans count with the tables. A
