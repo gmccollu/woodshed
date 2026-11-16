@@ -297,7 +297,7 @@ func TestBundleCLIMatchesQueue(t *testing.T) {
 		lines[2] != "  2026-11-14 09:12:00 to 2026-11-14 09:52:00 UTC: 122 records from 2 devices (syslog, SNMP traps)" ||
 		lines[3] != "  edge-fw-01 (192.0.2.1), group HQ: syslog 80, SNMP traps 2, reboots 1, dropped 0, truncated 0" ||
 		lines[4] != "  192.0.2.2: syslog 40, SNMP traps 0, reboots 0, dropped 0, truncated 0" ||
-		lines[5] != "  gaps: none (Woodshed and its listeners were up the whole window)" {
+		lines[5] != "  gaps: none of 1 s or more (Woodshed and its listeners were up the whole window)" {
 		t.Errorf("stdout:\n%s", stdout)
 	}
 	if !strings.Contains(string(cli["README.txt"]), "  Reboots      1: 09:30:58.250 (coldStart trap)\n") ||

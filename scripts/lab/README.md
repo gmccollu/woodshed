@@ -64,5 +64,13 @@ the verifyseq JSON lines and the samples.
 - The stress CPU figure is the service's CPU time over the step's sampling window, in % of one core (400% = all 4).
 - On Windows, the hand-run exe is started as a scheduled task, because OpenSSH ends a session's child processes
   when it closes.
+- `wl-send --proto tls --ca FILE` sends over TLS checking the server against a downloaded CA; `--proto trap` sends SNMP
+  traps or informs (`--snmp-version`, `--inform`, `--user`, `--auth`, `--priv`, `--key-ext`). Communities and
+  passphrases are only ever read by `woodshed send` from files (`--community-file`, `--auth-pass-file`,
+  `--priv-pass-file`), which must be regular files under `/opt/woodpile-lab/stage/`. For informs the WLSEND line adds the
+  answered and timed-out counts and the worst sender's round trips. Woodshed answers at most 100 informs a second per
+  source address, so an inform step above 100/s per sender times out by design.
+- `remote/labcheck.py` (Linux VMs, read-only): `secret-scan` (needles on stdin), `window` (an export or bundle zip
+  against its window and the data dir) and `missing` (a run's missing numbers, mapped to send times).
 - `remote/linux-lab.sh` and `remote/win-lab.ps1` are the VM-side halves; `wl stage` copies them with verifyseq,
   the package and the portable binary.

@@ -144,9 +144,9 @@ func TestSendErrors(t *testing.T) {
 			t.Errorf("%+v accepted", o)
 		}
 	}
-	// Nothing listening on TCP: a dial error.
-	_, _, addr := startListener(t, "udp") // a free-ish port number for TCP
-	if _, err := Send(ctx, SendOptions{Addr: addr, Proto: "tcp", Count: 1}); err == nil {
+	// Nothing listening on TCP: a dial error. Port 1 (tcpmux) is never served on a test machine; reusing a UDP
+	// listener's port number for TCP flaked on Windows, where another parallel test can hold that TCP port.
+	if _, err := Send(ctx, SendOptions{Addr: "127.0.0.1:1", Proto: "tcp", Count: 1}); err == nil {
 		t.Error("TCP send to a closed port succeeded")
 	}
 }

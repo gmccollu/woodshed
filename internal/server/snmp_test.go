@@ -64,12 +64,19 @@ func startLogged(t *testing.T, cfgPath string, buf *syncBuf) *running {
 // freeUDP returns a free UDP port on 127.0.0.1.
 func freeUDP(t *testing.T) int {
 	t.Helper()
-	c, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 100 {
+		c, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := c.LocalAddr().(*net.UDPAddr).Port
+		c.Close()
+		if claimPort(port) { // never one freePort or freeUDP already returned
+			return port
+		}
 	}
-	defer c.Close()
-	return c.LocalAddr().(*net.UDPAddr).Port
+	t.Fatal("no free UDP port")
+	return 0
 }
 
 // The trap receiver end to end, in process (SPEC §11.6): v1, v2c and v3 traps
@@ -123,6 +130,9 @@ func TestTrapsEndToEndInProcess(t *testing.T) {
 		rate := 2000.0
 		if rn.to.Inform {
 			rate = 60 // under the reply limit (100 a second per source): every inform from 127.0.0.1
+			// Each Response follows its record's write; a slow disk under load
+			// delayed all 50 past the 2 s default. A late answer only costs time.
+			rn.to.Timeout = 10 * time.Second
 		}
 		res, err := loadgen.Send(ctx, loadgen.SendOptions{Addr: addr, Proto: "trap", Count: rn.n, Rate: rate, Trap: rn.to})
 		if err != nil {
@@ -176,8 +186,14 @@ func TestTrapsEndToEndInProcess(t *testing.T) {
 	if f := page.Results[0].Fields; page.Results[0].Type != "trap" || f["version"] != "3" || f["status"] != "ok" {
 		t.Fatalf("result %+v", page.Results[0])
 	}
+	// The wrong-passphrase traps were sent last and nothing above waited for them:
+	// wait until all 5 are indexed (the 270 can be in before them).
 	q = url.Values{"type": {"trap"}, "status": {"auth_failed"}}
-	r.do(t, "GET", "/api/search?"+q.Encode(), nil, &page)
+	waitFor(t, "the auth_failed traps in the index", func() bool {
+		page.Results = nil
+		r.do(t, "GET", "/api/search?"+q.Encode(), nil, &page)
+		return len(page.Results) >= 5
+	})
 	if len(page.Results) != 5 || strings.Contains(page.Results[0].Raw, "vb=") {
 		t.Fatalf("auth_failed: %d %+v", len(page.Results), page.Results)
 	}
@@ -342,6 +358,17 @@ func TestSNMPUsersAPI(t *testing.T) {
 	if bytes.Contains(raw, []byte(pass)) {
 		t.Fatal("a passphrase in the list")
 	}
+	// A GET -> PUT round trip of the object as GET returns it (read-only fields included) is accepted.
+	for _, got := range list {
+		var back api.SNMPUser
+		if code := r.do(t, "PUT", "/api/snmp/users/"+got.Name, got, &back); code != 200 || back.Name != got.Name || back.Level != got.Level {
+			t.Errorf("round trip of %s: %d %+v", got.Name, code, back)
+		}
+	}
+	// An unknown field is still refused.
+	if code := r.do(t, "PUT", "/api/snmp/users/ops", map[string]any{"auth": "sha", "lvl": "x"}, nil); code != 400 {
+		t.Errorf("unknown field: %d, want 400", code)
+	}
 	if code := r.do(t, "DELETE", "/api/snmp/users/ops", nil, nil); code != 204 {
 		t.Fatalf("delete %d", code)
 	}
@@ -372,7 +399,9 @@ func TestInformReplyLimit(t *testing.T) {
 	})
 	r := start(t, cfgPath)
 	res, err := loadgen.Send(context.Background(), loadgen.SendOptions{Addr: fmt.Sprintf("127.0.0.1:%d", snmpPort), Proto: "trap",
-		Count: 400, Trap: loadgen.TrapOptions{Version: "2c", Inform: true, Timeout: 500 * time.Millisecond}})
+		// 2 s: a Response that arrives after the timeout counts as answered on the
+		// server and timed out here (a starved runner reached ~500 ms round trips).
+		Count: 400, Trap: loadgen.TrapOptions{Version: "2c", Inform: true, Timeout: 2 * time.Second}})
 	if err != nil {
 		t.Fatal(err)
 	}

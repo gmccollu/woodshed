@@ -828,3 +828,75 @@ func TestFields(t *testing.T) {
 		t.Error("blank values make a filter")
 	}
 }
+
+// A file deleted (retention) between two pages while the cursor holds a line
+// of it as the stream's next one: the next page goes on with the following file
+// and returns everything else exactly once. An oldest-first search used to keep
+// the "pending" line across the move past the gone file, so a deleted last
+// file panicked in encodeCursor (index out of range; seen in
+// TestSearchWhileWriting under load). The middle file is the same path with a
+// next file to go on to.
+func TestPendingFileGoneBetweenPages(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, 3, 300)
+	files, _ := f.idx.Files(bg, model.DeviceID(devB))
+	if len(files) < 3 {
+		t.Fatalf("%d files for %s", len(files), devB)
+	}
+	for _, vi := range []int{len(files) - 1, len(files) / 2} {
+		victim := files[vi]
+		q := Query{Filter: Filter{From: f.day0, To: f.day0.Add(72 * time.Hour)}, Asc: true, Limit: 7}
+		var got []Line
+		removed := false
+		for n := 0; ; n++ {
+			p, err := f.eng.Search(bg, q)
+			if err != nil {
+				t.Fatalf("victim %d page %d: %v", vi, n, err)
+			}
+			got = append(got, p.Results...)
+			if p.NextCursor == "" || n > 10000 {
+				break
+			}
+			if !removed {
+				cs, err := f.eng.decodeCursor(p.NextCursor, q.binding())
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, c := range cs.streams {
+					if c.fileID == victim.ID && c.head && c.pos >= 0 {
+						if err := os.Remove(filepath.Join(f.dir, filepath.FromSlash(victim.Path))); err != nil {
+							t.Fatal(err)
+						}
+						removed = true
+					}
+				}
+			}
+			q.Cursor = p.NextCursor
+		}
+		if !removed {
+			t.Fatalf("victim %d: no page ended with a line of it pending", vi)
+		}
+		// What was returned before the removal stays; nothing of the victim after
+		// it; everything else once, in order.
+		var want []rec
+		gotVictim := 0
+		for _, l := range got {
+			if id, _, _, _ := decodeRef(l.Ref); id == victim.ID {
+				gotVictim++
+			}
+		}
+		seenVictim := 0
+		for _, r := range f.expect(Query{Filter: q.Filter, Asc: true}) {
+			if r.dev == victim.DeviceID && r.ms >= victim.FirstReceived.UnixMilli() && r.ms <= victim.LastReceived.UnixMilli() {
+				if seenVictim >= gotVictim {
+					continue
+				}
+				seenVictim++
+			}
+			want = append(want, r)
+		}
+		same(t, fmt.Sprintf("victim %d", vi), got, want)
+		f = newFixture(t, 3, 300) // the next victim on a whole fixture
+		files, _ = f.idx.Files(bg, model.DeviceID(devB))
+	}
+}

@@ -1,8 +1,12 @@
 # Woodshed
 
-A syslog server for Windows, macOS and Linux. Install it, point your devices at it, and it keeps every message as
-plain text files (one folder per device, one file per day) within a disk budget. There's a web UI to watch the live
-tail, search, and export a zip for whoever needs the logs.
+A syslog and SNMP trap collector for the box on site. When something breaks, pick the moment and how far before and
+after, and get one zip with every device's logs, traps and polled counters for that window: checksums, a summary per
+device (counts by severity, first and last message, reboots) and any gaps where Woodshed wasn't running. It installs in a minute on
+Windows, macOS or Linux.
+
+Underneath, it keeps every message as plain text files (one folder per device, one file per day) within a disk
+budget, with a web UI to watch the live tail and search, and `woodshed search` / `woodshed bundle` for the terminal.
 
 ![demo](docs/demo.gif)
 
@@ -72,11 +76,13 @@ design), [docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTI
 
 ## Known issues
 
-As of 1.1.0 (details in the [CHANGELOG](CHANGELOG.md)):
+As of 1.2.0 (details in the [CHANGELOG](CHANGELOG.md)):
 
 - The installers aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask once.
 - On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
 - On non-English Windows the "TLS firewall rule is off" banner doesn't appear; `woodshed tls on` still turns the rule on.
+- On some Windows machines, especially with endpoint protection, CPU use at moderate syslog rates is much higher than on
+  other systems. Nothing is lost; the cause is being traced.
 
 ## Features
 

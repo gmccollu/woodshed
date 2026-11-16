@@ -65,16 +65,41 @@ func freePort(t *testing.T) int {
 			u.Close()
 			if err == nil {
 				l.Close()
-				return port
+				if claimPort(port) {
+					return port
+				}
 			}
 			continue
 		}
-		if port := 20000 + rand.IntN(20000); both(port) {
+		if port := 20000 + rand.IntN(20000); both(port) && claimPort(port) {
 			return port
 		}
 	}
 	t.Fatal("no free port")
 	return 0
+}
+
+// handedOut holds every port freePort and freeUDP have returned in this test
+// binary. Each one is closed again before the server binds it, so without this
+// two calls in one test (syslog and TLS, syslog and SNMP) can return the same
+// number and the second listener fails to bind.
+var handedOut struct {
+	sync.Mutex
+	ports map[int]bool
+}
+
+// claimPort reports whether port hadn't been handed out yet, and marks it.
+func claimPort(port int) bool {
+	handedOut.Lock()
+	defer handedOut.Unlock()
+	if handedOut.ports == nil {
+		handedOut.ports = map[int]bool{}
+	}
+	if handedOut.ports[port] {
+		return false
+	}
+	handedOut.ports[port] = true
+	return true
 }
 
 // writeConfig writes a config for a test server on 127.0.0.1 and returns its path.

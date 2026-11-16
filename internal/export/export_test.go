@@ -357,12 +357,22 @@ func TestExportZipContents(t *testing.T) {
 	if zipTool(t, m, in.ID) {
 		t.Log("unzip -t: ok")
 	}
-	evs, _ := e.idx.Events(bg, time.Time{}, time.Time{}, 0)
+	// The "ready" event is recorded after the state turns Ready (export.go: save,
+	// unlock, then m.event), so wait for it.
 	var kinds []string
-	for _, x := range evs {
-		if x.Kind == index.KindExport {
-			kinds = append(kinds, x.Text)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		evs, _ := e.idx.Events(bg, time.Time{}, time.Time{}, 0)
+		kinds = kinds[:0]
+		for _, x := range evs {
+			if x.Kind == index.KindExport {
+				kinds = append(kinds, x.Text)
+			}
 		}
+		if len(kinds) >= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if len(kinds) != 2 || !strings.Contains(kinds[0], "queued") || !strings.Contains(kinds[1], "ready") {
 		t.Errorf("export events %q", kinds)

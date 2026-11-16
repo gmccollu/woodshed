@@ -116,13 +116,7 @@ func putBuf(b []byte) {
 // appendLocked buffers one message, rotating first if the day changed or the part
 // is full.
 func (d *device) appendLocked(rec time.Time, m *model.Message) error {
-	day := logfile.DayOf(rec)
-	if day < d.minDay {
-		day = d.minDay
-	}
-	if d.day != "" && day < d.day {
-		day = d.day // late message after a rotation: it keeps its own timestamp
-	}
+	day := d.dayFor(rec)
 	if d.day != "" && day > d.day {
 		d.rotateLocked(rotMidnight)
 	}
@@ -143,8 +137,7 @@ func (d *device) appendLocked(rec time.Time, m *model.Message) error {
 	start := len(d.buf)
 	d.buf = logfile.AppendLine(d.buf, rec, d.addr, m.Raw)
 	n := int64(len(d.buf) - start)
-	if d.p.size > 0 && d.p.size+n > d.s.partBytes.Load() &&
-		(d.renameRetry.IsZero() || !d.s.clock().Before(d.renameRetry)) {
+	if d.sizeRotationDue(n) {
 		line := append([]byte(nil), d.buf[start:]...)
 		d.buf = d.buf[:start]
 		d.rotateLocked(rotSize)
@@ -153,6 +146,52 @@ func (d *device) appendLocked(rec time.Time, m *model.Message) error {
 		}
 		d.buf = append(d.buf, line...)
 	}
+	return d.lineAddedLocked(rec, m, n)
+}
+
+// dayFor is the day file a message received at rec goes to.
+func (d *device) dayFor(rec time.Time) string {
+	day := logfile.DayOf(rec)
+	if day < d.minDay {
+		day = d.minDay
+	}
+	if d.day != "" && day < d.day {
+		day = d.day // late message after a rotation: it keeps its own timestamp
+	}
+	return day
+}
+
+// sizeRotationDue reports whether a line of n bytes must start a new part.
+func (d *device) sizeRotationDue(n int64) bool {
+	return d.p.size > 0 && d.p.size+n > d.s.partBytes.Load() &&
+		(d.renameRetry.IsZero() || !d.s.clock().Before(d.renameRetry))
+}
+
+// tryAppendLocked is appendLocked for a caller that must not touch the disk
+// (Store.TryWrite): it appends only when that is a buffer append, with no new
+// day, no new part and no buffer flush, and otherwise changes nothing and
+// returns false.
+func (d *device) tryAppendLocked(rec time.Time, m *model.Message) bool {
+	if d.day == "" || d.dayFor(rec) > d.day {
+		return false // a new day file: rotation, or a stat of the file
+	}
+	if d.buf == nil {
+		d.buf = d.newBuf()
+	}
+	start := len(d.buf)
+	d.buf = logfile.AppendLine(d.buf, rec, d.addr, m.Raw)
+	n := int64(len(d.buf) - start)
+	if d.sizeRotationDue(n) || len(d.buf) >= d.s.opts.FlushBytes {
+		d.buf = d.buf[:start]
+		return false
+	}
+	_ = d.lineAddedLocked(rec, m, n) // under FlushBytes: no flush, no error
+	return true
+}
+
+// lineAddedLocked records the line of n bytes just appended to the buffer, and
+// flushes the buffer once it reaches FlushBytes.
+func (d *device) lineAddedLocked(rec time.Time, m *model.Message, n int64) error {
 	if cp, ok := d.cp.Observe(d.p.size, d.p.lines, rec); ok {
 		d.newCPs = append(d.newCPs, cp)
 	}

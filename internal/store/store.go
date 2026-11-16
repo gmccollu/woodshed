@@ -499,6 +499,58 @@ func (s *Store) write(ti uint8, m model.Message) error {
 	}
 }
 
+// TryWrite is Write for a caller that must never wait on the disk or on a lock
+// held by something that may (the UDP readers' fast path, SPEC §11.5): it stores
+// m only when that is an append to the buffer of a stream that's already open,
+// with no new day, part or flush, and the stream's lock is free. Otherwise it
+// does nothing at all and returns false, and the caller hands m to Write
+// elsewhere. With true, err is what Write would have returned.
+func (s *Store) TryWrite(m model.Message) (ok bool, err error) { return s.tryWrite(0, m) }
+
+// TryWriteType is TryWrite for a data type (see WriteType).
+func (s *Store) TryWriteType(typ string, m model.Message) (ok bool, err error) {
+	ti, known := typeIndex(typ)
+	if !known {
+		return true, ErrUnknownType
+	}
+	return s.tryWrite(ti, m)
+}
+
+func (s *Store) tryWrite(ti uint8, m model.Message) (bool, error) {
+	if s.closed.Load() || !m.Sender.IsValid() {
+		return false, nil // Write reports these
+	}
+	v, ok := s.devices.Load(streamKey{m.Sender.Unmap(), ti})
+	if !ok {
+		return false, nil // a new stream: admission, and it may read the disk
+	}
+	d := v.(*device)
+	if !d.mu.TryLock() {
+		return false, nil // a flush, rotation or fsync may hold it
+	}
+	defer d.mu.Unlock()
+	if d.evicted || d.closed {
+		return false, nil
+	}
+	rec := m.Received
+	if rec.IsZero() {
+		rec = s.clock()
+	}
+	rec = time.UnixMilli(rec.UnixMilli()).UTC()
+	if s.paused.Load() {
+		s.watchClock(rec)
+		d.heardLocked(rec)
+		d.dropLocked(rec, 1, dropPaused)
+		return true, ErrPaused
+	}
+	if !d.tryAppendLocked(rec, &m) {
+		return false, nil
+	}
+	s.watchClock(rec)
+	d.heardLocked(rec)
+	return true, nil
+}
+
 func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, retry bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -508,6 +560,17 @@ func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, 
 	if d.closed {
 		return ErrClosed, false
 	}
+	d.heardLocked(rec)
+	if s.paused.Load() {
+		d.dropLocked(rec, 1, dropPaused)
+		return ErrPaused, false
+	}
+	return d.appendLocked(rec, m), false
+}
+
+// heardLocked notes a message received at rec (d.mu held).
+func (d *device) heardLocked(rec time.Time) {
+	s := d.s
 	d.lastHeard = rec
 	ms := rec.UnixMilli()
 	d.heardMs.Store(ms)
@@ -520,11 +583,6 @@ func (s *Store) writeTo(d *device, rec time.Time, m *model.Message) (err error, 
 		}
 		s.resMu.Unlock()
 	}
-	if s.paused.Load() {
-		d.dropLocked(rec, 1, dropPaused)
-		return ErrPaused, false
-	}
-	return d.appendLocked(rec, m), false
 }
 
 // device returns the state for a sender's stream of a type, creating it on first

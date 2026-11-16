@@ -284,7 +284,10 @@ func TestShutdownDoesNotWaitForSilentConnections(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		t0 := time.Now()
 		srv.stop()
-		if d := time.Since(t0); d > time.Second {
+		// Under 3 s: well short of net/http's 5 s grace for new connections, which
+		// is what this guards; 1 s was within one Shutdown idle-poll step (~1 s) of
+		// a delayed sweep on a busy runner.
+		if d := time.Since(t0); d > 3*time.Second {
 			t.Errorf("lan=%v: shutdown took %v with silent connections open", lan, d)
 		}
 		// The silent connections were closed by the server.
@@ -311,7 +314,7 @@ func TestShutdownRightAfterSilentConnect(t *testing.T) {
 		t0 := time.Now()
 		srv.stop()
 		c.Close()
-		if d := time.Since(t0); d > time.Second {
+		if d := time.Since(t0); d > 3*time.Second { // the failure was 5 s (net/http's grace); see above for 3 s
 			t.Fatalf("round %d: shutdown took %v with a just-made silent connection", i, d)
 		}
 	}

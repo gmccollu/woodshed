@@ -45,7 +45,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   run, again with nothing lost). Measured in-process on a 14-core Apple M4 Pro with the test agents in another
   process (`TestPollLoad`); the reference-spec (4 vCPU) runner and lab numbers will replace these before release.
 
-## [1.2.0] - unreleased
+## [1.2.0] - 2026-11-16
 
 ### Added
 - An SNMP trap receiver, off until you turn it on in **Settings → SNMP traps** or with `woodshed snmp on` (UDP 162):
@@ -121,6 +121,21 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - Retention, the size cap and the low-disk guard count a device's syslog and traps together, oldest file first.
 - When Woodshed stops, it stores the UDP messages still queued first, for at most a third of the shutdown time
   (5 seconds for the service); any left then are counted as dropped.
+
+### Fixed
+- `PUT /api/snmp/users/{name}` accepts the object exactly as GET returns it (its read-only fields are ignored), and
+  `key_ext: "draft"` is accepted with any privacy protocol, so the Settings form and a GET → PUT round trip work.
+- `woodshed tls status` shows failure times in UTC, and on Linux says what `tls on` opened in ufw or firewalld
+  instead of the generic "open the port" hint.
+- 1.2.0-rc1 only: on Windows, UDP syslog and SNMP traps cost about a CPU core at a few hundred messages a second,
+  because every message woke the UDP queue's second thread. A message that arrives on its own is now stored straight
+  away; bursts still go through the queue, so a slow disk is absorbed as before.
+
+### Known issues
+- On some Windows machines Woodshed uses much more CPU than elsewhere at moderate rates (up to most of a core at
+  100–500 messages a second, mostly kernel time, on one lab VM with endpoint protection; about 1–2% on a plain Windows
+  machine at 500/s). Nothing is lost. 1.0 behaved the same way there; the cause is being traced.
+
 
 ## [1.1.0] - 2026-11-14
 

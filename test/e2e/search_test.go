@@ -65,10 +65,13 @@ func TestSearchContextExport(t *testing.T) {
 		p.getJSON("/api/search?"+q.Encode(), &pg)
 		return pg
 	}
-	// One message by its exact tag.
-	waitFor(t, "the last message to be searchable", 20*time.Second, func() bool {
-		return len(search(url.Values{"q": {tag + fmt.Sprint(2*per-1) + " "}}).Results) == 1
+	// The last UDP and the last TCP message: UDP goes through its own drainer, so
+	// the TCP run's last can be stored before the UDP run's last.
+	waitFor(t, "the last messages to be searchable", 20*time.Second, func() bool {
+		return len(search(url.Values{"q": {tag + fmt.Sprint(2*per-1) + " "}}).Results) == 1 &&
+			len(search(url.Values{"q": {tag + fmt.Sprint(per-1) + " "}}).Results) == 1
 	})
+	// One message by its exact tag.
 	hit := search(url.Values{"q": {tag + "1234 "}})
 	if len(hit.Results) != 1 || !strings.Contains(hit.Results[0].Raw, tag+"1234 e2e Link DOWN probe") ||
 		hit.Results[0].Severity == nil || *hit.Results[0].Severity != 6 || hit.Results[0].DeviceID != "127.0.0.1" {

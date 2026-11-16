@@ -352,3 +352,43 @@ func TestTLSFirewallStateOnlyForService(t *testing.T) {
 		}
 	}
 }
+
+// A host name added in Settings shows in the certificate status as soon as
+// the PUT returns, even with the status read all the while (the run-state
+// writer and the UI do). The save used to recheck the names before the new
+// config was in place, so a status read in between cached the old names for
+// identityRecheck (1 min): the tls_cert_names banner stayed away (seen on a
+// starved runner in TestTLSEndToEnd).
+func TestExtraHostnameSeenWhileStatusIsRead(t *testing.T) {
+	dir := t.TempDir()
+	tlsPort := freePort(t)
+	r := start(t, writeConfig(t, dir, freePort(t), 0, func(c *config.Config) {
+		c.Listeners.TLS = config.TLSListener{Enabled: true, Addr: "127.0.0.1", Port: tlsPort}
+	}))
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				r.srv.be.tlsc.certs.Status()
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	var set api.Settings
+	r.do(t, "GET", "/api/settings", nil, &set)
+	for i := range 30 {
+		name := fmt.Sprintf("edge-%d.example.net", i)
+		set.UI.ExtraHostnames = []string{name}
+		if code := r.do(t, "PUT", "/api/settings", set, &set); code != 200 {
+			t.Fatalf("PUT %d", code)
+		}
+		if missing := r.srv.be.tlsc.certs.Status().MissingNames; !slices.Contains(missing, name) {
+			t.Fatalf("round %d: right after the PUT, missing names %v lack %s", i, missing, name)
+		}
+	}
+}

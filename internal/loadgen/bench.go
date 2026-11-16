@@ -62,6 +62,15 @@ type BenchOptions struct {
 	// Both zero: no stalls.
 	StallEvery, StallFor time.Duration
 
+	// Sender, if set, sends instead of Send (same options and result), for
+	// example from another process so the sender's CPU isn't counted with the
+	// pipeline's (TestCPUPerMessage).
+	Sender func(ctx context.Context, o SendOptions) (SendResult, error)
+	// NoFastPath sends every UDP datagram through the queue and its drainer,
+	// as 1.2.0-rc1 did, instead of letting the reader store lone ones itself
+	// (for comparing CPU per message, TestCPUPerMessage).
+	NoFastPath bool
+
 	// Trap configures Proto "trap" (SPEC §11.6): the version, informs, the v3
 	// protocols and the varbinds. A v3 run's user and passphrases are made up
 	// for the run, in memory; no secret is read or kept.
@@ -82,6 +91,7 @@ type BenchResult struct {
 	Foreign    int64 // lines on disk that aren't from this run (a reused DataDir)
 
 	Listened       int64 // messages the listener passed to the pipeline
+	Inline         int64 // of those, lone UDP datagrams the reader stored itself (the fast path)
 	Stored         int64 // messages the store wrote
 	StoreDropped   int64 // messages the store refused (low disk, write errors), not counting QueueDropped
 	StoreQueueFull int64 // UDP queue drops as the store counted them (dropped_by_reason.queue_full)
@@ -159,8 +169,8 @@ func (r BenchResult) String() string {
 				b.WriteString("  kernel UDP drops: not visible on this OS\n")
 			}
 		}
-		fmt.Fprintf(&b, "  UDP queue: high-water %d of %d messages, %d dropped because it was full\n",
-			r.QueueHighWater, r.QueueCapacity, r.QueueDropped)
+		fmt.Fprintf(&b, "  UDP queue: high-water %d of %d messages, %d dropped because it was full; %d stored by the reader (lone datagrams)\n",
+			r.QueueHighWater, r.QueueCapacity, r.QueueDropped, r.Inline)
 		if r.Stalls > 0 {
 			fmt.Fprintf(&b, "  fake slow disk: %d stalls\n", r.Stalls)
 		}
@@ -284,10 +294,30 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 			}
 			live.Publish(m)
 		},
+		// As the server wires it: a lone datagram is stored by the reader when
+		// that can't block. A fake stall makes the write "block", as a stalled
+		// flush holding the stream's lock would.
+		TrySink: func(m model.Message) bool {
+			if stall.active() {
+				return false
+			}
+			ok, err := st.TryWrite(m)
+			if !ok {
+				return false
+			}
+			if err != nil {
+				writeErrs.Add(1)
+			}
+			live.Publish(m)
+			return true
+		},
 		OnQueueDrop: st.DropQueued,
 	}
 	if certs != nil {
 		lopts.TLSCertificate = certs.Certificate
+	}
+	if o.NoFastPath {
+		lopts.TrySink = nil
 	}
 	trapOpts := o.Trap
 	if o.Proto == "trap" {
@@ -297,6 +327,9 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 		}
 		trapOpts = to
 		lopts.Trap = rcv.Handle
+		if !o.NoFastPath {
+			lopts.TrapTry = rcv.TryHandle
+		}
 		lopts.OnTrapQueueDrop = func(from netip.Addr, at time.Time, n int64) { st.DropQueuedType(logfile.TypeTrap, from, at, n) }
 		res.Trap = trapOpts.Describe()
 	}
@@ -329,7 +362,11 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	stat := srv.Status()
 	res.UDPRcvbufBytes, res.UDPRcvbufRequestedBytes = stat.UDPRcvbufBytes, stat.UDPRcvbufRequestedBytes
 
-	sres, sendErr := Send(ctx, SendOptions{
+	send := o.Sender
+	if send == nil {
+		send = Send
+	}
+	sres, sendErr := send(ctx, SendOptions{
 		Addr: addr.String(), Proto: o.Proto, Framing: o.Framing, TLS: clientTLS,
 		Rate: o.Rate, Duration: o.Duration, Size: o.Size, RunID: res.RunID, Trap: trapOpts,
 	})
@@ -358,7 +395,7 @@ func Bench(ctx context.Context, o BenchOptions) (BenchResult, error) {
 	srv.Close() // drains the UDP queue
 	listenerOpen = false
 	stat = srv.Status()
-	res.Listened = stat.Received
+	res.Listened, res.Inline = stat.Received, stat.Inline
 	for _, q := range stat.UDPQueues {
 		res.QueueCapacity, res.QueueHighWater, res.QueueDropped = q.CapacityMessages, q.HighWater24h, q.Dropped
 	}
@@ -396,6 +433,16 @@ type staller struct {
 
 func newStaller(every, for_ time.Duration) *staller {
 	return &staller{start: time.Now(), every: every, for_: for_}
+}
+
+// active reports whether a stall is in progress (writes would block).
+func (s *staller) active() bool {
+	if s == nil || s.every <= 0 || s.for_ <= 0 {
+		return false
+	}
+	el := time.Since(s.start)
+	k := int(el / s.every)
+	return k > 0 && el-time.Duration(k)*s.every < s.for_
 }
 
 // wait blocks until the end of the stall in progress, if any, and reports

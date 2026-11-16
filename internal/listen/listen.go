@@ -112,11 +112,22 @@ type Options struct {
 	// they count for the sender's device.
 	OnQueueDrop QueueDrop
 
+	// TrySink, if set, is the UDP reader's fast path for a lone datagram
+	// (udpqueue.go): it delivers m as Sink would only if that can't block (the
+	// store's TryWrite), and otherwise does nothing and returns false, and m goes
+	// through the queue to Sink. Without it every datagram goes through the queue.
+	TrySink func(m model.Message) bool
+
 	// Trap handles the SNMP trap listener's datagrams (snmp.go), one at a time
 	// in arrival order from its queue's drainer. Without it an enabled SNMP
 	// listener stays down. OnTrapQueueDrop receives its queue's drops.
 	Trap            TrapHandler
 	OnTrapQueueDrop QueueDrop
+	// TrapTry, if set, is the SNMP reader's fast path for a lone datagram: it
+	// handles p as Trap would without blocking, and returns nil when that's
+	// done, or, when the store write would block, a func that finishes p (the
+	// write and what follows it), which the drainer calls in arrival order.
+	TrapTry func(p *TrapPacket) (finish func())
 	// DrainTimeout bounds how long Close (and a UDP rebind) waits for the UDP
 	// queue to empty into the sink; what's left then is counted as dropped.
 	// Default DefaultDrainTimeout.
@@ -151,6 +162,7 @@ type Status struct {
 	KernelDrops        int64
 
 	Received  int64 // messages handed to the sink since Start
+	Inline    int64 // of those, UDP datagrams (syslog and traps) the reader delivered itself (TrySink, TrapTry)
 	Truncated int64 // of those, cut at the max message size
 	Rejected  int64 // refused by the blocklist, the allowlist or the per-source limit since Start (a refused TCP connection counts once)
 
@@ -203,6 +215,7 @@ type Server struct {
 	idleTimeout  atomic.Int64 // time.Duration a TCP connection may go without a complete message
 
 	received, truncated, connsRefused    atomic.Int64
+	inline                               atomic.Int64
 	evicted, perSourceRefused, frameCuts atomic.Int64
 	conns                                atomic.Int64
 
@@ -400,6 +413,7 @@ func (s *Server) Status() Status {
 	st := Status{
 		UDPRcvbufRequestedBytes:  rcvbufOf(s.cfg),
 		Received:                 s.received.Load(),
+		Inline:                   s.inline.Load(),
 		Truncated:                s.truncated.Load(),
 		Rejected:                 s.rejects.totalCount(),
 		TCPConns:                 int(s.conns.Load()),
@@ -595,7 +609,20 @@ func (s *Server) enqueue(q *udpQueue, raw []byte, from netip.Addr) {
 		return
 	}
 	raw, truncated := s.cut(raw, false)
-	q.push(queued{raw: append(make([]byte, 0, len(raw)), raw...), from: from, at: now, truncated: truncated})
+	own := append(make([]byte, 0, len(raw)), raw...)
+	if s.opts.TrySink != nil && q.inline(now) {
+		m := model.Message{Received: now, Sender: from, Raw: own, Truncated: truncated}
+		syslog.Parse(m.Raw, &m)
+		if s.opts.TrySink(m) {
+			if truncated {
+				s.truncated.Add(1)
+			}
+			s.received.Add(1)
+			s.inline.Add(1)
+			return
+		}
+	}
+	q.push(queued{raw: own, from: from, at: now, truncated: truncated})
 }
 
 // drainQueue is syslog's drainer: it hands q's messages to the sink (parsed)
@@ -621,7 +648,11 @@ func (s *Server) drainQueueWith(q *udpQueue, deliver func(*queued), onDrop Queue
 				break
 			}
 			e := &batch[i]
-			deliver(e)
+			if e.finish != nil {
+				e.finish()
+			} else {
+				deliver(e)
+			}
 			*e = queued{}
 		}
 		s.reportQueueDrops(q, onDrop)

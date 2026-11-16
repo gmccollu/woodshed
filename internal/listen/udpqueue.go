@@ -17,6 +17,15 @@ import (
 // the queue is full a datagram is dropped at once and counted for its sender
 // (reason queue_full), so a stall caused by Woodshed is never a silent kernel
 // drop.
+//
+// A lone datagram (the queue empty, the drainer idle, nothing read in the last
+// inlineGap) is delivered by the reader itself, through a delivery that can't
+// block (Options.TrySink, Options.TrapTry: the store's TryWrite). Handing it to
+// the drainer would cost a second goroutine wake-up, on another OS thread, for
+// every message at low rates: the reader readies the drainer and then blocks at
+// once, which makes the scheduler wake a spinning thread to steal it (on
+// Windows that thread yields with SwitchToThread). A delivery that would block
+// goes through the queue as before.
 
 // queued is one datagram waiting for the drainer.
 type queued struct {
@@ -25,7 +34,17 @@ type queued struct {
 	port      uint16    // the sender's port (the SNMP listener replies to it)
 	at        time.Time // when the reader read it (the message's Received time)
 	truncated bool      // raw was cut at the max message size
+	// finish, if set, completes a datagram the reader already handled up to a
+	// write that would have blocked (Options.TrapTry); the drainer calls it
+	// instead of delivering raw.
+	finish func()
 }
+
+// inlineGap is how long since the previous datagram a socket must have been
+// quiet for the reader to deliver the next one itself: a datagram read straight
+// after another is part of a burst (or a backlog in the socket buffer), and the
+// queue spreads that over the drainer.
+const inlineGap = 100 * time.Microsecond
 
 // queueChunk is a fixed block of the FIFO, so memory follows the depth: a
 // drained queue holds one spare chunk, not its high-water mark.
@@ -67,7 +86,9 @@ type udpQueue struct {
 	n        int
 	bytes    int64
 	waiting  bool // the drainer is waiting on wake
+	busy     bool // the drainer holds messages it popped and hasn't finished
 	closed   bool
+	lastIn   time.Time // when the reader read the previous datagram (the reader's alone)
 	wake     chan struct{}
 	hist     *queueHist // survives rebinds (the Server keeps it per listener)
 
@@ -161,6 +182,7 @@ func (q *udpQueue) push(e queued) bool {
 func (q *udpQueue) pop(dst []queued, max int) ([]queued, bool) {
 	q.mu.Lock()
 	for q.n == 0 {
+		q.busy = false // everything popped before is delivered
 		if q.closed {
 			q.mu.Unlock()
 			return dst, false
@@ -170,6 +192,7 @@ func (q *udpQueue) pop(dst []queued, max int) ([]queued, bool) {
 		<-q.wake
 		q.mu.Lock()
 	}
+	q.busy = true
 	for k := 0; q.n > 0 && k < max; k++ {
 		e := &q.head.e[q.hi]
 		dst = append(dst, *e)
@@ -183,6 +206,22 @@ func (q *udpQueue) pop(dst []queued, max int) ([]queued, bool) {
 	}
 	q.mu.Unlock()
 	return dst, true
+}
+
+// inline reports whether the reader may deliver a datagram read at now itself:
+// the queue is empty, the drainer has nothing in hand (so delivering now keeps
+// arrival order), and the socket had been quiet for inlineGap. Only the reader
+// calls it, and only the reader adds to the queue, so it stays true until the
+// reader pushes.
+func (q *udpQueue) inline(now time.Time) bool {
+	gap := now.Sub(q.lastIn)
+	q.lastIn = now
+	if gap < inlineGap {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.n == 0 && !q.busy && !q.closed
 }
 
 // advanceLocked frees the head chunk once it's used up (or the queue is empty).

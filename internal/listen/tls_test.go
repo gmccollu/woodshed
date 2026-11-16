@@ -182,7 +182,11 @@ func TestTLSHandshakeMatrix(t *testing.T) {
 			t.Errorf("%s: connected, want refused", c.name)
 			continue
 		}
-		waitFor(t, c.name+" failure", func() bool { return s.Status().TLSHandshakeFailed > before })
+		// The counter rises before the failure record is stored, so wait for the record itself.
+		waitFor(t, c.name+" failure", func() bool {
+			f, _ := failureOf(s, "127.0.0.1")
+			return s.Status().TLSHandshakeFailed > before && f.Reason == c.reason // earlier cases leave their own record
+		})
 		if f, _ := failureOf(s, "127.0.0.1"); f.Reason != c.reason {
 			t.Errorf("%s: reason %q (%s), want %q", c.name, f.Reason, f.Detail, c.reason)
 		}
@@ -235,9 +239,12 @@ func TestTLSNamesAndTrust(t *testing.T) {
 // Failure reasons: plain syslog to the TLS port, an untrusted CA, a version
 // mismatch, a timeout and a close mid-handshake.
 func TestTLSFailureReasons(t *testing.T) {
-	s, _, _ := startTLS(t, tlsConfig(false), func(o *Options) { o.HandshakeTimeout = 300 * time.Millisecond })
+	// The default handshake timeout (10 s): the real handshakes classified here
+	// must finish within it, and a short one turned them into timeouts on a
+	// starved runner. The timeout case has its own server below.
+	s, _, _ := startTLS(t, tlsConfig(false), nil)
 	addr := tlsAddr(t, s)
-	expect := func(what, reason, detail string) {
+	expectOn := func(s *Server, what, reason, detail string) {
 		t.Helper()
 		var f TLSFailure
 		waitFor(t, what, func() bool { f, _ = failureOf(s, "127.0.0.1"); return f.Reason == reason })
@@ -245,6 +252,7 @@ func TestTLSFailureReasons(t *testing.T) {
 			t.Errorf("%s: detail %q, want %q", what, f.Detail, detail)
 		}
 	}
+	expect := func(what, reason, detail string) { t.Helper(); expectOn(s, what, reason, detail) }
 
 	plain, _ := net.Dial("tcp", addr)
 	fmt.Fprintf(plain, "<13>plain syslog to the TLS port\n")
@@ -262,21 +270,26 @@ func TestTLSFailureReasons(t *testing.T) {
 	tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11})
 	expect("version", TLSVersion, "unsupported versions")
 
-	stall, _ := net.Dial("tcp", addr)
-	expect("timeout", TLSTimeout, "no complete handshake within 300ms")
-	if !closedByServer(stall, 2*time.Second) {
-		t.Error("stalled handshake not closed")
-	}
-	stall.Close()
-
 	half, _ := net.Dial("tcp", addr)
 	half.Write([]byte{0x16, 0x03, 0x01, 0x00, 0x40, 0x01}) // a ClientHello's first bytes, then nothing
 	half.Close()
 	expect("closed", TLSClosed, "")
 
 	fs := s.TLSFailures()
-	if len(fs) != 1 || fs[0].IP != "127.0.0.1" || fs[0].Failures24h != 5 || fs[0].Delivered {
+	if len(fs) != 1 || fs[0].IP != "127.0.0.1" || fs[0].Failures24h != 4 || fs[0].Delivered {
 		t.Errorf("failures %+v", fs)
+	}
+
+	// A handshake that never starts, on a server with a short timeout.
+	st, _, _ := startTLS(t, tlsConfig(false), func(o *Options) { o.HandshakeTimeout = 300 * time.Millisecond })
+	stall, _ := net.Dial("tcp", tlsAddr(t, st))
+	expectOn(st, "timeout", TLSTimeout, "no complete handshake within 300ms")
+	if !closedByServer(stall, 2*time.Second) {
+		t.Error("stalled handshake not closed")
+	}
+	stall.Close()
+	if fs := st.TLSFailures(); len(fs) != 1 || fs[0].Failures24h != 1 {
+		t.Errorf("timeout server failures %+v", fs)
 	}
 }
 
@@ -421,7 +434,12 @@ func TestTLSHandshakeLimits(t *testing.T) {
 	}
 	fmt.Fprintf(est, "<13>during\n")
 	c.wait(t, 2)
-	waitFor(t, "the stalled handshakes' timeout", func() bool { return s.Status().TLSHandshakes == 0 })
+	// A handshake leaves the in-progress count before its failure is recorded
+	// (tls.go handshake: release, then tlsStats.fail), so wait for the record too.
+	waitFor(t, "the stalled handshakes' timeout", func() bool {
+		f, _ := failureOf(s, "198.51.0.1")
+		return s.Status().TLSHandshakes == 0 && f.Reason == TLSTimeout
+	})
 	if f, _ := failureOf(s, "198.51.0.1"); f.Reason != TLSTimeout {
 		t.Errorf("stalled: %+v", f)
 	}
@@ -596,7 +614,7 @@ func TestCloseWithIdleTCPAndTLSIsPrompt(t *testing.T) {
 	waitFor(t, "2 conns and a handshake", func() bool { st := s.Status(); return st.TCPConns == 2 && st.TLSHandshakes == 1 })
 	t0 := time.Now()
 	s.Close()
-	if d := time.Since(t0); d > time.Second {
+	if d := time.Since(t0); d > 5*time.Second { // far below the 1 min handshake and 24 h idle timeouts, with room for a stalled runner
 		t.Errorf("Close took %v with idle connections open", d)
 	}
 	for name, conn := range map[string]net.Conn{"tcp": tcp, "tls": tc, "handshake": stalled} {

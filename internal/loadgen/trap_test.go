@@ -184,7 +184,7 @@ func TestSendTrapVersions(t *testing.T) {
 			}
 			if c.opt.Inform {
 				st := res.Informs
-				if st == nil || st.Answered != n || st.TimedOut != 0 || len(st.RTTs) != n || st.Percentile(99) <= 0 {
+				if st == nil || st.Answered != n || st.TimedOut != 0 || len(st.RTTs) != n || st.Percentile(99) < 0 { // 0 is possible: a loopback round trip can be under the clock's resolution (Windows)
 					t.Errorf("informs: %+v", st)
 				}
 			} else if res.Informs != nil {

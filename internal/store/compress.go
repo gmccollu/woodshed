@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/atomicfile"
@@ -52,7 +53,7 @@ func (s *Store) compressLoop() {
 				if s.testHookLowerPrio != nil {
 					s.testHookLowerPrio()
 				}
-				if !s.testKeepPrio {
+				if !s.testKeepPrio && !keepPrioForTests.Load() {
 					if err := lowerThreadPriority(); err != nil {
 						s.log.Debug("store: couldn't lower the compressor's priority", "err", err)
 					}
@@ -62,6 +63,11 @@ func (s *Store) compressLoop() {
 		}
 	}
 }
+
+// keepPrioForTests, when set, keeps every store's compressor at normal priority: for tests that open a store
+// and need its compression to run promptly on a busy machine (a background-band thread may not be scheduled for
+// seconds). Never set outside tests.
+var keepPrioForTests atomic.Bool
 
 // compressorStopWait is how long Close waits for the compressor to exit. A
 // starved low-priority thread may take longer; it then changes nothing (the

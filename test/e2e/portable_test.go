@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
@@ -93,6 +94,14 @@ func TestPortable(t *testing.T) {
 	resp.Body.Close()
 
 	run := loadgen.NewRunID()
+	// Each run's last message on the live tail means the server has read it and
+	// handed it to the store (which still holds it in a buffer): the flush on stop
+	// is what's tested, not how fast the sockets are read.
+	base := fmt.Sprintf("http://127.0.0.1:%d", ui)
+	lasts := []*liveStream{
+		openLive(t, base, "q="+url.QueryEscape(loadgen.SeqTag(run)+"1999")),
+		openLive(t, base, "q="+url.QueryEscape(loadgen.SeqTag(run)+"3999")),
+	}
 	for i, proto := range []string{"udp", "tcp"} {
 		if _, err := loadgen.Send(context.Background(), loadgen.SendOptions{
 			Addr: fmt.Sprintf("127.0.0.1:%d", syslogPort), Proto: proto, Count: 2000, Rate: 4000, RunID: run, FirstSeq: i * 2000,
@@ -112,7 +121,9 @@ func TestPortable(t *testing.T) {
 		t.Errorf("second copy: %s", second)
 	}
 
-	time.Sleep(300 * time.Millisecond) // let the TCP data be read; the flush is what's tested
+	for _, ls := range lasts {
+		ls.wait(t, 10*time.Second)
+	}
 	t0 := time.Now()
 	if err := terminate(cmd); err != nil {
 		t.Fatal(err)

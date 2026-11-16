@@ -843,7 +843,7 @@ first, at most 200:
 `POST /api/snmp/users` body `{"name": "monitor", "auth": "sha-256", "auth_pass": "…", "priv": "aes-128",
 "priv_pass": "…", "key_ext": "draft", "engine_ids": []}` → `201` with the user (without secrets).
 
-`PUT /api/snmp/users/{name}` (the same body) → `200` with the user. A missing or empty `auth_pass` / `priv_pass`
+`PUT /api/snmp/users/{name}` (the same body; GET's read-only fields `level`, `auth_set`, `priv_set`, `stored`, `readable` and `weak` are accepted and ignored, so a GET → PUT round trip works) → `200` with the user. A missing or empty `auth_pass` / `priv_pass`
 keeps the stored one, unless the protocol changes (then it's required). A user can't be renamed: a `name` other than
 the path's is a `400` on `name` (delete it and add the new name). `404` if unknown.
 

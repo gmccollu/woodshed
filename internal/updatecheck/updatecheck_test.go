@@ -106,10 +106,15 @@ func newHarness(t *testing.T, version, check string, dir string, clock *uctest.F
 	return h
 }
 
+// waitLimit bounds each wait for the checker: generous, as each returns as soon
+// as its condition holds (the server's copy of this harness ran past 5 s on a
+// starved runner).
+const waitLimit = 20 * time.Second
+
 // next waits for the checker to schedule a check and moves the clock to it.
 func (h *harness) next() time.Time {
 	h.t.Helper()
-	d, ok := h.clock.WaitTimer(5 * time.Second)
+	d, ok := h.clock.WaitTimer(waitLimit)
 	if !ok {
 		h.t.Fatal("no check scheduled")
 	}
@@ -120,7 +125,7 @@ func (h *harness) next() time.Time {
 // request waits for the request the last next() triggered and for its result.
 func (h *harness) request() uctest.Request {
 	h.t.Helper()
-	r, ok := h.srv.WaitRequest(5 * time.Second)
+	r, ok := h.srv.WaitRequest(waitLimit)
 	if !ok {
 		h.t.Fatal("no request")
 	}
@@ -131,7 +136,7 @@ func (h *harness) request() uctest.Request {
 // settle waits until the check has finished (the next one is scheduled).
 func (h *harness) settle() {
 	h.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitLimit)
 	for time.Now().Before(deadline) {
 		if in := h.c.Info(); in.LastCheck != nil && !in.LastCheck.Before(h.clock.Now()) {
 			if _, ok := h.clock.Pending(); ok {

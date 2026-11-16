@@ -307,6 +307,9 @@ func firewalldRunning(run Runner) bool {
 // is active (and for Settings).
 func LinuxCommands(port int) string { return tlsSpec.linuxCommands(port) }
 
+// LinuxOpened is what `tls on` recorded opening in ufw or firewalld (empty when it opened nothing).
+func LinuxOpened(dataDir string) (Record, error) { return readRecord(dataDir, tlsSpec.record) }
+
 func (sp spec) linuxCommands(port int) string {
 	p := strconv.Itoa(port) + "/" + strings.ToLower(sp.proto)
 	return "  ufw:       sudo ufw allow " + p + "\n" +

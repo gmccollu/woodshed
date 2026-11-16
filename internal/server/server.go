@@ -332,6 +332,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	ln, err := listen.Start(cfg.Listeners, listen.Options{
 		Sink:        s.be.sink,
+		TrySink:     s.be.trySink,
 		OnQueueDrop: s.be.store.DropQueued,
 		// A third of the shutdown for draining the UDP queue, leaving the rest
 		// for the store's flush and the index.
@@ -340,6 +341,7 @@ func (s *Server) Run(ctx context.Context) error {
 		Logger:          log,
 		TLSCertificate:  s.be.tlsc.certs.Certificate,
 		Trap:            s.be.snmp.rcv.Handle,
+		TrapTry:         s.be.snmp.rcv.TryHandle,
 		OnTrapQueueDrop: s.be.trapQueueDrop,
 	})
 	if err != nil {

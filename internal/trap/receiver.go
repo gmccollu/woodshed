@@ -43,6 +43,10 @@ type Options struct {
 	// Write stores one trap record (the store's trap stream); an error means it
 	// wasn't stored (paused, refused by the device limits) and no reply goes out.
 	Write func(m model.Message) error
+	// TryWrite is Write that never blocks (the store's TryWriteType), for
+	// TryHandle: false means it did nothing and the write must happen later.
+	// Without it TryHandle always leaves the write to its finish func.
+	TryWrite func(m model.Message) (ok bool, err error)
 	// Admit admits a sender as Write would, without storing anything: v3
 	// discovery Reports go only to admitted senders.
 	Admit func(addr netip.Addr) error
@@ -346,7 +350,16 @@ func (r *Receiver) HasUser(name string) bool { return r.creds.hasUser(name) }
 // ---- the datagrams ----
 
 // Handle decodes, stores and answers one datagram (listen.Options.Trap).
-func (r *Receiver) Handle(p *listen.TrapPacket) {
+func (r *Receiver) Handle(p *listen.TrapPacket) { r.handle(p, false) }
+
+// TryHandle is Handle for the SNMP reader's fast path (listen.Options.TrapTry):
+// it never blocks. When storing the record would block it returns a func that
+// stores it and sends what follows (an inform's Response), for the listener's
+// drainer to call; everything before the write (decoding, counting) happens
+// here, exactly once.
+func (r *Receiver) TryHandle(p *listen.TrapPacket) (finish func()) { return r.handle(p, true) }
+
+func (r *Receiver) handle(p *listen.TrapPacket, try bool) (finish func()) {
 	now := p.Received
 	addr := p.From.Addr().Unmap()
 	usm := r.usm.Load()
@@ -380,8 +393,27 @@ func (r *Receiver) Handle(p *listen.TrapPacket) {
 	if m.Status != snmp.StatusOK && m.Status != snmp.StatusUnexpectedPDU && !(m.TimeResync && m.Status == snmp.StatusNotInTime) {
 		r.failures.add(addr, now, m.Status.String(), m.Err)
 	}
-	if err := r.opts.Write(model.Message{Received: now, Sender: addr, Raw: rec}); err != nil {
-		return // not in the store's buffer: never acknowledged (the sender retries)
+	msg := model.Message{Received: now, Sender: addr, Raw: rec}
+	if try {
+		if r.opts.TryWrite == nil {
+			return func() { r.stored(p, usm, m, now, r.opts.Write(msg)) }
+		}
+		ok, err := r.opts.TryWrite(msg)
+		if !ok {
+			return func() { r.stored(p, usm, m, now, r.opts.Write(msg)) }
+		}
+		r.stored(p, usm, m, now, err)
+		return nil
+	}
+	r.stored(p, usm, m, now, r.opts.Write(msg))
+	return nil
+}
+
+// stored is what follows the write of m's record: an error means it isn't in
+// the store's buffer, so it's never acknowledged (the sender retries).
+func (r *Receiver) stored(p *listen.TrapPacket, usm *snmp.USM, m *snmp.Message, now time.Time, err error) {
+	if err != nil {
+		return
 	}
 	r.lastSeen.Store(now.UnixMilli())
 	switch m.Reply {

@@ -56,10 +56,17 @@ func TestCLISearch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	waitFor(t, "the last message to be searchable", 20*time.Second, func() bool {
-		var pg searchPage
-		p.getJSON("/api/search?"+url.Values{"q": {tag + fmt.Sprint(2*per-1) + " "}}.Encode(), &pg)
-		return len(pg.Results) == 1
+	// The last of each run: UDP goes through its own drainer, so the TCP run's
+	// last can be stored before the UDP run's last.
+	waitFor(t, "the last messages to be searchable", 20*time.Second, func() bool {
+		for _, seq := range []int{per - 1, 2*per - 1} {
+			var pg searchPage
+			p.getJSON("/api/search?"+url.Values{"q": {tag + fmt.Sprint(seq) + " "}}.Encode(), &pg)
+			if len(pg.Results) != 1 {
+				return false
+			}
+		}
+		return true
 	})
 
 	var pg searchPage // the API's first page, to compare --json with

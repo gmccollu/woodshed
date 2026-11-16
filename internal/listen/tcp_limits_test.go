@@ -277,7 +277,13 @@ func TestEvictLongestIdle(t *testing.T) {
 		t.Errorf("status %+v", st)
 	}
 
-	// Nobody is idle long enough now: the next newcomer is refused.
+	// Nobody is idle long enough now: the next newcomer is refused. B, C and D
+	// send again first, so a stall since B's first message (EvictIdle is only 1 s)
+	// can't make B look idle when E arrives.
+	for i, cn := range []net.Conn{b, cc, d} {
+		fmt.Fprintf(cn, "<13>again %d\n", i)
+	}
+	c.wait(t, 7)
 	e := dial()
 	if !closedByServer(e, 5*time.Second) {
 		t.Error("newcomer accepted with no idle connection to evict")

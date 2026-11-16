@@ -159,6 +159,22 @@ func (b *backend) sink(m model.Message) {
 	b.hub.Publish(m)
 }
 
+// trySink is sink for the UDP reader's fast path (listen.Options.TrySink):
+// it does everything sink does, or, when the store write would have to wait
+// (store.TryWrite), nothing at all.
+func (b *backend) trySink(m model.Message) bool {
+	ok, _ := b.store.TryWrite(m) // the store counts what it drops itself
+	if !ok {
+		return false
+	}
+	if b.firstMsg.Load() == 0 {
+		b.firstMsg.CompareAndSwap(0, m.Received.UnixMilli())
+	}
+	b.live.add(m.Sender, m.Received)
+	b.hub.Publish(m)
+	return true
+}
+
 // listenEvent records a listener start, stop or bind event in the event log.
 func (b *backend) listenEvent(e listen.Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -827,6 +843,10 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 	b.cfgMu.Lock()
 	b.cfg = next.Clone()
 	b.cfgMu.Unlock()
+	// Read the host names again now that ui.extra_hostnames is in place:
+	// prepareTLS's recheck ran before, and a status read in between (the
+	// run-state writer, the UI) would keep the old names for a minute.
+	b.tlsc.certs.Recheck()
 	if cur.Updates != next.Updates && b.updates != nil {
 		b.updates.SetCheck(next.Updates.Check)
 	}

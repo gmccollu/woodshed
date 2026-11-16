@@ -213,6 +213,7 @@ cmd_stage() {
 	else
 		"${SSH[@]}" "$(tv SSH)" 'sudo -n install -d -o "$(id -un)" /opt/woodpile-lab /var/tmp/woodpile-lab ~/woodshed-portable'
 		vm_put "$here/remote/linux-lab.sh" /opt/woodpile-lab/linux-lab.sh
+		vm_put "$here/remote/labcheck.py" /opt/woodpile-lab/labcheck.py
 		vm_put "$t/verifyseq-linux-amd64" /opt/woodpile-lab/verifyseq
 		vm_put "$pkg" "/opt/woodpile-lab/$(basename "$pkg")"
 		tmp=$(mktemp -d)
@@ -220,7 +221,7 @@ cmd_stage() {
 		d=$(find "$tmp" -type f -name woodshed | head -1)
 		vm_put "$d" woodshed-portable/woodshed
 		rm -rf "$tmp"
-		"${SSH[@]}" "$(tv SSH)" 'chmod 0755 /opt/woodpile-lab/linux-lab.sh /opt/woodpile-lab/verifyseq ~/woodshed-portable/woodshed'
+		"${SSH[@]}" "$(tv SSH)" 'chmod 0755 /opt/woodpile-lab/linux-lab.sh /opt/woodpile-lab/labcheck.py /opt/woodpile-lab/verifyseq ~/woodshed-portable/woodshed'
 	fi
 	echo "staged $(basename "$pkg") on $target"
 }
