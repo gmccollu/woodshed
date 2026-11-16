@@ -259,6 +259,7 @@
         lines={[{ label: 'CPU', color: 'var(--chart-1)', values: vals(head, 'cpu') }]} />
       <PollChart title="Memory used" unit="%" fixedTop={100} {from} {to} {utc} start={grid!.start} size={grid!.size} {markers}
         note={noHr ? 'CPU and memory: not available on this device.' : ''}
+        caption="As the agent reports it: on Linux with net-snmp, used includes the page cache, so an idle host can show about 90 %."
         lines={[{ label: 'Memory', color: 'var(--chart-5)', values: vals(head, 'mem_used_pct') }]} />
       <PollChart title="Traffic, all interfaces" unit="bit/s" {from} {to} {utc} start={grid!.start} size={grid!.size} {markers}
         lines={[

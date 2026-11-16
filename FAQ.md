@@ -8,6 +8,7 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 - [Devices can't reach Woodshed](#devices-cant-reach-woodshed)
 - [What does the installer change in the firewall?](#what-does-the-installer-change-in-the-firewall)
 - [Does Woodshed receive SNMP traps?](#does-woodshed-receive-snmp-traps)
+- [Why does a polled rate jump around a little?](#why-does-a-polled-rate-jump-around-a-little)
 - [Windows or macOS warns me about the download](#windows-or-macos-warns-me-about-the-download)
 - [Where are the logs?](#where-are-the-logs)
 - [Can I search the logs without the UI?](#can-i-search-the-logs-without-the-ui)
@@ -104,6 +105,14 @@ See [Receiving SNMP traps](docs/user-guide.md#receiving-snmp-traps).
 - **Does it answer informs?** Yes, once the inform is stored, and only to senders it accepts, at most 100 replies a
   second per sender. The only other packets it sends are the v3 Reports a device asks for to learn Woodshed's engine
 ID, as answers on the same socket; it never starts a connection to a device.
+
+## Why does a polled rate jump around a little?
+
+Because a rate is the change in the device's counters between two polls, and some agents update their interface
+counters only every few seconds. One 60 s cycle can then read a few percent high and the next a little low (about
+±5 % in the 1.3 lab), while the total over a window stays exact: every octet is counted once. In the lab, steady
+traffic read within 0.1 % on average and totals within 0.22 %. Look at a few cycles, or the total, before reading
+much into one point. See [Polling devices](docs/user-guide.md#polling-devices-snmp).
 
 ## Windows or macOS warns me about the download
 

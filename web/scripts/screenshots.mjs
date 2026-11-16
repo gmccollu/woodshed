@@ -2106,6 +2106,7 @@ const SHOTS = [
     clip: 'section[aria-labelledby="poll-h"]',
     check: `(() => { const items = [...document.querySelectorAll('ul.changes li')].map((li) => li.textContent);
       return items.some((t) => t.includes('eth5 down') && t.includes('not charted')) && items.some((t) => t.includes('rebooted'))
+        && [...document.querySelectorAll('figure.chartcard')].some((f) => f.textContent.includes('Memory used') && f.querySelector('.caption')?.textContent.includes('page cache'))
         && !!__btn('Chart eth5') && [...document.querySelectorAll('figure.chartcard')].every((f) => f.querySelector('.mark.oper'))
         && ![...document.querySelectorAll('figure.chartcard')].some((f) => f.textContent.includes('Interfaces:') && f.textContent.includes('eth5')); })()`,
   }),
