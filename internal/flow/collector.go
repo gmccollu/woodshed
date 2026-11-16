@@ -335,7 +335,7 @@ func (c *Collector) addTemplate(e *exporter, d *domainState, t *Template, now in
 		}
 		c.removeTemplateLocked(d, oldest)
 	}
-	for (c.nTmpl >= c.opts.MaxTemplates || c.tmplBytes+size > maxTemplateBytes) && c.lru.Len() > 0 {
+	for (c.nTmpl >= c.opts.MaxTemplates || (c.tmplBytes+size > maxTemplateBytes && !c.fileMode)) && c.lru.Len() > 0 {
 		x := c.lru.Back().Value.(*tmplEntry)
 		c.removeTemplateLocked(x.exp.domains[x.key], x)
 	}
