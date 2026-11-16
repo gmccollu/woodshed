@@ -2305,6 +2305,10 @@ Simple and fast: every view reads the headline rollups or one device's poll file
                    errors +12 in (eth3), +0 out; discards +340 in (eth3); eth3 down 09:30:58 to 09:31:40
       Reboots      1: 09:30:58 (poll: sysUpTime and hrSystemUptime reset; coldStart trap)
   ```
+  Only restarts that may have been the device's count as reboots: `reboot=1`, `reboot=?` and the traps. With any
+  `reboot=0` (the agent's alone) the line is `Restarts     3 (0 reboots): …`, still listing every restart (§12.10
+  #14), and the device's one-line summary says `restarts 3, reboots 0`; with none it's `Reboots      none (…)`. (1.3
+  lab: three agent restarts read "Reboots 3".)
 - Plain exports take `types: ["poll"]` the same way, with the `poll` filters.
 
 ### 12.7 CLI

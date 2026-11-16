@@ -418,14 +418,18 @@ func (d DeviceSummary) Heading() string {
 }
 
 // Line is the device's summary in one line, for `woodshed bundle`'s output:
-// "syslog 12,408, SNMP traps 7, reboots 1, dropped 0, truncated 0".
+// "syslog 12,408, SNMP traps 7, reboots 1, dropped 0, truncated 0". When some
+// restarts were the agent's alone, both counts: "restarts 3, reboots 0".
 func (d DeviceSummary) Line(types []string) string {
 	var parts []string
 	for _, t := range types {
 		parts = append(parts, typeWord(t)+" "+datatype.Thousands(d.Types[t].Lines))
 	}
 	if slices.Contains(types, datatype.Trap) || slices.Contains(types, datatype.Poll) {
-		parts = append(parts, "reboots "+datatype.Thousands(int64(len(d.Reboots))))
+		if n := datatype.CountReboots(d.Reboots); n != len(d.Reboots) {
+			parts = append(parts, "restarts "+datatype.Thousands(int64(len(d.Reboots))))
+		}
+		parts = append(parts, "reboots "+datatype.Thousands(int64(datatype.CountReboots(d.Reboots))))
 	}
 	parts = append(parts, "dropped "+datatype.Thousands(d.Dropped), "truncated "+datatype.Thousands(d.Truncated))
 	return strings.Join(parts, ", ")
@@ -589,7 +593,7 @@ func mergeReboots(rs []datatype.Reboot) []datatype.Reboot {
 			if rs[best].Time.Before(at) {
 				at = rs[best].Time
 			}
-			rs[i] = datatype.Reboot{Time: at, Source: "poll, " + rs[best].Source, Detail: r.Detail}
+			rs[i] = datatype.Reboot{Time: at, Source: "poll, " + rs[best].Source, Detail: r.Detail, Reboot: r.Reboot}
 		}
 	}
 	for i, r := range rs {
@@ -714,7 +718,13 @@ func (b *builder) bundleReadme(info Info, sum []DeviceSummary) string {
 				}
 				rs = append(rs, tf.record(r.Time)+" ("+rebootWords(r)+")")
 			}
-			row("Reboots", fmt.Sprintf("%d: %s", len(d.Reboots), strings.Join(rs, ", ")))
+			// Every restart is listed (SPEC §12.10 #14); the count says how many
+			// were reboots when some were the SNMP agent's alone.
+			if n := datatype.CountReboots(d.Reboots); n != len(d.Reboots) {
+				row("Restarts", fmt.Sprintf("%d (%s): %s", len(d.Reboots), plural(n, "reboot"), strings.Join(rs, ", ")))
+			} else {
+				row("Reboots", fmt.Sprintf("%d: %s", len(d.Reboots), strings.Join(rs, ", ")))
+			}
 		}
 		if len(d.Gaps) == 0 {
 			row("Gaps", "none of 1 s or more (Woodshed and its listeners were up the whole window)")
