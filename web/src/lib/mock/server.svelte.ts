@@ -1372,6 +1372,7 @@ function statsJSON(now: number): Stats {
     rejected_24h: rejected(now).reduce((n, r) => n + r.count_24h, 0),
     dropped_by_reason: { paused: droppedByGuard, write_error: 0, refused: 0, queue_full: droppedByQueue },
     udp_queue: queueJSON(now),
+    flow_parts_early: 0,
   };
 }
 

@@ -141,6 +141,8 @@ export interface Stats {
   dropped_by_reason: DroppedByReason;
   /** One per enabled UDP listener (1.2). */
   udp_queue: UdpQueue[];
+  /** Flow segments closed early to keep flow memory bounded, since the server started (2.0). */
+  flow_parts_early: number;
 }
 
 export interface DroppedByReason {

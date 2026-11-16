@@ -62,7 +62,8 @@ because this copy holds the UI port.
                  "depth": 12, "high_water_24h": 3210, "dropped_24h": 0,
                  "high_water_by_hour": [120, 3210, 88]},   // oldest first, the last 24 hours
                 {"listener": "snmp", "port": 162, "capacity_messages": 100000, "capacity_bytes": 67108864,
-                 "depth": 0, "high_water_24h": 40, "dropped_24h": 0, "high_water_by_hour": [12, 40]}]   // while listeners.snmp.enabled
+                 "depth": 0, "high_water_24h": 40, "dropped_24h": 0, "high_water_by_hour": [12, 40]}],  // while listeners.snmp.enabled
+  "flow_parts_early": 0                       // flow segments started early to keep flow memory bounded (2.0, below)
 }
 ```
 **Drops by reason** (since 1.2): `dropped_by_reason` splits `dropped_24h`: `paused` (the low-disk guard had paused
@@ -70,6 +71,12 @@ writing, UDP messages still in the queue included), `write_error` (a log file wr
 over the device limits, see `device_limit`) and `queue_full` (a UDP listener's queue was full, below). `dropped_24h`
 still counts every drop, `queue_full` included. The reasons are counted since the server started, so for a day after a
 restart they can sum to less than `dropped_24h`, which comes from the index.
+
+**Early flow parts** (since 2.0): `flow_parts_early` counts the flow segments closed before their hour ended, since
+the server started, because every exporter's open segment together had reached the writers' memory budget. The
+exporter's next records go on in the hour's next part (`…T09.001.wsf`), so nothing is lost and searches read both; it
+only means more, smaller files. At one block a second per exporter, an hour stays one part up to about 43 exporters;
+300 exporters make about 4 parts an exporter-hour.
 
 **UDP receive queue** (since 1.2, SPEC §11.5): each UDP socket's reader only reads, stamps, applies the blocklist and
 allowlist and queues; one drainer parses and stores in arrival order, so a slow disk fills the queue instead of the OS

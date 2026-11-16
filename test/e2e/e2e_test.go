@@ -299,6 +299,7 @@ var (
 	statsShape    = map[string]string{
 		"msgs_per_sec": "number", "sparkline": "array", "devices": "object", "disk": "object", "dropped_24h": "number",
 		"kernel_dropped_24h": "null|number", "truncated_24h": "number", "rejected_24h": "number",
+		"flow_parts_early": "number",
 	}
 	statsDevicesShape = map[string]string{"total": "number", "online": "number", "quiet": "number", "offline": "number"}
 	diskShape         = map[string]string{"used_bytes": "number", "cap_bytes": "number", "free_bytes": "number", "days_kept": "number"}
