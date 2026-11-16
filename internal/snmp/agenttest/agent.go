@@ -125,6 +125,7 @@ type Agent struct {
 	opts  Options
 	conn  *net.UDPConn
 	other *net.UDPConn // for wrong-source replies
+	guard *net.UDPConn // [::]:port, held so no wildcard socket takes our port (nil where refused)
 
 	mu         sync.Mutex
 	usm        *snmp.USM
@@ -186,8 +187,14 @@ func Start(opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	// macOS lets a dual-stack socket on [::] take an ephemeral port that a
+	// socket on 127.0.0.1 already holds; a poller whose socket got this
+	// agent's port would send to itself-shadowed 127.0.0.1:port and its replies
+	// would go to the agent. Holding [::]:port too keeps the port to us (where
+	// the OS refuses that bind, as Linux does, it can't happen anyway).
+	guard, _ := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6unspecified, Port: conn.LocalAddr().(*net.UDPAddr).Port})
 	now := opts.Clock()
-	a := &Agent{opts: opts, conn: conn, sysStart: now, hrStart: now, cpus: slices.Clone(opts.CPUs), memUsed: opts.MemUsed,
+	a := &Agent{opts: opts, conn: conn, guard: guard, sysStart: now, hrStart: now, cpus: slices.Clone(opts.CPUs), memUsed: opts.MemUsed,
 		extra: map[string]snmp.Value{}, requests: map[string]int{}, sources: map[netip.AddrPort]int{}, done: make(chan struct{})}
 	for k, v := range opts.Extra {
 		a.extra[k] = v
@@ -240,6 +247,9 @@ func (a *Agent) Boots() int64 {
 func (a *Agent) Close() error {
 	err := a.conn.Close()
 	<-a.done
+	if a.guard != nil {
+		a.guard.Close()
+	}
 	a.mu.Lock()
 	if a.other != nil {
 		a.other.Close()
