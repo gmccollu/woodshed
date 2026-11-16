@@ -204,7 +204,8 @@ func TestRoutesMatchDocExamples(t *testing.T) {
 	examples := docExamples(t)
 	for _, route := range []string{"/api/status", "/api/stats", "/api/devices", "/api/groups", "/api/settings", "/api/rejected", "/api/storage/history", "/api/storage/estimate",
 		"/api/search/schema", "/api/search/summary", "/api/saved-searches", "/api/tls", "/api/tls/failures",
-		"/api/poll", "/api/poll/targets", "/api/poll/series"} {
+		"/api/poll", "/api/poll/targets", "/api/poll/series", "/api/flows", "/api/flows/top", "/api/flows/timeline",
+		"/api/flows/templates"} {
 		if _, ok := examples[route]; !ok {
 			t.Fatalf("no example for %s in docs/api.md", route)
 		}
@@ -227,6 +228,12 @@ func TestRoutesMatchDocExamples(t *testing.T) {
 		}
 		if route == "/api/poll/series" {
 			path += "?device=10.1.0.1&series=in_bps"
+		}
+		switch route {
+		case "/api/flows/timeline":
+			path += "?from=2026-11-16T09:00:00Z&to=2026-11-16T10:00:00Z"
+		case "/api/flows/templates":
+			path += "?device=10.1.0.1"
 		}
 		r := do(t, c, "GET", srv.url(path), "")
 		if r.code != http.StatusOK {

@@ -85,6 +85,23 @@ import { setupFamilies, setupSnippet } from './setup';
 import type { SnippetBody } from '../setup';
 import { POLL_SCHEMA, devicePoll, deviceRoute as pollDeviceRoute, pollBanners, pollDefaults, pollRoute, seriesRoute as pollSeriesRoute, setPollUsers, timelineRoute as pollTimelineRoute } from './poll';
 import { POLL_RANGES } from '../poll';
+import {
+  FLOW_ONLY_PARAMS,
+  FLOW_RECORD_CAP,
+  FLOW_SCHEMA,
+  flowBanners,
+  flowCounts,
+  flowDefaults,
+  flowEstimate,
+  flowSearch,
+  flowState,
+  flowSummary,
+  flowTemplates,
+  flowTimeline,
+  flowTop,
+  flowTotals,
+} from './flows';
+import { parseDuration } from '../bundle';
 
 setPollUsers(() => listUsers().map((u) => u.name));
 
@@ -490,6 +507,7 @@ let settings: Settings = {
       mib_dir: '',
       engine_id: '',
     },
+    flow: flowDefaults(),
   },
   storage: {
     data_dir: OS.startsWith('windows')
@@ -500,6 +518,7 @@ let settings: Settings = {
     retention_days: 30,
     retention_bytes: 20 * GiB,
     part_bytes: 100 * MiB,
+    flow_budget_bytes: 0,
   },
   ui: {
     lan_mode: P.get('mock_auth') === '1',
@@ -757,6 +776,30 @@ function validate(s: Settings): Record<string, string> {
   if (!Number.isInteger(q.offline_after_seconds) || q.offline_after_seconds <= q.quiet_after_seconds)
     e['quiet.offline_after_seconds'] = 'Offline must come after quiet.';
   if (s.updates && !['ask', 'on', 'off'].includes(s.updates.check)) e['updates.check'] = 'Must be "ask", "on" or "off".';
+  // 2.0: the flow listener and its budget (docs/api.md → Flow listener).
+  const fl = s.listeners.flow;
+  if (fl) {
+    for (const k of ['flow_port', 'ipfix_port'] as const) {
+      const v = fl[k];
+      if (!Number.isInteger(v) || v < 0 || v > 65535) e[`listeners.flow.${k}`] = 'Use 0 (off) or a port from 1 to 65535.';
+    }
+    if (fl.enabled && !fl.flow_port && !fl.ipfix_port) e['listeners.flow.ipfix_port'] = 'Turn at least one flow port on, or turn flows off.';
+    if (fl.enabled && fl.flow_port && fl.flow_port === fl.ipfix_port) e['listeners.flow.ipfix_port'] = 'The flow and IPFIX ports must differ.';
+    for (const k of ['flow_port', 'ipfix_port'] as const)
+      if (fl.enabled && fl[k] && s.listeners.udp.enabled && fl[k] === s.listeners.udp.port) e[`listeners.flow.${k}`] = `UDP ${fl[k]} is the syslog listener's port.`;
+    if (!isIP(fl.addr)) e['listeners.flow.addr'] = 'Not an IP address.';
+    const t = parseDuration(fl.template_timeout);
+    if (!/^(\d+(ms|s|m|h))+$/.test(fl.template_timeout) || !(t >= MIN && t <= 24 * H)) e['listeners.flow.template_timeout'] = 'Use a duration from 1m to 24h, e.g. 30m.';
+    if (!Array.isArray(fl.rule_id_ies) || fl.rule_id_ies.length > 8) e['listeners.flow.rule_id_ies'] = 'At most 8 entries.';
+    else
+      fl.rule_id_ies.forEach((x, i) => {
+        const m = /^(\d{1,10}):(\d{1,5})$/.exec(x);
+        if (!m || Number(m[1]) > 4294967295 || Number(m[2]) > 32767) e[`listeners.flow.rule_id_ies[${i}]`] = 'Use <enterprise number>:<element ID>, e.g. 32473:7.';
+      });
+  }
+  const fb = st.flow_budget_bytes;
+  if (fb !== undefined && fb !== 0 && (!Number.isFinite(fb) || fb < GiB || fb > st.retention_bytes * 0.9))
+    e['storage.flow_budget_bytes'] = 'Use 0 (40 % of the cap), or at least 1 GiB and at most 90 % of the cap.';
   if (s.poll) {
     for (const [k, [lo, hi]] of Object.entries(POLL_RANGES)) {
       const v = (s.poll as unknown as Record<string, number>)[k];
@@ -1110,13 +1153,14 @@ function deviceJSON(d: Dev, now: number): Device {
 /** 1.2: the data types a device has on disk and their stored lines; total_msgs counts both. */
 function deviceTypes(d: Dev, now: number): Pick<Device, 'types' | 'lines_by_type' | 'total_msgs' | 'last_heard'> {
   const t = mock.firstRun ? undefined : trapStats(now).get(d.def.ip);
+  const fl = mock.firstRun ? undefined : flowTotals(now).get(d.def.ip);
   const syslog = d.total;
-  const types = [...(syslog > 0 ? ['syslog'] : []), ...(t ? ['trap'] : [])];
+  const types = [...(syslog > 0 ? ['syslog'] : []), ...(t ? ['trap'] : []), ...(fl ? ['flow'] : [])];
   return {
     types,
-    lines_by_type: { ...(syslog > 0 ? { syslog } : {}), ...(t ? { trap: t.n } : {}) },
-    total_msgs: syslog + (t?.n ?? 0),
-    last_heard: new Date(Math.max(d.lastHeard, t?.last ?? 0)).toISOString(),
+    lines_by_type: { ...(syslog > 0 ? { syslog } : {}), ...(t ? { trap: t.n } : {}), ...(fl ? { flow: fl.n } : {}) },
+    total_msgs: syslog + (t?.n ?? 0) + (fl?.n ?? 0),
+    last_heard: new Date(Math.max(d.lastHeard, t?.last ?? 0, fl?.last ?? 0)).toISOString(),
   };
 }
 
@@ -1139,6 +1183,10 @@ function statusJSON(): Status {
   }
   if (l.tls?.enabled) listeners.push({ proto: 'tls', addr: l.tls.addr, port: l.tls.port, ok: true, error: '' });
   if (l.snmp?.enabled) listeners.push({ proto: 'snmp', addr: l.snmp.addr, port: l.snmp.port, ok: true, error: '' });
+  if (l.flow?.enabled) {
+    if (l.flow.flow_port) listeners.push({ proto: 'flow', addr: l.flow.addr, port: l.flow.flow_port, ok: true, error: '' });
+    if (l.flow.ipfix_port) listeners.push({ proto: 'ipfix', addr: l.flow.addr, port: l.flow.ipfix_port, ok: true, error: '' });
+  }
   const banners: Status['banners'] = [];
   const down = listeners.filter((x) => !x.ok);
   if (down.length) {
@@ -1187,6 +1235,7 @@ function statusJSON(): Status {
   banners.push(...tlsBanners());
   banners.push(...snmpBanners());
   banners.push(...pollBanners(Date.now()));
+  banners.push(...flowBanners(!!l.flow?.enabled, OS));
   if (mock.queueFull && l.udp.enabled)
     banners.push({
       kind: 'udp_queue_full',
@@ -1586,6 +1635,7 @@ const isoS = (t: number) => new Date(t).toISOString().replace(/\.000Z$/, 'Z');
 interface ActiveCounts {
   syslog: number;
   trap: number;
+  flow: number;
 }
 
 /**
@@ -1598,7 +1648,7 @@ function activeIn(from: number, to: number, now: number): Map<string, ActiveCoun
   const key = `${from}-${Math.min(to, now)}`;
   if (activeCache && activeCache.key === key && now - activeCache.at < 5000) return activeCache.m;
   const m = new Map<string, ActiveCounts>();
-  const get = (ip: string) => m.get(ip) ?? (m.set(ip, { syslog: 0, trap: 0 }), m.get(ip)!);
+  const get = (ip: string) => m.get(ip) ?? (m.set(ip, { syslog: 0, trap: 0, flow: 0 }), m.get(ip)!);
   if (!mock.firstRun) {
     const lo = Math.ceil(from / STEP);
     const hi = Math.ceil(Math.min(to, now) / STEP) - 1;
@@ -1609,6 +1659,7 @@ function activeIn(from: number, to: number, now: number): Map<string, ActiveCoun
       const ms = i * TRAP_STEP;
       if (ms >= from && ms < to) get(senderAt(i).ip).trap++;
     }
+    for (const [ip, c] of flowCounts(from, Math.min(to, now), now)) get(ip).flow += c.n;
   }
   activeCache = { key, at: now, m };
   return m;
@@ -1647,7 +1698,7 @@ const exportsList: MockExport[] = [
 ];
 
 /** An upper bound from the index: lines (and traps) per type for these devices, and one file per device, day and type. */
-function estimate(b: { devices: string[]; from: string; to: string; severities?: unknown[]; types?: string[] }, now = Date.now()) {
+function estimate(b: { devices: string[]; from: string; to: string; severities?: unknown[]; types?: string[] }, now = Date.now()): { lines: number; bytes: number; files: number; by_type: Record<string, { lines?: number; records?: number; bytes: number }>; tooMany?: string } {
   const from = Date.parse(b.from);
   const to = Date.parse(b.to);
   const span = Math.max(0, to - from);
@@ -1656,6 +1707,17 @@ function estimate(b: { devices: string[]; from: string; to: string; severities?:
   let lines = 0;
   let bytes = 0;
   let files = 0;
+  const by_type: Record<string, { lines?: number; records?: number; bytes: number }> = {};
+  let tooMany: string | undefined;
+  if (types.includes('flow')) {
+    const fe = flowEstimate(b.devices, from, to, now);
+    by_type.flow = { records: fe.records, bytes: fe.bytes };
+    lines += fe.records;
+    bytes += fe.bytes;
+    files += fe.records ? b.devices.length * 2 : 0;
+    if (fe.worst && fe.worst[1] > FLOW_RECORD_CAP)
+      tooMany = `Too many flow records for one zip (${fe.worst[1].toLocaleString('en-US')} for ${fe.worst[0]}); narrow the window or add a flow filter.`;
+  }
   if (types.includes('syslog')) {
     let n = Math.round((span / STEP) * shareOf(b.devices));
     // Severity and text filters can only shrink it.
@@ -1663,6 +1725,7 @@ function estimate(b: { devices: string[]; from: string; to: string; severities?:
     lines += n;
     bytes += n * 142;
     files += b.devices.length * days;
+    by_type.syslog = { lines: n, bytes: n * 142 };
   }
   if (types.includes('trap')) {
     const act = activeIn(from, to, now);
@@ -1676,8 +1739,9 @@ function estimate(b: { devices: string[]; from: string; to: string; severities?:
     lines += n;
     bytes += n * 410;
     files += senders * days;
+    by_type.trap = { lines: n, bytes: n * 410 };
   }
-  return { lines, bytes, files };
+  return { lines, bytes, files, by_type, tooMany };
 }
 
 /** One build at a time; the rest wait in the queue. */
@@ -1732,7 +1796,7 @@ function canonDuration(ms: number): string {
   return out;
 }
 
-const DATA_TYPES = ['syslog', 'trap', 'poll'];
+const DATA_TYPES = ['syslog', 'trap', 'poll', 'flow'];
 /** Syslog's filters in an export body (they're a 400 with types ["trap"]). */
 const SYSLOG_BODY_FILTERS = ['severities', 'app', 'host', 'facilities', 'exclude_app', 'exclude_host'] as const;
 const present = (v: unknown) => (Array.isArray(v) ? v.length > 0 : typeof v === 'string' ? v !== '' : v === true);
@@ -1741,8 +1805,16 @@ type ExportBody = Record<string, unknown> & {
   all_devices?: boolean; devices?: string[]; group?: string; ungrouped?: boolean; from?: string; to?: string;
   severities?: unknown[]; q?: string; regex?: boolean; case?: boolean; app?: string[]; host?: string[]; exclude?: string;
   type?: string; syntax?: 'text' | 'terms'; facilities?: (number | string)[]; exclude_devices?: string[]; exclude_app?: string[]; exclude_host?: string[];
-  types?: string[]; kind?: string; at?: string; before?: string; after?: string; active_devices?: boolean;
+  types?: string[]; kind?: string; at?: string; before?: string; after?: string; active_devices?: boolean; flow_formats?: unknown;
 };
+
+/** flow_formats: ["csv"], ["ipfix"] or both (the default), or the 400's message. */
+function flowFormatsOf(b: ExportBody): ('csv' | 'ipfix')[] | string {
+  if (b.flow_formats === undefined) return ['csv', 'ipfix'];
+  const v = b.flow_formats;
+  if (!Array.isArray(v) || !v.length || v.some((x) => x !== 'csv' && x !== 'ipfix')) return 'flow_formats: ["csv"], ["ipfix"] or both.';
+  return (['csv', 'ipfix'] as const).filter((x) => v.includes(x));
+}
 
 /** POST /api/exports(/estimate) with kind "bundle" (docs/api.md → the incident bundle): the window around at, the devices, the types. */
 function bundleRoute(p: string, b: ExportBody, now: number): Response {
@@ -1751,7 +1823,7 @@ function bundleRoute(p: string, b: ExportBody, now: number): Response {
     ['to', 'a bundle\'s window is at, before and after, not from and to.'],
     ['all_devices', 'a bundle takes active_devices, devices, group or ungrouped.'],
     ['exclude_devices', 'a bundle has no device exclusions; list the devices instead.'],
-    ...['q', 'regex', 'case', 'syntax', 'exclude', 'type', ...SYSLOG_BODY_FILTERS, ...TRAP_ONLY_PARAMS].map(
+    ...['q', 'regex', 'case', 'syntax', 'exclude', 'type', ...SYSLOG_BODY_FILTERS, ...TRAP_ONLY_PARAMS, ...FLOW_ONLY_PARAMS].map(
       (k): [string, string] => [k, 'a bundle has no filters: it holds everything in its window. Use a plain export to filter.'],
     ),
   ];
@@ -1795,14 +1867,19 @@ function bundleRoute(p: string, b: ExportBody, now: number): Response {
   const types = b.types?.length
     ? DATA_TYPES.filter((t) => b.types!.includes(t))
     : DATA_TYPES.filter((t) => ids.some((ip) => (act.get(ip)?.[t as keyof ActiveCounts] ?? 0) > 0));
+  const ff = flowFormatsOf(b);
+  if (typeof ff === 'string') return err(400, ff);
   const est = estimate({ devices: ids, from: new Date(from).toISOString(), to: new Date(to).toISOString(), types }, now);
-  if (p === '/api/exports/estimate') return json(est);
+  if (est.tooMany) return err(400, est.tooMany);
+  const { tooMany: _tm, ...estBody } = est;
+  void _tm;
+  if (p === '/api/exports/estimate') return json(estBody);
   const e: MockExport = {
     id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date(now).toISOString(),
     devices: ids, from: isoS(from), to: isoS(to),
     state: 'queued', progress: 0, lines: 0, size_bytes: 0, error: '', estimate: est.lines, ready_at: null, expires_at: null,
     filters: {
-      ...noFilters(), group: b.group ?? '', ungrouped: !!b.ungrouped, kind: 'bundle', types,
+      ...noFilters(), group: b.group ?? '', ungrouped: !!b.ungrouped, kind: 'bundle', types, ...(types.includes('flow') ? { flow_formats: ff } : {}),
       at: isoS(at), before: canonDuration(before), after: canonDuration(after), active_devices: !!b.active_devices,
     },
   };
@@ -2238,6 +2315,7 @@ const SCHEMA = {
     },
     TRAP_SCHEMA,
     POLL_SCHEMA,
+    FLOW_SCHEMA,
   ],
 };
 const FIELD_KEYS = SCHEMA.types[0].fields.map((x) => x.key);
@@ -2702,7 +2780,12 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const restarting = wasLan !== s.ui.lan_mode || settings.ui.port !== s.ui.port;
     // A PUT without updates keeps it (docs/api.md).
     const check = s.updates?.check ?? settings.updates?.check ?? 'ask';
+    const prevFlow = settings.listeners.flow;
+    const prevBudget = settings.storage.flow_budget_bytes;
     settings = structuredClone({ ...s, updates: settings.updates, poll: s.poll ?? settings.poll });
+    // 2.0: a PUT without the flow keys (a 1.x client) keeps them.
+    if (!s.listeners.flow && prevFlow) settings.listeners.flow = structuredClone(prevFlow);
+    if (s.storage.flow_budget_bytes === undefined) settings.storage.flow_budget_bytes = prevBudget;
     // docs/api.md: a plain community is stored and comes back only as "#<hash8>" (the mock's hash isn't SHA-256).
     if (settings.listeners.snmp) {
       const prevSnmp = s.listeners.snmp ? undefined : structuredClone(prev.snmp);
@@ -2786,6 +2869,22 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const to = url.searchParams.get('to') ?? new Date(now).toISOString();
     return json({ type: 'poll', from, to, matched: 0, counted_from: from, fields: [], ...base });
   }
+  if ((p === '/api/flows' || p.startsWith('/api/flows/') || ((p === '/api/search' || p === '/api/search/summary') && url.searchParams.get('type') === 'flow')) && method === 'GET') {
+    const reply = (r: { status: number; body?: unknown }) => json(r.body, r.status);
+    const u = url.searchParams;
+    if (p === '/api/search') return reply(flowSearch(u, now, trapDevicePasses(u)));
+    if (p === '/api/search/summary') return reply(flowSummary(u, now, trapDevicePasses(u), devLabel));
+    if (p === '/api/flows') return json(flowState(now, settings.storage.flow_budget_bytes ?? 0, settings.storage.retention_bytes, !!settings.listeners.flow?.enabled));
+    if (p === '/api/flows/top') return reply(flowTop(u, now, trapDevicePasses(u)));
+    if (p === '/api/flows/templates') return reply(flowTemplates(u.get('device') ?? '', now));
+    if (p === '/api/flows/timeline') {
+      const list = listParam(u, 'devices');
+      const group = u.get('group');
+      const ug = u.get('ungrouped') === 'true';
+      return reply(flowTimeline(u, now, (ip) => (list.length ? list.includes(ip) : group ? groupOf(ip) === group : ug ? !groupOf(ip) : !hiddenNow(ip))));
+    }
+  }
+  if (method === 'GET' && p === '/api/context' && /^f\d+$/.test(url.searchParams.get('ref') ?? '')) return err(400, "Flows have no context: a record isn't a line.");
   if (method === 'GET' && p === '/api/search' && url.searchParams.get('type') === 'trap') return trapSearchRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/search/summary' && url.searchParams.get('type') === 'trap') return trapSummaryRoute(url.searchParams, now);
   if (method === 'GET' && p === '/api/context' && /^t\d+$/.test(url.searchParams.get('ref') ?? '')) return trapContextRoute(url.searchParams, now);
@@ -2857,17 +2956,31 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const f: MockFilters = { devices: b.devices, group: b.group || undefined, ungrouped: !!b.ungrouped, sev: null };
     const anySelector = b.all_devices || !!b.devices?.length || !!b.group || !!b.ungrouped;
     const known = [...new Set([...FLEET.map((d) => d.ip), ...devs.keys()])];
-    const ids = anySelector ? known.filter((ip) => deviceMatches(ip, f, true) && !b.exclude_devices?.includes(ip)) : [];
+    // Named devices are exported as named, even ones with nothing stored (as the server does; the request fixture names 127.0.0.1).
+    const ids = !anySelector
+      ? []
+      : b.devices?.length
+        ? b.devices.filter((ip) => !b.exclude_devices?.includes(ip))
+        : known.filter((ip) => deviceMatches(ip, f, true) && !b.exclude_devices?.includes(ip));
     // 1.2: types (["syslog"] by default); type (1.1) is a one-entry types, and both must agree.
     if (b.type !== undefined && !DATA_TYPES.includes(b.type)) return err(400, `type: unknown data type "${b.type}".`);
     for (const t of b.types ?? []) if (!DATA_TYPES.includes(t)) return err(400, `types: unknown data type "${t}".`);
     const types = b.types?.length ? DATA_TYPES.filter((t) => b.types!.includes(t)) : [b.type ?? 'syslog'];
     if (b.type !== undefined && b.types?.length && !(types.length === 1 && types[0] === b.type)) return err(400, `type: "${b.type}" doesn't match types.`);
-    const trapKeys = TRAP_ONLY_PARAMS.filter((k) => present(b[k]));
+    const flowKeys = FLOW_ONLY_PARAMS.filter((k) => present(b[k]) && !TRAP_ONLY_PARAMS.includes(k));
+    const trapKeys = TRAP_ONLY_PARAMS.filter((k) => present(b[k]) && !(types[0] === 'flow' && k === 'status'));
     const syslogKeys = SYSLOG_BODY_FILTERS.filter((k) => present(b[k]));
-    if (types.length > 1 && (b.q || b.exclude || trapKeys.length || syslogKeys.length))
+    if (types.length > 1 && (b.q || b.exclude || trapKeys.length || syslogKeys.length || flowKeys.length))
       return err(400, 'types: Filters apply to one data type; pick one, or leave the filters out.');
-    if (types[0] === 'trap' && types.length === 1) {
+    const ff = flowFormatsOf(b);
+    if (typeof ff === 'string') return err(400, ff);
+    if (types[0] === 'flow' && types.length === 1) {
+      if (b.q) return err(400, 'q: flows have no text; use src, dst, ip, port or proto.');
+      if (syslogKeys.length) return err(400, `${syslogKeys[0]}: not a filter for flows.`);
+      const tk = trapKeys.filter((k) => !FLOW_ONLY_PARAMS.includes(k));
+      if (tk.length) return err(400, `${tk[0]}: not a filter for flows.`);
+    } else if (flowKeys.length) return err(400, `${flowKeys[0]}: not a filter for ${types[0] === 'trap' ? 'SNMP traps' : 'syslog'}.`);
+    else if (types[0] === 'trap' && types.length === 1) {
       if (syslogKeys.length) return err(400, `${syslogKeys[0]}: not a filter for SNMP traps.`);
     } else if (trapKeys.length) return err(400, `${trapKeys[0]}: not a filter for syslog.`);
     if (b.regex && b.syntax === 'terms') return err(400, TERMS_AND_REGEX);
@@ -2904,14 +3017,17 @@ async function route(method: string, url: URL, body: unknown, header: string | n
       if (!Array.isArray(v)) return err(400, `${k} must be a list`);
       trap[k] = v.map(String).map((x) => x.trim()).filter(Boolean);
     }
-    if (trapKeys.length) {
+    if (trapKeys.length && types[0] !== 'flow') {
       const u = new URLSearchParams();
       for (const [k, v] of Object.entries(trap)) u.set(k, v.join(','));
       const tf = trapFilter(u, now, () => true);
       if (typeof tf === 'string') return err(400, tf);
     }
     const est = estimate({ devices: ids, from: b.from, to: b.to, severities: b.severities, types }, now);
-    if (p === '/api/exports/estimate') return json(est);
+    if (est.tooMany) return err(400, est.tooMany);
+    const { tooMany: _tm, ...estBody } = est;
+    void _tm;
+    if (p === '/api/exports/estimate') return json(estBody);
     const e: MockExport = {
       id: `exp_${Math.random().toString(36).slice(2, 6)}`, created: new Date(now).toISOString(),
       devices: b.all_devices ? ids : b.devices?.length ? b.devices : [], from: b.from, to: b.to,
@@ -2922,7 +3038,7 @@ async function route(method: string, url: URL, body: unknown, header: string | n
         app: b.app ?? [], host: b.host ?? [], exclude: b.exclude ?? '',
         type: types.length === 1 ? types[0] : 'syslog', syntax: b.syntax ?? 'text', facilities: (b.facilities ?? []) as ExportInfo['filters']['facilities'],
         exclude_devices: b.exclude_devices ?? [], exclude_app: b.exclude_app ?? [], exclude_host: b.exclude_host ?? [],
-        kind: 'export', types, ...(trapKeys.length ? { trap } : {}),
+        kind: 'export', types, ...(trapKeys.length && types[0] !== 'flow' ? { trap } : {}), ...(types.includes('flow') ? { flow_formats: ff } : {}),
       },
     };
     exportsList.unshift(e);

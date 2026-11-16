@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/datatype"
+	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/model"
 )
 
@@ -146,6 +147,8 @@ type SearchRequest struct {
 	Trap *datatype.TrapFilter
 	// 1.3: the poll type's filter (Type "poll"; nil: none).
 	Poll *datatype.PollFilter
+	// 2.0: the flow type's filter parameters (Type "flow"; nil: none).
+	Flow FlowParams
 }
 
 // SearchLine is one search result or context line.
@@ -161,6 +164,8 @@ type SearchLine struct {
 	// fields (docs/api.md, "Search results for type=trap").
 	Type string
 	Trap *datatype.TrapResult
+	// Flow is a flow result's record (Type "flow"; Raw is empty).
+	Flow *flow.Record
 }
 
 // MarshalJSON gives the docs/api.md shape: received with millisecond
@@ -168,6 +173,9 @@ type SearchLine struct {
 // (bytes that aren't valid UTF-8 become U+FFFD). A trap line has its own
 // shape: type, ref, raw (the record) and fields.
 func (l SearchLine) MarshalJSON() ([]byte, error) {
+	if l.Type == datatype.Flow && l.Flow != nil {
+		return flowLineJSON(l)
+	}
 	if l.Type == datatype.Poll {
 		return json.Marshal(struct {
 			Received string              `json:"received"`
@@ -255,6 +263,10 @@ type ExportRequest struct {
 	Types []string
 	Trap  *datatype.TrapFilter
 	Poll  *datatype.PollFilter // 1.3: the poll type's filter
+	// 2.0: the flow filter (one type, flow) and the flow file formats in the
+	// zip (nil: both, csv and ipfix).
+	Flow        FlowParams
+	FlowFormats []string
 	// 1.2: the incident bundle (Kind "bundle"): the moment, the spans around
 	// it and the devices active in the window (docs/api.md "Exports"). From
 	// and To are left zero; the backend works the window out, cut at now.
@@ -269,6 +281,16 @@ type ExportEstimate struct {
 	Lines int64 `json:"lines"`
 	Bytes int64 `json:"bytes"`
 	Files int   `json:"files"`
+	// ByType (2.0) splits the estimate by data type: lines and bytes for the
+	// line types, records and bytes for flows.
+	ByType map[string]TypeEstimate `json:"by_type,omitempty"`
+}
+
+// TypeEstimate is one type's share of an export estimate.
+type TypeEstimate struct {
+	Lines   int64 `json:"lines,omitempty"`
+	Records int64 `json:"records,omitempty"`
+	Bytes   int64 `json:"bytes"`
 }
 
 // ExportFilters echoes an export's filters.
@@ -295,6 +317,9 @@ type ExportFilters struct {
 	Trap  *TrapLists `json:"trap,omitempty"`
 	// 1.3: the poll type's filter.
 	Poll *PollLists `json:"poll,omitempty"`
+	// 2.0: the flow filter and the flow formats.
+	Flow        *FlowLists `json:"flow,omitempty"`
+	FlowFormats []string   `json:"flow_formats,omitempty"`
 	// A bundle's moment and spans ("30m"), and whether its devices are the
 	// active ones; omitted for exports.
 	At            *time.Time `json:"at,omitempty"`
@@ -634,8 +659,10 @@ func parseFilters11(v url.Values, r *SearchRequest) error {
 		return err
 	}
 	r.ExcludeDevices, r.ExcludeApp, r.ExcludeHost = splitList(v.Get("exclude_devices")), splitList(v.Get("exclude_app")), splitList(v.Get("exclude_host"))
-	r.Trap, r.Poll, err = parseTypeFilter(r.Type, v.Get)
-	return err
+	if r.Trap, r.Poll, err = parseTypeFilter(r.Type, v.Get); err != nil {
+		return err
+	}
+	return checkFlowRequest(r, v.Get)
 }
 
 // requestOrBackendError answers a Backend error: 400 for a RequestError, 404
@@ -727,6 +754,9 @@ type exportBody struct {
 	Kind  string   `json:"kind"`
 	TrapLists
 	PollLists
+	// 2.0: the flow filters (status is TrapLists.Status) and formats.
+	FlowLists
+	FlowFormats []string `json:"flow_formats"`
 	// The incident bundle (kind "bundle").
 	At            string `json:"at"`
 	Before        string `json:"before"`
@@ -781,9 +811,9 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 	}
 	syslogFilters := len(b.Severities.Values) > 0 || b.Severities.None || len(b.Facilities.Values) > 0 || b.Facilities.None ||
 		len(req.App) > 0 || len(req.Host) > 0 || len(req.ExcludeApp) > 0 || len(req.ExcludeHost) > 0
-	lists := typeListsGet(&b.TrapLists, &b.PollLists)
+	lists := typeListsGet(&b.TrapLists, &b.PollLists, &b.FlowLists)
 	typeFilters := false
-	for _, t := range []string{datatype.Trap, datatype.Poll} {
+	for _, t := range []string{datatype.Trap, datatype.Poll, datatype.Flow} {
 		for _, p := range datatype.Get(t).FilterParams() {
 			typeFilters = typeFilters || lists(p) != ""
 		}
@@ -814,6 +844,16 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 		if req.Trap, req.Poll, err = parseTypeFilter(req.Type, get); err != nil {
 			return bad(err.Error())
 		}
+		if req.Type == datatype.Flow {
+			sr := SearchRequest{Type: req.Type, Q: req.Q, Exclude: req.Exclude, Regex: req.Regex, Case: req.Case}
+			if err := checkFlowRequest(&sr, get); err != nil {
+				return bad(err.Error())
+			}
+			req.Flow = sr.Flow
+		}
+	}
+	if req.FlowFormats, err = parseFlowFormats(b.FlowFormats); err != nil {
+		return bad(err.Error())
 	}
 	if req.Terms, err = parseSyntax(b.Syntax); err != nil {
 		return bad(err.Error() + ".")
@@ -852,7 +892,7 @@ func (s *Server) readExportRequest(w http.ResponseWriter, r *http.Request) (Expo
 // when sent, and no from or to: its window is at, before and after.
 func readBundle(b *exportBody, req *ExportRequest) string {
 	req.Kind = "bundle"
-	lists := typeListsGet(&b.TrapLists, &b.PollLists)
+	lists := typeListsGet(&b.TrapLists, &b.PollLists, &b.FlowLists)
 	for _, x := range []struct {
 		name string
 		set  bool
@@ -876,7 +916,7 @@ func readBundle(b *exportBody, req *ExportRequest) string {
 		}
 		return x.name + ": a bundle takes no filters: it's everything around the moment. Filter with a plain export instead."
 	}
-	for _, t := range []string{datatype.Trap, datatype.Poll} {
+	for _, t := range []string{datatype.Trap, datatype.Poll, datatype.Flow} {
 		for _, p := range datatype.Get(t).FilterParams() {
 			if lists(p) != "" {
 				return p + ": a bundle takes no filters: it's everything around the moment. Filter with a plain export instead."
@@ -904,6 +944,9 @@ func readBundle(b *exportBody, req *ExportRequest) string {
 		}
 	}
 	req.ActiveDevices = b.ActiveDevices
+	if req.FlowFormats, err = parseFlowFormats(b.FlowFormats); err != nil {
+		return err.Error()
+	}
 	if len(b.Types) > 0 || b.Type != "" {
 		if req.Types, err = parseTypes(b.Types, b.Type); err != nil {
 			return err.Error()
@@ -1054,4 +1097,26 @@ func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	h.Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, name, dl.ModTime, dl.File)
+}
+
+// parseFlowFormats reads flow_formats: "csv", "ipfix" or both; nil (absent)
+// means both.
+func parseFlowFormats(in []string) ([]string, error) {
+	if in == nil {
+		return nil, nil
+	}
+	var out []string
+	for _, f := range in {
+		f = strings.ToLower(strings.TrimSpace(f))
+		if f != "csv" && f != "ipfix" {
+			return nil, fmt.Errorf("flow_formats: %q isn't csv or ipfix.", f)
+		}
+		if !slicesContains(out, f) {
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("flow_formats: name csv, ipfix or both (or leave it out for both).")
+	}
+	return out, nil
 }

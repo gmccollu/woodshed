@@ -1,0 +1,71 @@
+Incident bundle around 2026-11-14 00:05:00 UTC (30 min before, 10 min after)
+Window: 2026-11-13 23:35:00 to 2026-11-14 00:15:00 UTC (local time UTC-05:00)
+Devices: 2, every device that sent anything in the window. Types: flows.
+
+edge-fw-01 (192.0.2.50)
+  Flows        535 records from 1 observation domain; unsampled
+               bytes 340 kB exported, packets 1,944
+               top talkers by bytes: 10.20.0.6 25 %, 10.20.0.5 25 %, 10.20.0.8 25 %
+               top destination ports: tcp/443 100 %
+               top conversations: 10.20.0.6 ↔ 198.51.100.8 9 %
+               firewall events: 160 created, 162 deleted, 160 denied
+               top denied sources: 203.0.113.50 80, 203.0.113.51 80; top denied ports: tcp/23 80, tcp/445 80
+               NAT: 213 translated connections; top post-NAT sources: 192.0.2.10 100 %
+               sequence gaps 3 (≈ 90 records lost before Woodshed, last 24 h); waiting for a template 1; malformed 1
+  Reboots      not known (no SNMP traps or polls in this bundle)
+  Gaps         none of 1 s or more (Woodshed and its listeners were up the whole window)
+  Losses       dropped 0, truncated 0 (<loss note>)
+
+192.0.2.51
+  Flows        161 records from 2 observation domains; sampled 1 in 100 on domain 1, unsampled on domain 2
+               bytes 26.8 MB exported (≈ 1.3 GB scaled), packets 17,871 (≈ 896,991 scaled)
+               top talkers by bytes: 10.20.0.6 25 %, 10.20.0.5 25 %, 10.20.0.8 25 %
+               top destination ports: udp/53 34 %, tcp/443 33 %, tcp/22 33 %
+               top conversations: 10.20.0.5 ↔ 198.51.100.7 12 %
+               sequence gaps 0 (≈ 0 records lost before Woodshed, last 24 h); waiting for a template 0; malformed 0
+  Reboots      not known (no SNMP traps or polls in this bundle)
+  Gaps         none of 1 s or more (Woodshed and its listeners were up the whole window)
+  Losses       dropped 0, truncated 0 (<loss note>)
+
+flows/<device>/flows.csv
+    The flow records Woodshed stored from each exporter in the window (flow
+    time: a record is in when its start-to-end overlaps the window), one row
+    per record, CSV with a header row (UTF-8, RFC 4180, CRLF). Columns:
+        start,end,event_time,src,src_port,dst,dst_port,proto,tcp_flags,packets,bytes,sampling,packets_scaled,bytes_scaled,in_if,in_if_name,out_if,out_if_name,domain,fw_event,nat_event,post_nat_src,post_nat_src_port,post_nat_dst,post_nat_dst_port,initiator_bytes,responder_bytes,initiator_packets,responder_packets,rev_bytes,rev_packets,rule_id,tos,src_as,dst_as,next_hop,time_source,status,received
+    Times are UTC, RFC 3339 with milliseconds. An empty cell means the record
+    didn't carry that field. proto is the protocol number, tcp_flags the set
+    flags as letters (S A F R P U E C), fw_event and nat_event by name.
+    sampling is 1 (unsampled), N (1 in N) or 0 (unknown); the *_scaled
+    columns multiply by it and are empty when it's unknown. Enterprise and
+    other fields without a column aren't in the CSV; the IPFIX file has them.
+
+flows/<device>/flows.ipfix
+    The same records as an IPFIX file (RFC 5655), for flow tools: one
+    observation domain per original domain, templates carrying every field
+    the records had, enterprise fields included; flow v5 and v9 records
+    are written as their IPFIX fields. Woodshed wrote it from stored records
+    (an options record in each domain says so); it wasn't captured off the
+    wire. Not carried: the decode status, the exporter's source port and the
+    original template IDs.
+
+flows/<device>/raw.txt
+    Only when there are any: flow data stored undecoded in the window, data
+    whose template never arrived (no_template) and malformed packets, one per
+    line: <received> <status> v<version> domain=<id> template=<id> <base64>.
+
+manifest.json
+    What was exported: the request (devices with their names and groups, the
+    range and any filters), each log file's line count and SHA-256, and "gaps":
+    periods in the range when Woodshed wasn't running or a listener was down,
+    so "the device sent nothing" can be told apart from "Woodshed wasn't
+    listening". "gaps_note" says how the gaps are worked out.
+    A bundle's manifest also has "at", "before", "after" and "summary": the
+    numbers above, per device, as JSON ("summary_note" says where they come
+    from).
+
+woodshed-events.log
+    Woodshed's own events in the range: starts and stops, listener bind errors,
+    file rotations and deletions, dropped messages, paused writes.
+
+To check a file: sha256sum flows/<device>/flows.csv (or on Windows:
+certutil -hashfile <file> SHA256) and compare with manifest.json.

@@ -61,6 +61,11 @@ func (d *DB) Apply(ctx context.Context, b Batch) error {
 			return err
 		}
 	}
+	for _, m := range b.FlowMinutes {
+		if err := st.flowMinute(m); err != nil {
+			return err
+		}
+	}
 	for _, a := range b.Activity {
 		if err := st.activity(a); err != nil {
 			return err
@@ -143,6 +148,11 @@ func (s *stmts) fileOp(op *FileOp) error {
 				return err
 			}
 		}
+		if op.Flow != nil {
+			if err := s.flowSegment(op.Flow); err != nil {
+				return fmt.Errorf("index: flow segment %s: %w", f.Path, err)
+			}
+		}
 		return s.checkpoints(id, op.Checkpoints)
 	case OpRename:
 		if op.OldPath != f.Path {
@@ -180,6 +190,11 @@ func (s *stmts) fileOp(op *FileOp) error {
 	case OpDelete:
 		if _, err := s.exec(`DELETE FROM files WHERE path = ?`, f.Path); err != nil {
 			return err
+		}
+		if fileType(f.Type) == TypeFlow {
+			if err := s.deleteFlowRows(f.Path); err != nil {
+				return err
+			}
 		}
 		if del := op.Deletion; del != nil {
 			if _, err := s.exec(insertDeletionSQL, ms(del.Time), del.File, del.DeviceID, del.Bytes, string(del.Reason), fileType(del.Type)); err != nil {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/peer"
 	"github.com/gmccollu/woodshed/internal/server"
@@ -225,6 +226,7 @@ reached.`, stderr)
 		statusTLSRows(w, cfg, &rs)
 		statusSNMPRows(w, cfg, &rs)
 		statusPollRows(w, cfg, &rs, time.Now())
+		statusFlowRows(w, &rs)
 		w.row("Data", cfg.Storage.DataDir)
 		if cfgErr == nil {
 			updateRows(w, cfg, rs.Version)
@@ -433,8 +435,12 @@ Rebuild the index (index.db) from the log files, which are always the source of
 truth. Device names, groups and hidden flags are kept.
 
 The server must be stopped: reindex refuses while Woodshed is running on the
-data folder.`, stderr)
+data folder.
+
+--flows-redecode also decodes the flow data kept undecoded because its template
+hadn't arrived, where the segment holds that template now (SPEC §13.1.3).`, stderr)
 	cfgPath := configFlag(fs)
+	redecode := fs.Bool("flows-redecode", false, "decode stored flow data that waited for a template, with the segment's templates")
 	if code, done := parse(fs, args, stdout); done {
 		return code
 	}
@@ -478,6 +484,23 @@ data folder.`, stderr)
 	defer idx.Close()
 	t0 := time.Now()
 	ctx := context.Background()
+	if *redecode {
+		var rules []flow.IEKey
+		for _, r := range cfg.Listeners.Flow.RuleIDIEs {
+			if pen, id, ok := config.ParseRuleIDIE(r); ok {
+				rules = append(rules, flow.IEKey{PEN: pen, ID: id})
+			}
+		}
+		rr, err := index.RedecodeFlows(dataDir, version, rules)
+		if err != nil {
+			return fail(stderr, "reindex", err)
+		}
+		fmt.Fprintf(stdout, "Flows: decoded %d undecoded sets (%d records) in %d segments; %d sets still undecoded\n",
+			rr.Decoded, rr.Records, rr.Segments, rr.StillRaw)
+		for _, u := range rr.Unreadable {
+			fmt.Fprintf(stdout, "  not read: %s\n", u)
+		}
+	}
 	res, err := idx.Reindex(ctx, dataDir)
 	if err != nil {
 		return fail(stderr, "reindex", err)

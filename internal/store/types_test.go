@@ -73,7 +73,7 @@ func TestTrapsInTheirOwnFiles(t *testing.T) {
 	if u := e.s.Usage(); u.Devices != 2 || u.Files != 3 {
 		t.Fatalf("usage: %d devices (streams count once per device), %d files", u.Devices, u.Files)
 	}
-	if err := e.s.WriteType("flow", model.Message{Sender: ip(1), Raw: []byte("x")}); err != ErrUnknownType {
+	if err := e.s.WriteType("sflow", model.Message{Sender: ip(1), Raw: []byte("x")}); err != ErrUnknownType {
 		t.Fatalf("unknown type: %v", err)
 	}
 }

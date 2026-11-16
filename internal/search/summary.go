@@ -800,3 +800,24 @@ func filterable(v string, app bool) bool {
 	}
 	return !app || !strings.HasSuffix(v, "*")
 }
+
+// PickBucket is the histogram bucket for a range: size when given (checked
+// like CheckBucket), else DefaultBucket. Flow summaries use it too.
+func PickBucket(size time.Duration, from, to time.Time) (time.Duration, error) {
+	if size == 0 {
+		size = DefaultBucket(to.Sub(from))
+	}
+	if err := CheckBucket(size, from.UnixMilli(), to.UnixMilli()); err != nil {
+		return 0, err
+	}
+	return size, nil
+}
+
+// BucketOrigin is where buckets of size start: the Unix epoch, or a Monday
+// for 7-day buckets.
+func BucketOrigin(size time.Duration) time.Time {
+	if size == 7*24*time.Hour {
+		return time.UnixMilli(weekOrigin).UTC()
+	}
+	return time.Unix(0, 0).UTC()
+}

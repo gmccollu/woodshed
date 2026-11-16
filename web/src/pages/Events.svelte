@@ -80,6 +80,10 @@
   import FieldPanel from '../components/FieldPanel.svelte';
   import Histogram from '../components/Histogram.svelte';
   import PollStrips from '../components/PollStrips.svelte';
+  import FlowEvents from '../components/FlowEvents.svelte';
+  import FlowReadme from '../components/FlowReadme.svelte';
+  import FlowStrip from '../components/FlowStrip.svelte';
+  import { FLOW } from '../lib/flows';
   import Icon from '../components/Icon.svelte';
   import ModeSwitch from '../components/ModeSwitch.svelte';
   import SavedMenu from '../components/SavedMenu.svelte';
@@ -210,7 +214,9 @@
    * the CLI, but Events shows polls as graphs, not as a tab (SPEC §12.3, §12.10 #8); any other type
    * the server lists is ignored here too. Bundles still offer every type.
    */
-  const eventSchemas = $derived(schemas.filter((t) => t.type === SYSLOG || t.type === TRAP));
+  const eventSchemas = $derived(schemas.filter((t) => t.type === SYSLOG || t.type === TRAP || t.type === FLOW));
+  /** 2.0: Events opens these types from the URL (type=flow is the Flows tab, FlowEvents). */
+  const KNOWN = [SYSLOG, TRAP, FLOW];
   /** The field panel's fields: the schema of the type being searched. */
   const schema = $derived(eventSchemas.find((t) => t.type === dtype) ?? (dtype === SYSLOG ? (eventSchemas.find((t) => t.default) ?? null) : null));
   /** The types the device list counts: the bundle's, or every type the server has. */
@@ -232,11 +238,22 @@
     .then((p) => (trapFilesSeen = p.devices.some((d) => d.types?.includes(TRAP))))
     .catch(() => {});
   const trapType = $derived(schemas.find((t) => t.type === TRAP));
-  const showTypes = $derived(
-    dtype !== SYSLOG ||
-      (!!trapType &&
-        (trapFilesSeen || !!live.status?.listeners.some((l) => l.proto === 'snmp') || !!live.devices?.some((d) => d.types?.includes(TRAP)))),
+  const flowType = $derived(schemas.find((t) => t.type === FLOW));
+  let flowFilesSeen = $state(false);
+  getDevices({ limit: 1000, sort: 'last_heard', hidden: 'include' })
+    .then((p) => (flowFilesSeen = p.devices.some((d) => d.types?.includes(FLOW))))
+    .catch(() => {});
+  /** The Flows tab shows when the flow listener is on or flow segments exist (SPEC §13.3). */
+  const showFlows = $derived(
+    !!flowType &&
+      (dtype === FLOW || flowFilesSeen || !!live.status?.listeners.some((l) => l.proto === 'flow' || l.proto === 'ipfix') || !!live.devices?.some((d) => d.types?.includes(FLOW))),
   );
+  const showTraps = $derived(
+    !!trapType && (dtype === TRAP || trapFilesSeen || !!live.status?.listeners.some((l) => l.proto === 'snmp') || !!live.devices?.some((d) => d.types?.includes(TRAP))),
+  );
+  const showTypes = $derived(dtype !== SYSLOG || showTraps || showFlows);
+  /** The type switch: syslog always, traps and flows when they're in use. */
+  const switchTypes = $derived(eventSchemas.filter((t) => t.type === SYSLOG || (t.type === TRAP && showTraps) || (t.type === FLOW && showFlows)));
 
   /** Switching type keeps the text, devices, range and order; the other type's filters don't apply, so they're cleared. */
   function setType(t: string) {
@@ -293,13 +310,13 @@
     fields = fieldsFromQuery(p);
     extras = extrasFromQuery(p);
     order = p.get('order') === 'asc' ? 'asc' : 'desc';
-    dtype = typeFromQuery(p);
-    tf = dtype === SYSLOG ? {} : typeFiltersFromQuery(p);
+    dtype = typeFromQuery(p, KNOWN);
+    tf = dtype === SYSLOG || dtype === FLOW ? {} : typeFiltersFromQuery(p);
     bundle = bundleFromQuery(p);
     if (bundle) {
       scope = $state.snapshot(bundle.scope) as Scope;
       // A bundle of one type opens on that type unless the link names one.
-      if (bundle.types.length === 1 && !p.has('type') && typeFromQuery(new URLSearchParams({ type: bundle.types[0] })) === bundle.types[0]) {
+      if (bundle.types.length === 1 && !p.has('type') && typeFromQuery(new URLSearchParams({ type: bundle.types[0] }), KNOWN) === bundle.types[0]) {
         dtype = bundle.types[0];
         tf = {};
       }
@@ -365,6 +382,11 @@
     e?.preventDefault();
     cancel();
     cancelSummary();
+    // The Flows tab searches by itself (FlowEvents), and keeps its own URL.
+    if (dtype === FLOW) {
+      lastRun = router.query;
+      return;
+    }
     qError = exError = rangeError = error = sumError = '';
     if (bundle) {
       // The preview searches the bundle's window (cut at now) and its devices.
@@ -964,12 +986,22 @@
             <span class="blab">Types</span>
             <BundleTypes bind:value={bundle.types} types={schemas} />
           </div>
-          <BundleBuild form={bundle} formError={bundleError} />
+          <BundleBuild form={bundle} formError={bundleError} types={schemas} />
         </div>
         <BundleDevices bind:value={bundle} win={bundleWin} types={countTypes} bind:listed={bundleListed} />
       </div>
     </section>
   {/if}
+  {#if bundle && bundleWin}<FlowReadme win={bundleWin} scope={bundle.scope} types={bundle.types} />{/if}
+  {#if dtype === FLOW}
+    <FlowEvents
+      types={switchTypes}
+      ontype={setType}
+      fixed={bundle && bundleWin ? { from: bundleWin.from, to: bundleWin.to, scope: $state.snapshot(bundle.scope) as Scope } : null}
+      onbundle={bundle ? moveMoment : startBundle}
+      onzoom={bundle ? narrowBundle : undefined}
+    />
+  {:else}
   <form class="card space-y-3" onsubmit={run} role="search" aria-labelledby="ev-title">
     <div class="flex items-start gap-3">
       <div class="min-w-0 grow">
@@ -982,7 +1014,7 @@
       </div>
       {#if showTypes}
         <div class="seg typesw" role="radiogroup" aria-label="Data type">
-          {#each eventSchemas as t (t.type)}
+          {#each switchTypes as t (t.type)}
             <button type="button" role="radio" aria-checked={dtype === t.type} onclick={() => setType(t.type)}>{t.label}</button>
           {/each}
         </div>
@@ -1175,6 +1207,7 @@
         utc={prefs.utc}
         onmarkers={(m) => (pollMarks = m)}
       />
+      <FlowStrip hist={summary?.histogram ?? null} from={active.from!} to={active.to!} scope={scopeParams(activeScope)} utc={prefs.utc} />
     {/if}
 
     <div
@@ -1275,6 +1308,7 @@
     </div>
   </section>
   </div>
+  {/if}
 </div>
 
 {#if ctx}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/datatype"
+	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -45,11 +46,19 @@ type builder struct {
 	loc          *time.Location
 	zip64Limit   int64
 	testHookLine func()
+	// flows returns the flow query engine (nil: no flows in zips);
+	// flowStats the collector's counts for an exporter (nil: not known).
+	flows     func() *flowquery.Engine
+	flowStats func(deviceID string) *FlowStats
 }
 
 func newBuilder(o Options) builder {
 	b := builder{idx: o.Index, eng: o.Search, version: o.Version, now: o.Now, level: o.Level, loc: o.Location,
-		zip64Limit: o.zip64Limit, testHookLine: o.testHookLine}
+		zip64Limit: o.zip64Limit, testHookLine: o.testHookLine, flowStats: o.FlowStats}
+	if o.Flows != nil {
+		eng := o.Flows
+		b.flows = func() *flowquery.Engine { return eng }
+	}
 	if b.now == nil {
 		b.now = time.Now
 	}
@@ -162,6 +171,10 @@ func (b *builder) resolveBundle(ctx context.Context, r *Request) ([]string, erro
 	all := types
 	if len(all) == 0 {
 		all = datatype.Names()
+		if b.flowEngine() == nil {
+			// No flow engine (an old caller): flows can't be read.
+			all = datatype.LineNames()
+		}
 	}
 	active, err := b.eng.Active(ctx, all, r.From, r.To)
 	if err != nil {
@@ -198,6 +211,11 @@ func (b *builder) resolveBundle(ctx context.Context, r *Request) ([]string, erro
 		}
 	}
 	f.Types = types
+	if slices.Contains(types, datatype.Flow) {
+		if _, err := b.countFlows(ctx, *r, devs); err != nil {
+			return nil, err
+		}
+	}
 	return devs, nil
 }
 
@@ -218,8 +236,11 @@ func typeList(types []string) string {
 
 // typeWord is a type's label inside a sentence ("syslog", "SNMP traps").
 func typeWord(t string) string {
-	if t == datatype.Syslog {
+	switch t {
+	case datatype.Syslog:
 		return "syslog"
+	case datatype.Flow:
+		return "flows"
 	}
 	if ty := datatype.Get(t); ty != nil {
 		return ty.Label()
@@ -257,6 +278,15 @@ func (p *Plan) Estimate(ctx context.Context) (search.Estimate, error) {
 	req := Request{Devices: p.Info.Named, From: p.Info.From, To: p.Info.To, Filters: p.Info.Filters}
 	var est search.Estimate
 	for _, t := range req.TypesOrSyslog() {
+		if t == datatype.Flow {
+			fe, err := p.b.flowEstimate(ctx, req, p.Info.Devices)
+			if err != nil {
+				return est, err
+			}
+			est.Lines += fe.Records
+			est.Bytes += fe.Bytes
+			continue
+		}
 		e, err := p.b.eng.Estimate(ctx, p.Info.Devices, req.typeFilter(t))
 		if err != nil {
 			return est, err
@@ -390,10 +420,12 @@ type DeviceSummary struct {
 	Types    map[string]TypeSummary `json:"types"`
 	Reboots  []datatype.Reboot      `json:"reboots"`
 	// Poll is the device's polls in the window (a bundle with the poll type).
-	Poll      *datatype.PollStats `json:"poll,omitempty"`
-	Gaps      []Gap               `json:"gaps"`
-	Dropped   int64               `json:"dropped"`
-	Truncated int64               `json:"truncated"`
+	Poll *datatype.PollStats `json:"poll,omitempty"`
+	// Flow is the device's flows in the window (a bundle with flows).
+	Flow      *FlowSummary `json:"flow,omitempty"`
+	Gaps      []Gap        `json:"gaps"`
+	Dropped   int64        `json:"dropped"`
+	Truncated int64        `json:"truncated"`
 	hidden    bool
 }
 
@@ -449,15 +481,20 @@ func (c *typeCount) add(rec []byte, t time.Time) {
 	c.sum.Add(rec, t)
 }
 
-// summaries are a bundle's counts, per device and type.
+// summaries are a bundle's counts, per device and type (flows: per device).
 type summaries struct {
-	m map[[2]string]*typeCount
+	m     map[[2]string]*typeCount
+	flows map[string]*flowCount
 }
 
 func newSummaries(devs, types []string) *summaries {
-	s := &summaries{m: map[[2]string]*typeCount{}}
+	s := &summaries{m: map[[2]string]*typeCount{}, flows: map[string]*flowCount{}}
 	for _, d := range devs {
 		for _, t := range types {
+			if t == datatype.Flow {
+				s.flows[d] = newFlowCount()
+				continue
+			}
 			s.m[[2]string{d, t}] = &typeCount{sum: datatype.Get(t).NewSummary()}
 		}
 	}
@@ -476,6 +513,20 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 		ds := DeviceSummary{DeviceID: d.ID, IP: d.IP, Name: d.Name, Group: d.Group, Types: map[string]TypeSummary{},
 			Reboots: []datatype.Reboot{}, Gaps: nonNil(gaps), hidden: d.hidden}
 		for _, t := range types {
+			if t == datatype.Flow {
+				fc := s.flows[d.ID]
+				ts := TypeSummary{Lines: fc.records}
+				if fc.records > 0 {
+					ts.First, ts.Last = ms(time.UnixMilli(fc.first)), ms(time.UnixMilli(fc.last))
+				}
+				var st *FlowStats
+				if b.flowStats != nil {
+					st = b.flowStats(d.ID)
+				}
+				ds.Flow = fc.summary(st)
+				ds.Types[t] = ts
+				continue
+			}
 			c := s.of(d.ID, t)
 			ts := TypeSummary{Lines: c.lines, Key: c.sum.Key(), Counts: c.sum.Counts()}
 			if c.lines > 0 {
@@ -505,6 +556,13 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 	for i := range out {
 		for _, t := range types {
 			ts := out[i].Types[t]
+			if t == datatype.Flow {
+				if ts.Lines > 0 {
+					ts.readme = flowReadme(out[i].Flow)
+				}
+				out[i].Types[t] = ts
+				continue
+			}
 			if ts.Lines > 0 {
 				ts.readme = s.of(out[i].DeviceID, t).sum.README(ts.Lines, tf.record(*ts.First), tf.record(*ts.Last))
 			}

@@ -21,6 +21,9 @@ import (
 )
 
 func cmdSend(args []string, stdout, stderr io.Writer) int {
+	if flowSendProto(args) != "" {
+		return cmdSendFlow(args, stdout, stderr) // sendflow.go
+	}
 	fs := newFlagSet("send", "", `
 Send test syslog messages to a syslog server (Woodshed or any other). Each
 message is RFC 5424 and carries a run tag and a sequence number
@@ -45,7 +48,7 @@ Examples:
                                                          SNMPv3 authPriv informs, waiting for each Response`, stderr)
 	host := fs.String("host", "127.0.0.1", "syslog server (or trap receiver) `host` name or IP")
 	port := fs.Int("port", 514, "syslog server `port` (6514 with --proto tls, 162 with --proto trap)")
-	proto := fs.String("proto", "udp", "`protocol`: udp, tcp, tls or trap (SNMP traps over UDP)")
+	proto := fs.String("proto", "udp", "`protocol`: udp, tcp, tls or trap (SNMP traps over UDP); flow-v5, flow-v9 or ipfix for flows (see woodshed send --proto ipfix --help)")
 	framing := fs.String("framing", "lf", "TCP and TLS `framing`: lf (newline) or octet (RFC 6587 octet counting)")
 	caFile := fs.String("ca", "", "TLS: the CA certificate `file` to trust (PEM or DER, e.g. Woodshed's woodshed-ca.pem)")
 	insecure := fs.Bool("insecure", false, "TLS: don't check the server's certificate (a quick test only)")
@@ -168,11 +171,17 @@ Examples:
 }
 
 func cmdBench(args []string, stdout, stderr io.Writer) int {
+	if benchFlowProto(args) != "" {
+		return cmdBenchFlow(args, stdout, stderr) // benchflow.go
+	}
 	fs := newFlagSet("bench", "", `
 Measure sustained throughput: run an in-process Woodshed (listener on
 127.0.0.1, store and live hub) in a temporary data folder, send to it at --rate
 for --duration, then read the files back and check that every message arrived
 exactly once. It doesn't touch a running Woodshed or its data.
+
+--proto ipfix, flow-v9 or flow-v5 runs the flow bench instead (woodshed bench
+--proto ipfix --help).
 
 --proto trap runs the SNMP trap listener and receiver instead (SPEC §11.6):
 --snmp-version 1, 2c or 3, --inform to send InformRequests (each Response is

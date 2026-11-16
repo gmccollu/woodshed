@@ -41,6 +41,9 @@ type RunState struct {
 	SNMP *RunStateSNMP `json:"snmp,omitempty"`
 	// Poll is the SNMP poller, while any target is configured (poll.go).
 	Poll *RunStatePoll `json:"poll,omitempty"`
+	// Flows is the flow collector: GET /api/flows's state (flow.go), while
+	// the listener is on or flows are stored.
+	Flows *api.FlowState `json:"flows,omitempty"`
 }
 
 // RunStateUI is the UI server's state.

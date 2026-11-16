@@ -206,8 +206,8 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 - `q`: substring by default (case-insensitive unless `case=true`). With `regex=true` it's an RE2 regular expression;
   an invalid one is a `400` with the parse error. With `syntax=terms` it's boolean terms (below). `case` applies to
   all of them. Empty `q` matches every line, so it's a filtered browse.
-- `type`: the data type: `syslog` (the default), `trap` (SNMP traps, below) or, since 1.3, `poll` (SNMP poll
-  records, below). Any other value is a
+- `type`: the data type: `syslog` (the default), `trap` (SNMP traps, below), since 1.3 `poll` (SNMP poll
+  records, below) or, since 2.0, `flow` (flow records: see "Flows"). Any other value is a
   `400 {"error": "type: unknown data type \"x\"."}`. Without `type`, everything means what it meant in 1.1.
 - `syntax`: `text` (the default: `q` and `exclude` mean exactly what they meant in 1.0) or `terms` (below). Anything
   else is a `400`.
@@ -1226,37 +1226,37 @@ SNMP poll target is configured (since 1.3), a `poll` object gives `targets`, `an
 
 Any non-2xx returns `{"error": "human-readable message"}`.
 
-## 2.0 (planned)
+## Flows
 
-Not in 1.x builds: nothing in this section is served yet. It's the 2.0 contract (SPEC §13). As before, routes here sit
-in a `###` heading or after a label, never at the start of a line in the usual "`GET /api/...`" form, so
-`routes_test.go` doesn't request them; when one ships, move it into its section above. Everything is additive
-(SPEC §13.9).
+Since 2.0 (SPEC §13): the flow listener (flow v5/v9, IPFIX), `type=flow` in search, the summary, saved searches and
+exports, and the flow routes. Everything is additive (SPEC §13.9).
 
-### Flow listener
+### Flow listener and state
 
 **Settings:** `/api/settings` gains `listeners.flow` and `storage.flow_budget_bytes`:
 ```json
-{"listeners": {"flow": {"enabled": false, "addr": "0.0.0.0", "netflow_port": 2055, "ipfix_port": 4739,
+{"listeners": {"flow": {"enabled": false, "addr": "0.0.0.0", "flow_port": 2055, "ipfix_port": 4739,
                         "template_timeout": "30m", "rule_id_ies": []}},
  "storage": {"flow_budget_bytes": 0}}
 ```
-- Shown here as fragments of the settings object. `netflow_port` / `ipfix_port`: 0 (off) or 1–65535, not shared with
+- Shown here as fragments of the settings object. `flow_port` / `ipfix_port`: 0 (off) or 1–65535, not shared with
   another UDP listener on an overlapping address; at least one non-zero while enabled. `template_timeout` 1 min to
   24 h. `rule_id_ies`: up to 8 `"<enterprise number>:<element ID>"` strings naming the IEs that carry a rule or ACL
   identifier (there's no standard one; SPEC §13.2.1); the first one a record has fills `rule_id`.
 - `flow_budget_bytes`: 0 means 40 % of `storage.retention_bytes`; otherwise at least 1 GiB and at most 90 % of it
   (a `400` on the key otherwise). File-only: `listeners.flow.pending_bytes`, `queue_messages`, `queue_bytes`.
-- `/api/status.listeners` gains `{"proto": "netflow", …}` and `{"proto": "ipfix", …}` entries while enabled.
+- `/api/status.listeners` gains `{"proto": "flow", …}` and `{"proto": "ipfix", …}` entries while enabled.
 
-**Flow state:** `GET /api/flows` →
+**Flow state:**
+
+`GET /api/flows` →
 ```json
 {"enabled": true,
  "budget": {"bytes": 8589934592, "used_bytes": 5100000000, "estimated_days": 4.8},
  "exporters": [{"device_id": "10.1.0.1", "domains": [{"id": 1, "sampling": 1000, "templates": 6, "last_template": "2026-11-16T09:58:01Z"}],
                 "records_per_sec": 1180.5, "pending_bytes": 0,
                 "counts_24h": {"records": 101000000, "late": 120, "no_template": 0, "malformed": 0, "sequence_gaps": 3, "duplicates": 0},
-                "clock_skew_ms": 210, "time_source": "exporter"}]}
+                "clock_skew_ms": 210, "time_source": "exporter", "last_seen": "2026-11-16T10:00:01Z"}]}
 ```
 
 ### Flow search and top-N
@@ -1304,7 +1304,10 @@ in a `###` heading or after a label, never at the start of a line in the usual "
 histogram's `source` is `index` (from `flow_minute`) when unfiltered, with a `metric` parameter (`flows`, `bytes`,
 `packets`; default `flows`). Instead of `counted_from`, a partial flow summary carries `progress`.
 
-### Top-N: `GET /api/flows/top`
+### Top-N
+
+`GET /api/flows/top?by=src&metric=bytes&top=10&from=…&to=…` (and the flow filters) →
+
 Parameters: the flow filters, the range, the device selection, plus `by` (`src`, `dst`, `conversation`, `dst_port`,
 `src_port`, `proto`, `in_if`, `out_if`, `post_nat_src`, `post_nat_dst`, `fw_event`, `rule_id`), `metric` (`bytes`
 default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), `top` (10, at most 100),
@@ -1312,9 +1315,9 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
 ```json
 {"by": "src", "metric": "bytes", "from": "2026-11-16T09:00:00Z", "to": "2026-11-16T10:00:00Z",
  "total": {"flows": 1204332, "bytes": 18200000000, "packets": 21400000,
-           "bytes_scaled": 1900000000000, "packets_scaled": 2100000000, "scaled_complete": false},
+           "bytes_scaled": 1900000000000, "packets_scaled": 2100000000, "scaled_complete": false, "connections": 51112},
  "rows": [{"key": "10.20.0.5", "label": "10.20.0.5", "flows": 40211, "bytes": 5642000000, "packets": 4100000,
-           "bytes_scaled": 564200000000, "packets_scaled": 410000000, "scaled_lower_bound": false,
+           "bytes_scaled": 564200000000, "packets_scaled": 410000000, "scaled_lower_bound": false, "connections": 40000,
            "share": 0.31, "first": "2026-11-16T09:00:02Z", "last": "2026-11-16T09:59:58Z"}],
  "other": {"flows": 1000000, "bytes": 9000000000},
  "approx": false,
@@ -1333,9 +1336,25 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
   returns running totals, not deltas.
 
 ### Timeline strip
-**Strip:** `GET /api/flows/timeline?devices=a,b&from=…&to=…&bucket=…&metric=bytes` → per exporting device (at most 4,
-the busiest, then `more`): `{"devices": [{"device_id", "points": [{"start", "bytes", "bytes_scaled", "flows"}]}],
-"more": 0}`, from `flow_minute`, on the histogram's bucket edges.
+
+`GET /api/flows/timeline?devices=a,b&from=…&to=…&bucket=…&metric=bytes` → per exporting device (at most 4, the busiest
+by bytes, then `more`), from `flow_minute`, on the histogram's bucket edges (`bucket` in seconds, 60 to 604800, at
+most 1,000 buckets; picked from the range when absent):
+```json
+{"devices": [{"device_id": "10.1.0.1", "points": [{"start": "2026-11-16T09:00:00Z", "bytes": 5100000, "bytes_scaled": 5100000000,
+  "flows": 812, "packets": 7300}]}], "more": 0}
+```
+
+### Templates
+
+`GET /api/flows/templates?device=10.1.0.1` → the exporter's cached template definitions, per observation domain, so a
+user can find the IE that carries a rule ID (Settings → Flows); `404` for a device that hasn't sent flows since the
+start:
+```json
+{"device_id": "10.1.0.1", "domains": [{"id": 1, "templates": [{"id": 256, "options": false, "received": "2026-11-16T09:58:01Z",
+  "fields": [{"pen": 0, "id": 8, "name": "sourceIPv4Address", "length": 4}, {"pen": 32473, "id": 7, "name": "", "length": 4}]}]}]}
+```
+`name` is `""` for IEs Woodshed doesn't know (enterprise-specific ones among them); `length` 65535 is variable.
 
 ### Exports and bundles
 - `types` may include `"flow"`; `kind: "bundle"` includes it by default when there are flows in the window.
@@ -1345,13 +1364,15 @@ the busiest, then `more`): `{"devices": [{"device_id", "points": [{"start", "byt
 - `/api/exports/estimate` gains `"by_type": {"syslog": {"lines", "bytes"}, "flow": {"records", "bytes"}, …}`. More than
   20,000,000 flow records for one device is a `400` at estimate and at build: "Too many flow records for one zip
   (24,113,002 for 10.1.0.1); narrow the window or add a flow filter."
-- A bundle's manifest `summary` entries gain `"flow": {"records", "domains", "sampling", "bytes", "bytes_scaled",
+- A bundle's manifest `summary` entries gain `"flow": {"records", "domains", "sampling": [{"domain", "sampling": [rates seen]}], "scaled_complete", "bytes", "bytes_scaled",
   "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
   "fw_events": {"created", "deleted", "denied"}, "top_denied_sources": [{"key", "count"}], "top_denied_ports": [...],
   "nat_connections", "top_post_nat_sources": [...],
-  "sequence_gaps", "lost_estimate", "no_template", "malformed"}`.
+  "sequence_gaps", "lost_estimate", "no_template", "malformed"}`. `sequence_gaps` and `lost_estimate` are the
+  collector's last 24 hours (`null` from `woodshed bundle`, which has no collector); entries whose count is 0 are left
+  out of the top lists, which hold at most 3.
 
-### Banners (2.0)
+### Banners
 - `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives
   the rate and the budget.
 - `flow_templates` (warn, action `""`): an exporter's data has been waiting for a template for over 10 min, or was
@@ -1360,6 +1381,12 @@ the busiest, then `more`): `{"devices": [{"device_id", "points": [{"start", "byt
 - `flow_firewall` (warn, action `""`): Windows only, while the flow listener is on and a rule is disabled, missing or on
   another port; the text gives `woodshed flow on`.
 
+
 **CLI** (not HTTP): `woodshed search --type flow`, `woodshed flows top`, `woodshed flow on|off|status`, `woodshed send
---proto netflow5|netflow9|ipfix`, as in SPEC §13.7 and §13.8. (The setup helper, also in the 2.0 contract, is served:
-see "Device setup helper" above.)
+--proto flow-v5|flow-v9|ipfix`, `woodshed bench --proto ipfix` and `woodshed reindex --flows-redecode`, as in SPEC
+§13.7 and §13.8.
+
+## 2.0 (planned)
+
+Everything in the 2.0 contract (SPEC §13) is now served: see "Flows" and "Device setup helper" above. Everything is
+additive (SPEC §13.9).

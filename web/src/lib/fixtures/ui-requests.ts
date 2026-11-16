@@ -5,11 +5,20 @@
 import { newPollForm, pollSettingsBody, pollSettingsForm, pollTargetBody, type PollSettings, type PollTarget, type PollTargetInput } from '../poll.ts';
 import { userBody } from '../traps.ts';
 import { newSetupForm, snippetBody, type SetupFamily } from '../setup.ts';
+import { allTypesExport, flowBudgetBody, flowExport, flowListenerBody, flowSettingsForm } from '../flows.ts';
+import { bundleBody, newBundle } from '../bundle.ts';
+import { exportJson } from '../exportbody.ts';
 
 /** Placeholders the replay substitutes (strings in the JSON, numbers here). */
 export const AGENT_PORT = 16161;
 export const AGENT_V3_PORT = 16162;
 export const PLACEHOLDERS: Record<number, string> = { [AGENT_PORT]: '{agent_port}', [AGENT_V3_PORT]: '{agent_v3_port}' };
+/** 2.0: the flow listener's ports in the settings step (the replay picks free ones; never 2055 or 4739). */
+export const FLOW_PORT = 12055;
+export const FLOW_IPFIX_PORT = 14739;
+const FLOW_PORTS: Record<number, string> = { [FLOW_PORT]: '{flow_port}', [FLOW_IPFIX_PORT]: '{flow_ipfix_port}' };
+/** The types a 2.0 server lists (GET /api/search/schema), in its order: "Every type" sends these. */
+export const ALL_TYPES = ['syslog', 'trap', 'poll', 'flow'];
 
 export interface Step {
   name: string;
@@ -54,7 +63,9 @@ function saved(id: string, b: PollTargetInput, prev: PollTarget | null = null): 
 
 /** Port numbers back to their placeholders, as the JSON holds them. */
 function withPlaceholders<T>(b: T): T {
-  return JSON.parse(JSON.stringify(b), (k, v) => (k === 'port' && PLACEHOLDERS[v] ? PLACEHOLDERS[v] : v));
+  return JSON.parse(JSON.stringify(b), (k, v) =>
+    k === 'port' && PLACEHOLDERS[v] ? PLACEHOLDERS[v] : (k === 'flow_port' || k === 'ipfix_port') && FLOW_PORTS[v] ? FLOW_PORTS[v] : v,
+  );
 }
 
 /** The families the setup page's form needs (only the fields it reads), as GET /api/setup/families serves them. */
@@ -123,6 +134,24 @@ export function buildSteps(): Step[] {
   pin.pinned = 'eth1, 2';
   const pinBody = pollTargetBody(pin, t2);
 
+  // 2.0, Settings → Flows: on, ports moved off the defaults, a 45 min template timeout, a rule-ID IE (typed, then
+  // one added with "Use as rule ID"), and a 2 GiB budget.
+  const ff = flowSettingsForm(undefined, 0);
+  Object.assign(ff, { flowEnabled: true, flowPort: FLOW_PORT, flowIpfixPort: FLOW_IPFIX_PORT, flowTimeout: '45 min', flowRuleIes: '32473:7\n32473:9', flowBudgetGiB: 2 });
+  const flowSettings = { listeners: { flow: flowListenerBody(ff) }, storage: { flow_budget_bytes: flowBudgetBody(ff) } };
+
+  // 2.0, Export: "Every type" (the default) for one device and an hour, with flows and with Leave flows out; a
+  // flows-only export from the Flows tab's "Export these results", CSV only. Bundles: IPFIX only, and flows left out.
+  const dev = { devices: ['127.0.0.1'] };
+  const from = '2026-11-16T09:00:00Z';
+  const to = '2026-11-16T10:00:00Z';
+  const all = exportJson(allTypesExport(dev, from, to, ALL_TYPES, true, ['csv', 'ipfix'], []));
+  const allNoFlows = exportJson(allTypesExport(dev, from, to, ALL_TYPES, false, ['csv', 'ipfix'], []));
+  const flowOnly = exportJson(flowExport(dev, from, to, { proto: ['tcp'], dst_port: ['443'], fw_event: ['denied'] }, ['csv'], []));
+  const b = { ...newBundle('{at}', { mode: 'devices', group: '', devices: ['127.0.0.1'] }) };
+  const bundleIpfix = bundleBody({ ...b, flowFormats: ['ipfix'] }, ALL_TYPES);
+  const bundleNoFlows = bundleBody({ ...b, noFlows: true }, ALL_TYPES);
+
   return [
     { name: 'snmp_user_add', method: 'POST', path: '/api/snmp/users', if_match: false,
       body: userBody({ ...user, authPass: 'fixture-auth-pass', privPass: 'fixture-priv-pass' }) },
@@ -141,6 +170,14 @@ export function buildSteps(): Step[] {
     { name: 'poll_delete_v3', method: 'DELETE', path: '/api/poll/targets/{poll_v3_id}', if_match: false },
     { name: 'poll_delete', method: 'DELETE', path: '/api/poll/targets/{poll_id}', if_match: false },
     ...setupSteps(),
+    { name: 'settings_flow_save', method: 'PUT', path: '/api/settings', merge_get: '/api/settings', if_match: true, etag_get: '/api/settings',
+      body: withPlaceholders(flowSettings) },
+    { name: 'export_estimate_every_type', method: 'POST', path: '/api/exports/estimate', if_match: false, body: all },
+    { name: 'export_every_type', method: 'POST', path: '/api/exports', if_match: false, body: all },
+    { name: 'export_estimate_leave_flows_out', method: 'POST', path: '/api/exports/estimate', if_match: false, body: allNoFlows },
+    { name: 'export_flows_filtered_csv', method: 'POST', path: '/api/exports', if_match: false, body: flowOnly },
+    { name: 'bundle_estimate_flows_ipfix', method: 'POST', path: '/api/exports/estimate', if_match: false, body: bundleIpfix },
+    { name: 'bundle_leave_flows_out', method: 'POST', path: '/api/exports', if_match: false, body: bundleNoFlows },
   ];
 }
 
@@ -153,4 +190,5 @@ export const NOTES = [
   'SNMP user: key_ext is "draft" unless priv is aes-192 or aes-256 (the form\'s choice is sent only then); empty passphrases are omitted (kept).',
   'Test poll of an edited target that keeps its stored community is sent as {"id": …} (the UI can\'t resend a community it never sees).',
   'Set up a device: the body has only the choices that apply to the family, data type and transport, and only those set (the server fills in its defaults); it never carries a secret.',
+  '2.0 flows: {flow_port} and {flow_ipfix_port} are two free UDP ports the replay picks (never 2055 or 4739); the settings step turns the flow listener on there. Export steps name device 127.0.0.1 and a fixed past hour; bundle steps\' at is {at} (the replay substitutes now minus 30 min, RFC 3339 UTC); "Every type" lists the types a 2.0 server has (syslog, trap, poll, flow), and Leave flows out lists them without flow. flow_formats is sent only when it isn\'t both; flow filters are top-level lists like the trap filters.',
 ];

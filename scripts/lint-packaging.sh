@@ -51,12 +51,12 @@ if command -v xmllint >/dev/null 2>&1; then
 		packaging/macos/com.woodshed.daemon.plist || status=1
 fi
 
-# The MSI's firewall-rule custom actions (TLS, SNMP): each one is sequenced, and each remove
+# The MSI's firewall-rule custom actions (TLS, SNMP, flows): each one is sequenced, and each remove
 # runs only on a real uninstall, never when a major upgrade removes the old product (which
 # would bring an enabled rule back disabled).
 echo "==> woodshed.wxs firewall custom actions"
 wxs=packaging/windows/woodshed.wxs
-for rule in Tls Snmp; do
+for rule in Tls Snmp Flow; do
 	for act in Ensure Remove; do
 		id="Woodshed${rule}Firewall${act}"
 		grep -q "<CustomAction Id=\"$id\"" "$wxs" || { echo "$wxs: no CustomAction $id"; status=1; continue; }

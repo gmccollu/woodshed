@@ -7,7 +7,8 @@
     "Poll target bodies carry every field (the form fills the Settings defaults in when it opens); community is sent only when typed, or on a new target; an edit that leaves it empty omits it (kept). pinned (SPEC §12.11 #3) is always sent, [] when none.",
     "SNMP user: key_ext is \"draft\" unless priv is aes-192 or aes-256 (the form's choice is sent only then); empty passphrases are omitted (kept).",
     "Test poll of an edited target that keeps its stored community is sent as {\"id\": …} (the UI can't resend a community it never sees).",
-    "Set up a device: the body has only the choices that apply to the family, data type and transport, and only those set (the server fills in its defaults); it never carries a secret."
+    "Set up a device: the body has only the choices that apply to the family, data type and transport, and only those set (the server fills in its defaults); it never carries a secret.",
+    "2.0 flows: {flow_port} and {flow_ipfix_port} are two free UDP ports the replay picks (never 2055 or 4739); the settings step turns the flow listener on there. Export steps name device 127.0.0.1 and a fixed past hour; bundle steps' at is {at} (the replay substitutes now minus 30 min, RFC 3339 UTC); \"Every type\" lists the types a 2.0 server has (syslog, trap, poll, flow), and Leave flows out lists them without flow. flow_formats is sent only when it isn't both; flow filters are top-level lists like the trap filters."
   ],
   "steps": [
     {
@@ -294,6 +295,155 @@
         "what": "flow",
         "transport": "ipfix",
         "interface": "eth1"
+      }
+    },
+    {
+      "name": "settings_flow_save",
+      "method": "PUT",
+      "path": "/api/settings",
+      "merge_get": "/api/settings",
+      "if_match": true,
+      "etag_get": "/api/settings",
+      "body": {
+        "listeners": {
+          "flow": {
+            "enabled": true,
+            "addr": "0.0.0.0",
+            "flow_port": "{flow_port}",
+            "ipfix_port": "{flow_ipfix_port}",
+            "template_timeout": "45m",
+            "rule_id_ies": [
+              "32473:7",
+              "32473:9"
+            ]
+          }
+        },
+        "storage": {
+          "flow_budget_bytes": 2147483648
+        }
+      }
+    },
+    {
+      "name": "export_estimate_every_type",
+      "method": "POST",
+      "path": "/api/exports/estimate",
+      "if_match": false,
+      "body": {
+        "from": "2026-11-16T09:00:00Z",
+        "to": "2026-11-16T10:00:00Z",
+        "devices": [
+          "127.0.0.1"
+        ],
+        "types": [
+          "syslog",
+          "trap",
+          "poll",
+          "flow"
+        ]
+      }
+    },
+    {
+      "name": "export_every_type",
+      "method": "POST",
+      "path": "/api/exports",
+      "if_match": false,
+      "body": {
+        "from": "2026-11-16T09:00:00Z",
+        "to": "2026-11-16T10:00:00Z",
+        "devices": [
+          "127.0.0.1"
+        ],
+        "types": [
+          "syslog",
+          "trap",
+          "poll",
+          "flow"
+        ]
+      }
+    },
+    {
+      "name": "export_estimate_leave_flows_out",
+      "method": "POST",
+      "path": "/api/exports/estimate",
+      "if_match": false,
+      "body": {
+        "from": "2026-11-16T09:00:00Z",
+        "to": "2026-11-16T10:00:00Z",
+        "devices": [
+          "127.0.0.1"
+        ],
+        "types": [
+          "syslog",
+          "trap",
+          "poll"
+        ]
+      }
+    },
+    {
+      "name": "export_flows_filtered_csv",
+      "method": "POST",
+      "path": "/api/exports",
+      "if_match": false,
+      "body": {
+        "from": "2026-11-16T09:00:00Z",
+        "to": "2026-11-16T10:00:00Z",
+        "devices": [
+          "127.0.0.1"
+        ],
+        "types": [
+          "flow"
+        ],
+        "proto": [
+          "tcp"
+        ],
+        "dst_port": [
+          "443"
+        ],
+        "fw_event": [
+          "denied"
+        ],
+        "flow_formats": [
+          "csv"
+        ]
+      }
+    },
+    {
+      "name": "bundle_estimate_flows_ipfix",
+      "method": "POST",
+      "path": "/api/exports/estimate",
+      "if_match": false,
+      "body": {
+        "kind": "bundle",
+        "at": "{at}",
+        "before": "30m",
+        "after": "10m",
+        "devices": [
+          "127.0.0.1"
+        ],
+        "types": [],
+        "flow_formats": [
+          "ipfix"
+        ]
+      }
+    },
+    {
+      "name": "bundle_leave_flows_out",
+      "method": "POST",
+      "path": "/api/exports",
+      "if_match": false,
+      "body": {
+        "kind": "bundle",
+        "at": "{at}",
+        "before": "30m",
+        "after": "10m",
+        "devices": [
+          "127.0.0.1"
+        ],
+        "types": [
+          "syslog",
+          "trap",
+          "poll"
+        ]
       }
     }
   ]

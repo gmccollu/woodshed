@@ -476,7 +476,7 @@ func TestBundleRequests(t *testing.T) {
 		{"all devices", base(func(r *Request) { r.AllDevices = true }), "all_devices"},
 		{"exclude", base(func(r *Request) { r.ExcludeDevices = []string{"192.0.2.1"} }), "exclude_devices"},
 		{"filter", base(func(r *Request) { r.Q = "x" }), "takes no filters"},
-		{"type", base(func(r *Request) { r.Types = []string{"flow"} }), "unknown data type"},
+		{"type", base(func(r *Request) { r.Types = []string{"sflow"} }), "unknown data type"},
 		{"empty window", base(func(r *Request) {
 			now := be.now
 			r.At, r.Before, r.After = &now, 0, time.Minute

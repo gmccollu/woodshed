@@ -441,7 +441,7 @@ func TestSearchExitCodes(t *testing.T) {
 		{"group and ungrouped", f.dir, []string{"--group", "HQ", "--ungrouped"}, 2, "--group and --ungrouped"},
 		{"json and raw", f.dir, []string{"--json", "--raw"}, 2, "--json and --raw"},
 		{"count and context", f.dir, []string{"--count", "--context", "2"}, 2, "--count"},
-		{"type flow", f.dir, []string{"--type", "flow"}, 2, `--type: unknown data type "flow" (this build searches syslog, trap, poll)`},
+		{"type sflow", f.dir, []string{"--type", "sflow"}, 2, `--type: unknown data type "sflow" (this build searches syslog, trap, poll, flow)`},
 		{"type trap, none stored", f.dir, []string{"--type", "trap"}, 1, ""},
 		{"syslog flag with traps", f.dir, []string{"--type", "trap", "--severities", "3"}, 2, "--severities: not a filter for SNMP traps."},
 		{"trap field with syslog", f.dir, []string{"--field", "trap_oid=linkDown"}, 2, `syslog has no field "trap_oid"`},

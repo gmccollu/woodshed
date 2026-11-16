@@ -70,6 +70,8 @@ func init() {
 		{"snmp", cmdSNMP},
 		{"poll", cmdPoll},
 		{"setup", cmdSetup},
+		{"flow", cmdFlow},
+		{"flows", cmdFlows},
 		{"update-check", cmdUpdateCheck},
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},

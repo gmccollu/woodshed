@@ -32,6 +32,9 @@
   import BundleBuild from '../components/BundleBuild.svelte';
   import BundleTypes from '../components/BundleTypes.svelte';
   import BundleWindow from '../components/BundleWindow.svelte';
+  import FlowOptions from '../components/FlowOptions.svelte';
+  import { allTypesExport, byTypeText, type ExportWho, FLOW, FLOW_PARAMS, flowEstimate, flowExport, isTooManyFlows, leaveFlowsOutByDefault, type FlowFormat } from '../lib/flows';
+  import { filtersFromQuery } from '../lib/traps';
   import DevicePicker from '../components/DevicePicker.svelte';
   import ModeSwitch from '../components/ModeSwitch.svelte';
   import Icon from '../components/Icon.svelte';
@@ -51,10 +54,18 @@
   /** Facility and the exclude forms of device, program/tag and host: set only from Events' field panel. */
   let extras = $state<Extras>(noExtras());
   let fromSearch = $state(false);
-  /** 1.2: the data types of a plain export (SPEC §11.7): syslog, SNMP traps, or both (then without filters). */
-  let xtype = $state<'syslog' | 'trap' | 'both'>('syslog');
+  /**
+   * The data types of a plain export: every type the server has (2.0's default, SPEC §13.4; then without
+   * filters), or one type with its filters (syslog, SNMP traps, flows), as Events' "Export these results" sets.
+   */
+  let xtype = $state<'all' | 'syslog' | 'trap' | 'flow'>('all');
   /** The trap filters, from Events' "Export these results" on traps (by parameter name). */
   let trapF = $state<TypeFilters>({});
+  /** The flow filters, from the Flows tab's "Export these results". */
+  let flowF = $state<TypeFilters>({});
+  /** Leave flows out (null: the pre-selection rule decides) and the flow files (SPEC §13.4). */
+  let leaveFlows = $state<boolean | null>(null);
+  let flowFormats = $state<FlowFormat[]>(['csv', 'ipfix']);
 
   // ----- the two ways to export: a time range, or around a moment (the incident bundle, SPEC §11.3) -----
   let tab = $state<'range' | 'around'>('range');
@@ -78,6 +89,10 @@
     .then((s) => (schemas = s.types))
     .catch(() => {});
   const hasTraps = $derived(schemas.some((t) => t.type === TRAP));
+  const hasFlows = $derived(schemas.some((t) => t.type === FLOW));
+  /** Every type the server has (the "Every type" choice). */
+  const allTypes = $derived(schemas.length ? schemas.map((t) => t.type) : [SYSLOG]);
+  const flowsIn = $derived(xtype === 'flow' || (xtype === 'all' && allTypes.includes(FLOW)));
 
   $effect(() => {
     const s = router.query;
@@ -90,9 +105,10 @@
       return;
     }
     tab = 'range';
-    const t = typeFromQuery(p);
-    xtype = t === TRAP ? 'trap' : 'syslog';
+    const t = typeFromQuery(p, [SYSLOG, TRAP, FLOW]);
+    xtype = t === TRAP ? 'trap' : t === FLOW ? 'flow' : 'syslog';
     trapF = t === TRAP ? typeFiltersFromQuery(p) : {};
+    flowF = t === FLOW ? filtersFromQuery(p, FLOW_PARAMS) : {};
     scope = scopeFromQuery(p);
     range = rangeFromQuery(p);
     sev = sevFromQuery(p);
@@ -117,12 +133,18 @@
   const formError = $derived(
     count === 0 ? 'Pick at least one device.' : xtype === 'syslog' && !sev.length ? 'Pick at least one severity, or All.' : '',
   );
+  /** "proto: tcp · dst port: 443 · not device: edge-fw-02": the flow filters in words. */
+  const flowText = (f: TypeFilters, xdev: string[]) => {
+    const bits = Object.entries(f).filter(([, v]) => v.length).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v.join(', ')}`);
+    if (xdev.length) bits.push(`not device: ${xdev.map(deviceName).join(', ')}`);
+    return bits.join(' · ');
+  };
 
 
   // Groups stay groups (the server resolves them when it builds); "all devices" is sent as the list.
-  async function request(): Promise<ExportRequest> {
+  async function request(withFlows = !noFlows): Promise<ExportRequest> {
     const { from, to } = resolveRange(range);
-    const who =
+    const who: ExportWho =
       scope.mode === 'group'
         ? { group: scope.group }
         : scope.mode === 'ungrouped'
@@ -130,8 +152,10 @@
           : scope.mode === 'all'
             ? { all_devices: true }
             : { devices: scope.devices };
-    // Both types: every line in range (filters apply to one type). Traps: the text, exclude and trap filters.
-    if (xtype === 'both') return { ...who, from, to, types: [SYSLOG, TRAP], exclude_devices: extras.xdev };
+    // Every type: everything in range (filters apply to one type), flows unless left out. Traps: the text,
+    // exclude and trap filters. Flows: the flow filters (flows have no text).
+    if (xtype === 'all') return allTypesExport(who, from, to, allTypes, withFlows, flowFormats, extras.xdev);
+    if (xtype === 'flow') return flowExport(who, from, to, $state.snapshot(flowF), flowFormats, extras.xdev);
     if (xtype === 'trap')
       return {
         ...who,
@@ -169,18 +193,40 @@
   let est = $state<ExportEstimate | null>(null);
   let estError = $state('');
   let estBusy = $state(false);
+  /** The window's flows (from an estimate with flows in), for Leave flows out and its pre-selection. */
+  let flowEst = $state<{ records: number; bytes: number } | null>(null);
+  let tooMany = $state('');
+  const windowMs = $derived.by(() => {
+    const { from, to } = resolveRange(range);
+    return Date.parse(to) - Date.parse(from) || 0;
+  });
+  /** The pre-selection (SPEC §13.11 #6), and also when the zip can't hold the window's flows at all. */
+  const autoLeave = $derived(leaveFlowsOutByDefault(windowMs, flowEst?.bytes ?? 0) || !!tooMany);
+  /** Leave flows out applies to "Every type" only; a flows-only export is all flows. */
+  const noFlows = $derived(xtype === 'all' && allTypes.includes(FLOW) && (leaveFlows ?? autoLeave));
   $effect(() => {
-    const key = JSON.stringify({ scope, range, sev, q, mode, cs, fields, extras, xtype, trapF, tab, e: formError });
+    const key = JSON.stringify({ scope, range, sev, q, mode, cs, fields, extras, xtype, trapF, flowF, tab, e: formError, noFlows, flowFormats, allTypes });
     void key;
     if (formError || tab !== 'range') {
       est = null;
       return;
     }
     const ctrl = new AbortController();
+    const out = noFlows;
     const t = setTimeout(async () => {
       estBusy = true;
       try {
-        est = await estimateExport(await request(), ctrl.signal);
+        let full: ExportEstimate | null = null;
+        try {
+          full = await estimateExport(await request(true), ctrl.signal);
+          flowEst = flowEstimate(full.by_type);
+          tooMany = '';
+        } catch (x) {
+          if (!(x instanceof Error) || !isTooManyFlows(x.message) || !flowsIn) throw x;
+          tooMany = x.message;
+          if (xtype === 'flow') throw x;
+        }
+        est = out || !full ? await estimateExport(await request(false), ctrl.signal) : full;
         estError = '';
       } catch (x) {
         if ((x as Error).name !== 'AbortError') {
@@ -244,7 +290,7 @@
     building = true;
     buildError = '';
     try {
-      await createExport(await request());
+      await createExport(await request(!noFlows));
       await kick();
     } catch (x) {
       buildError = (x as Error).message;
@@ -393,7 +439,7 @@
           <span class="lbl">Types</span>
           <BundleTypes bind:value={bform.types} types={schemas.length ? schemas : [{ type: SYSLOG, label: 'Syslog', default: true, fields: [] }]} />
         </div>
-        <BundleBuild form={bform} formError={bError}>
+        <BundleBuild form={bform} formError={bError} types={schemas}>
           <button type="button" class="ghost-btn px-4 py-2" onclick={preview} disabled={!!bError} title="See the window in Events: the histogram, the fields and each device's counts, then build from there">
             Preview in Events
           </button>
@@ -409,20 +455,44 @@
         <span class="lbl">Time range</span>
         <div class="min-w-0 grow"><TimeRange bind:value={range} /></div>
       </div>
-      {#if hasTraps || xtype !== 'syslog'}
-        <div class="row">
-          <span class="lbl">Data</span>
-          <div class="seg" role="radiogroup" aria-label="Data types">
-            <button type="button" role="radio" aria-checked={xtype === 'syslog'} onclick={() => (xtype = 'syslog')}>Syslog</button>
-            <button type="button" role="radio" aria-checked={xtype === 'trap'} onclick={() => (xtype = 'trap')}>SNMP traps</button>
-            <button type="button" role="radio" aria-checked={xtype === 'both'} onclick={() => (xtype = 'both')}>Both</button>
+      <div class="row">
+        <span class="lbl">Data</span>
+        <div class="seg" role="radiogroup" aria-label="Data types">
+          <button type="button" role="radio" aria-checked={xtype === 'all'} onclick={() => (xtype = 'all')} title="Every type the devices stored in the range, one folder per type">Every type</button>
+          <button type="button" role="radio" aria-checked={xtype === 'syslog'} onclick={() => (xtype = 'syslog')}>Syslog</button>
+          {#if hasTraps || xtype === 'trap'}<button type="button" role="radio" aria-checked={xtype === 'trap'} onclick={() => (xtype = 'trap')}>SNMP traps</button>{/if}
+          {#if hasFlows || xtype === 'flow'}<button type="button" role="radio" aria-checked={xtype === 'flow'} onclick={() => (xtype = 'flow')}>Flows</button>{/if}
+        </div>
+      </div>
+      {#if flowsIn}
+        <div class="row top">
+          <span class="lbl">Flows</span>
+          <div class="min-w-0 grow">
+            {#if xtype === 'all'}
+              <FlowOptions bind:leave={leaveFlows} bind:formats={flowFormats} auto={autoLeave} flow={flowEst} {tooMany} idp="xfl" />
+            {:else}
+              <FlowOptions leave={false} bind:formats={flowFormats} auto={false} flow={flowEst} idp="xfl" fixed />
+            {/if}
           </div>
         </div>
       {/if}
-      {#if xtype === 'both'}
+      {#if xtype === 'all'}
         <p class="m-0 text-[13.5px] text-muted">
-          Both types: every line and trap in the range, in <span class="font-mono">logs/</span> and <span class="font-mono">traps/</span>. Filters apply to one data type, so pick one to filter.
+          Every type: everything the devices stored in the range, one folder per type (<span class="font-mono">logs/</span>, <span class="font-mono">traps/</span>,
+          <span class="font-mono">poll/</span>, <span class="font-mono">flows/</span>). Filters apply to one data type, so pick one to filter.
         </p>
+      {:else if xtype === 'flow'}
+        <p class="m-0 text-[13.5px] text-muted">
+          Flow records whose traffic overlaps the range, per exporter in <span class="font-mono">flows/</span>: a CSV, an IPFIX file and the undecoded sets.
+          Flows have no text; filter them on Events → Flows and use Export these results.
+        </p>
+        {#if Object.keys(flowF).length || extras.xdev.length}
+          <div class="row">
+            <span class="lbl">Also</span>
+            <span class="min-w-0 grow font-mono text-[13px]" data-flow-filters>{flowText(flowF, extras.xdev)}</span>
+            <button type="button" class="ghost-btn" onclick={() => ((flowF = {}), (extras = noExtras()))} title="Drop these filters from the export">Clear</button>
+          </div>
+        {/if}
       {:else}
       {#if xtype === 'syslog'}
       <div class="row">
@@ -491,7 +561,8 @@
         {:else if estError}
           <span class="text-bad-fg font-medium">{estError}</span>
         {:else if est}
-          <span>Up to <b>{num(est.lines)}</b> lines from <b>{num(est.files)}</b> file{est.files === 1 ? '' : 's'}, about <b>{bytes(est.bytes)}</b> before compression.</span>
+          <span>Up to <b>{num(est.lines)}</b> {est.by_type?.flow ? 'lines and records' : 'lines'} from <b>{num(est.files)}</b> file{est.files === 1 ? '' : 's'}, about <b>{bytes(est.bytes)}</b> before compression.</span>
+          {#if est.by_type && byTypeText(est.by_type)}<span class="block text-[13px] text-muted">{byTypeText(est.by_type)}</span>{/if}
           {#if estBusy}<span class="text-muted"> Updating…</span>{/if}
         {:else}
           <span class="text-muted">Estimating…</span>
@@ -499,7 +570,7 @@
       </div>
 
       <div class="flex flex-wrap items-center gap-3">
-        <button type="button" class="pill-btn px-5 py-2.5" onclick={build} disabled={!!formError || building}>
+        <button type="button" class="pill-btn px-5 py-2.5" onclick={build} disabled={!!formError || building || (!!tooMany && flowsIn && !noFlows)}>
           <Icon name="export" size={15} />{building ? 'Starting…' : 'Build the zip'}
         </button>
         {#if buildError}<span class="text-[13.5px] font-medium text-bad-fg" role="alert">{buildError}</span>{/if}
@@ -512,7 +583,7 @@
     <section class="card">
       <h2 class="m-0 mb-2 text-[16px] font-bold">What's in the bundle</h2>
       <ul class="m-0 list-disc space-y-1.5 pl-5 text-[14px] leading-relaxed">
-        <li><b>Everything in the window</b>, from every device you picked: syslog in <span class="font-mono">logs/</span>, SNMP traps in <span class="font-mono">traps/</span>, one file per device per day. No filters: filtering is what a time-range export is for.</li>
+        <li><b>Everything in the window</b>, from every device you picked: syslog in <span class="font-mono">logs/</span>, SNMP traps in <span class="font-mono">traps/</span>, polls in <span class="font-mono">poll/</span>, flows in <span class="font-mono">flows/</span> (a CSV and an IPFIX file per exporter; Leave flows out keeps them out). No filters: filtering is what a time-range export is for.</li>
         <li><b>A summary per device</b> in <span class="font-mono">README.txt</span>: how many messages of each severity, the traps by name, reboots, gaps and losses.</li>
         <li><b>A manifest</b> with the moment, the window, the devices and a SHA-256 checksum for every file, and <b>Woodshed's own events</b> for the window.</li>
         <li>A window that would end after now ends now. Preview it in Events to see the histogram, the fields and each device's counts first.</li>
@@ -522,7 +593,8 @@
     <section class="card">
       <h2 class="m-0 mb-2 text-[16px] font-bold">What's in the zip</h2>
       <ul class="m-0 list-disc space-y-1.5 pl-5 text-[14px] leading-relaxed">
-        <li><b>The logs</b>, one plain-text file per device per day, exactly as received, so anyone can open them.</li>
+        <li><b>The logs</b>, one plain-text file per device per day, exactly as received, so anyone can open them. SNMP traps and polls are in their own folders.</li>
+        {#if flowsIn}<li><b>Flows</b> in <span class="font-mono">flows/</span>, per exporter: <span class="font-mono">flows.csv</span> (one row per record, for a spreadsheet or grep), <span class="font-mono">flows.ipfix</span> (an IPFIX file, RFC 5655, that flow tools read, enterprise fields included) and <span class="font-mono">raw.txt</span> for sets that couldn't be decoded.</li>{/if}
         <li><b>A manifest</b> with the devices, range and filters, and a line count and SHA-256 checksum for every file, so the recipient can tell nothing was changed or lost.</li>
         <li><b>A gaps report</b>: times when Woodshed wasn't running or a listener was down. "No logs at 14:05" then means something definite.</li>
         <li><b>Woodshed's own events</b> for the range (restarts, rotations, deletions, drops), so "the device sent nothing" can be told apart from "Woodshed wasn't listening".</li>

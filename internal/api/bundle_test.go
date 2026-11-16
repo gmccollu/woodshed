@@ -52,7 +52,7 @@ func TestBundleBody(t *testing.T) {
 		{`"exclude_devices": ["10.1.0.9"]`, "exclude_devices: a bundle takes active_devices"},
 		{`"before": "5x"`, `before: "5x" isn't a duration`},
 		{`"after": "-1m"`, `after: "-1m" isn't a duration`},
-		{`"types": ["flow"]`, `types: unknown data type "flow"`},
+		{`"types": ["sflow"]`, `types: unknown data type "sflow"`},
 	} {
 		wantError(t, do(t, c, "POST", srv.url("/api/exports"), `{`+base+`, `+c2.extra+`}`), 400, c2.msg)
 	}

@@ -46,7 +46,7 @@ the owner can still overrule them. Everything else is a proposal and can change.
 | Incident bundle and CLI search (1.2) | The bundle is an export (`kind: "bundle"`) with per-type folders, syslog kept in `logs/`; `woodshed search` and `woodshed bundle` read the data folder directly and read-only (§11.3, §11.4) **decided (coordinator, 2026-11-14, owner-delegated)** |
 | UDP queue (1.2) | A bounded queue per UDP socket (100,000 messages / 64 MiB), drops counted as `queue_full`; readers never touch the disk (§11.5) **decided (coordinator, 2026-11-14, owner-delegated)** |
 | SNMP poller (1.3) | A third data type `poll` (text lines in `logs/<device>/poll/`), rates computed at write time with raw counters kept; restarts and reboots from sysUpTime, hrSystemUptime and engineBoots; targets configured per device with credentials in the 1.2 store; graphs on the Events timeline and a device page panel; three CSVs per device in bundles (§12) **decided (coordinator, 2026-11-15, owner-delegated)** |
-| Flows (2.0) | NetFlow v5/v9 and IPFIX on UDP 2055/4739, off by default; a fourth data type `flow` in columnar segments (`logs/<device>/flows/<day>T<hour>.wsf`) with block indexes; flow-time queries, top-N with exported and scaled counts; a flow budget (40 % of the cap); CSV and IPFIX files in the zip; a setup helper named by syntax family, never by vendor (§13) **decided (coordinator, 2026-11-16, owner-delegated)** |
+| Flows (2.0) | Flow v5/v9 and IPFIX on UDP 2055/4739, off by default; a fourth data type `flow` in columnar segments (`logs/<device>/flows/<day>T<hour>.wsf`) with block indexes; flow-time queries, top-N with exported and scaled counts; a flow budget (40 % of the cap); CSV and IPFIX files in the zip; a setup helper named by syntax family, never by vendor (§13) **decided (coordinator, 2026-11-16, owner-delegated)** |
 | First run | Zero-config: listens immediately, and the UI opens on a welcome page **(decided)** |
 | Port 514 in use | The listener fails with a clear error; the UI still starts and explains the clash **(decided)** |
 | UI port | 8514 on localhost (§5) **(decided)** |
@@ -391,7 +391,7 @@ Designed in §12.
 
 ### 2.0
 Designed in §13.
-- **NetFlow v5/v9 and IPFIX collector** (UDP 2055/4739, configurable): template handling per exporter and
+- **Flow collector (flow v5, v9 and IPFIX)** (UDP 2055/4739, configurable): template handling per exporter and
   observation domain, compact columnar storage per device per hour, retention and the disk guard shared with
   syslog. Search by time, IPs, ports and protocol; simple top-talker and top-port views for a time window;
   windowed export (CSV or IPFIX file). No long-term flow analytics, baselining or anomaly detection.
@@ -401,7 +401,7 @@ Designed in §13.
 
 ### After 2.0 (candidates)
 - **sFlow** as a fifth data type: packet samples and counter samples, which many switches export instead of
-  NetFlow or IPFIX (§13.11).
+  flow v5/v9 or IPFIX (§13.11).
 
 ### Out of scope
 - SIEM features: correlation rules, threat detection, compliance reporting, case management.
@@ -2503,7 +2503,7 @@ Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
 
 ## 13. 2.0 design (draft, 2026-11-16)
 
-§9's 2.0 entry **(owner)**: a NetFlow v5/v9 and IPFIX collector, the export covering every data type, and the device
+§9's 2.0 entry **(owner)**: a flow collector (flow v5, flow v9 (RFC 3954) and IPFIX (RFC 7011)), the export covering every data type, and the device
 setup helper. The framing is the scope rule's: an evidence collector for troubleshooting, so "the flows around the
 outage window", not long-term flow analytics, baselining or anomaly detection. Owner decisions are marked
 **(owner)**; the calls made here are **decided (coordinator, 2026-11-16, owner-delegated)** and listed in §13.10. The
@@ -2517,9 +2517,9 @@ talkers and top ports for a window; windowed export as CSV or IPFIX file.
 
 ```toml
 [listeners.flow]
-enabled = false            # Settings → Listeners → "Flows (NetFlow, IPFIX)"; off by default
+enabled = false            # Settings → Flows; off by default
 addr = "0.0.0.0"
-netflow_port = 2055        # NetFlow v5 and v9 (any version is accepted on either port)
+flow_port = 2055           # flow v5 and v9 (any version is accepted on either port)
 ipfix_port = 4739          # IPFIX; 0 turns one port off
 template_timeout = "30m"   # a template not refreshed for this long expires
 pending_bytes = 33554432   # the buffer for data that arrived before its template (§13.1.3)
@@ -2529,7 +2529,7 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
 - **Off by default**, decided (coordinator, 2026-11-16, owner-delegated), like TLS, traps and polling: a 1.3 upgrade
   opens no port.
 - Both ports read every version (the header's version field says which), so an exporter pointed at the "wrong" port
-  still works. Each port shows in `/api/status.listeners` as `proto: "netflow"` and `proto: "ipfix"`, with the usual
+  still works. Each port shows in `/api/status.listeners` as `proto: "flow"` and `proto: "ipfix"`, with the usual
   `listener_bind` banner and Retry.
 - **Transport:** IPFIX over UDP only in 2.0. IPFIX over TCP (and over TLS, reusing §10.3) is a later 2.x item if a
   user asks for it; SCTP isn't planned (Windows has no native SCTP, and exporters rarely use it).
@@ -2542,9 +2542,9 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
   `woodshed flow on|off|status` flips the listener and the rules, ufw/firewalld on Linux.
 
 #### 13.1.1 Versions
-- **NetFlow v5:** the fixed 48-byte record; the header's `sampling_interval` (mode and 14-bit rate) is the records'
+- **Flow v5:** the fixed 48-byte record; the header's `sampling_interval` (mode and 14-bit rate) is the records'
   sampling; `unix_secs`, `unix_nsecs` and `sys_uptime` turn the records' uptime-relative times into UTC.
-- **NetFlow v9** (RFC 3954): template, options template and data FlowSets, per (exporter address, source ID).
+- **Flow v9** (RFC 3954): template, options template and data FlowSets, per (exporter address, source ID).
 - **IPFIX** (RFC 7011): template, options template and data sets, per (exporter address, observation domain ID),
   with variable-length fields, enterprise-specific IEs, and the RFC 7011 time IEs (seconds, milliseconds,
   microseconds, nanoseconds, deltas, and `systemInitTimeMilliseconds` from options data).
@@ -2644,10 +2644,10 @@ folder logic, `ls` order and "logs from Tuesday" still work. A segment past 256 
    length and CRC. Written when the segment closes (the hour ends, the part limit, a clean stop).
 
 #### 13.2.1 Firewall events, NAT and bidirectional flows
-A troubleshooting collector's main flow sources include firewalls exporting **event-style** NetFlow v9 and IPFIX:
+A troubleshooting collector's main flow sources include firewalls exporting **event-style** flow v9 and IPFIX:
 one record when a connection is created, one when it's torn down, and one for each denied connection, with the NAT
 translation. Their fields get **first-class columns and filters**, not extras, decided (coordinator, 2026-11-16,
-owner-delegated), using the standard IANA IEs (checked against the IANA IPFIX registry, 2026-11-16). NetFlow v9
+owner-delegated), using the standard IANA IEs (checked against the IANA IPFIX registry, 2026-11-16). Flow v9
 templates that use the same field type numbers are read the same way.
 
 | Column | IANA IE | Notes |
@@ -2832,7 +2832,7 @@ and the manifest's summary gains the same numbers as JSON.
 ### 13.5 Device setup helper
 **Owner (§9):** generated logging, trap and flow-export configuration per device. A **Setup → Send to Woodshed** page
 fills in this Woodshed's addresses, ports, CA certificate and the user's choices:
-- **What:** syslog (UDP, TCP or TLS), SNMP traps (v2c or v3), flows (NetFlow v9 or IPFIX), and the SNMP agent settings a
+- **What:** syslog (UDP, TCP or TLS), SNMP traps (v2c or v3), flows (flow v9 or IPFIX), and the SNMP agent settings a
   device needs so Woodshed can poll it (§12).
 - **Syntax family**, named by syntax, never by vendor or product, decided (coordinator, 2026-11-16, owner-delegated):
   - "Line-oriented CLI (global configuration mode)": `logging host …`, `snmp-server host …`, `flow exporter …`-style
@@ -2867,6 +2867,24 @@ the first bench, which records the measured numbers here:
   across exporters (a block is flushed early to stay under it); the queue's bytes (128 MiB); query state at most
   256 MiB. 512 MiB for flows in all at the targets.
 - **Disk:** 12–20 bytes per stored record (to be measured).
+- **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core Apple
+  M4 Pro under other load; the reference box and the lab runs replace these):
+  - 50,000 records/s for 10 min (30 a packet, 2 domains) with UDP syslog at 5,000 msg/s: all 30,000,000 records and
+    3,000,186 messages stored, 0.43 of a core, peak RSS 153 MiB (Go heap 90 MiB), 20.4 bytes per stored record (19.2
+    in blocks, 20.0 for a closed segment in the format bench).
+  - Queries over 18,000,000 records (the 1 h at 5,000/s case): top talkers (`woodshed flows top --by src`, bytes)
+    0.34–0.72 s, complete; a search for one source address, first 500, 0.10 s.
+  - Over 180,000,000 records (the 1 h at 50,000/s case; 3.4 GiB of segments, 20.2 bytes a record): top talkers 2.9–3.8 s
+    and top destination ports 2.4 s, complete in one response (inside the 10 s budget); top conversations, past the
+    1,000,000-key exact limit and so approximate, 28 s (inside the 60 s target); a search for one source address,
+    newest 500, 0.16 s. Memory: the `flows top` process peaks at about 480 MiB RSS for top talkers (mostly the 14
+    workers' block buffers) and 1.8 GiB for conversations past the exact limit, over the 256 MiB query-state target.
+    The reference box's 4 workers would need less; a hard cap is open.
+  - A 150,000 records/s burst for 10 s: all 1,500,000 stored, nothing dropped by the queue, 0.33 of a core.
+  - At 5,000 records/s a segment takes 21.9 bytes a record (the per-block index and the Bloom filter over random
+    source ports weigh more in smaller blocks).
+  - The format alone: encoding about 440 ns a record (2.2 % of a core at 50,000/s); decoding the source and bytes
+    columns 38–40 M records/s on one core, every column about 5.4 M/s.
 - **Queries:** top talkers (`by=src`, bytes) over 1 h at 5,000 records/s (18 million records) in under 3 s,
   complete in one response; at 50,000/s (180 million) partial within the 10 s budget and complete within 60 s.
   A filtered search for one address over 1 h at 5,000/s returns its first page in under 1 s.
@@ -2885,7 +2903,7 @@ the first bench, which records the measured numbers here:
 - **Unit and fuzz:** the v5, v9 and IPFIX decoders against hand-built and captured packets (every IE type and length,
   variable-length fields, enterprise IEs, padding, options records, template replacement, withdrawal and timeout,
   sequence gaps and duplicates, time conversion from uptime-relative, absolute and delta forms). Fuzz targets:
-  `FuzzNetFlow5`, `FuzzNetFlow9`, `FuzzIPFIX` (no panic, bounded memory, malformed counted not lost), `FuzzTemplates`
+  `FuzzFlowV5`, `FuzzFlowV9`, `FuzzIPFIX` (no panic, bounded memory, malformed counted not lost), `FuzzTemplates`
   (random sequences of templates, withdrawals and data against one cache: no stale decode after a replacement),
   `FuzzSegment` (any bytes as a segment file: recovery never panics and never keeps a block whose CRC fails) and
   `FuzzIPFIXFile` (re-read what the IPFIX file writer wrote).
@@ -2897,7 +2915,7 @@ the first bench, which records the measured numbers here:
   pmacct's `nfprobe` as a second exporter for IPFIX with options data (sampling and interface names). The IPFIX file
   Woodshed exports is read back by our decoder and by an independent IPFIX file reader in CI (tshark), and both must
   agree with the CSV.
-- **`woodshed send --proto netflow5|netflow9|ipfix`:** generators for the lab with exactly-once-checkable records.
+- **`woodshed send --proto flow-v5|flow-v9|ipfix`:** generators for the lab with exactly-once-checkable records.
   Each record carries the run ID and a sequence number: in v9 and IPFIX as an enterprise-specific IE under 32473
   (IANA's documentation enterprise number, as 1.2's trap generator uses), in v5 split across `src_as` and `dst_as`
   (16 bits each). Flags: `--rate` (records/s), `--records-per-packet`, `--domains`, `--sampling N`,
@@ -2947,6 +2965,14 @@ the first bench, which records the measured numbers here:
 columnar storage per device per hour, shared retention and disk guard, search and top views for a window, CSV or
 IPFIX export, the export covering every type, the setup helper; no long-term analytics.
 
+**Owner (2026-11-16):** the flow protocols' trademarked name is used nowhere in the project: not in code
+identifiers, file names, fuzz targets, CLI flags or values, config or API values, UI text, docs, the CHANGELOG or
+tests. The protocols are "flow v5", "flow v9 (RFC 3954)" and "IPFIX (RFC 7011)", and the general noun is "flows" or
+"flow export". Config and API values are `v5`, `v9` and `ipfix`; the 2055 socket is the flow port (`flow_port`,
+`proto: "flow"`); `woodshed send` and `bench` take `--proto flow-v5|flow-v9|ipfix`. Third-party tools we invoke keep
+their own names (softflowd, pmacct's nfprobe, tshark's `cflow.*` fields). `internal/repocheck` fails `go test` on the
+word in any tracked file or file name.
+
 Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
 1. The flow listener is off by default; both ports accept every version (§13.1).
 2. IPFIX over UDP only; TCP (and TLS) later if asked; no SCTP (§13.1).
@@ -2974,49 +3000,164 @@ Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
 17. The major version is a milestone and an operator-visible change (the binary format, the flow budget), not an API
     break (§13.9).
 
+Made while building it, each **decided (build, 2026-11-16)**:
+
+*Collector (§13.1):*
+
+18. Both flow ports feed one receive queue (shown as `flow` in `udp_queues`) and one drainer, so the collector's
+    template state stays single-threaded; there's no inline fast path for flows (exporters send steadily, and a
+    packet carries ~30 records).
+19. A v5 header sampling interval of 0 or 1 is unsampled. Domain-level sampling comes from options data without a
+    sampler ID (v9 scope System, IPFIX scope observationDomainId); sampler tables from 48/302 with 34, 50, 305/306,
+    309/310 or 311.
+20. `rule_id`: a fixed-length field of 1–8 bytes is a big-endian unsigned integer in decimal; a variable-length or
+    longer one is printable ASCII as text (trailing NULs trimmed), else hex. The IE also stays in extras.
+21. An exporter clock more than 1 h off: end = received, start = received − duration, event time = received,
+    `time_source=received`; the exporter's own times are kept as extras 152, 153 and 323.
+22. Totals (85/86, initiator and responder) fill bytes and packets (with the totals mark) only when the record has no
+    delta counter; otherwise they go to extras. With several forms of one time, the most precise absolute form wins.
+23. Duplicates are counted and still stored. Sequence numbers: v9 counts packets (records lost ≈ gap × the average
+    records per packet), v5 and IPFIX records; undecodable sets make the next number unknown (resync, no gap); a jump
+    back of more than 100,000 is an exporter restart.
+24. A break in the header or set structure stores the whole packet raw; a break inside a data set stores the rest of
+    that set raw, after the records decoded before it.
+25. Interface names are resolved per record at decode (the domain's names, else any of the exporter's domains; ifName
+    wins over ifDescription; at most 256 bytes) and stored with the record, so a record keeps the names in force when
+    it arrived.
+26. Bounds: 1,024 fields per template, 12 MiB of templates and decode plans, 4 MiB of metadata, 20,000 exporters
+    (least recently heard out first).
+
+*Storage (§13.2):*
+
+27. The segment header is 32 fixed bytes, then the device ID and the writer version, with a header length (a long
+    IPv6 device ID doesn't fit in 32). Raw sets and templates are written as chunks with each flush, templates before
+    the block that uses them, so a crashed segment still decodes on its own; at close come the whole template table,
+    the footer and a 16-byte trailer. One address dictionary per block serves every address column; DEFLATE level 6,
+    and a column that doesn't shrink is stored raw.
+28. Post-NAT addresses and ports are in each block's Bloom filter, so `post_nat_*` and `ip_any` can skip blocks.
+29. Effective flow time: end is the flow end, else the event time, else the received time; start is the flow start,
+    else the end (never after it). The `flow_minute` rule: a record counts once, in its end's minute; its bytes and
+    packets spread evenly over at most 120 minutes (a longer flow's start is clamped). `flow_minute` rows are kept per
+    segment, so deleting a segment removes its minutes.
+30. Scaled sums leave out records of unknown sampling (they're then a lower bound, marked), everywhere: segments,
+    `flow_minute`, Top and the summary.
+31. A segment's hour is the received hour of the datagram that opens it; late-decoded records go into the open
+    segment. Queries pick segments by their flow-time range (`flow_segments`), so no received-hour widening is needed.
+    After a restart within the hour, recovery closes the segment and the exporter's next records start a new part: a
+    closed segment is never reopened.
+32. The other types' cap is the storage cap less what flows hold (at most their budget). The fair-share weight is each
+    exporter's flow datagram bytes over 7 days (`type_stats`); `type_stats` counts flow records as messages and their
+    datagrams' bytes as bytes. The low-disk guard deletes every closed flow segment, oldest first, before any other
+    data.
+33. Readers outside the writer's process (`woodshed search`, `flows top`, `bundle`) read a segment still being written
+    up to its last complete block, read-only (`flowseg.OpenLive`).
+34. `woodshed reindex --flows-redecode` rewrites a segment with its raw sets decoded by the segment's own template of
+    that exporter port, domain and ID (the first received after the set, else the latest), the records marked late.
+    Queries decode the same sets on read, with the same choice, placed in the plan by the segment's received range
+    (records may start up to an hour before it).
+
+*Query and API (§13.3):*
+
+35. Top-N and summaries read in waves of blocks; a wave once started finishes, and every request reads at least one,
+    so a continuation always progresses and its counts cover whole blocks. A search page that runs out of budget
+    returns only the records no unread block can beat, and a cursor past every block read. A continued query whose
+    range was the default keeps its first request's range.
+36. A flow summary gives `progress` and sets `counted_from` to `complete_from`; bucket counts hold the `metric`
+    (flows by default) with `bytes` and `bytes_scaled` beside; field values are filter values (protocols by name,
+    ports as numbers labelled `tcp/443`).
+37. `GET /api/flows/templates?device=` lists an exporter's cached templates with IE names, for Settings → Flows.
+    `/api/context` refuses a flow ref. Bundles' active devices are exact for flows: each candidate segment's blocks
+    prove or rule out the window by their received bounds, and only a block straddling an edge has its received
+    column decoded (then the raw sets), so the cost is a footer read per segment and usually one or two block decodes (late-decoded records can make
+    more blocks straddle an edge).
+38. In JSON bodies (saved searches, exports) the flow filters are top-level lists; `status` is shared with the trap
+    lists' key. A parameter two types share is each one's own (`CheckParams`); messages say "flows".
+39. `woodshed search --type flow` prints the bundle CSV's columns after a device column, oldest flow end first; the
+    flow filters are flags named like their parameters (`--dst-port`).
+
+*Export (§13.4):*
+
+40. `raw.txt` lines: `<received, RFC 3339 UTC ms> <status> v<version> domain=<id> template=<id> <base64 of the set>`.
+41. The estimate's bytes are 225 B a record for the CSV and 95 B for the IPFIX file, uncompressed (measured 205–242
+    and 92–95 on the fixtures). The 20,000,000 cap is checked at create, when a bundle resolves, and while writing.
+42. The bundle README's sequence gaps are the collector's last-24-hour counts and say so (only the running collector
+    keeps them; `woodshed bundle` says they aren't known). The firewall-event, denied and NAT lines appear only with
+    something to count; scaled figures only when a rate above 1 is known, with "≥" when some sampling is unknown;
+    top lists hold 3 entries; "translated connections" count NAT create events.
+43. `flows.ipfix` writes columns as their IANA IEs at fixed lengths (the received time as
+    collectionTimeMilliseconds, 258), extras as they came, interface names as options data before the records that
+    use them, and opens each domain with an options record whose observationDomainName says "Written by Woodshed
+    <version> from stored flow records; not captured off the wire." It doesn't carry the late status, the exporter
+    port or the original version and template IDs; a record too big for one message has its trailing extras cut
+    (counted).
+
+*Generators and tests (§13.8):*
+
+44. Generator IDs: IPFIX PEN 32473 IE 1 is the run, 2 the sequence, 3 the rule, 10 and up the fillers; v9 (no
+    enterprise numbers) uses field types 40001–40003 and 40010 up; v5 puts the sequence in `src_as` (high 16 bits) and
+    `dst_as` (low 16), and the run's last 4 hex digits in engine type and ID. `--sampled-domains` sets how many domains
+    are sampled; `--biflow` is IPFIX only.
+45. `woodshed bench --proto ipfix` runs the sender in a child process (`woodshed send`), so the CPU it reports is the
+    pipeline's.
+
+*Second round (build, 2026-11-16):*
+
+46. Options records are kept raw (§13.1.2) when any non-scope field is one the collector doesn't interpret (sampling,
+    sampler and selector, interface index and name, systemInitTime are interpreted): keyed by template ID and scope
+    values per exporter port, domain and version, up to 4 versions per key (identical values only refresh), at most
+    1,024 keys per scope and 2 MiB of the 4 MiB metadata cap.
+47. The exporter's metadata (sampling, samplers, system init time, interface names, the raw options records) is one
+    JSON blob in each segment's template table, given to the store when its version changes; the store keeps a stream
+    (and its blob) for an hour after its last batch, so every later segment carries it.
+48. `flow_templates` also fires when an exporter's oldest pending data has waited over 10 minutes
+    (`ExporterStats.PendingOldest`).
+49. A settings save applies `rule_id_ies` to the collector and to raw sets decoded on read at once, no restart.
+50. The segment writer's cut-back after a failed write is tested by fault injection (every section kind, whole and
+    short writes, a failing truncate, at Close); no writer bug was found.
+
 **Setup helper build decisions** (the setup-helper build agent, 2026-11-16, for the owner's review; branch
 `feat-setup-helper`):
-18. **Routes:** `POST /api/setup/snippet` as the contract says, plus `GET /api/setup/snippet?…` with the same fields
+51. **Routes:** `POST /api/setup/snippet` as the contract says, plus `GET /api/setup/snippet?…` with the same fields
     as query parameters (`type` accepted for `what`) for scripts. The CLI is `woodshed setup snippet --family …
     --what …` with `--type` as an alias, and `woodshed setup families`; the snippet goes to stdout, its notes to
     stderr.
-19. **Additive response fields:** a snippet also has `family`, `what`, `transport`, `address`, `reference`, `does`
+52. **Additive response fields:** a snippet also has `family`, `what`, `transport`, `address`, `reference`, `does`
     (the "what this does" line), `check`, `parts` (each a `file`, `command`, `cli` or `steps` with its own Copy) and
     `addresses` (the list the page offers). A family also has `transports`, `choices` and `notes`, with every data
     type as a key (`[]` where the family has no template), so the shape is fixed.
-20. **Template format:** `text/template` files in `internal/setuphelper/templates/`, one per family and data type,
+53. **Template format:** `text/template` files in `internal/setuphelper/templates/`, one per family and data type,
     each with a header (family, what, transports, reference, verification, `checked_on` for lab_checked) and
     `does`, `parts`, `notes` and `check` blocks; parts are split on `@@part` marker lines. Golden files pin every
     family, type and transport.
-21. **Coverage:** the line-oriented CLI and the web UI checklist cover all four types; the set-style CLI covers
+54. **Coverage:** the line-oriented CLI and the web UI checklist cover all four types; the set-style CLI covers
     syslog, traps and polling, with no flow template, because flow export statements differ too much between
     set-style devices to give one that's useful (a family note says so). rsyslog covers syslog; net-snmp traps and
     polling; softflowd flows.
-22. **Verification:** rsyslog and net-snmp are Tested by the CI job `setup-snippets` (TestSetupSnippets in
+55. **Verification:** rsyslog and net-snmp are Tested by the CI job `setup-snippets` (TestSetupSnippets in
     internal/server, against a real running server, each record exactly once). softflowd stays **Reference only**
     on this branch: its CI cases exist but skip until the flow listener lands, and §13.11 #5 allows Tested only with a
     CI test that applies it. When feat-flows merges, write the softflowd runner, drop the cases' skip and mark
     `softflowd-flow.tmpl` tested. TestSetupTestedTemplatesHaveCI and the deny-list test both fail a Tested template
     no unskipped case applies.
-23. **Choices:** source interface (line-oriented CLI), the interface softflowd watches, severity (RFC 5424 keywords,
+56. **Choices:** source interface (line-oriented CLI), the interface softflowd watches, severity (RFC 5424 keywords,
     default `info`), facility (`local0`–`local7` or the device's default), SNMPv3 user, SHA-256 (default) or SHA-1,
     AES-128 (the protocols most devices and net-snmp share; the notes say to match both sides), and the polled
     agent's port. Values are checked against strict patterns, so nothing a user types can add a line to a snippet.
-24. **Filled from live state:** the listener's own address when it's bound to one, else the host's addresses, then the
+57. **Filled from live state:** the listener's own address when it's bound to one, else the host's addresses, then the
     TLS certificate's DNS names and `ui.extra_hostnames`; each listener's port and whether it's on (a note says how to
     turn it on, first); for TLS, the name a client should check (the address when it's a name on the certificate,
     else its first DNS name that isn't `localhost`; rsyslog and many devices check names, not IP addresses) and the
     CA's fingerprint.
-25. **rsyslog:** one omfwd action in `/etc/rsyslog.d/60-woodshed.conf`, RFC 5424 format, octet-counted framing for
+58. **rsyslog:** one omfwd action in `/etc/rsyslog.d/60-woodshed.conf`, RFC 5424 format, octet-counted framing for
     TCP and TLS, an in-memory queue that retries while Woodshed is down, and for TLS the gtls driver with
     `x509/name` and the action-level `StreamDriver.CAFile` (rsyslog 8.2108 or later), so it never touches the main
     config's `global()`. **net-snmp:** `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start), the
     test trap's secrets in `~/.snmp/snmp.conf` rather than the command line, and `rocommunity` limited to Woodshed's
     address for polling.
-26. **The page:** "Set up a device" at `#/device-setup`, **Connect** in the navigation (the existing **Setup** label
+59. **The page:** "Set up a device" at `#/device-setup`, **Connect** in the navigation (the existing **Setup** label
     stays the Welcome page, which now links to it). The mock answers from `web/src/lib/mock/setup-fixture.json`,
     which a Go test generates from the real templates, so it can't drift.
-27. **Vendor-neutral:** the deny list (network, security and log-product vendors, their OS and product names, and
+60. **Vendor-neutral:** the deny list (network, security and log-product vendors, their OS and product names, and
     desktop and server OS names) is in `internal/setuphelper/denylist_test.go` only. It runs over the templates, the
     families, every rendered snippet, the page and the docs' setup sections. **(owner, 2026-11-16)** no trademarked
     flow-protocol name anywhere in the setup helper: it says "flow v9 (RFC 3954)" and "IPFIX (RFC 7011)", the flow

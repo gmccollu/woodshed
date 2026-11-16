@@ -94,7 +94,7 @@ const FieldDevice = "device"
 var deviceField = Field{Key: FieldDevice, Label: "Device", Param: "devices", ExcludeParam: "exclude_devices"}
 
 // types is the registry, syslog first.
-var types = []Type{syslogType{}, trapType{}, pollType{}}
+var types = []Type{syslogType{}, trapType{}, pollType{}, flowType{}}
 
 // Types returns every type, the default first.
 func Types() []Type { return types }
@@ -125,12 +125,17 @@ func Names() []string {
 // (SPEC §11.2.5: "severities: not a filter for SNMP traps."). has reports
 // whether a parameter is present.
 func CheckParams(t Type, has func(string) bool) error {
+	own := map[string]bool{}
+	for _, p := range t.FilterParams() {
+		own[p] = true
+	}
 	for _, o := range types {
 		if o.Name() == t.Name() {
 			continue
 		}
 		for _, p := range o.FilterParams() {
-			if has(p) {
+			// A name two types share (traps' and flows' status) is each one's own.
+			if has(p) && !own[p] {
 				return &ParamError{Param: p, Msg: p + ": not a filter for " + labelLower(t) + "."}
 			}
 		}
@@ -140,8 +145,11 @@ func CheckParams(t Type, has func(string) bool) error {
 
 // labelLower is a type's label as it reads inside a sentence.
 func labelLower(t Type) string {
-	if t.Name() == Syslog {
+	switch t.Name() {
+	case Syslog:
 		return "syslog"
+	case Flow:
+		return "flows"
 	}
 	return t.Label()
 }

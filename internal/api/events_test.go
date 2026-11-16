@@ -25,7 +25,7 @@ func TestParseSearch11(t *testing.T) {
 		t.Errorf("none %+v", r.Facilities)
 	}
 	for bad, msg := range map[string]string{
-		"type=flow":               `type: unknown data type "flow".`,
+		"type=sflow":              `type: unknown data type "sflow".`,
 		"type=trap&severities=3":  `severities: not a filter for SNMP traps.`,
 		"trap_oid=linkDown":       `trap_oid: not a filter for syslog.`,
 		"type=trap&pdus=get":      `pdus: "get" is not one of v1trap, trap, inform, unexpected (or none on its own).`,
@@ -91,7 +91,7 @@ func TestSummaryAndSchemaRoutes(t *testing.T) {
 	if strings.Contains(string(r.body), `"histogram"`) {
 		t.Errorf("histogram=false: %s", r.body)
 	}
-	for _, bad := range []string{"top=0", "bucket=x", "budget_ms=0", "histogram=maybe", "type=flow", "syntax=terms&regex=true"} {
+	for _, bad := range []string{"top=0", "bucket=x", "budget_ms=0", "histogram=maybe", "type=sflow", "syntax=terms&regex=true"} {
 		wantError(t, do(t, c, "GET", srv.url("/api/search/summary?"+bad), ""), 400, "")
 	}
 	srv.b.mu.Lock()
@@ -118,7 +118,7 @@ func TestSavedSearchRoutes(t *testing.T) {
 	if q["range"].(map[string]any)["last"] != "1h" || len(list[0]["missing_devices"].([]any)) != 1 || q["order"] != "desc" {
 		t.Errorf("%s", r.body)
 	}
-	wantError(t, do(t, c, "GET", srv.url("/api/saved-searches?type=flow"), ""), 400, "unknown data type")
+	wantError(t, do(t, c, "GET", srv.url("/api/saved-searches?type=sflow"), ""), 400, "unknown data type")
 
 	// Create: 201 with an ETag, defaults filled in.
 	r = do(t, c, "POST", srv.url("/api/saved-searches"), `{"name": "  Auth failures ", "query": {"q": "fail", "syntax": "terms",
@@ -143,7 +143,7 @@ func TestSavedSearchRoutes(t *testing.T) {
 		`{"name": "", "query": {}}`:                                           "name",
 		`{"name": "` + strings.Repeat("x", 81) + `"}`:                         "name",
 		`{"query": {}}`:                                                       "name",
-		`{"name": "x", "type": "flow"}`:                                       "type",
+		`{"name": "x", "type": "sflow"}`:                                      "type",
 		`{"name": "x", "query": {"syntax": "terms", "regex": true}}`:          "query.syntax",
 		`{"name": "x", "query": {"range": {"last": "0m"}}}`:                   "query.range.last",
 		`{"name": "x", "query": {"range": {"last": "401d"}}}`:                 "query.range.last",
@@ -227,7 +227,7 @@ func TestExportBody11(t *testing.T) {
 		!slices.Equal(req.ExcludeApp, []string{"kernel"}) || !slices.Equal(req.ExcludeHost, []string{"lab-01"}) {
 		t.Errorf("%+v", req)
 	}
-	for _, bad := range []string{`"type": "flow"`, `"syntax": "x"`, `"syntax": "terms", "regex": true`, `"facilities": [30]`} {
+	for _, bad := range []string{`"type": "sflow"`, `"syntax": "x"`, `"syntax": "terms", "regex": true`, `"facilities": [30]`} {
 		wantError(t, do(t, c, "POST", srv.url("/api/exports"), `{`+base+`, `+bad+`}`), 400, "")
 	}
 }

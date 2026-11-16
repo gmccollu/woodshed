@@ -128,6 +128,11 @@ type Options struct {
 	// done, or, when the store write would block, a func that finishes p (the
 	// write and what follows it), which the drainer calls in arrival order.
 	TrapTry func(p *TrapPacket) (finish func())
+	// Flow handles the flow listener's datagrams (flow.go), one at a time in
+	// arrival order from its queue's drainer. Without it an enabled flow
+	// listener stays down. OnFlowQueueDrop receives its queue's drops.
+	Flow            FlowHandler
+	OnFlowQueueDrop QueueDrop
 	// DrainTimeout bounds how long Close (and a UDP rebind) waits for the UDP
 	// queue to empty into the sink; what's left then is counted as dropped.
 	// Default DefaultDrainTimeout.
@@ -201,6 +206,11 @@ type Server struct {
 	snmpErr  *ListenerStatus // set while the enabled SNMP listener is down
 	snmpHist *queueHist      // its queue's history, kept across rebinds
 	snmpQ    *udpQueue
+
+	flow     *flowListener    // the flow listener (flow.go)
+	flowErrs []ListenerStatus // its enabled ports that are down
+	flowHist *queueHist
+	flowQ    *udpQueue
 
 	pool      *connPool // TCP and TLS connections together
 	tlsStats  *tlsStats
@@ -282,6 +292,7 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 		started:  opts.Clock(),
 		udpHist:  &queueHist{},
 		snmpHist: &queueHist{},
+		flowHist: &queueHist{},
 	}
 	s.allow.Store(al)
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
@@ -294,6 +305,7 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	s.startTCP(&ev)
 	s.startTLS(&ev)
 	s.startSNMP(&ev)
+	s.startFlow(&ev)
 	s.mu.Unlock()
 	ev.flush(s)
 
@@ -321,6 +333,10 @@ func (s *Server) Retry() Status {
 		}
 		if s.cfg.SNMP.Enabled && s.snmp == nil {
 			s.startSNMP(&ev)
+		}
+		if s.cfg.Flow.Enabled && len(s.flowErrs) > 0 {
+			s.stopFlow(&ev)
+			s.startFlow(&ev)
 		}
 	}
 	s.mu.Unlock()
@@ -382,6 +398,12 @@ func (s *Server) Reconfigure(cfg config.Listeners) error {
 	} else if s.snmp != nil {
 		s.snmp.q.setLimits(queueLimits(cfg))
 	}
+	if flowChanged(old.Flow, cfg.Flow) {
+		s.stopFlow(&ev)
+		s.startFlow(&ev)
+	} else if s.flow != nil {
+		s.flow.q.setLimits(flowQueueLimits(cfg.Flow))
+	}
 	return nil
 }
 
@@ -399,6 +421,7 @@ func (s *Server) Close() error {
 	s.stopTCP(&ev)
 	s.stopTLS(&ev)
 	s.stopSNMP(&ev)
+	s.stopFlow(&ev)
 	close(s.stop)
 	s.mu.Unlock()
 	s.wg.Wait()
@@ -489,6 +512,7 @@ func (s *Server) Status() Status {
 		}
 		st.UDPQueues = append(st.UDPQueues, q.status("snmp", port, s.opts.Clock(), s.started))
 	}
+	s.flowStatus(&st)
 	return st
 }
 

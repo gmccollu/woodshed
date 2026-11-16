@@ -63,6 +63,9 @@ func ListAll(dataDir string) (files []Entry, temps []string, unknown []string, e
 			return nil, nil, nil, err
 		}
 		for _, sub := range subs {
+			if sub == FlowDir {
+				continue // segments, listed by package flowseg
+			}
 			typ, ok := TypeOfDir(sub)
 			if !ok {
 				unknown = append(unknown, LogsDir+"/"+dv.Name()+"/"+sub)

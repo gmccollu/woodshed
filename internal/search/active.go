@@ -2,8 +2,14 @@ package search
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/gmccollu/woodshed/internal/datatype"
+	"github.com/gmccollu/woodshed/internal/flow"
+	"github.com/gmccollu/woodshed/internal/flowseg"
 )
 
 // Active answers "which devices stored anything in [from, to)?" for the
@@ -43,6 +49,29 @@ func (e *Engine) Active(ctx context.Context, types []string, from, to time.Time)
 			return nil, err
 		}
 		found := map[string]bool{}
+		if datatype.IsSegments(typ) {
+			// Flow segments have no checkpoints and aren't lines: each
+			// candidate segment's blocks (and raw sets) are checked by their
+			// received times, decoding only a block that straddles the range.
+			for _, sp := range spans {
+				f := sp.File
+				if found[f.DeviceID] || f.Lines == 0 || f.FirstReceived.UnixMilli() >= toMs || f.LastReceived.UnixMilli() < fromMs {
+					continue
+				}
+				ok, err := e.flowActive(filepath.Join(e.dataDir, filepath.FromSlash(f.Path)), fromMs, toMs)
+				if err != nil {
+					e.log.Warn("search: a flow segment couldn't be read for the active devices", "file", f.Path, "err", err)
+					continue
+				}
+				found[f.DeviceID] = ok
+			}
+			for d, ok := range found {
+				if ok {
+					out[d] = append(out[d], typ)
+				}
+			}
+			continue
+		}
 		var unsure []int64 // file IDs that need their checkpoints
 		unsureDev := map[int64]string{}
 		for _, sp := range spans {
@@ -105,4 +134,43 @@ func (e *Engine) Active(ctx context.Context, types []string, from, to time.Time)
 		}
 	}
 	return out, nil
+}
+
+// flowActive reports whether a flow segment holds a record or a raw set
+// received in [fromMs, toMs): a block wholly inside the range proves it, a
+// block that straddles it is decoded (the received column only).
+func (e *Engine) flowActive(path string, fromMs, toMs int64) (bool, error) {
+	r, err := flowseg.Open(path)
+	if errors.Is(err, flowseg.ErrNoFooter) {
+		r, err = flowseg.OpenLive(path) // the segment the store is writing
+	}
+	if err != nil {
+		return false, err
+	}
+	defer r.Close()
+	f := r.Footer()
+	var blk flowseg.Block
+	for i := range f.Blocks {
+		b := &f.Blocks[i]
+		switch {
+		case b.Rows == 0 || b.MaxReceived < fromMs || b.MinReceived >= toMs:
+			continue
+		case b.MinReceived >= fromMs && b.MaxReceived < toMs:
+			return true, nil
+		}
+		if err := r.Decode(i, flowseg.ColReceived, &blk); err != nil {
+			return false, err
+		}
+		for _, ms := range blk.Received() {
+			if ms >= fromMs && ms < toMs {
+				return true, nil
+			}
+		}
+	}
+	found := false
+	err = r.Raw(func(rs *flow.RawSet) bool {
+		found = rs.Received >= fromMs && rs.Received < toMs
+		return !found
+	})
+	return found, err
 }

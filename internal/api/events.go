@@ -57,13 +57,17 @@ func parseTypeFilter(typ string, get func(string) string) (*datatype.TrapFilter,
 	return nil, nil, nil
 }
 
-// typeListsGet reads a body's trap and poll lists by parameter name.
-func typeListsGet(t *TrapLists, p *PollLists) func(string) string {
+// typeListsGet reads a body's trap, poll and flow lists by parameter name
+// (flows' status is the trap lists' status key).
+func typeListsGet(t *TrapLists, p *PollLists, f *FlowLists) func(string) string {
 	return func(name string) string {
 		if v := t.get(name); v != "" {
 			return v
 		}
-		return p.get(name)
+		if v := p.get(name); v != "" {
+			return v
+		}
+		return f.get(name)
 	}
 }
 
@@ -216,6 +220,9 @@ type SummaryRequest struct {
 	Histogram bool
 	Bucket    int // seconds; 0: from the range
 	BudgetMS  int // 1-10,000
+	// Metric (flows only) is what a histogram bucket's count holds: flows
+	// (the default), bytes or packets.
+	Metric string
 }
 
 // SummaryBucket is one histogram bucket. Count nil means not counted yet.
@@ -223,6 +230,9 @@ type SummaryBucket struct {
 	Start  time.Time `json:"start"`
 	Count  *int64    `json:"count"`
 	Approx bool      `json:"approx"`
+	// Flows also carry the bucket's bytes, exported and scaled.
+	Bytes       *int64 `json:"bytes,omitempty"`
+	BytesScaled *int64 `json:"bytes_scaled,omitempty"`
 }
 
 // SummaryHistogram is a summary's histogram.
@@ -238,6 +248,9 @@ type SummaryValue struct {
 	Label      string `json:"label"`
 	Count      int64  `json:"count"`
 	Filterable bool   `json:"filterable"`
+	// Flows: the value's bytes, exported and scaled, beside its flow count.
+	Bytes       *int64 `json:"bytes,omitempty"`
+	BytesScaled *int64 `json:"bytes_scaled,omitempty"`
 }
 
 // SummaryField is one field's counts.
@@ -265,6 +278,9 @@ type SummaryPage struct {
 	ScannedBytes int64             `json:"scanned_bytes"`
 	ScannedFiles int               `json:"scanned_files"`
 	ElapsedMS    int64             `json:"elapsed_ms"`
+	// Progress (flows) replaces counted_from's meaning: blocks and records
+	// read, and the flow time from which every block has been read.
+	Progress *FlowProgress `json:"progress,omitempty"`
 }
 
 func (p *SummaryPage) normalize() {
@@ -328,6 +344,18 @@ func ParseSummary(v url.Values) (SummaryRequest, error) {
 			return r, fmt.Errorf("budget_ms must be an integer from 1 to 10000, not %q", s)
 		}
 		r.BudgetMS = min(n, 10000)
+	}
+	if m := v.Get("metric"); m != "" {
+		if r.Type != datatype.Flow {
+			return r, errors.New("metric: only with type=flow (a flow histogram counts flows, bytes or packets)")
+		}
+		if m != "flows" && m != "bytes" && m != "packets" {
+			return r, fmt.Errorf("metric must be flows, bytes or packets, not %q", m)
+		}
+		r.Metric = m
+	}
+	if r.Type == datatype.Flow && r.Metric == "" {
+		r.Metric = "flows"
 	}
 	return r, nil
 }
@@ -410,10 +438,12 @@ type SavedQuery struct {
 	ExcludeHost    []string   `json:"exclude_host"`
 	Order          string     `json:"order"` // "desc" | "asc"
 	Range          SavedRange `json:"range"`
-	// The trap type's filters (1.2) and the poll type's (1.3), as lists;
-	// absent for syslog.
+	// The trap type's filters (1.2), the poll type's (1.3) and the flow
+	// type's (2.0, whose status is TrapLists' status key), as lists; absent
+	// for syslog.
 	TrapLists
 	PollLists
+	FlowLists
 }
 
 func (q *SavedQuery) normalize() {
@@ -448,6 +478,8 @@ func (q SavedQuery) FilterOf(typ string) SearchRequest {
 		r.Trap, _ = q.TrapLists.Filter()
 	case datatype.Poll:
 		r.Poll, _ = q.PollLists.Filter()
+	case datatype.Flow:
+		r.Flow, _ = parseFlowParams(typeListsGet(&q.TrapLists, &PollLists{}, &q.FlowLists))
 	}
 	return r
 }
@@ -547,6 +579,7 @@ type savedQueryBody struct {
 	Range          json.RawMessage `json:"range"`
 	TrapLists
 	PollLists
+	FlowLists
 }
 
 // readSaved decodes and checks a create or update body. It writes the error
@@ -641,7 +674,7 @@ func readSaved(w http.ResponseWriter, r *http.Request) (SavedSearchInput, bool) 
 			if syslogSet[p] {
 				return "set"
 			}
-			return typeListsGet(&qb.TrapLists, &qb.PollLists)(p)
+			return typeListsGet(&qb.TrapLists, &qb.PollLists, &qb.FlowLists)(p)
 		}
 		if err := datatype.CheckParams(datatype.Get(in.Type), func(p string) bool { return get(p) != "" }); err != nil {
 			var pe *datatype.ParamError
@@ -658,6 +691,16 @@ func readSaved(w http.ResponseWriter, r *http.Request) (SavedSearchInput, bool) 
 			case datatype.Poll:
 				if _, err = qb.PollLists.Filter(); err == nil {
 					q.PollLists = qb.PollLists
+				}
+			case datatype.Flow:
+				if q.Q != "" {
+					errs["query.q"] = errFlowNoText
+				}
+				if q.Exclude != "" {
+					errs["query.exclude"] = "exclude: flows have no text; use the exclude_ filters."
+				}
+				if _, err = parseFlowParams(typeListsGet(&qb.TrapLists, &PollLists{}, &qb.FlowLists)); err == nil {
+					q.FlowLists, q.TrapLists = qb.FlowLists, TrapLists{Status: qb.TrapLists.Status}
 				}
 			}
 			if err != nil {

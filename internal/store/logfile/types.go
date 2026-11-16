@@ -11,7 +11,14 @@ const (
 	TypeSyslog = "syslog"
 	TypeTrap   = "trap"
 	TypePoll   = "poll"
+	// TypeFlow (SPEC §13.2) isn't a line type: its files are columnar
+	// segments (.wsf, package flowseg) in FlowDir, so it isn't in DataTypes
+	// and the line listing, recovery and scans never read them.
+	TypeFlow = "flow"
 )
+
+// FlowDir is the flow type's folder inside a device folder.
+const FlowDir = "flows"
 
 // DataType is one type's name and its folder inside a device folder ("" is the
 // device folder itself).

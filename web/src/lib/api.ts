@@ -4,6 +4,7 @@
 
 import type { SetupFamily, Snippet, SnippetBody } from './setup';
 import { SseParser, type SseEvent } from './sse';
+import { ALL_SEVS, exportJson, sevParam, type SevKey } from './exportbody';
 import type {
   PollDevicePanel,
   PollSeriesResponse,
@@ -15,11 +16,24 @@ import type {
   PollTestResult,
   PollTimeline,
 } from './poll';
+import type {
+  EstimateByType,
+  FlowFormat,
+  FlowListenerSettings,
+  FlowSearchResponse,
+  FlowState,
+  FlowTemplates,
+  FlowTimeline,
+  FlowTopParams,
+  FlowTopResponse,
+} from './flows';
+
+export { ALL_SEVS, exportJson, sevParam, type SevKey };
 
 // ---------- Types (docs/api.md) ----------
 
 /** "tls" from 1.1: the TLS syslog listener (docs/api.md → TLS syslog listener); "snmp" from 1.2: the SNMP trap receiver. */
-export type Proto = 'udp' | 'tcp' | 'tls' | 'snmp';
+export type Proto = 'udp' | 'tcp' | 'tls' | 'snmp' | 'flow' | 'ipfix';
 
 export interface Listener {
   proto: Proto;
@@ -59,7 +73,11 @@ export type BannerKind =
   | 'snmp_credentials'
   | 'snmp_mibs'
   | 'poll_unreachable'
-  | 'poll_overrun';
+  | 'poll_overrun'
+  | 'flow_budget'
+  | 'flow_templates'
+  | 'flow_clock'
+  | 'flow_firewall';
 /** update_choice: Turn on / No thanks (PUT /api/updates); update_dismiss: hide this version (POST /api/updates/dismiss).
  *  tls_renew opens Settings → Syslog over TLS; it never renews by itself. */
 export type BannerAction = '' | 'retry_listeners' | 'update_choice' | 'update_dismiss' | 'tls_renew';
@@ -217,19 +235,6 @@ export interface SampledNotice {
   shown: number;
 }
 
-/** A syslog severity 0 (emerg) … 7 (debug), or "unknown" (no parseable PRI). */
-export type SevKey = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 'unknown';
-export const ALL_SEVS: SevKey[] = [0, 1, 2, 3, 4, 5, 6, 7, 'unknown'];
-
-/**
- * The `severities=` value (docs/api.md → Severity filters): all selected → undefined (the
- * server's default is all), nothing selected → "none".
- */
-export function sevParam(sel: SevKey[]): string | undefined {
-  if (!sel.length) return 'none';
-  if (ALL_SEVS.every((k) => sel.includes(k))) return undefined;
-  return ALL_SEVS.filter((k) => sel.includes(k)).join(',');
-}
 
 export interface LiveFilters {
   devices?: string[];
@@ -385,6 +390,10 @@ export interface ExportRequest {
   types?: string[];
   /** 1.2, with types ["trap"]: the trap filters by parameter name (trap_oid, status, …), sent as top-level JSON lists. */
   trap?: Record<string, string[]>;
+  /** 2.0: the flow filters (types ["flow"]), sent as top-level lists like the trap filters. */
+  flow?: Record<string, string[]>;
+  /** 2.0: which flow files the zip holds (left out for the default, both). */
+  flow_formats?: FlowFormat[];
   kind?: 'export';
 }
 
@@ -406,6 +415,8 @@ export interface BundleRequest {
   ungrouped?: boolean;
   /** [] = every type with data in the window. */
   types: string[];
+  /** 2.0: which flow files the zip holds (left out for the default, both). */
+  flow_formats?: FlowFormat[];
 }
 
 export interface ExportFilters {
@@ -443,6 +454,8 @@ export interface ExportEstimate {
   lines: number;
   bytes: number;
   files: number;
+  /** 2.0: per type, flows as records (docs/api.md → Exports and bundles). Older servers omit it. */
+  by_type?: EstimateByType;
 }
 
 export type ExportState = 'queued' | 'building' | 'ready' | 'failed' | 'expired';
@@ -488,6 +501,8 @@ export interface Settings {
     tls?: TlsListenerSettings;
     /** 1.2: the SNMP trap receiver. Older servers omit it; a PUT without it keeps it. */
     snmp?: SnmpListenerSettings;
+    /** 2.0: the flow collector (flow v5, flow v9 and IPFIX). Older servers omit it; a PUT without it keeps it. */
+    flow?: FlowListenerSettings;
     allowlist: string[];
     /** Senders refused at the listener (IPs or CIDRs); checked before the allowlist and wins. */
     blocklist: string[];
@@ -496,7 +511,14 @@ export interface Settings {
     new_device_burst: number;
     new_devices_per_minute: number;
   };
-  storage: { data_dir: string; retention_days: number; retention_bytes: number; part_bytes: number };
+  storage: {
+    data_dir: string;
+    retention_days: number;
+    retention_bytes: number;
+    part_bytes: number;
+    /** 2.0: the flow budget; 0 means 40 % of retention_bytes. Older servers omit it. */
+    flow_budget_bytes?: number;
+  };
   /**
    * cert_file/key_file: paths to a user certificate for LAN mode; empty = self-signed.
    * extra_hostnames: more names for the self-signed certificate; trusted_hosts: more Host
@@ -988,6 +1010,8 @@ export interface SummaryParams extends Omit<SearchParams, 'order' | 'limit'> {
   histogram?: boolean;
   bucket?: number;
   budget_ms?: number;
+  /** 2.0, type=flow: what each histogram bucket's count holds (default flows). */
+  metric?: 'flows' | 'bytes' | 'packets';
 }
 
 export interface HistogramBucket {
@@ -996,6 +1020,9 @@ export interface HistogramBucket {
   count: number | null;
   /** Spread from checkpoints: show "≈" in the tooltip. */
   approx: boolean;
+  /** 2.0, flows: the bucket's bytes exported and scaled. */
+  bytes?: number;
+  bytes_scaled?: number | null;
 }
 
 export interface Histogram {
@@ -1010,6 +1037,9 @@ export interface FieldValueCount {
   count: number;
   /** False for a value `param` can't express (one with a comma, say). */
   filterable: boolean;
+  /** 2.0, flows: the value's bytes (count is flows). */
+  bytes?: number;
+  bytes_scaled?: number | null;
 }
 
 export interface FieldSummary {
@@ -1027,8 +1057,10 @@ export interface SummaryResponse {
   from: string;
   to: string;
   matched: number;
-  /** The counts are exact for [counted_from, to); equals from once complete. */
+  /** The counts are exact for [counted_from, to); equals from once complete. Flows carry progress instead (SPEC §13.3). */
   counted_from: string;
+  /** 2.0, flows: blocks and records read so far, and the flow-time span fully read. */
+  progress?: import('./flows').FlowProgress;
   /** Absent with histogram=false. */
   histogram?: Histogram;
   fields: FieldSummary[];
@@ -1061,6 +1093,7 @@ export const summaryPath = (p: SummaryParams) =>
     top: p.top,
     histogram: p.histogram === false ? false : undefined,
     bucket: p.bucket,
+    metric: p.metric,
     budget_ms: p.budget_ms,
     cursor: p.cursor,
   })}`;
@@ -1137,39 +1170,6 @@ export async function updateSavedSearch(id: string, b: SavedSearchBody, etag = '
 
 export const deleteSavedSearch = (id: string) => request<void>('DELETE', `/api/saved-searches/${encodeURIComponent(id)}`);
 
-/** Optional filters are sent only when they narrow the export (all severities = no filter). */
-function exportBody(r: ExportRequest): ExportRequest {
-  const b: ExportRequest = { from: r.from, to: r.to };
-  if (r.all_devices) b.all_devices = true;
-  if (r.devices?.length) b.devices = r.devices;
-  if (r.group) b.group = r.group;
-  if (r.ungrouped) b.ungrouped = true;
-  if (r.severities && r.severities.length && sevParam(r.severities)) b.severities = ALL_SEVS.filter((k) => r.severities!.includes(k));
-  if (r.app?.length) b.app = r.app;
-  if (r.host?.length) b.host = r.host;
-  if (r.exclude) b.exclude = r.exclude;
-  if (r.q || r.exclude) {
-    if (r.q) b.q = r.q;
-    if (r.regex) b.regex = true;
-    if (r.case) b.case = true;
-    if (r.syntax === 'terms') b.syntax = 'terms';
-  }
-  if (r.type && r.type !== 'syslog') b.type = r.type;
-  if (r.facilities?.length) b.facilities = r.facilities;
-  if (r.exclude_devices?.length) b.exclude_devices = r.exclude_devices;
-  if (r.exclude_app?.length) b.exclude_app = r.exclude_app;
-  if (r.exclude_host?.length) b.exclude_host = r.exclude_host;
-  // 1.2: a syslog-only export leaves types out, so its body is exactly the 1.1 one.
-  if (r.types?.length && !(r.types.length === 1 && r.types[0] === 'syslog')) b.types = [...r.types];
-  return b;
-}
-
-/** The body as sent: exportBody's fields, plus the trap filters as top-level lists (docs/api.md → Exports). */
-function exportJson(r: ExportRequest): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...exportBody(r) };
-  for (const [k, v] of Object.entries(r.trap ?? {})) if (v.length) out[k] = [...v];
-  return out;
-}
 export const createExport = (r: ExportRequest) => request<{ id: string }>('POST', '/api/exports', exportJson(r));
 export const estimateExport = (r: ExportRequest, signal?: AbortSignal) =>
   request<ExportEstimate>('POST', '/api/exports/estimate', exportJson(r), signal);
@@ -1227,6 +1227,45 @@ export interface StorageEstimate {
 /** The retention estimate for a cap that hasn't been saved yet (docs/api.md). */
 export const getStorageEstimate = (retentionBytes: number, signal?: AbortSignal) =>
   request<StorageEstimate>('GET', `/api/storage/estimate${query({ retention_bytes: Math.round(retentionBytes) })}`, undefined, signal);
+
+// ---------- 2.0: flows (docs/api.md → 2.0) ----------
+
+/** /api/search with type=flow: flow records (the filters go in p.filters). */
+export const searchFlows = (p: SearchParams, signal?: AbortSignal) =>
+  request<FlowSearchResponse>('GET', searchPath({ ...p, type: 'flow' }), undefined, signal);
+export const getFlows = (signal?: AbortSignal) => request<FlowState>('GET', '/api/flows', undefined, signal);
+export const getFlowTemplates = (device: string, signal?: AbortSignal) =>
+  request<FlowTemplates>('GET', `/api/flows/templates${query({ device })}`, undefined, signal);
+export const getFlowTop = (p: FlowTopParams, signal?: AbortSignal) =>
+  request<FlowTopResponse>(
+    'GET',
+    `/api/flows/top${query({
+      by: p.by,
+      metric: p.metric,
+      top: p.top,
+      from: p.from,
+      to: p.to,
+      devices: p.devices,
+      group: p.group,
+      ungrouped: p.ungrouped ? true : undefined,
+      exclude_devices: p.exclude_devices,
+      ...Object.fromEntries(Object.entries(p.filters ?? {}).map(([k, v]) => [k, v.length ? v : undefined])),
+      budget_ms: p.budget_ms,
+      cursor: p.cursor,
+    })}`,
+    undefined,
+    signal,
+  );
+export const getFlowTimeline = (
+  p: { devices?: string[]; group?: string; ungrouped?: boolean; from: string; to: string; bucket?: number; metric?: 'bytes' | 'flows' },
+  signal?: AbortSignal,
+) =>
+  request<FlowTimeline>(
+    'GET',
+    `/api/flows/timeline${query({ devices: p.devices, group: p.group, ungrouped: p.ungrouped ? true : undefined, from: p.from, to: p.to, bucket: p.bucket, metric: p.metric })}`,
+    undefined,
+    signal,
+  );
 
 export const getTls = () => request<TlsState>('GET', '/api/tls');
 export const getSetupFamilies = () => request<SetupFamily[]>('GET', '/api/setup/families');

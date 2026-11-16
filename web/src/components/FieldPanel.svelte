@@ -20,6 +20,9 @@
     state: stateOf,
     onpick,
     oncontinue,
+    unit = 'line',
+    spanText = '',
+    valueExtra,
   }: {
     fields: FieldDescriptor[];
     summary: SummaryResponse | null;
@@ -31,6 +34,12 @@
     state: (f: FieldDescriptor, value: string) => 'in' | 'out' | '';
     onpick: (f: FieldDescriptor, value: string, exclude: boolean) => void;
     oncontinue: () => void;
+    /** What a count counts ("line"; 2.0's Flows tab: "flow"). */
+    unit?: string;
+    /** Replaces the counted-span line (flows report progress instead of counted_from). */
+    spanText?: string;
+    /** Text after a value's count (flows: its bytes). */
+    valueExtra?: (v: import('../lib/api').FieldValueCount) => string;
   } = $props();
 
   const byKey = $derived(new Map((summary?.fields ?? []).map((f) => [f.key, f])));
@@ -44,12 +53,12 @@
 <aside class="fp log-panel" aria-label="Field values">
   <div class="fbar">
     <b class="text-white">Fields</b>
-    {#if summary}<span class="matched">{num(summary.matched)} line{summary.matched === 1 ? '' : 's'}</span>{/if}
+    {#if summary}<span class="matched">{num(summary.matched)} {unit}{summary.matched === 1 ? '' : 's'}</span>{/if}
   </div>
   <div class="span" aria-live="polite">
     {#if error}<span class="err" role="alert">{error}</span>
     {:else if summary}
-      <span>{countedLine(summary.from, summary.to, summary.counted_from, utc)}{utc ? ' UTC' : ''}</span>
+      <span>{spanText || `${countedLine(summary.from, summary.to, summary.counted_from, utc)}${utc ? ' UTC' : ''}`}</span>
       {#if status === 'running'}<span class="busy"><span class="spin" aria-hidden="true"></span>Counting…</span>{/if}
     {:else if status === 'running'}<span class="busy"><span class="spin" aria-hidden="true"></span>Counting…</span>{/if}
     {#if status === 'paused'}
@@ -94,6 +103,7 @@
                   <span class="val nf" title="This value can't be used as a filter">{v.label}</span>
                 {/if}
                 <span class="cnt">{num(v.count)}</span>
+                {#if valueExtra}<span class="xtra">{valueExtra(v)}</span>{/if}
                 {#if v.filterable}
                   <button type="button" class="pm" aria-label="Show only {v.label}" title="Show only {v.label}" onclick={() => onpick(f, v.value, false)}>+</button>
                   <button type="button" class="pm" aria-label="Leave out {v.label}" title="Leave out {v.label}" onclick={() => onpick(f, v.value, true)}>−</button>
@@ -132,6 +142,15 @@
     padding: 10px 16px;
     background: var(--log-bar);
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .xtra {
+    position: relative;
+    flex: none;
+    min-width: 5.2em;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--log-dim);
   }
   .matched {
     margin-left: auto;
