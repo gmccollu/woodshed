@@ -1,8 +1,9 @@
 <script lang="ts">
   // The device page's Polling panel (SPEC §12.5): the system box, 5 small charts with 13 lines by
   // default (CPU, memory, total in/out, the 4 busiest interfaces in and out, errors plus discards),
-  // restart and oper-change markers on every chart, and the interface table. Clicking a row adds
-  // that interface to the interface chart (at most 8 charted at once).
+  // restart and oper-change markers on every chart (every interface's, charted or not, from the
+  // panel's own markers), the list of those changes, and the interface table. Clicking a row, or
+  // "Chart" in the changes list, adds that interface to the interface chart (at most 8 at once).
   import { getPollDevice, getPollSeries, getPollTargets } from '../lib/api';
   import { ago, dateTime } from '../lib/format';
   import {
@@ -16,6 +17,7 @@
     HEADLINE_KEYS,
     ifKey,
     ifSeriesBatches,
+    markerTitle,
     MAX_CHARTED,
     pct,
     speed,
@@ -102,16 +104,25 @@
     const s = r?.series.find((x) => x.key === key);
     return grid && s ? aligned(s.points, grid.start, grid.size, grid.n, total) : [];
   };
+  // The panel's markers hold every interface's changes, charted or not (a down on an interface no
+  // one is looking at is often the evidence); the series' markers add the charted ones'.
   const markers = $derived.by(() => {
-    const all: PollMarker[] = [...(head?.markers ?? []), ...ifSeries.flatMap((r) => r.markers)];
+    const all: PollMarker[] = [...(panel?.markers ?? []), ...(head?.markers ?? []), ...ifSeries.flatMap((r) => r.markers)];
     const seen = new Set<string>();
-    return all.filter((m) => {
-      const k = `${m.time}|${m.kind}|${m.if ?? ''}`;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
+    return all
+      .filter((m) => {
+        const k = `${m.time}|${m.kind}|${m.if ?? ''}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
   });
+  // The changes list: newest first, the first CHANGES_SHOWN unless the user asks for all.
+  const CHANGES_SHOWN = 8;
+  let allChanges = $state(false);
+  const changes = $derived([...markers].reverse());
+  const changeTime = (iso: string) => (utc ? `${iso.slice(0, 16).replace('T', ' ')} UTC` : dateTime(iso));
   const ifVals = (name: string, what: 'in_bps' | 'out_bps') => {
     for (const r of ifSeries) {
       const v = vals(r, ifKey(name, what));
@@ -263,6 +274,33 @@
       </div>
     </div>
 
+    <div class="mt-4">
+      <h3 class="m-0 text-[14px] font-semibold" id="poll-changes-h">Restarts and interface changes ({changes.length}{changes.length >= 100 ? '+' : ''})</h3>
+      {#if changes.length}
+        <ul class="changes" aria-labelledby="poll-changes-h">
+          {#each allChanges ? changes : changes.slice(0, CHANGES_SHOWN) as m (`${m.time}|${m.kind}|${m.if ?? ''}`)}
+            {@const uncharted = m.kind === 'oper' && !!m.if && !charted.includes(m.if)}
+            <li>
+              <time datetime={m.time}>{changeTime(m.time)}</time>
+              <span class="chip {m.kind === 'restart' ? 'restart' : operTone(m.oper ?? '')}">{m.kind === 'restart' ? (m.reboot === '1' ? 'reboot' : 'restart') : (m.oper ?? 'change')}</span>
+              <span class="what">{markerTitle(m)}</span>
+              {#if uncharted}
+                <span class="sub">not charted</span>
+                <button class="linkbtn" onclick={() => toggle(m.if!)}>Chart {m.if}</button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        {#if changes.length > CHANGES_SHOWN}
+          <button class="linkbtn mt-1" aria-expanded={allChanges} onclick={() => (allChanges = !allChanges)}>
+            {allChanges ? `Show the newest ${CHANGES_SHOWN}` : `Show all ${changes.length}`}
+          </button>
+        {/if}
+      {:else}
+        <p class="m-0 mt-1 text-[13px] text-muted">None in this range.</p>
+      {/if}
+    </div>
+
     <div class="mt-4 flex flex-wrap items-baseline justify-between gap-2">
       <h3 class="m-0 text-[14px] font-semibold">Interfaces ({panel.interfaces.length})</h3>
       <span class="text-[12.5px] text-muted" aria-live="polite">
@@ -380,9 +418,32 @@
     border-color: var(--bad);
     color: var(--bad-fg);
   }
-  .chip.failing {
+  .chip.failing,
+  .chip.restart {
     border-color: var(--warn);
     color: var(--warn-fg);
+  }
+  .changes {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    font-size: 13.5px;
+  }
+  .changes li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--divider);
+  }
+  .changes time {
+    min-width: 11em;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .changes .sub {
+    display: inline;
   }
   .ift {
     width: 100%;

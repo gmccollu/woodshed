@@ -122,9 +122,10 @@ export interface PollMarker {
   /** Restarts: "1" a reboot, "0" the agent only, "?" can't tell. */
   reboot?: '1' | '0' | '?' | (string & {});
   detail: string;
-  /** Oper markers: the interface and its new status. Not in docs/api.md yet; detail says it too. */
+  /** Oper markers: the interface, its new status and the one before (docs/api.md); detail says it too. */
   if?: string;
   oper?: string;
+  was?: string;
 }
 export interface PollSeriesResponse {
   device_id: string;
@@ -180,6 +181,8 @@ export interface PollDevicePanel {
   /** The 4 busiest in the range: the default chart set. */
   charted: string[];
   interfaces_left_out: number;
+  /** Restarts and every interface's oper changes in the range, charted or not (docs/api.md, at most 100). */
+  markers: PollMarker[];
 }
 
 export interface PollSettings {

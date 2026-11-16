@@ -82,6 +82,8 @@ interface MockPolled {
   restart?: { at: number; reboot: '1' | '0' | '?'; detail: string };
   /** An interface down for a while: [from, to). */
   flap?: { if: string; from: number; to: number };
+  /** An interface (one that's down now, so never charted by default) that went down at `at` and stayed down. */
+  wentDown?: { if: string; at: number };
   /** Answering until this moment (failing since then). */
   silentFrom?: number;
   engine: string;
@@ -106,6 +108,7 @@ const POLLED: Record<string, MockPolled> = {
     hr: true,
     restart: { at: T0 - 2 * H - 7 * MIN, reboot: '1', detail: 'sysUpTime and hrSystemUptime reset' },
     flap: { if: 'eth3', from: T0 - 50 * MIN, to: T0 - 50 * MIN + 42_000 },
+    wentDown: { if: 'eth5', at: T0 - 3 * H - 12 * MIN },
     engine: '80001f8880a1b2c3d4',
   },
   '10.1.0.10': {
@@ -687,9 +690,12 @@ function markersFor(d: MockPolled, from: number, to: number, withOper: boolean |
   const operOK = withOper === true || (Array.isArray(withOper) && d.flap && withOper.includes(d.flap.if));
   if (d.flap && operOK) {
     for (const [t, oper] of [[d.flap.from, 'down'], [d.flap.to, 'up']] as const)
-      if (t >= from && t < to) out.push({ device_id: d.device, time: new Date(t).toISOString(), kind: 'oper', if: d.flap.if, oper, detail: `${d.flap.if} ${oper}` });
+      if (t >= from && t < to) out.push({ device_id: d.device, time: new Date(t).toISOString(), kind: 'oper', if: d.flap.if, oper, was: oper === 'down' ? 'up' : 'down', detail: `${d.flap.if} ${oper} (was ${oper === 'down' ? 'up' : 'down'})` });
   }
-  return out;
+  const wd = d.wentDown;
+  if (wd && (withOper === true || (Array.isArray(withOper) && withOper.includes(wd.if))) && wd.at >= from && wd.at < to)
+    out.push({ device_id: d.device, time: new Date(wd.at).toISOString(), kind: 'oper', if: wd.if, oper: 'down', was: 'up', detail: `${wd.if} down (was up)` });
+  return out.sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
 }
 
 const parseRange = (u: URLSearchParams, now: number): { from: number; to: number } | string => {
@@ -793,6 +799,7 @@ export function deviceRoute(id: string, u: URLSearchParams, now: number): Reply 
       interfaces: [],
       charted: [],
       interfaces_left_out: 0,
+      markers: [],
     };
     return { status: 200, body: empty };
   }
@@ -813,7 +820,8 @@ export function deviceRoute(id: string, u: URLSearchParams, now: number): Reply 
     const pin = peakOf((t) => ifBps(d, f, 'in', t));
     const pout = peakOf((t) => ifBps(d, f, 'out', t));
     const sum = (dir: 'in' | 'out', k: 'err' | 'disc') => (times.length ? times.reduce((s, t) => s + ifErr(d, f, dir, k, t), 0) * Math.max(1, step / (tgt.interval_s * 1000)) : null);
-    const flaps = d.flap && d.flap.if === f.name ? [d.flap.from, d.flap.to].filter((t) => t >= r.from && t < r.to).length : 0;
+    const flaps = (d.flap && d.flap.if === f.name ? [d.flap.from, d.flap.to].filter((t) => t >= r.from && t < r.to).length : 0)
+      + (d.wentDown?.if === f.name && d.wentDown.at >= r.from && d.wentDown.at < r.to ? 1 : 0);
     const operNow = f.down ? 'down' : 'up';
     return {
       index: f.index,
@@ -851,6 +859,8 @@ export function deviceRoute(id: string, u: URLSearchParams, now: number): Reply 
     interfaces: rows,
     charted: rows.filter((x) => (x.peak_in_bps ?? 0) > 0).slice(0, 4).map((x) => x.name),
     interfaces_left_out: tgt.interfaces === 'all' ? Math.max(0, d.ifs.length - tgt.max_interfaces) : 0,
+    // docs/api.md: restarts and every interface's oper changes, charted or not.
+    markers: markersFor(d, r.from, r.to, true).map(({ device_id: _d, ...m }) => m),
   };
   return { status: 200, body };
 }
