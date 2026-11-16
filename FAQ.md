@@ -105,6 +105,15 @@ See [Receiving SNMP traps](docs/user-guide.md#receiving-snmp-traps).
   second per sender. The only other packets it sends are the v3 Reports a device asks for to learn Woodshed's engine
 ID, as answers on the same socket; it never starts a connection to a device.
 
+## Why no vendor-specific instructions?
+
+Because we couldn't keep them right. Commands differ between makers, models and software versions, change between
+releases, and the project can't test configuration on every device. A wrong logging command on a firewall can stop
+traffic. So **Set up a device** is organised by syntax (a line-oriented CLI, a set-style CLI, a web page, and three
+Linux tools), not by brand. The Linux snippets are tested in CI against the real tools; the others follow common,
+documented syntax and say **Reference only**, with notes where devices are known to differ. Check your device's
+documentation for the exact commands. See [Setting up devices](docs/user-guide.md#setting-up-devices).
+
 ## Windows or macOS warns me about the download
 
 Woodshed's downloads aren't code-signed yet, so the first time you open one:

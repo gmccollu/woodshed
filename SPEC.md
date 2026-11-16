@@ -2974,6 +2974,53 @@ Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
 17. The major version is a milestone and an operator-visible change (the binary format, the flow budget), not an API
     break (§13.9).
 
+**Setup helper build decisions** (the setup-helper build agent, 2026-11-16, for the owner's review; branch
+`feat-setup-helper`):
+18. **Routes:** `POST /api/setup/snippet` as the contract says, plus `GET /api/setup/snippet?…` with the same fields
+    as query parameters (`type` accepted for `what`) for scripts. The CLI is `woodshed setup snippet --family …
+    --what …` with `--type` as an alias, and `woodshed setup families`; the snippet goes to stdout, its notes to
+    stderr.
+19. **Additive response fields:** a snippet also has `family`, `what`, `transport`, `address`, `reference`, `does`
+    (the "what this does" line), `check`, `parts` (each a `file`, `command`, `cli` or `steps` with its own Copy) and
+    `addresses` (the list the page offers). A family also has `transports`, `choices` and `notes`, with every data
+    type as a key (`[]` where the family has no template), so the shape is fixed.
+20. **Template format:** `text/template` files in `internal/setuphelper/templates/`, one per family and data type,
+    each with a header (family, what, transports, reference, verification, `checked_on` for lab_checked) and
+    `does`, `parts`, `notes` and `check` blocks; parts are split on `@@part` marker lines. Golden files pin every
+    family, type and transport.
+21. **Coverage:** the line-oriented CLI and the web UI checklist cover all four types; the set-style CLI covers
+    syslog, traps and polling, with no flow template, because flow export statements differ too much between
+    set-style devices to give one that's useful (a family note says so). rsyslog covers syslog; net-snmp traps and
+    polling; softflowd flows.
+22. **Verification:** rsyslog and net-snmp are Tested by the CI job `setup-snippets` (TestSetupSnippets in
+    internal/server, against a real running server, each record exactly once). softflowd stays **Reference only**
+    on this branch: its CI cases exist but skip until the flow listener lands, and §13.11 #5 allows Tested only with a
+    CI test that applies it. When feat-flows merges, write the softflowd runner, drop the cases' skip and mark
+    `softflowd-flow.tmpl` tested. TestSetupTestedTemplatesHaveCI and the deny-list test both fail a Tested template
+    no unskipped case applies.
+23. **Choices:** source interface (line-oriented CLI), the interface softflowd watches, severity (RFC 5424 keywords,
+    default `info`), facility (`local0`–`local7` or the device's default), SNMPv3 user, SHA-256 (default) or SHA-1,
+    AES-128 (the protocols most devices and net-snmp share; the notes say to match both sides), and the polled
+    agent's port. Values are checked against strict patterns, so nothing a user types can add a line to a snippet.
+24. **Filled from live state:** the listener's own address when it's bound to one, else the host's addresses, then the
+    TLS certificate's DNS names and `ui.extra_hostnames`; each listener's port and whether it's on (a note says how to
+    turn it on, first); for TLS, the name a client should check (the address when it's a name on the certificate,
+    else its first DNS name that isn't `localhost`; rsyslog and many devices check names, not IP addresses) and the
+    CA's fingerprint.
+25. **rsyslog:** one omfwd action in `/etc/rsyslog.d/60-woodshed.conf`, RFC 5424 format, octet-counted framing for
+    TCP and TLS, an in-memory queue that retries while Woodshed is down, and for TLS the gtls driver with
+    `x509/name` and the action-level `StreamDriver.CAFile` (rsyslog 8.2108 or later), so it never touches the main
+    config's `global()`. **net-snmp:** `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start), the
+    test trap's secrets in `~/.snmp/snmp.conf` rather than the command line, and `rocommunity` limited to Woodshed's
+    address for polling.
+26. **The page:** "Set up a device" at `#/device-setup`, **Connect** in the navigation (the existing **Setup** label
+    stays the Welcome page, which now links to it). The mock answers from `web/src/lib/mock/setup-fixture.json`,
+    which a Go test generates from the real templates, so it can't drift.
+27. **Vendor-neutral:** the deny list (network, security and log-product vendors, their OS and product names, and
+    desktop and server OS names) is in `internal/setuphelper/denylist_test.go` only. It runs over the templates, the
+    families, every rendered snippet, the page and the docs' setup sections. "NetFlow v9" is kept as the protocol's
+    name, as in the rest of §13.
+
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
    justify a major version even with an additive API (§13.9).

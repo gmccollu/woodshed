@@ -55,6 +55,42 @@ woodshed send --message "hello"          # in the portable folder: ./woodshed se
 
 If nothing arrives, see [Devices can't reach it](../FAQ.md#devices-cant-reach-woodshed) in the FAQ.
 
+### Setting up devices
+
+**Connect** in the menu opens **Set up a device**. It writes the configuration a device needs to send Woodshed its
+syslog, SNMP traps or flows, or to let Woodshed poll it, filled in with this Woodshed's addresses, ports, and the name
+on its TLS certificate.
+
+1. Pick how the device is configured: a line-oriented CLI (one command per line in a configuration mode), a
+   hierarchical set-style CLI (`set …` statements and `commit`), Linux with rsyslog, Linux with net-snmp's `snmpd`
+   and `snmptrap`, Linux with softflowd, or a web page (a checklist of fields and values).
+2. Pick what to set up (syslog, SNMP traps, SNMP polling or flows) and how (UDP, TCP or TLS; SNMPv2c or v3; NetFlow
+   v9 or IPFIX).
+3. Pick Woodshed's address as the device reaches it, and fill in the choices the snippet offers: the device's source
+   interface, the lowest severity to send, the facility, an SNMPv3 user name.
+4. Copy each part to the device, put your own values in place of the placeholders (`<COMMUNITY>`,
+   `<AUTH-PASSPHRASE>`, `<CA-FILE>`), and check that it worked as the snippet's last line says.
+
+Each snippet carries a badge:
+- **Tested**: CI applies it to the real tool (rsyslog, net-snmp) against a running Woodshed on every change, and checks
+  that the data arrives exactly once.
+- **Lab-checked**: applied by hand on lab equipment, on the date shown.
+- **Reference only**: not tested on a device; check your device's documentation. The commands follow common,
+  documented syntax, and the notes say where devices are known to differ.
+
+Woodshed never puts a stored community, passphrase or key into a snippet, and making one changes nothing on the
+server. The notes say first when a listener the snippet needs is off. TCP and TLS syslog snippets for network devices
+carry the firewall warning above.
+
+Without a browser, `woodshed setup snippet` prints the same thing; the notes go to stderr, so you can redirect the
+snippet into a file:
+
+```sh
+woodshed setup families
+woodshed setup snippet --family rsyslog --what syslog --transport tls > 60-woodshed.conf
+woodshed setup snippet --family line-cli --what trap --transport v3 --v3-user monitor --source-interface mgmt0
+```
+
 ### Sending syslog over TLS
 
 **Sending syslog over TLS.** Use this when a device should encrypt its logs on the way. It's off until you turn it

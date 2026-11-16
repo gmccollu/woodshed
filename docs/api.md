@@ -989,6 +989,78 @@ text suggests a longer interval or a higher `poll.concurrency`.
 **CLI** (not HTTP): `woodshed poll test <address> …`, `woodshed search --type poll`, and the `woodshed status`
 Polling row, as in SPEC §12.7.
 
+## Device setup helper
+
+SPEC §13.5 (since 2.0). The **Set up a device** page: the configuration a device needs to send this Woodshed its syslog,
+traps or flows, or to let Woodshed poll it, filled in from this server's settings. The families are named by syntax,
+never by vendor or product. Nothing here changes anything on the server, and no stored secret is ever put into a
+snippet: communities, passphrases and the CA file are placeholders (`<COMMUNITY>`, `<AUTH-PASSPHRASE>`, `<CA-FILE>`).
+
+`GET /api/setup/families`
+```json
+[{"id": "rsyslog", "label": "Linux: rsyslog", "what": ["syslog"], "verification": "tested",
+  "reference": "rsyslog documentation: the omfwd action and the gtls network stream driver",
+  "transports": {"syslog": ["udp", "tcp", "tls"], "trap": [], "poll": [], "flow": []},
+  "choices": {"syslog": ["severity", "facility"], "trap": [], "poll": [], "flow": []},
+  "notes": ["For Linux and other Unix-like machines that run rsyslog, the usual system logger on many distributions."]}]
+```
+- The families, in the page's order: `line-cli` ("Line-oriented CLI (global configuration mode)"), `set-cli`
+  ("Hierarchical set-style CLI"), `rsyslog`, `net-snmp` ("Linux: net-snmp `snmpd` and `snmptrap`"), `softflowd` and
+  `web-ui` ("Web UI checklist").
+- `what`: the data types the family has a template for: `syslog`, `trap`, `poll` (the SNMP agent settings Woodshed needs
+  to poll the device) and `flow`. `transports` lists each one's transports, the default first: syslog `udp`, `tcp`,
+  `tls`; trap and poll `v2c`, `v3`; flow `netflow9`, `ipfix`. Every data type is a key of `transports` and `choices`,
+  `[]` for the ones the family doesn't cover.
+- `choices`: per data type, the snippet body's fields that change its snippet. `v3_user`, `auth` and `priv` apply to
+  the `v3` transport only.
+- `verification` is the lowest level of the family's templates: `tested` (CI applies the snippet to the real
+  open-source tool against a running Woodshed and checks the data arrives), `lab_checked` (applied by hand on lab gear;
+  then `"checked_on": "YYYY-MM-DD"` is present) or `reference` (common syntax, not tested on a device).
+
+`POST /api/setup/snippet` body `{"family": "rsyslog", "what": "syslog", "transport": "tls", "address":
+"logs-01.example.net"}` →
+```json
+{"family": "rsyslog", "what": "syslog", "transport": "tls", "address": "logs-01.example.net", "verification": "tested",
+ "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+ "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TLS.",
+ "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog …\n…",
+ "parts": [{"kind": "file", "path": "/etc/rsyslog.d/60-woodshed.conf", "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
+            "text": "*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"6514\" …)\n"},
+           {"kind": "command", "path": "", "title": "Check the file and send a test message", "text": "sudo rsyslogd -N1\n…"}],
+ "notes": ["<CA-FILE> is Woodshed's CA certificate as a PEM file on this machine: …"],
+ "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; …",
+ "placeholders": ["<CA-FILE>"],
+ "addresses": ["10.1.0.50", "fd00::50", "logs-01", "logs-01.example.net"]}
+```
+- Body fields (all but `family` and `what` optional; unknown fields are a `400`):
+  - `transport`: default the first whose listener is on.
+  - `address`: Woodshed's address as the device should use it, an IP address or a DNS name. Default: the first of
+    `addresses`, which lists the listener's own address when it's bound to one, else this machine's addresses (IPv4
+    first), then the TLS certificate's DNS names and `ui.extra_hostnames`; loopback only when there's nothing else.
+  - `source_interface` (line-oriented CLI: the interface the device's packets leave from; left out when empty),
+    `interface` (softflowd: the interface it watches), `severity` (syslog: the lowest to send, an RFC 5424 keyword
+    `emerg` … `debug`, default `info`), `facility` (syslog: `local0`–`local7`, default the device's own, for rsyslog
+    every facility), `v3_user` (default a `<V3-USER>` placeholder), `auth` (`sha-256` default, or `sha`), `priv`
+    (`aes-128`), `agent_port` (poll: the device's SNMP agent port, default 161).
+- A choice that doesn't apply to the family, data type and transport, or a value it can't take, is
+  `400 {"error": "<field>: …", "errors": {"<field>": "…"}}`.
+- Filled from the live settings: each listener's port, whether it's on (a listener that's off gets a note saying how
+  to turn it on, first), and for TLS the name a client should check (the address when it's a name, else a DNS name on
+  the certificate) and the CA's SHA-256 fingerprint.
+- `parts`: `kind` `file` (a file to create or add to, at its usual `path`), `command` (shell commands), `cli` (lines
+  for a device's configuration mode) or `steps` (fields to fill in on a web page). `text` is every part, for one Copy.
+- `notes` start with anything to do first, then, for `reference` snippets, "Reference only: not tested on a device;
+  check your device's documentation.", and on every TCP and TLS syslog snippet for a network device the warning about
+  firewalls that block traffic while the log host is down. `placeholders` are the values to fill in, in order.
+
+**Snippet, as a query:** `GET /api/setup/snippet?family=…&what=…&…` takes the same fields as query parameters (`type` is
+accepted for `what`), for scripts and `curl`.
+
+**CLI** (not HTTP): `woodshed setup families [--json]` and `woodshed setup snippet --family F --what W [--transport T]
+[--address A] [--source-interface I] [--interface I] [--severity S] [--facility F] [--v3-user U] [--auth A] [--priv P]
+[--agent-port N] [--json]` (`--type` is `--what`). The snippet goes to stdout and its notes to stderr; it's filled from the
+config file and, when the account can read it, the TLS certificate.
+
 ## Update check
 
 The opt-in update check (SPEC §10.2): off until someone agrees, it asks once, and when it's on it fetches one public file
@@ -1279,22 +1351,6 @@ the busiest, then `more`): `{"devices": [{"device_id", "points": [{"start", "byt
   "nat_connections", "top_post_nat_sources": [...],
   "sequence_gaps", "lost_estimate", "no_template", "malformed"}`.
 
-### Setup helper
-**Families:** `GET /api/setup/families` →
-```json
-[{"id": "line-cli", "label": "Line-oriented CLI (global configuration mode)", "what": ["syslog", "trap", "flow", "poll"],
-  "verification": "reference", "reference": "the device's own documentation"},
- {"id": "rsyslog", "label": "Linux: rsyslog", "what": ["syslog"], "verification": "tested", "reference": "rsyslog documentation, omfwd"}]
-```
-`verification`: `tested`, `lab_checked` (with `"checked_on"`) or `reference`.
-
-**Snippet:** `POST /api/setup/snippet` body `{"family": "rsyslog", "what": "syslog", "transport": "tls", "address":
-"logs-01.example.net"}` → `{"text": "…", "notes": ["…"], "placeholders": ["<CA-FILE>"], "verification": "tested"}`.
-- `address` defaults to the first of this Woodshed's addresses the Setup page lists; `transport` per `what`: syslog
-  `udp`, `tcp` or `tls`; trap `v2c` or `v3`; flow `netflow9` or `ipfix`; poll `v2c` or `v3`.
-- Secrets are always placeholders; no stored community or key is ever put into a snippet. Nothing is changed on the
-  server.
-
 ### Banners (2.0)
 - `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives
   the rate and the budget.
@@ -1304,5 +1360,6 @@ the busiest, then `more`): `{"devices": [{"device_id", "points": [{"start", "byt
 - `flow_firewall` (warn, action `""`): Windows only, while the flow listener is on and a rule is disabled, missing or on
   another port; the text gives `woodshed flow on`.
 
-**CLI** (not HTTP): `woodshed search --type flow`, `woodshed flows top`, `woodshed flow on|off|status`, `woodshed setup
-snippet`, `woodshed send --proto netflow5|netflow9|ipfix`, as in SPEC §13.7 and §13.8.
+**CLI** (not HTTP): `woodshed search --type flow`, `woodshed flows top`, `woodshed flow on|off|status`, `woodshed send
+--proto netflow5|netflow9|ipfix`, as in SPEC §13.7 and §13.8. (The setup helper, also in the 2.0 contract, is served:
+see "Device setup helper" above.)

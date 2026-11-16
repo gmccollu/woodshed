@@ -4,6 +4,20 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [2.0.0] - unreleased
+
+### Added
+- **Set up a device** (**Connect** in the menu): the configuration a device needs to send Woodshed its syslog (UDP,
+  TCP or TLS), SNMP traps (v2c or v3) or flows, or to let Woodshed poll it, filled in with this server's addresses,
+  ports and TLS certificate name. Six families, named by syntax rather than brand: a line-oriented CLI, a set-style
+  CLI, Linux rsyslog, Linux net-snmp (`snmpd` and `snmptrap`), Linux softflowd and a web UI checklist. Secrets are
+  always placeholders, and each snippet says what it does, how to check it worked, and how it's verified: the rsyslog
+  and net-snmp snippets are **Tested** (CI applies them to the real tools against a running Woodshed), the others are
+  **Reference only**. See [docs/user-guide.md](docs/user-guide.md#setting-up-devices).
+- `woodshed setup families` and `woodshed setup snippet --family … --what …` print the same from a terminal.
+- API: `GET /api/setup/families` and `POST /api/setup/snippet` (or `GET` with query parameters); see docs/api.md
+  "Device setup helper".
+
 ## [1.3.0] - unreleased
 
 ### Added
