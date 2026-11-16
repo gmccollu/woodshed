@@ -480,11 +480,10 @@ func readFooter(fl io.ReaderAt, size int64, hl int) (*Footer, error) {
 	if off < int64(hl) {
 		return nil, ErrCorrupt
 	}
-	magic, body, ok := readSection(fl, off, size-trailerLen, nil)
-	if !ok || magic != magicFoot || int64(len(body)) != n || crc(body) != binary.LittleEndian.Uint32(tr[4:]) {
+	if n > maxSectionBody {
 		return nil, ErrCorrupt
 	}
-	f, ok := decodeFooter(body, off)
+	f, ok := readFooterStream(fl, off, n, binary.LittleEndian.Uint32(tr[4:]), off)
 	if !ok {
 		return nil, ErrCorrupt
 	}

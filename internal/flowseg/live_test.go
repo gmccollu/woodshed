@@ -82,7 +82,8 @@ func TestOpenLive(t *testing.T) {
 	}
 	check(path, 601, 1)
 	r, _ := OpenLive(path)
-	if !r.Footer().Blocks[0].loaded {
+	// Its blocks' header copies are the footer's (past the template table).
+	if foot := r.Footer(); foot.Blocks[0].hdrOff < foot.tableOff {
 		t.Fatal("closed segment didn't use its footer")
 	}
 	r.Close()

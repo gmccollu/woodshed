@@ -52,6 +52,7 @@ func (s *segState) addBlock(bi *BlockInfo, off, length, hdrOff, hdrLen int64) {
 	lite.inIfs, lite.outIfs, lite.keys = ifSet{}, ifSet{}, bloom{}
 	lite.protos = [4]uint64{}
 	lite.loaded = false
+	lite.hdrOff, lite.hdrLen = hdrOff, hdrLen
 	s.blocks = append(s.blocks, lite)
 	s.hdrSpans = append(s.hdrSpans, [2]int64{hdrOff, hdrLen})
 	s.totals.add(&bi.Totals)

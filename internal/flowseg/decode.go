@@ -38,6 +38,7 @@ type Block struct {
 	templates []*flow.Template
 	dict      []netip.Addr
 	buf       []byte
+	inf       [64][]byte // inflated columns, reused from block to block
 }
 
 // Decoded reports which columns the last Decode filled.
@@ -163,7 +164,7 @@ func decodeBody(body []byte, cols Cols, templates []*flow.Template, b *Block) er
 	}
 	*b = Block{pres: b.pres, u: b.u, t: b.t, a: b.a, s: b.s, received: b.received, sampling: b.sampling,
 		domain: b.domain, version: b.version, port: b.port, tmpl: b.tmpl, tid: b.tid, status: b.status, tsrc: b.tsrc,
-		xpres: b.xpres, buf: b.buf}
+		xpres: b.xpres, buf: b.buf, dict: b.dict, inf: b.inf}
 	b.Rows, b.Info, b.templates = bi.Rows, bi, templates
 	n := bi.Rows
 	for i := range b.pres {
@@ -194,7 +195,10 @@ func decodeBody(body []byte, cols Cols, templates []*flow.Template, b *Block) er
 		if uint64(e.raw) > uint64(e.sto)*1100+1024 {
 			return nil, errCorrupt
 		}
-		out, err := inflate(e.data, e.raw, nil)
+		out, err := inflate(e.data, e.raw, b.inf[e.id])
+		if err == nil {
+			b.inf[e.id] = out
+		}
 		return out, err
 	}
 	// The dictionary first.
@@ -213,7 +217,10 @@ func decodeBody(body []byte, cols Cols, templates []*flow.Template, b *Block) er
 		}
 		dd := &dec{b: r}
 		k := dd.count(16)
-		dict := make([]netip.Addr, 0, k)
+		dict := b.dict[:0]
+		if cap(dict) < k {
+			dict = make([]netip.Addr, 0, k)
+		}
 		for j := 0; j < k; j++ {
 			x := dd.next(16)
 			if x == nil {

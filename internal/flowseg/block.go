@@ -369,6 +369,9 @@ type BlockInfo struct {
 	keys   bloom
 	hdr    []byte // the encoded header (the footer repeats it)
 	loaded bool   // the index fields above are set
+	// Where a copy of the encoded header sits in the file (the footer's, or
+	// the block's own), for Reader.Block; 0 when not known.
+	hdrOff, hdrLen int64
 }
 
 // maxDistinct caps the sampling and domain lists a block or footer keeps.
