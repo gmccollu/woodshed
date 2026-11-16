@@ -111,6 +111,12 @@ func flowRec(i int, at time.Time, dev netip.Addr) []flow.Record {
 
 func newFlowEnv(t *testing.T) *flowEnv {
 	t.Helper()
+	return newFlowEnvWith(t, nil)
+}
+
+// newFlowEnvWith is newFlowEnv with the store's options changed by mod.
+func newFlowEnvWith(t *testing.T, mod func(*store.Options)) *flowEnv {
+	t.Helper()
 	dir := t.TempDir()
 	idx, err := index.Open(filepath.Join(dir, index.FileName))
 	if err != nil {
@@ -118,8 +124,12 @@ func newFlowEnv(t *testing.T) *flowEnv {
 	}
 	t.Cleanup(func() { idx.Close() })
 	c := &clock{t: time.Date(2026, 11, 13, 23, 30, 0, 0, time.UTC)}
-	st, err := store.Open(store.Options{DataDir: dir, Index: idx, Manual: true, Clock: c.Now, Logger: quiet, Version: "1.2.3",
-		DiskUsage: func(string) (uint64, uint64, error) { return 1 << 40, 1 << 41, nil }})
+	so := store.Options{DataDir: dir, Index: idx, Manual: true, Clock: c.Now, Logger: quiet, Version: "1.2.3",
+		DiskUsage: func(string) (uint64, uint64, error) { return 1 << 40, 1 << 41, nil }}
+	if mod != nil {
+		mod(&so)
+	}
+	st, err := store.Open(so)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,6 +491,50 @@ func TestFlowBundle(t *testing.T) {
 		`"nat_connections"`, `"top_post_nat_sources"`, `"sequence_gaps"`, `"lost_estimate"`, `"no_template"`, `"malformed"`} {
 		if !bytes.Contains(b, []byte(k)) {
 			t.Errorf("summary JSON lacks %s: %s", k, b)
+		}
+	}
+}
+
+// With a segment's part limit at 10 blocks, every exporter's hours are
+// many parts (closed, and the open one): a bundle's records and a flow
+// count over the window still find every record once.
+func TestFlowBundleOverParts(t *testing.T) {
+	fe := newFlowEnvWith(t, func(o *store.Options) { o.FlowPartBlocks = 10 })
+	parts, _ := filepath.Glob(filepath.Join(fe.dir, "logs", "*", "flows", "*.0[0-9][0-9].wsf"))
+	if len(parts) < 20 {
+		t.Fatalf("%d numbered parts", len(parts))
+	}
+	m := fe.flowManager()
+	at := fe.at
+	in, err := m.Create(bg, Request{Filters: Filters{Kind: KindBundle, At: &at, Before: 30 * time.Minute, After: 10 * time.Minute,
+		ActiveDevices: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Devices) != 2 {
+		t.Fatalf("devices %v", in.Devices)
+	}
+	wait(t, m, in.ID, Ready)
+	files, _ := readZip(t, m, in.ID)
+	var man Manifest
+	if err := json.Unmarshal(files["manifest.json"], &man); err != nil {
+		t.Fatal(err)
+	}
+	from, to := at.Add(-30*time.Minute), at.Add(10*time.Minute)
+	got := map[string]int64{}
+	for _, d := range man.Summary {
+		if d.Flow != nil {
+			got[d.DeviceID] = d.Flow.Records
+		}
+	}
+	counts, err := fe.fe.Count(bg, flowquery.Query{From: from, To: to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dev := range []string{model.DeviceID(fwDev), model.DeviceID(rtDev)} {
+		want := int64(len(fe.inWindow(dev, from, to)))
+		if want == 0 || got[dev] != want || counts[dev] != want {
+			t.Fatalf("%s: bundle %d records, count %d, want %d", dev, got[dev], counts[dev], want)
 		}
 	}
 }
