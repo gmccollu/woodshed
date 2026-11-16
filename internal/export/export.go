@@ -25,10 +25,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/atomicfile"
 	"github.com/gmccollu/woodshed/internal/datatype"
+	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -95,6 +97,10 @@ type Filters struct {
 	Trap  *datatype.TrapFilter `json:"trap,omitempty"`
 	// 1.3: with one type of polls, its filter (SPEC §12.6).
 	Poll *datatype.PollFilter `json:"poll,omitempty"`
+	// 2.0: with one type of flows, its filter parameters (flowquery.Parse
+	// reads them), and the flow files in the zip (nil: csv and ipfix).
+	Flow        map[string]string `json:"flow,omitempty"`
+	FlowFormats []string          `json:"flow_formats,omitempty"`
 	// 1.2: the incident bundle (SPEC §11.3): Kind "bundle", the moment and
 	// the spans before and after it, and whether the devices are the ones
 	// active in the window. A bundle's Types are resolved when it's created
@@ -228,7 +234,14 @@ type Manager struct {
 
 	stop chan struct{}
 	wg   sync.WaitGroup
+
+	// flows is the flow query engine (SetFlows), nil until the server sets it.
+	flows atomic.Pointer[flowquery.Engine]
 }
+
+// SetFlows gives the manager the flow query engine, for flows in exports
+// and bundles (SPEC §13.4).
+func (m *Manager) SetFlows(e *flowquery.Engine) { m.flows.Store(e) }
 
 type entry struct {
 	info   Info

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/export"
 	"github.com/gmccollu/woodshed/internal/hub"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -123,6 +124,9 @@ func SearchQuery(r api.SearchRequest) search.Query {
 }
 
 func (b *backend) Search(ctx context.Context, r api.SearchRequest) (api.SearchPage, error) {
+	if r.Type == datatype.Flow {
+		return b.flowSearch(ctx, r)
+	}
 	p, err := b.search.Search(ctx, SearchQuery(r))
 	if err != nil {
 		return api.SearchPage{}, requestError(err)
@@ -132,6 +136,9 @@ func (b *backend) Search(ctx context.Context, r api.SearchRequest) (api.SearchPa
 }
 
 func (b *backend) Context(ctx context.Context, ref string, before, after int) (api.ContextPage, error) {
+	if isFlowRef(ref) {
+		return api.ContextPage{}, &api.RequestError{Msg: "Context isn't available for flows: a flow record isn't a line."}
+	}
 	p, err := b.search.Context(ctx, ref, before, after)
 	if err != nil {
 		return api.ContextPage{}, requestError(err)
@@ -144,7 +151,7 @@ func toExportRequest(r api.ExportRequest) export.Request {
 		Group: r.Group, Ungrouped: r.Ungrouped, Severities: toSeveritySet(r.Severities), Q: r.Q, Regex: r.Regex, Case: r.Case,
 		Apps: r.App, Hosts: r.Host, Exclude: r.Exclude, Terms: r.Terms, Facilities: toFacilitySet(r.Facilities),
 		ExcludeDevices: r.ExcludeDevices, ExcludeApps: r.ExcludeApp, ExcludeHosts: r.ExcludeHost, Types: exportTypes(r.Types),
-		Trap: r.Trap, Poll: r.Poll}}
+		Trap: r.Trap, Poll: r.Poll, Flow: map[string]string(r.Flow), FlowFormats: r.FlowFormats}}
 	if r.Kind == export.KindBundle {
 		at := r.At
 		req.Kind, req.At, req.Before, req.After, req.ActiveDevices = export.KindBundle, &at, r.Before, r.After, r.ActiveDevices

@@ -241,6 +241,10 @@ type compiled struct {
 }
 
 func (e *Engine) compile(f Filter) (compiled, error) {
+	if datatype.IsSegments(f.Type) {
+		// Flows are segments, not lines: internal/flowquery reads them.
+		return compiled{}, &QueryError{Msg: "type: flows are searched by the flow engine, not the line search."}
+	}
 	if f.Terms && f.Regex {
 		return compiled{}, &QueryError{Msg: ErrTermsWithRegex}
 	}

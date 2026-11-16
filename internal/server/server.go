@@ -180,6 +180,8 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 		MaxDevices:          cfg.Listeners.MaxDevices,
 		NewDeviceBurst:      cfg.Listeners.NewDeviceBurst,
 		NewDevicesPerMinute: float64(cfg.Listeners.NewDevicesPerMinute),
+		FlowBudgetBytes:     cfg.Storage.FlowBudgetBytes,
+		Version:             opts.Version,
 		Reclaim:             s.exports.Reclaim,
 		Logger:              log,
 	}); err != nil {
@@ -208,6 +210,10 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	// The SNMP poller: nothing is polled or sent until Run gives it the
 	// configured targets, and with none it opens no socket (SPEC §12.9).
 	s.be.openPoll(cfg, opts.pollOnSend, opts.pollUnit)
+	// The flow collector and query engine (SPEC §13): no socket until the
+	// listener is on, but segments on disk are searchable either way.
+	s.be.openFlows(cfg)
+	s.exports.SetFlows(s.be.flows.eng)
 	// The update check: nothing touches the network unless updates.check is "on"
 	// in a release build (SPEC §10.2).
 	s.be.updates = updatecheck.New(updatecheck.Options{
@@ -343,6 +349,8 @@ func (s *Server) Run(ctx context.Context) error {
 		Trap:            s.be.snmp.rcv.Handle,
 		TrapTry:         s.be.snmp.rcv.TryHandle,
 		OnTrapQueueDrop: s.be.trapQueueDrop,
+		Flow:            s.be.flowHandle,
+		OnFlowQueueDrop: s.be.flowQueueDrop,
 	})
 	if err != nil {
 		// Only an invalid allowlist gets here, and Validate already checked it.
@@ -444,6 +452,7 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 		}
 		setStep("stopping the SNMP poller")
 		s.be.closePoll()
+		s.be.closeFlows()
 		setStep("closing the live hub")
 		s.hub.Close()
 		if apiCancel != nil {
@@ -500,6 +509,7 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 func (s *Server) closeOpened() {
 	if s.be != nil {
 		s.be.closePoll()
+		s.be.closeFlows()
 	}
 	if s.store != nil {
 		_ = s.store.Close()

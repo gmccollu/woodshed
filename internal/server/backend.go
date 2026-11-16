@@ -65,6 +65,8 @@ type backend struct {
 	snmp *snmpSide
 	// poll is the SNMP poller (poll.go).
 	poll *pollSide
+	// flows is the flow collector and query engine (flow.go).
+	flows *flowSide
 
 	cfgMu sync.RWMutex
 	cfg   config.Config
@@ -296,6 +298,7 @@ func (b *backend) listenerState(ctx context.Context, cfg config.Config) (listen.
 		banners = append(banners, b.snmpBanners(cfg, b.now())...)
 	}
 	banners = append(banners, b.pollBanners()...)
+	banners = append(banners, b.flowBanners(ctx, cfg, b.now(), runtime.GOOS)...)
 	if ban := udpBufferBanner(runtime.GOOS, ls.UDPRcvbufBytes, ls.UDPRcvbufRequestedBytes); ban != nil {
 		banners = append(banners, *ban)
 	}
@@ -866,9 +869,11 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 			MaxDevices:          next.Listeners.MaxDevices,
 			NewDeviceBurst:      next.Listeners.NewDeviceBurst,
 			NewDevicesPerMinute: float64(next.Listeners.NewDevicesPerMinute),
+			FlowBudgetBytes:     flowBudgetLimit(next.Storage.FlowBudgetBytes),
 		})
 	}
 	b.applyPollSettings(cur.Poll, next.Poll)
+	b.applyFlowSettings(cur, next)
 	if b.snmp != nil && trapSettings(cur.Listeners.SNMP) != trapSettings(next.Listeners.SNMP) {
 		if err := b.snmp.rcv.Apply(trapSettings(next.Listeners.SNMP)); err != nil {
 			return api.Settings{}, fmt.Errorf("apply the SNMP settings: %w", err)
@@ -879,6 +884,11 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 }
 
 func listenersEqual(a, b config.Listeners) bool {
+	fa, fb := a.Flow, b.Flow
+	if fa.Enabled != fb.Enabled || fa.Addr != fb.Addr || fa.NetFlowPort != fb.NetFlowPort || fa.IPFIXPort != fb.IPFIXPort ||
+		fa.QueueMessages != fb.QueueMessages || fa.QueueBytes != fb.QueueBytes {
+		return false
+	}
 	if a.UDP != b.UDP || a.TCP != b.TCP || a.TLS != b.TLS || snmpChanged(a.SNMP, b.SNMP) || a.UDPRcvbufBytes != b.UDPRcvbufBytes || a.MaxMessageBytes != b.MaxMessageBytes ||
 		a.UDPQueueMessages != b.UDPQueueMessages || a.UDPQueueBytes != b.UDPQueueBytes {
 		return false

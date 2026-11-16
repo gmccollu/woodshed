@@ -1,6 +1,8 @@
 package search
 
 import (
+	"github.com/gmccollu/woodshed/internal/datatype"
+
 	"context"
 	"sort"
 	"time"
@@ -43,6 +45,22 @@ func (e *Engine) Active(ctx context.Context, types []string, from, to time.Time)
 			return nil, err
 		}
 		found := map[string]bool{}
+		if datatype.IsSegments(typ) {
+			// Flow segments have no checkpoints and aren't lines: a segment
+			// whose received range overlaps the range makes its device active
+			// (records within a segment arrive in received order, but for
+			// late-decoded ones).
+			for _, sp := range spans {
+				f := sp.File
+				if f.Lines > 0 && f.FirstReceived.UnixMilli() < toMs && f.LastReceived.UnixMilli() >= fromMs {
+					found[f.DeviceID] = true
+				}
+			}
+			for d := range found {
+				out[d] = append(out[d], typ)
+			}
+			continue
+		}
 		var unsure []int64 // file IDs that need their checkpoints
 		unsureDev := map[int64]string{}
 		for _, sp := range spans {
