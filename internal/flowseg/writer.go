@@ -321,8 +321,11 @@ func (w *Writer) Sync() error {
 }
 
 // Close flushes, writes the template table, the footer and the trailer,
-// fsyncs and closes the file. It returns the footer. After an error the file
-// is closed anyway; Recover can finish it.
+// fsyncs and closes the file. The footer is written through a bounded
+// buffer, so Close's memory doesn't grow with it. It returns the footer as
+// Open would read it: blocks' directory entries only, their index not
+// loaded (Reader.Block loads one from the footer's copy). After an error the
+// file is closed anyway; Recover can finish it.
 func (w *Writer) Close() (*Footer, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -383,11 +386,33 @@ func (w *Writer) TakeMinutes() []Minute {
 }
 
 // Snapshot returns the footer of what's been written so far (complete
-// sections only), for OpenSnapshot; its blocks' index isn't loaded.
+// sections only), for OpenSnapshot; its blocks' index isn't loaded. It
+// copies the whole block directory (472 bytes a block): callers that only
+// need the totals use Summary.
 func (w *Writer) Snapshot() *Footer {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.st.footer()
+}
+
+// Summary returns the segment-level fields of what's been written so far
+// (identity, totals, raw counts, time ranges, samplings, domains, minutes),
+// as Snapshot would, without the block directory, raw chunks, templates or
+// metadata (Blocks, RawChunks, Templates and Meta are nil). Its cost doesn't
+// grow with the blocks written: the store calls it on every flush for the
+// index rows (index.FlowRowsOf).
+func (w *Writer) Summary() *Footer {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.st.summary()
+}
+
+// Blocks is the number of blocks written (the store starts a new part at
+// its block limit, which bounds the writer's directory and the footer).
+func (w *Writer) Blocks() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.st.blocks)
 }
 
 // Footer is Snapshot's running totals (an alias kept for callers that only

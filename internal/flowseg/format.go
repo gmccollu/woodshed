@@ -355,8 +355,13 @@ type Footer struct {
 // Empty reports whether the segment holds neither records nor raw sets.
 func (f *Footer) Empty() bool { return f.Totals.Records == 0 && f.Raw == 0 }
 
-func encodeFooter(f *Footer, hdrs [][]byte) []byte {
-	b := putUvarint(nil, 1)
+// appendFooterHead encodes the footer body's fields before the block list,
+// up to and including the block count (nBlocks). The body goes on with each
+// block's offset, length and header (length-prefixed), then the raw chunk
+// count and appendRawDirEntry's entries (segState.writeTail; read by
+// readFooterStream).
+func appendFooterHead(b []byte, f *Footer, nBlocks int) []byte {
+	b = putUvarint(b, 1)
 	b = putBytes(b, []byte(f.DeviceID))
 	b = putVarint(b, f.Hour.UnixMilli())
 	b = putBytes(b, []byte(f.WriterVersion))
@@ -373,94 +378,20 @@ func encodeFooter(f *Footer, hdrs [][]byte) []byte {
 	b = appendU32s(b, f.Domains)
 	b = appendMinutes(b, f.Minutes)
 	b = putUvarint(b, uint64(f.tableOff))
-	b = putUvarint(b, uint64(len(f.Blocks)))
-	for i := range f.Blocks {
-		bi := &f.Blocks[i]
-		b = putUvarint(b, uint64(bi.Offset))
-		b = putUvarint(b, uint64(bi.Length))
-		b = putBytes(b, hdrs[i])
-	}
-	b = putUvarint(b, uint64(len(f.RawChunks)))
-	for _, c := range f.RawChunks {
-		b = putUvarint(b, uint64(c.Offset))
-		b = putUvarint(b, uint64(c.Length))
-		b = putUvarint(b, uint64(c.Count))
-		b = putVarint(b, c.MinReceived)
-		b = putUvarint(b, uint64(c.MaxReceived-c.MinReceived))
-		for _, v := range c.Status {
-			b = putUvarint(b, uint64(v))
-		}
-	}
-	return b
+	return putUvarint(b, uint64(nBlocks))
 }
 
-// decodeFooter parses a footer body; blocks' index fields are loaded from the
-// footer's copies of their headers. Templates come from the table section.
-func decodeFooter(body []byte, size int64) (*Footer, bool) {
-	d := &dec{b: body}
-	if d.uvarint() != 1 {
-		return nil, false
+// appendRawDirEntry encodes a raw chunk's footer entry.
+func appendRawDirEntry(b []byte, c *RawChunk) []byte {
+	b = putUvarint(b, uint64(c.Offset))
+	b = putUvarint(b, uint64(c.Length))
+	b = putUvarint(b, uint64(c.Count))
+	b = putVarint(b, c.MinReceived)
+	b = putUvarint(b, uint64(c.MaxReceived-c.MinReceived))
+	for _, v := range c.Status {
+		b = putUvarint(b, uint64(v))
 	}
-	f := &Footer{}
-	id := d.bytes()
-	if len(id) > maxDeviceID {
-		return nil, false
-	}
-	f.DeviceID = string(id)
-	f.Hour = time.UnixMilli(d.varint()).UTC()
-	v := d.bytes()
-	if len(v) > maxVersion {
-		return nil, false
-	}
-	f.WriterVersion = string(v)
-	f.Totals = readTotals(d)
-	f.Raw = int64(d.limit(math.MaxInt64))
-	for i := range f.RawStatus {
-		f.RawStatus[i] = int64(d.limit(math.MaxInt64))
-	}
-	f.MinReceived = d.varint()
-	f.MaxReceived = addSpan(d, f.MinReceived)
-	f.MinStart = d.varint()
-	f.MaxEnd = addSpan(d, f.MinStart)
-	f.Samplings = readU32s(d)
-	f.Domains = readU32s(d)
-	f.Minutes = readMinutes(d)
-	f.tableOff = int64(d.limit(uint64(size)))
-	n := d.count(3)
-	f.Blocks = make([]BlockInfo, 0, n)
-	prevEnd := int64(0)
-	for i := 0; i < n && d.err == nil; i++ {
-		bi := BlockInfo{Offset: int64(d.limit(uint64(size))), Length: int64(d.limit(uint64(size)))}
-		hdr := d.bytes()
-		hd := &dec{b: hdr}
-		readHeader(hd, &bi)
-		if hd.err != nil || len(hd.b) != 0 || bi.Offset < prevEnd || bi.Length < prefixLen ||
-			bi.Offset+bi.Length > size {
-			d.fail()
-			break
-		}
-		prevEnd = bi.Offset + bi.Length
-		bi.hdr = hdr
-		f.Blocks = append(f.Blocks, bi)
-	}
-	n = d.count(5)
-	for i := 0; i < n && d.err == nil; i++ {
-		c := RawChunk{Offset: int64(d.limit(uint64(size))), Length: int64(d.limit(uint64(size)))}
-		c.Count = int(d.limit(math.MaxInt32))
-		c.MinReceived = d.varint()
-		c.MaxReceived = addSpan(d, c.MinReceived)
-		for j := range c.Status {
-			c.Status[j] = int64(d.limit(math.MaxInt64))
-		}
-		if c.Offset+c.Length > size {
-			d.fail()
-		}
-		f.RawChunks = append(f.RawChunks, c)
-	}
-	if d.err != nil || len(d.b) != 0 {
-		return nil, false
-	}
-	return f, true
+	return b
 }
 
 // readFooter reads a closed segment's footer and template table.
