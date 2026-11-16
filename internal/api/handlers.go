@@ -240,6 +240,7 @@ func (s *Server) apiRoutes() *http.ServeMux {
 	}
 	s.snmpRoutes(mux)
 	s.pollRoutes(mux)
+	s.setupRoutes(mux)
 	mux.HandleFunc("/api/", notFound)
 	mux.HandleFunc("/api", notFound)
 	return mux
