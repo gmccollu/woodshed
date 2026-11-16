@@ -229,3 +229,31 @@ func TestFlowLowDiskFirst(t *testing.T) {
 		t.Fatalf("syslog touched: %d lines", len(lines))
 	}
 }
+
+// The exporter's metadata blob goes into every segment it writes: the one
+// open when it changed, and the next hour's, without being sent again.
+func TestFlowMetadataInEverySegment(t *testing.T) {
+	e := newEnv(t, nil)
+	a := ip(11)
+	h := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	e.clock.Set(h.Add(10 * time.Minute))
+	meta := []byte(`{"scopes":[{"domain":1,"sampling":100}]}`)
+	if err := e.s.WriteFlows(a, FlowBatch{Received: e.clock.Now(), Records: flowRecs(e.clock.Now(), 3, 0), Meta: meta}); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Set(h.Add(time.Hour + time.Minute))
+	e.maintain() // the hour ends: the first segment closes
+	e.writeFlows(a, 2, 100)
+	e.reopen() // closes the second
+	for _, name := range []string{"2026-11-10T12.wsf", "2026-11-10T13.wsf"} {
+		r, err := flowseg.Open(filepath.Join(e.dir, "logs/192.0.2.11/flows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(r.Meta())
+		r.Close()
+		if got != string(meta) {
+			t.Fatalf("%s: meta %q", name, got)
+		}
+	}
+}

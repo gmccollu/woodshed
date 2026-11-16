@@ -67,6 +67,24 @@ type flowSide struct {
 
 	stop chan struct{}
 	done chan struct{}
+
+	metaMu sync.Mutex
+	metaV  map[netip.Addr]uint64 // the metadata version last given to the store, per exporter
+}
+
+// metaVersion records v as an exporter's metadata version and reports whether
+// it's new.
+func (fs *flowSide) metaVersion(addr netip.Addr, v uint64) bool {
+	fs.metaMu.Lock()
+	defer fs.metaMu.Unlock()
+	if fs.metaV == nil {
+		fs.metaV = map[netip.Addr]uint64{}
+	}
+	if fs.metaV[addr] == v {
+		return false
+	}
+	fs.metaV[addr] = v
+	return true
 }
 
 // flowRates counts records per exporter per second over the last minute.
@@ -215,7 +233,13 @@ func (b *backend) flowHandle(p *listen.FlowPacket) {
 		}
 		mine = append(mine, rs)
 	}
-	err := b.store.WriteFlows(addr, store.FlowBatch{Received: p.Received, Size: len(p.Data), Records: recs, Raw: mine})
+	batch := store.FlowBatch{Received: p.Received, Size: len(p.Data), Records: recs, Raw: mine}
+	// The exporter's metadata (sampling, interface names, options kept raw)
+	// goes into its segment's template table when it changed.
+	if blob, v := fs.coll.Metadata(addr); v != 0 && fs.metaVersion(addr, v) {
+		batch.Meta = blob
+	}
+	err := b.store.WriteFlows(addr, batch)
 	if err == nil {
 		fs.rates.add(model.DeviceID(addr), p.Received, int64(len(recs)))
 		b.noteFirstMessage(p.Received)
@@ -651,9 +675,9 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 	for _, es := range b.flows.coll.Stats(now) {
 		id := model.DeviceID(es.Addr)
 		rate += b.flows.rates.perSec(id, now)
-		// Stored raw for lack of a template in the last 24 h (data still waiting
-		// shows in /api/flows' pending_bytes; the collector keeps no age for it).
-		if es.Counts24h.NoTemplate > 0 {
+		// Data waiting for its template over 10 minutes, or stored raw for lack
+		// of one in the last 24 h.
+		if es.Counts24h.NoTemplate > 0 || (!es.PendingOldest.IsZero() && now.Sub(es.PendingOldest) > 10*time.Minute) {
 			waiting = append(waiting, id)
 		}
 		if es.TimeSource == flow.TimeReceived.String() {
@@ -671,8 +695,8 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 	if len(waiting) > 0 {
 		sort.Strings(waiting)
 		out = append(out, api.Banner{Kind: "flow_templates", Level: "warn", Text: fmt.Sprintf(
-			"Flow data from %s arrived without its template and was kept undecoded. The exporter resends templates on its own "+
-				"schedule; until then its records can't be read (they're kept raw).", strings.Join(waiting, ", "))})
+			"Flow data from %s is waiting for its template (over 10 minutes) or was kept undecoded without one. The exporter "+
+				"resends templates on its own schedule; until then its records can't be read (they're kept raw).", strings.Join(waiting, ", "))})
 	}
 	if len(clock) > 0 {
 		sort.Strings(clock)

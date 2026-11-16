@@ -80,7 +80,13 @@ type flowStream struct {
 	dirty       bool // flushed since the last fsync
 	pending     bool // appended to since the last flush
 	failed      time.Time
+	meta        []byte    // the exporter's latest metadata blob, given to every segment it opens
+	lastWrite   time.Time // the latest batch's received time (the stream is forgotten an hour after it)
 }
+
+// flowStreamIdle is how long a stream without an open segment is kept (with
+// its metadata) after its last batch.
+const flowStreamIdle = time.Hour
 
 // flows is the store's flow state.
 type flows struct {
@@ -225,7 +231,8 @@ func (s *Store) appendFlowsLocked(st *flowStream, rec time.Time, b *FlowBatch) e
 		st.w.AddTemplate(t)
 	}
 	if b.Meta != nil {
-		st.w.SetMeta(b.Meta)
+		st.meta = append([]byte(nil), b.Meta...)
+		st.w.SetMeta(st.meta)
 	}
 	for _, r := range b.Records {
 		if err := st.w.Append(r); err != nil {
@@ -238,6 +245,7 @@ func (s *Store) appendFlowsLocked(st *flowStream, rec time.Time, b *FlowBatch) e
 		}
 	}
 	st.pending = true
+	st.lastWrite = rec
 	if st.first.IsZero() || rec.Before(st.first) {
 		st.first = rec
 	}
@@ -274,6 +282,9 @@ func (s *Store) openFlowLocked(st *flowStream, hour time.Time) error {
 			}
 			st.w, st.name, st.abs, st.rel, st.hour = w, n, abs, s.rel(abs), hour
 			st.first, st.last, st.dirty = time.Time{}, time.Time{}, false
+			if st.meta != nil {
+				w.SetMeta(st.meta) // a new hour or part carries the metadata in force
+			}
 			return nil
 		}
 		n.Part++
@@ -370,12 +381,12 @@ func (s *Store) flushFlows(now time.Time, rotate bool) error {
 				first = err
 			}
 		}
-		idle := st.w == nil
+		idle := st.w == nil && now.Sub(st.lastWrite) >= flowStreamIdle
 		st.mu.Unlock()
 		if rotate && idle {
 			s.fl.mu.Lock()
 			st.mu.Lock()
-			if st.w == nil && s.fl.streams[st.id] == st {
+			if st.w == nil && now.Sub(st.lastWrite) >= flowStreamIdle && s.fl.streams[st.id] == st {
 				delete(s.fl.streams, st.id)
 			}
 			st.mu.Unlock()

@@ -78,11 +78,11 @@ func TestFlowsEndToEndInProcess(t *testing.T) {
 		t.Fatalf("send: %+v %v", res, err)
 	}
 	// Flow v5 on the IPFIX port: any version on either port.
-	if _, err := loadgen.SendFlows(ctx, loadgen.FlowOptions{Proto: loadgen.ProtoNetFlow5, Addr: fmt.Sprintf("127.0.0.1:%d", ix), Count: 300,
+	if _, err := loadgen.SendFlows(ctx, loadgen.FlowOptions{Proto: loadgen.ProtoFlowV5, Addr: fmt.Sprintf("127.0.0.1:%d", ix), Count: 300,
 		Rate: 20000, RunID: "00001234", FirstSeq: 100000}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadgen.SendFlows(ctx, loadgen.FlowOptions{Proto: loadgen.ProtoNetFlow9, Addr: fmt.Sprintf("127.0.0.1:%d", nf), Count: 600,
+	if _, err := loadgen.SendFlows(ctx, loadgen.FlowOptions{Proto: loadgen.ProtoFlowV9, Addr: fmt.Sprintf("127.0.0.1:%d", nf), Count: 600,
 		Rate: 20000, RunID: "00005678", FirstSeq: 200000}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -316,5 +316,43 @@ func TestFlowRuleIDIEsLive(t *testing.T) {
 	}
 	if got := r.srv.be.flows.eng.RuleIDIEs(); len(got) != 1 {
 		t.Fatalf("engine rule IEs %v", got)
+	}
+}
+
+// flow_templates: data waiting for its template over 10 minutes is a banner;
+// waiting less isn't.
+func TestFlowTemplatesBannerPendingAge(t *testing.T) {
+	r, _, ix := flowServer(t, nil)
+	ctx := context.Background()
+	// Templates held back for an hour: the data waits.
+	if _, err := loadgen.SendFlows(ctx, loadgen.FlowOptions{Proto: loadgen.ProtoIPFIX, Addr: fmt.Sprintf("127.0.0.1:%d", ix), Count: 60,
+		Rate: 5000, TemplateFirstDelay: time.Hour}, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var st api.FlowState
+		r.do(t, "GET", "/api/flows", nil, &st)
+		if len(st.Exporters) == 1 && st.Exporters[0].PendingBytes > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nothing pending: %+v", st)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	has := func(now time.Time) bool {
+		for _, b := range r.srv.be.flowBanners(ctx, r.srv.be.config(), now, "linux") {
+			if b.Kind == "flow_templates" {
+				return true
+			}
+		}
+		return false
+	}
+	if has(time.Now()) {
+		t.Fatal("a banner for data waiting under 10 minutes")
+	}
+	if !has(time.Now().Add(11 * time.Minute)) {
+		t.Fatal("no banner for data waiting over 10 minutes")
 	}
 }
