@@ -12,6 +12,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/flow"
+	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
@@ -268,5 +269,52 @@ func TestFlowSettings(t *testing.T) {
 	}
 	if code := r.do(t, "PUT", "/api/settings", st, &verr); code != 400 || verr.Errors["listeners.flow.rule_id_ies[0]"] == "" {
 		t.Fatalf("bad rule ie: %d %+v", code, verr)
+	}
+}
+
+// rule_id_ies applies from a settings save on, without a restart: the
+// generator's rule IE fills rule_id only for records sent after the save.
+func TestFlowRuleIDIEsLive(t *testing.T) {
+	r, _, ix := flowServer(t, func(c *config.Config) { c.Listeners.Flow.RuleIDIEs = []string{} })
+	ctx := context.Background()
+	send := func(run string, first int) {
+		t.Helper()
+		if _, err := loadgen.SendFlows(ctx, loadgen.FlowOptions{Proto: loadgen.ProtoIPFIX, Addr: fmt.Sprintf("127.0.0.1:%d", ix), Count: 200,
+			Rate: 5000, Events: true, RunID: run, FirstSeq: first}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ruled := func(run string) (with, without int) {
+		q := flowquery.Query{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)}
+		r.srv.be.flows.eng.Each(ctx, q, func(_ string, rec *flow.Record) error {
+			if tag, _, ok := loadgen.FlowSeq(rec); ok && loadgen.MatchRun(tag, run) {
+				if rec.Is(flow.HasRuleID) && rec.RuleID != "" {
+					with++
+				} else {
+					without++
+				}
+			}
+			return nil
+		})
+		return
+	}
+	send("0000aaaa", 0)
+	waitFlows(t, r, "", 200)
+	if w, wo := ruled("0000aaaa"); w != 0 || wo != 200 {
+		t.Fatalf("before the save: %d with a rule ID, %d without", w, wo)
+	}
+	var st api.Settings
+	r.do(t, "GET", "/api/settings", nil, &st)
+	st.Listeners.Flow.RuleIDIEs = []string{loadgen.RuleIE(loadgen.ProtoIPFIX).String()}
+	if code := r.do(t, "PUT", "/api/settings", st, nil); code != 200 {
+		t.Fatalf("put %d", code)
+	}
+	send("0000bbbb", 1000)
+	waitFlows(t, r, "", 400)
+	if w, wo := ruled("0000bbbb"); w != 200 || wo != 0 {
+		t.Fatalf("after the save: %d with a rule ID, %d without", w, wo)
+	}
+	if got := r.srv.be.flows.eng.RuleIDIEs(); len(got) != 1 {
+		t.Fatalf("engine rule IEs %v", got)
 	}
 }

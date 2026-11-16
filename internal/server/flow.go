@@ -236,6 +236,7 @@ func (b *backend) applyFlowSettings(cur, next config.Config) {
 	c, n := cur.Listeners.Flow, next.Listeners.Flow
 	if c.TemplateTimeout != n.TemplateTimeout || strings.Join(c.RuleIDIEs, ",") != strings.Join(n.RuleIDIEs, ",") {
 		b.flows.coll.SetOptions(time.Duration(n.TemplateTimeout), ruleIEs(n))
+		b.flows.eng.SetRuleIDIEs(ruleIEs(n))
 	}
 }
 

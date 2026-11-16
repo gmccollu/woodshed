@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/flow"
@@ -58,6 +59,21 @@ type Engine struct {
 	o      Options
 	mu     sync.Mutex
 	states map[string]*state
+	rules  atomic.Pointer[[]flow.IEKey] // RuleIDIEs in effect (SetRuleIDIEs)
+}
+
+// SetRuleIDIEs changes the IEs that fill rule_id in raw sets decoded on read
+// (a settings save), from the next query on.
+func (e *Engine) SetRuleIDIEs(rules []flow.IEKey) {
+	r := append([]flow.IEKey(nil), rules...)
+	e.rules.Store(&r)
+}
+
+func (e *Engine) ruleIEs() []flow.IEKey {
+	if r := e.rules.Load(); r != nil {
+		return *r
+	}
+	return nil
 }
 
 // State limits for continued top-N and summaries (as Events v2's).
@@ -87,7 +103,9 @@ func New(o Options) *Engine {
 	if o.MaxExactKeys <= 0 {
 		o.MaxExactKeys = DefaultExactKeys
 	}
-	return &Engine{o: o, states: map[string]*state{}}
+	e := &Engine{o: o, states: map[string]*state{}}
+	e.SetRuleIDIEs(o.RuleIDIEs)
+	return e
 }
 
 // Query is a window, a device selection and a filter.
@@ -382,7 +400,7 @@ func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, lo, hi int, f *
 				b := &p.blocks[bi]
 				r, err := rd.get(b.seg)
 				if err == nil && b.raw {
-					err = rawRecords(r, e.o.RuleIDIEs, func(i int, rec *flow.Record) {
+					err = rawRecords(r, e.ruleIEs(), func(i int, rec *flow.Record) {
 						s, en := flowseg.EffectiveTimes(rec)
 						if en >= p.from && s < p.to && f.Match(rec) {
 							fn(w, b, -1-i, rec)
@@ -828,7 +846,7 @@ func (e *Engine) Each(ctx context.Context, q Query, fn func(deviceID string, r *
 		}
 		if b.raw {
 			var ferr error
-			rerr := rawRecords(r, e.o.RuleIDIEs, func(_ int, rec *flow.Record) {
+			rerr := rawRecords(r, e.ruleIEs(), func(_ int, rec *flow.Record) {
 				s, en := flowseg.EffectiveTimes(rec)
 				if ferr == nil && en >= p.from && s < p.to && f.Match(rec) {
 					ferr = fn(p.segs[b.seg].DeviceID, rec)
@@ -930,3 +948,6 @@ func (e *Engine) Raw(ctx context.Context, q Query, fn func(deviceID string, rs *
 	}
 	return ctx.Err()
 }
+
+// RuleIDIEs returns the rule IEs in effect.
+func (e *Engine) RuleIDIEs() []flow.IEKey { return e.ruleIEs() }
