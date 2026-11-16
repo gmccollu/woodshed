@@ -128,3 +128,36 @@ func TestPendingOldest(t *testing.T) {
 		t.Fatalf("after expiry: %v %d", st.PendingOldest, st.PendingBytes)
 	}
 }
+
+// Options, Metadata and Stats are safe beside Decode and Expire (-race).
+func TestOptionsConcurrent(t *testing.T) {
+	c := NewCollector(Options{TemplateTimeout: time.Minute})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var s sink
+		for i := 0; i < 300; i++ {
+			b := NewBuilder(IPFIX)
+			b.OptionsTemplate(300, 1, []TemplateField{{ID: ieObsDomainID, Length: 4}, {ID: ieExporterV4, Length: 4}})
+			b.OptionsTemplate(301, 1, []TemplateField{{ID: ieInIf, Length: 4}, {ID: ieIfName, Length: 4}})
+			b.Data(300, Values{}.U32(uint32(i%7)).Addr(ip("192.0.2.77")))
+			b.Data(301, Values{}.U32(uint32(i%5)).Bytes([]byte("eth0")))
+			b.Data(999, Values{}.U32(1)) // waits for a template
+			s.decode(c, b.Message(Header{ExportTime: uint32(t0.Unix()), Seq: uint32(i), Domain: 1}), exp1, t0.Add(time.Duration(i)*time.Second))
+			c.Expire(t0.Add(time.Duration(i)*time.Second), func(*RawSet) {})
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			if len(c.Options(exp1.Addr())) == 0 {
+				t.Fatal("nothing kept")
+			}
+			return
+		default:
+			c.Stats(t0)
+			c.Options(exp1.Addr())
+			c.Metadata(exp1.Addr())
+		}
+	}
+}
