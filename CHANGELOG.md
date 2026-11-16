@@ -31,6 +31,13 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   failures and skipped cycles. Banners say when polled devices stop answering or polling can't keep up.
   `woodshed status` gains a Polling row.
 
+### Fixed
+- The device page's Polling panel showed up/down changes only for the interfaces on its charts, so an interface that
+  went down off the chart (often the one that matters) left no trace there. Every interface's changes, the restarts
+  and the reboots now mark every chart and are listed under them, newest first, with **Chart** for an interface that
+  isn't on the chart.
+- A chart marker's text no longer repeats the change ("eth3 down (was up)", not "eth3 down (eth3 down (was up))").
+
 ### Security
 - Polls are the second kind of outbound traffic (after the opt-in update check): SNMP `Get`, `GetNext` and `GetBulk`
   only, only to the addresses and ports an administrator configured, from one ephemeral UDP socket that exists only
