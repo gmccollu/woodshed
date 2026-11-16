@@ -174,3 +174,34 @@ func (r *Reader) Raw(fn func(*flow.RawSet) bool) error {
 	}
 	return nil
 }
+
+// OpenLive opens a segment without changing it, footer or not: a closed one
+// as Open does, and one still being written (or left by a crash) by scanning
+// its sections from the start, as Recover would, up to the first that's cut
+// short or fails its CRC (a block the writer is writing just ends the scan).
+// The footer is built in memory from the blocks, raw chunks and template
+// chunks found; nothing is cut or written. Use it from another process (the
+// CLI beside the service); inside the writer's process, OpenSnapshot is
+// cheaper. Blocks' index loads on first use (Block).
+func OpenLive(path string) (*Reader, error) {
+	f, err := logfile.OpenFile(path)
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	size := st.Size()
+	h, err := readHeaderAt(f, size)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if foot, err := readFooter(f, size, h.length); err == nil && foot.DeviceID == h.deviceID && foot.Hour.UnixMilli() == h.hour {
+		return &Reader{f: f, size: size, h: h, foot: foot}, nil
+	}
+	s := scan(f, size, h)
+	return &Reader{f: f, size: s.off, h: h, foot: s.footer()}, nil
+}
