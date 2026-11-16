@@ -1,8 +1,12 @@
 # Woodshed
 
-A syslog server for Windows, macOS and Linux. Install it, point your devices at it, and it keeps every message as
-plain text files (one folder per device, one file per day) within a disk budget. There's a web UI to watch the live
-tail, search, and export a zip for whoever needs the logs.
+A syslog and SNMP trap collector for the box on site. When something breaks, pick the moment and how far before and
+after, and get one zip with every device's logs and traps for that window: checksums, a summary per device (counts by
+severity, first and last message, reboots) and any gaps where Woodshed wasn't running. It installs in a minute on
+Windows, macOS or Linux.
+
+Underneath, it keeps every message as plain text files (one folder per device, one file per day) within a disk
+budget, with a web UI to watch the live tail and search, and `woodshed search` / `woodshed bundle` for the terminal.
 
 ![demo](docs/demo.gif)
 
