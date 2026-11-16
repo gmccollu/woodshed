@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowseg"
@@ -86,19 +87,22 @@ type plan struct {
 	skip    func(b *planned) bool
 	skipSeg func(s *segRef) bool
 
-	// Segments not loaded yet: open segments with no index row, then the index
-	// pages, merged with the open ones by their key.
-	unindexed []segRef // open, never indexed: first
-	pending   []segRef // the current index page's rest
+	// Segments not loaded yet: the open segments, listed once when the plan
+	// starts and keyed then (their index rows change while the plan pages,
+	// so the pages skip them), merged with the index pages by key.
+	opens     []segRef        // unread open segments, in key order
+	openSet   map[string]bool // every open segment's rel (the pages skip them)
+	pending   []segRef        // the current index page's rest
 	cur       *index.FlowSegCursor
 	indexDone bool
-	openRels  map[string]OpenSegment // indexed open segments the pages haven't reached
-	openStart map[string]int64       // their indexed starts
 
 	// The loaded batch.
 	segs   []segRef
 	blocks []planned
 	done   int
+
+	// charged is the loaded batch's bytes, reserved in the engine's pool.
+	charged int64
 
 	// Progress.
 	recsEst      int64 // records: the index's for unloaded segments, exact for loaded ones
@@ -109,86 +113,77 @@ type plan struct {
 
 // planFor starts the window's plan.
 func (e *Engine) planFor(ctx context.Context, q *Query, asc bool) (*plan, error) {
-	p := &plan{e: e, devs: q.DeviceIDs, asc: asc, from: q.From.UnixMilli(), to: q.To.UnixMilli(), openRels: map[string]OpenSegment{},
-		openStart: map[string]int64{}}
-	if e.o.Open != nil {
-		want := map[string]bool{}
-		for _, d := range q.DeviceIDs {
-			want[d] = true
-		}
-		for _, os := range e.o.Open(q.DeviceIDs) {
-			if q.DeviceIDs == nil || want[os.DeviceID] {
-				p.openRels[os.Rel] = os
-			}
-		}
-	}
+	p := &plan{e: e, devs: q.DeviceIDs, asc: asc, from: q.From.UnixMilli(), to: q.To.UnixMilli(), openSet: map[string]bool{}}
 	_, recs, err := e.o.Index.FlowSegmentsCount(ctx, q.DeviceIDs, q.From, q.To)
 	if err != nil {
 		return nil, err
 	}
 	p.recsEst = recs
-	// Open segments the index doesn't list yet go first; find them by asking
-	// for their rows.
-	seen := map[string]bool{}
-	if len(p.openRels) > 0 {
-		var c *index.FlowSegCursor
-		for {
-			rows, err := e.o.Index.FlowSegmentsPage(ctx, q.DeviceIDs, q.From, q.To, false, c, e.pageRows())
-			if err != nil {
-				return nil, err
-			}
-			for _, r := range rows {
-				if _, ok := p.openRels[r.Path]; ok {
-					seen[r.Path] = true
-					p.openStart[r.Path] = r.Start
-				}
-			}
-			// Open segments hold the newest ends: stop past the hour they could be in.
-			if len(rows) < e.pageRows() || len(seen) == len(p.openRels) || rows[len(rows)-1].End < p.from {
-				break
-			}
-			last := rows[len(rows)-1]
-			c = &index.FlowSegCursor{Key: last.End, Path: last.Path}
-		}
-		rels := make([]string, 0, len(p.openRels))
-		for rel := range p.openRels {
-			if !seen[rel] {
-				rels = append(rels, rel)
-			}
-		}
-		sort.Strings(rels)
-		for _, rel := range rels {
-			p.unindexed = append(p.unindexed, p.openRef(p.openRels[rel], nil))
-			delete(p.openRels, rel)
+	if e.o.Open == nil {
+		return p, ctx.Err()
+	}
+	want := map[string]bool{}
+	for _, d := range q.DeviceIDs {
+		want[d] = true
+	}
+	var rels []string
+	byRel := map[string]OpenSegment{}
+	for _, os := range e.o.Open(q.DeviceIDs) {
+		if (q.DeviceIDs == nil || want[os.DeviceID]) && !p.openSet[os.Rel] {
+			p.openSet[os.Rel] = true
+			byRel[os.Rel] = os
+			rels = append(rels, os.Rel)
 		}
 	}
+	// Their keys: any end (descending: they hold the newest flows), or the
+	// indexed start less openMargin (ascending; none indexed yet: first).
+	starts := map[string]int64{}
+	if asc && len(rels) > 0 {
+		rows, err := e.o.Index.FlowSegmentsByPath(ctx, rels)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			starts[r.Path] = r.Start
+		}
+	}
+	for _, rel := range rels {
+		ref := segRef{DeviceID: byRel[rel].DeviceID, Rel: rel, Path: byRel[rel].Path, snap: byRel[rel].Footer,
+			lazy: byRel[rel].Snap, open: true, start: math.MinInt64, end: math.MaxInt64}
+		if st, ok := starts[rel]; ok && st-openMargin.Milliseconds() > math.MinInt64 {
+			ref.start = st - openMargin.Milliseconds()
+		}
+		p.opens = append(p.opens, ref)
+	}
+	sort.Slice(p.opens, func(i, j int) bool {
+		a, b := p.opens[i], p.opens[j]
+		if a.start != b.start {
+			return a.start < b.start
+		}
+		return a.Rel < b.Rel
+	})
 	return p, ctx.Err()
 }
 
-// openRef is an open segment's reference; row is its index row, if any.
-func (p *plan) openRef(os OpenSegment, row *index.FlowSegment) segRef {
-	ref := segRef{DeviceID: os.DeviceID, Rel: os.Rel, Path: os.Path, snap: os.Footer, lazy: os.Snap, open: true,
-		start: math.MinInt64, end: math.MaxInt64}
-	if row != nil {
-		ref.start, ref.records = row.Start-openMargin.Milliseconds(), row.Records
+// openFirst reports whether the next open segment comes before the index's
+// next row (with a page loaded): always descending, by start ascending.
+func (p *plan) openFirst() bool {
+	if len(p.opens) == 0 {
+		return false
 	}
-	return ref
+	return !p.asc || len(p.pending) == 0 || p.opens[0].start <= p.pending[0].start
 }
 
-// nextSeg pops the next segment to load, or false when none is left.
-func (p *plan) nextSeg(ctx context.Context) (segRef, bool) {
-	if len(p.unindexed) > 0 {
-		s := p.unindexed[0]
-		p.unindexed = p.unindexed[1:]
-		return s, true
-	}
-	if len(p.pending) == 0 && !p.indexDone {
+// fill loads index pages until a row waits in pending or the index is done.
+// Rows of open segments are left out (they load from p.opens).
+func (p *plan) fill(ctx context.Context) {
+	for len(p.pending) == 0 && !p.indexDone {
 		from, to := time.UnixMilli(p.from).UTC(), time.UnixMilli(p.to).UTC()
 		rows, err := p.e.o.Index.FlowSegmentsPage(ctx, p.devs, from, to, p.asc, p.cur, p.e.pageRows())
 		if err != nil {
 			p.err = err
 			p.indexDone = true
-			return segRef{}, false
+			return
 		}
 		if len(rows) < p.e.pageRows() {
 			p.indexDone = true
@@ -203,59 +198,92 @@ func (p *plan) nextSeg(ctx context.Context) (segRef, bool) {
 		}
 		for i := range rows {
 			r := &rows[i]
-			if os, ok := p.openRels[r.Path]; ok {
-				p.pending = append(p.pending, p.openRef(os, r))
-				delete(p.openRels, r.Path)
-				delete(p.openStart, r.Path)
+			if p.openSet[r.Path] {
+				p.recsEst -= r.Records // counted when it loads
 				continue
 			}
 			p.pending = append(p.pending, segRef{DeviceID: r.DeviceID, Rel: r.Path,
 				Path: filepath.Join(p.e.o.DataDir, filepath.FromSlash(r.Path)), start: r.Start, end: r.End, records: r.Records})
 		}
 	}
-	if len(p.pending) == 0 {
+}
+
+// nextSeg pops the next segment to load, or false when none is left.
+func (p *plan) nextSeg(ctx context.Context) (segRef, bool) {
+	for {
+		if !p.asc && len(p.opens) > 0 {
+			break // descending, the open segments go first: no page needed
+		}
+		p.fill(ctx)
+		if p.openFirst() || len(p.pending) == 0 {
+			break
+		}
+		s := p.pending[0]
+		p.pending = p.pending[1:]
+		if p.skipSeg != nil && p.skipSeg(&s) {
+			p.recsEst -= s.records
+			continue
+		}
+		return s, true
+	}
+	if len(p.opens) == 0 {
 		return segRef{}, false
 	}
-	s := p.pending[0]
-	p.pending = p.pending[1:]
-	if p.skipSeg != nil && p.skipSeg(&s) {
-		p.recsEst -= s.records
-		return p.nextSeg(ctx)
-	}
+	s := p.opens[0]
+	p.opens = p.opens[1:]
 	return s, true
 }
 
 // peekKey is the next unloaded segment's bound: its end (desc) or start
-// (asc); ok false when none is left.
+// (asc); ok false when none is left. Skipped segments are dropped on the way.
 func (p *plan) peekKey(ctx context.Context) (int64, bool) {
-	if len(p.unindexed) > 0 {
-		if p.asc {
-			return math.MinInt64, true
-		}
+	if !p.asc && len(p.opens) > 0 {
 		return math.MaxInt64, true
 	}
-	if len(p.pending) == 0 && !p.indexDone {
-		// Fetch the next page (nextSeg's way), then put the segment back.
-		s, ok := p.nextSeg(ctx)
-		if !ok {
+	for {
+		p.fill(ctx)
+		if p.openFirst() {
+			return p.opens[0].start, true
+		}
+		if len(p.pending) == 0 {
 			return 0, false
 		}
-		p.pending = append([]segRef{s}, p.pending...)
+		if s := &p.pending[0]; p.skipSeg != nil && p.skipSeg(s) {
+			p.recsEst -= s.records
+			p.pending = p.pending[1:]
+			continue
+		}
+		if p.asc {
+			return p.pending[0].start, true
+		}
+		return p.pending[0].end, true
 	}
-	if len(p.pending) == 0 {
-		return 0, false
-	}
-	s := p.pending[0]
-	if p.asc {
-		return s.start, true
-	}
-	return s.end, true
+}
+
+// Batch bytes charged to the engine's pool (decision 51's 128 MiB), so the
+// directories running and saved plans hold count with the tables: each
+// loaded segment's entries, raw chunks and planned blocks.
+var (
+	entryCost   = int64(unsafe.Sizeof(flowseg.BlockInfo{}))
+	rawCost     = int64(unsafe.Sizeof(flowseg.RawChunk{}))
+	plannedCost = int64(unsafe.Sizeof(planned{}))
+)
+
+// release returns the batch's pool bytes (idempotent).
+func (p *plan) release() {
+	p.e.pool.release(p.charged)
+	p.charged = 0
 }
 
 // load reads the next batch of segments' blocks (rd's readers are the
-// batch's: it starts empty, and keeps the readers opened here).
+// batch's: it starts empty, and keeps the readers opened here). Past the
+// first segment, a segment the pool can't make room for (after dropping
+// saved states) ends the batch, its bytes charged anyway: a plan is over
+// the pool by one segment at most.
 func (p *plan) load(ctx context.Context, rd *readers) {
 	rd.reset(p)
+	p.release()
+	clear(p.segs) // no stale snapshots past the new length
 	p.segs, p.blocks, p.done = p.segs[:0], p.blocks[:0], 0
 	for entries := 0; entries < p.e.batchBlocks() && len(p.segs) < planBatchSegs; {
 		ref, ok := p.nextSeg(ctx)
@@ -314,6 +342,17 @@ func (p *plan) load(ctx context.Context, rd *readers) {
 				r.Close() // nothing to read: don't hold its file for the batch
 			}
 		}
+		cost := int64(len(foot.Blocks))*entryCost + int64(len(foot.RawChunks))*rawCost + int64(len(p.blocks)-planned0)*plannedCost
+		if si == 0 || p.e.pool.reserve(cost) {
+			if si == 0 {
+				p.e.pool.used.Add(cost)
+			}
+			p.charged += cost
+			continue
+		}
+		p.e.pool.used.Add(cost)
+		p.charged += cost
+		break
 	}
 	asc := p.asc
 	sort.SliceStable(p.blocks, func(i, j int) bool {
@@ -372,16 +411,6 @@ func (p *plan) bound(ctx context.Context) (int64, bool) {
 	if k, more := p.peekKey(ctx); more {
 		if !ok || (!p.asc && k > b) || (p.asc && k < b) {
 			b = k
-		}
-		ok = true
-	}
-	// An open segment the pages haven't reached yet (its row lags the writer):
-	// any end (desc), or from its indexed start less openMargin (asc).
-	for _, st := range p.openStart {
-		if v := st - openMargin.Milliseconds(); p.asc && (!ok || v < b) {
-			b = v
-		} else if !p.asc {
-			b = math.MaxInt64
 		}
 		ok = true
 	}

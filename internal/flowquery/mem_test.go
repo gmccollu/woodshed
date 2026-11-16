@@ -682,6 +682,11 @@ func TestPlanBatchSegmentsBounded(t *testing.T) {
 		if len(p.segs) > planBatchSegs || open > len(p.segs) || len(p.blocks) != len(p.segs) {
 			t.Fatalf("batch %d: %d segments, %d files open, %d blocks", batches, len(p.segs), open, len(p.blocks))
 		}
+		// The batch's directories are charged to the pool: 2 entries and a
+		// planned block a segment.
+		if want := int64(len(p.segs)) * (2*entryCost + plannedCost); p.charged != want || e.pool.Used() != want {
+			t.Fatalf("batch %d: charged %d, pool %d, want %d", batches, p.charged, e.pool.Used(), want)
+		}
 		p.done = len(p.blocks)
 		for _, b := range p.blocks {
 			rd.done(b.seg)
@@ -689,6 +694,9 @@ func TestPlanBatchSegmentsBounded(t *testing.T) {
 	}
 	if p.err != nil || segs != exporters || batches != (exporters+planBatchSegs-1)/planBatchSegs {
 		t.Fatalf("%d segments in %d batches: %v", segs, batches, p.err)
+	}
+	if p.release(); e.pool.Used() != 0 {
+		t.Fatalf("pool %d after the plan's release", e.pool.Used())
 	}
 	// Outside the window's blocks: the 09:00 one; a whole-window count.
 	n, err := e.Count(bg, q)

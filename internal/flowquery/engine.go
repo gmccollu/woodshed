@@ -423,6 +423,9 @@ type state struct {
 
 // free returns a state's pool bytes.
 func (st *state) free() {
+	if st.plan != nil {
+		st.plan.release()
+	}
 	if st.agg != nil {
 		st.agg.free()
 	}
@@ -710,6 +713,7 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 	if err != nil {
 		return SearchResult{}, err
 	}
+	defer p.release()
 	// Skip segments and blocks wholly before the cursor.
 	if after != nil {
 		p.skip = func(b *planned) bool { return (!asc && b.minEnd > after.End) || (asc && b.maxEnd < after.End) }
@@ -906,11 +910,13 @@ func (e *Engine) Each(ctx context.Context, q Query, fn func(deviceID string, r *
 			for i := range blocks {
 				if err := one(&blocks[i]); err != nil {
 					rd.close()
+					p.release()
 					return err
 				}
 			}
 		}
 		rd.close()
+		p.release()
 		if p.err != nil {
 			return p.err
 		}
@@ -952,6 +958,7 @@ func (e *Engine) Count(ctx context.Context, q Query) (map[string]int64, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer p.release()
 	f := q.filter()
 	out := map[string]int64{}
 	counts := make([]map[string]int64, e.o.Workers)
