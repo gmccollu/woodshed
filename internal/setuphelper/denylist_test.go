@@ -130,7 +130,7 @@ func TestNoVendorNames(t *testing.T) {
 										r.V3User = "monitor"
 									}
 								case ChoiceAgentPort:
-									r.AgentPort = 1161
+									r.AgentPort = ptr(1161)
 								}
 							}
 						}
@@ -158,7 +158,7 @@ func TestNoVendorNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	caseRe := regexp.MustCompile(`(?m)^\s*\{family: "([a-z-]+)", what: "([a-z]+)", transport: "([a-z0-9]+)"(, skip: [A-Za-z"]+)?\},`)
+	caseRe := regexp.MustCompile(`(?m)^\s*\{family: "([a-z-]+)", what: "([a-z]+)", transport: "([a-z0-9]+)"(?:, variant: "[a-z0-9-]+")?(, skip: [A-Za-z"]+)?\},`)
 	applied := map[string]bool{}
 	for _, m := range caseRe.FindAllStringSubmatch(string(src), -1) {
 		if m[4] == "" {

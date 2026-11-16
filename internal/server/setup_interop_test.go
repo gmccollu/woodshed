@@ -63,6 +63,9 @@ func TestSetupSnippets(t *testing.T) {
 	var summary []string
 	for _, c := range setupInteropCases {
 		name := c.family + "/" + c.what + "/" + c.transport
+		if c.variant != "" {
+			name += "/" + c.variant
+		}
 		t.Run(name, func(t *testing.T) {
 			if len(only) > 0 && !only[c.family] {
 				t.Skip("not in WOODSHED_SETUP_INTEROP_ONLY")
@@ -71,7 +74,7 @@ func TestSetupSnippets(t *testing.T) {
 				summary = append(summary, "- skipped "+name+": "+c.skip)
 				t.Skip(c.skip)
 			}
-			note := setupRunners[c.family+"/"+c.what](t, c.transport)
+			note := setupRunners[c.family+"/"+c.what](t, c)
 			summary = append(summary, "- passed "+name+note)
 		})
 	}
@@ -87,9 +90,13 @@ func TestSetupSnippets(t *testing.T) {
 }
 
 // setupCase is one snippet CI applies. A case with skip set isn't applied
-// (and so doesn't make its template Tested).
+// (and so doesn't make its template Tested). variant is "" (the defaults over
+// IPv4), "ipv6" (Woodshed on ::1, the snippet for ::1), "choices"
+// (non-default choices: severity and facility, or SHA-1 and a user name) or
+// "full-queue" (rsyslog with Woodshed down until the queue fills).
 type setupCase struct {
 	family, what, transport string
+	variant                 string
 	skip                    string
 }
 
@@ -99,17 +106,37 @@ var setupInteropCases = []setupCase{
 	{family: "rsyslog", what: "syslog", transport: "udp"},
 	{family: "rsyslog", what: "syslog", transport: "tcp"},
 	{family: "rsyslog", what: "syslog", transport: "tls"},
+	{family: "rsyslog", what: "syslog", transport: "tcp", variant: "ipv6"},
+	{family: "rsyslog", what: "syslog", transport: "udp", variant: "choices"},
+	{family: "rsyslog", what: "syslog", transport: "tcp", variant: "full-queue"},
+	{family: "rsyslog", what: "syslog", transport: "tls", variant: "full-queue"},
 	{family: "net-snmp", what: "trap", transport: "v2c"},
 	{family: "net-snmp", what: "trap", transport: "v3"},
+	{family: "net-snmp", what: "trap", transport: "v2c", variant: "ipv6"},
+	{family: "net-snmp", what: "trap", transport: "v3", variant: "choices"},
 	{family: "net-snmp", what: "poll", transport: "v2c"},
 	{family: "net-snmp", what: "poll", transport: "v3"},
+	{family: "net-snmp", what: "poll", transport: "v2c", variant: "ipv6"},
+	{family: "net-snmp", what: "poll", transport: "v3", variant: "choices"},
 	{family: "softflowd", what: "flow", transport: "v9"},
 	{family: "softflowd", what: "flow", transport: "ipfix"},
+	{family: "softflowd", what: "flow", transport: "ipfix", variant: "ipv6"},
 }
+
+// caseAddr is the address Woodshed listens on, and the snippet sends to.
+func caseAddr(c setupCase) string {
+	if c.variant == "ipv6" {
+		return "::1"
+	}
+	return "127.0.0.1"
+}
+
+// hostPort is net.JoinHostPort for a port number.
+func hostPort(addr string, port int) string { return net.JoinHostPort(addr, fmt.Sprint(port)) }
 
 // setupRunners apply one family and data type's snippet; each returns a note
 // for the summary.
-var setupRunners = map[string]func(t *testing.T, transport string) string{
+var setupRunners = map[string]func(t *testing.T, c setupCase) string{
 	"rsyslog/syslog": runRsyslog,
 	"net-snmp/trap":  runSnmpTrap,
 	"net-snmp/poll":  runSnmpPoll,
@@ -127,20 +154,23 @@ const (
 
 // setupEnv is one case's running server and folder.
 type setupEnv struct {
-	r        *running
-	dir      string
-	snmpPort int
+	r                 *running
+	dir, cfgPath      string
+	snmpPort, tcpPort int
 }
 
-func newSetupEnv(t *testing.T) *setupEnv {
+// newSetupEnv starts a server whose syslog, TLS and trap listeners are on
+// addr (127.0.0.1 or ::1).
+func newSetupEnv(t *testing.T, addr string) *setupEnv {
 	t.Helper()
 	dir := t.TempDir()
-	snmpPort, tlsPort := freeUDP(t), freePort(t)
-	cfgPath := writeConfig(t, dir, freePort(t), 0, func(c *config.Config) {
-		c.Listeners.TLS = config.TLSListener{Enabled: true, Addr: "127.0.0.1", Port: tlsPort}
-		c.Listeners.SNMP = config.SNMPListener{Enabled: true, Addr: "127.0.0.1", Port: snmpPort, AnswerInforms: true}
+	snmpPort, tlsPort, port := freeUDP(t), freePort(t), freePort(t)
+	cfgPath := writeConfig(t, dir, port, 0, func(c *config.Config) {
+		c.Listeners.UDP.Addr, c.Listeners.TCP.Addr = addr, addr
+		c.Listeners.TLS = config.TLSListener{Enabled: true, Addr: addr, Port: tlsPort}
+		c.Listeners.SNMP = config.SNMPListener{Enabled: true, Addr: addr, Port: snmpPort, AnswerInforms: true}
 	})
-	return &setupEnv{r: start(t, cfgPath), dir: dir, snmpPort: snmpPort}
+	return &setupEnv{r: start(t, cfgPath), dir: dir, cfgPath: cfgPath, snmpPort: snmpPort, tcpPort: port}
 }
 
 // snippet asks the server for one snippet.
@@ -327,12 +357,17 @@ func udpHeld(t *testing.T, port int, p *toolProc) {
 
 // ---- rsyslog ----
 
-func runRsyslog(t *testing.T, transport string) string {
+func runRsyslog(t *testing.T, c setupCase) string {
 	bin := tool(t, "rsyslogd")
-	e := newSetupEnv(t)
-	s := e.snippet(t, map[string]any{"family": "rsyslog", "what": "syslog", "transport": transport, "address": "127.0.0.1"})
+	addr := caseAddr(c)
+	e := newSetupEnv(t, addr)
+	req := map[string]any{"family": "rsyslog", "what": "syslog", "transport": c.transport, "address": addr}
+	if c.variant == "choices" {
+		req["severity"], req["facility"] = "warning", "local4"
+	}
+	s := e.snippet(t, req)
 	values := map[string]string{}
-	if transport == "tls" {
+	if c.transport == "tls" {
 		code, _, pem := e.r.doRaw(t, "GET", "/api/tls/ca.pem", nil)
 		if code != 200 {
 			t.Fatalf("ca.pem: %d", code)
@@ -347,31 +382,121 @@ func runRsyslog(t *testing.T, transport string) string {
 		t.Fatal(err)
 	}
 	// The harness's own rsyslog.conf: a work folder, a UDP input on loopback
-	// for the test message, and the snippet, included as the distribution's
-	// rsyslog.conf includes /etc/rsyslog.d/*.conf.
+	// for the test messages, a local file every message goes to (the "local
+	// logging" a full queue mustn't hold up), and the snippet, included as the
+	// distribution's rsyslog.conf includes /etc/rsyslog.d/*.conf.
 	work := filepath.Join(e.dir, "work")
 	os.MkdirAll(work, 0o755)
 	inPort := freeUDP(t)
+	local := filepath.Join(e.dir, "local.log")
 	conf := filepath.Join(e.dir, "rsyslog.conf")
-	os.WriteFile(conf, []byte(fmt.Sprintf("global(workDirectory=%q)\nmodule(load=\"imudp\")\ninput(type=\"imudp\" address=\"127.0.0.1\" port=\"%d\")\ninclude(file=%q)\n",
-		work, inPort, snippetFile)), 0o644)
+	os.WriteFile(conf, []byte(fmt.Sprintf("global(workDirectory=%q)\nmodule(load=\"imudp\")\ninput(type=\"imudp\" address=\"127.0.0.1\" port=\"%d\")\n"+
+		"*.* action(type=\"omfile\" file=%q)\ninclude(file=%q)\n", work, inPort, local, snippetFile)), 0o644)
 	env := append(os.Environ(), "HOME="+e.dir)
 	// The snippet's own check first: rsyslogd -N1.
 	if out, err := exec.Command(bin, "-N1", "-f", conf).CombinedOutput(); err != nil {
 		t.Fatalf("rsyslogd -N1 refused the snippet: %v\n%s", err, out)
 	}
+	if c.variant == "full-queue" {
+		e.r.stop(t) // Woodshed is down from the start
+	}
 	p := startProc(t, filepath.Join(e.dir, "rsyslogd.log"), env, bin, "-n", "-f", conf, "-i", filepath.Join(e.dir, "rsyslogd.pid"))
 	udpHeld(t, inPort, p)
-
-	token := fmt.Sprintf("wsetup-%s-%d", transport, time.Now().UnixNano())
-	c, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", inPort))
+	conn, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", inPort))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// user.info, as the snippet's logger test does (logger writes to the system's own socket).
-	fmt.Fprintf(c, "<14>%s setup-test woodshed-test: Test message for Woodshed %s", time.Now().Format(time.Stamp), token)
-	c.Close()
-	e.exactlyOnce(t, "rsyslog "+transport, "syslog", url.Values{"q": {token}})
+	defer conn.Close()
+	// pri is facility*8 + severity: 14 user.info, 164 local4.warning.
+	send := func(pri int, text string) {
+		fmt.Fprintf(conn, "<%d>%s setup-test woodshed-test: %s", pri, time.Now().Format(time.Stamp), text)
+	}
+	token := func(what string) string {
+		return fmt.Sprintf("wsetup-%s-%s-%d", c.transport, what, time.Now().UnixNano())
+	}
+
+	switch c.variant {
+	case "choices":
+		// local4.warning and above only: local4.info and user.err stay local.
+		want, low, other := token("want"), token("info"), token("user")
+		send(166, "too low "+low)
+		send(11, "other facility "+other)
+		send(164, "Test message for Woodshed "+want)
+		e.exactlyOnce(t, "rsyslog local4.warning", "syslog", url.Values{"q": {want}})
+		for _, x := range []string{low, other} {
+			if n := e.count(t, "syslog", url.Values{"q": {x}}); n != 0 {
+				t.Errorf("%s was forwarded (%d), but the snippet's filter is local4.warning", x, n)
+			}
+		}
+	case "full-queue":
+		// More than the queue holds (10,000), through logger when it's there,
+		// paced so loopback UDP keeps them all. With queue.timeoutEnqueue="0"
+		// the overflow is dropped for Woodshed at once; without it each one
+		// would hold every action for 2 s and local logging would stall.
+		const n = 15000
+		lines := make([]string, n)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("fill %d", i)
+		}
+		pushed := time.Now()
+		if lg, err := exec.LookPath("logger"); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			cmd := exec.CommandContext(ctx, lg, "--udp", "--server", "127.0.0.1", "--port", fmt.Sprint(inPort), "-p", "user.info", "-t", "setup-test")
+			in, _ := cmd.StdinPipe()
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			for i, l := range lines {
+				fmt.Fprintln(in, l)
+				if i%100 == 99 {
+					time.Sleep(time.Millisecond)
+				}
+			}
+			in.Close()
+			if err := cmd.Wait(); err != nil {
+				t.Fatalf("logger: %v (blocked: %v)", err, ctx.Err() != nil)
+			}
+			cancel()
+		} else {
+			for i, l := range lines {
+				send(14, l)
+				if i%100 == 99 {
+					time.Sleep(time.Millisecond)
+				}
+			}
+		}
+		marker := token("local")
+		send(14, "local marker "+marker)
+		deadline := time.Now().Add(30 * time.Second)
+		var got []byte
+		for time.Now().Before(deadline) {
+			got, _ = os.ReadFile(local)
+			if bytes.Contains(got, []byte(marker)) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !bytes.Contains(got, []byte(marker)) {
+			t.Fatalf("local logging stalled with Woodshed down: no marker after 30 s (%d lines written)", bytes.Count(got, []byte("\n")))
+		}
+		if m := bytes.Count(got, []byte("fill ")); m <= 10000 {
+			t.Fatalf("only %d of %d messages reached the local file", m, n)
+		}
+		t.Logf("%d messages pushed and written locally in %v with Woodshed down", n, time.Since(pushed).Round(time.Millisecond))
+		// Woodshed back: later messages arrive (rsyslog retries every 30 s).
+		e.r = start(t, e.cfgPath)
+		after := token("after")
+		send(14, "Test message for Woodshed "+after)
+		deadline = time.Now().Add(150 * time.Second)
+		for e.count(t, "syslog", url.Values{"q": {after}}) == 0 && time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+		}
+		e.exactlyOnce(t, "rsyslog after Woodshed came back", "syslog", url.Values{"q": {after}})
+	default:
+		tok := token("msg")
+		send(14, "Test message for Woodshed "+tok) // user.info, as the snippet's logger test sends
+		e.exactlyOnce(t, "rsyslog "+c.transport+" "+addr, "syslog", url.Values{"q": {tok}})
+	}
 	ver, _ := exec.Command(bin, "-v").CombinedOutput()
 	return " (" + strings.SplitN(strings.TrimSpace(string(ver)), "\n", 2)[0] + ")"
 }
@@ -408,9 +533,9 @@ func v3Auth(t *testing.T, env []string) (auth, note string) {
 	return "sha", " (SHA-1: these tools lack SHA-256)"
 }
 
-func (e *setupEnv) addUser(t *testing.T, auth string) {
+func (e *setupEnv) addUser(t *testing.T, name, auth string) {
 	t.Helper()
-	in := map[string]any{"name": setupUser, "auth": auth, "priv": "aes-128", "auth_pass": setupAuthPass, "priv_pass": setupPrivPass}
+	in := map[string]any{"name": name, "auth": auth, "priv": "aes-128", "auth_pass": setupAuthPass, "priv_pass": setupPrivPass}
 	if code := e.r.do(t, "POST", "/api/snmp/users", in, nil); code != 201 {
 		t.Fatalf("add user: %d", code)
 	}
@@ -418,21 +543,40 @@ func (e *setupEnv) addUser(t *testing.T, auth string) {
 
 var snmpSecrets = map[string]string{"<COMMUNITY>": setupCommunity, "<AUTH-PASSPHRASE>": setupAuthPass, "<PRIV-PASSPHRASE>": setupPrivPass}
 
-func runSnmpTrap(t *testing.T, transport string) string {
+// v3For is the v3 user and protocol a case sends: the defaults (SHA-256 when
+// the tools have it), or for "choices" SHA-1 and a user name of its own.
+func v3For(t *testing.T, c setupCase, env []string) (user, auth, note string) {
+	if c.variant == "choices" {
+		return "choiceuser", "sha", " (SHA-1, user choiceuser)"
+	}
+	auth, note = v3Auth(t, env)
+	return setupUser, auth, note
+}
+
+// netSNMPAddr is the snippet's transport address for addr and port.
+func netSNMPAddr(addr string, port int) string {
+	if strings.Contains(addr, ":") {
+		return fmt.Sprintf("udp6:[%s]:%d", addr, port)
+	}
+	return fmt.Sprintf("udp:%s:%d", addr, port)
+}
+
+func runSnmpTrap(t *testing.T, c setupCase) string {
 	snmpd, snmptrap := tool(t, "snmpd"), tool(t, "snmptrap", "/usr/bin")
-	e := newSetupEnv(t)
+	addr := caseAddr(c)
+	e := newSetupEnv(t, addr)
 	env, confDir, home := snmpEnv(e.dir)
-	req := map[string]any{"family": "net-snmp", "what": "trap", "transport": transport, "address": "127.0.0.1"}
-	note := ""
-	if transport == "v3" {
+	req := map[string]any{"family": "net-snmp", "what": "trap", "transport": c.transport, "address": addr}
+	note, user := "", ""
+	if c.transport == "v3" {
 		var auth string
-		auth, note = v3Auth(t, env)
-		req["v3_user"], req["auth"] = setupUser, auth
-		e.addUser(t, auth)
+		user, auth, note = v3For(t, c, env)
+		req["v3_user"], req["auth"] = user, auth
+		e.addUser(t, user, auth)
 	}
 	s := e.snippet(t, req)
-	if !strings.Contains(s.Text, fmt.Sprintf("udp:127.0.0.1:%d", e.snmpPort)) {
-		t.Fatalf("the snippet doesn't use the server's trap port %d", e.snmpPort)
+	if want := netSNMPAddr(addr, e.snmpPort); !strings.Contains(s.Text, want) {
+		t.Fatalf("the snippet doesn't send to %s", want)
 	}
 	// snmpd.conf: the snippet, plus the harness's agent address (the default,
 	// UDP 161, needs root); snmp.conf for snmptrap, from the snippet.
@@ -444,7 +588,7 @@ func runSnmpTrap(t *testing.T, transport string) string {
 	// snmpd sends coldStart when it starts.
 	p := startProc(t, filepath.Join(e.dir, "snmpd.log"), env, snmpd, "-f", "-Lf", filepath.Join(e.dir, "snmpd.log"), "-p", filepath.Join(e.dir, "snmpd.pid"))
 	udpHeld(t, agentPort, p)
-	e.exactlyOnce(t, "snmpd's coldStart ("+transport+")", "trap", url.Values{"trap_oid": {"1.3.6.1.6.3.1.1.5.1"}})
+	e.exactlyOnce(t, "snmpd's coldStart ("+c.transport+")", "trap", url.Values{"trap_oid": {"1.3.6.1.6.3.1.1.5.1"}})
 
 	// The snippet's test trap, run as written (by a shell, for its $(hostname)).
 	cmdText := part(t, s, setuphelper.PartCommand, "test trap").Text
@@ -453,7 +597,7 @@ func runSnmpTrap(t *testing.T, transport string) string {
 	if out, err := sh.CombinedOutput(); err != nil {
 		t.Fatalf("the test trap command failed: %v\n%s", err, out)
 	}
-	e.exactlyOnce(t, "snmptrap's test trap ("+transport+")", "trap", url.Values{"q": {"Test trap for Woodshed"}})
+	e.exactlyOnce(t, "snmptrap's test trap ("+c.transport+")", "trap", url.Values{"q": {"Test trap for Woodshed"}})
 	// Each with the version (and, for v3, the user) the snippet set up.
 	var page struct {
 		Results []struct {
@@ -462,35 +606,90 @@ func runSnmpTrap(t *testing.T, transport string) string {
 	}
 	e.r.do(t, "GET", "/api/search?type=trap&limit=50", nil, &page)
 	for _, r := range page.Results {
-		if r.Fields["status"] != "ok" || (transport == "v3" && r.Fields["cred"] != setupUser) || (transport == "v2c" && r.Fields["version"] != "2c") {
+		if r.Fields["status"] != "ok" || (c.transport == "v3" && r.Fields["cred"] != user) || (c.transport == "v2c" && r.Fields["version"] != "2c") {
 			t.Errorf("a trap stored as %v", r.Fields)
 		}
 	}
 	return note
 }
 
-func runSnmpPoll(t *testing.T, transport string) string {
+// distroSnmpdConf is an snmpd.conf as distributions ship it: the agent on
+// loopback only. The poll snippet's instructions are to replace its
+// agentaddress line and add the rest; leaving the line would also keep port
+// 161, which this unprivileged test can't bind, so snmpd wouldn't start.
+const distroSnmpdConf = `# As shipped: listen on loopback only.
+agentaddress 127.0.0.1,[::1]
+sysLocation lab rack 3
+sysContact admin@example.net
+`
+
+// applySnmpdParts edits base as the poll snippet's parts say: a part titled
+// "Replace the existing agentaddress line" replaces it (every agentaddress
+// line goes), the others are added at the end.
+func applySnmpdParts(t *testing.T, base string, s setuphelper.Snippet) string {
+	t.Helper()
+	conf := base
+	replaced := false
+	for _, p := range s.Parts {
+		if p.Kind != setuphelper.PartFile || !strings.HasSuffix(p.Path, "snmpd.conf") {
+			continue
+		}
+		text := fill(t, p.Text, snmpSecrets)
+		if strings.HasPrefix(p.Title, "Replace the existing agentaddress line") {
+			var kept []string
+			for _, l := range strings.Split(conf, "\n") {
+				if f := strings.Fields(l); len(f) > 0 && strings.EqualFold(f[0], "agentaddress") {
+					if !replaced {
+						kept = append(kept, strings.TrimRight(text, "\n"))
+						replaced = true
+					}
+					continue
+				}
+				kept = append(kept, l)
+			}
+			conf = strings.Join(kept, "\n")
+			if !replaced {
+				conf += text
+				replaced = true
+			}
+			continue
+		}
+		conf += text
+	}
+	if !replaced {
+		t.Fatal("the poll snippet has no agentaddress line to put in place of the distribution's")
+	}
+	if n := strings.Count(strings.ToLower(conf), "agentaddress"); n != 1 {
+		t.Fatalf("%d agentaddress lines after applying the snippet:\n%s", n, conf)
+	}
+	return conf
+}
+
+func runSnmpPoll(t *testing.T, c setupCase) string {
 	snmpd := tool(t, "snmpd")
-	e := newSetupEnv(t)
+	addr := caseAddr(c)
+	e := newSetupEnv(t, addr)
 	env, confDir, _ := snmpEnv(e.dir)
 	agentPort := freeUDP(t)
-	req := map[string]any{"family": "net-snmp", "what": "poll", "transport": transport, "address": "127.0.0.1", "agent_port": agentPort}
-	note := ""
-	auth := ""
-	if transport == "v3" {
-		auth, note = v3Auth(t, env)
-		req["v3_user"], req["auth"] = setupUser, auth
+	req := map[string]any{"family": "net-snmp", "what": "poll", "transport": c.transport, "address": addr, "agent_port": agentPort}
+	note, user, auth := "", "", ""
+	if c.transport == "v3" {
+		user, auth, note = v3For(t, c, env)
+		req["v3_user"], req["auth"] = user, auth
 	}
 	s := e.snippet(t, req)
-	os.WriteFile(filepath.Join(confDir, "snmpd.conf"), []byte(fill(t, part(t, s, setuphelper.PartFile, "snmpd.conf").Text, snmpSecrets)), 0o600)
+	if c.variant == "ipv6" && !strings.Contains(s.Text, "rocommunity6 <COMMUNITY> ::1") {
+		t.Fatalf("an IPv6 address needs rocommunity6:\n%s", s.Text)
+	}
+	os.WriteFile(filepath.Join(confDir, "snmpd.conf"), []byte(applySnmpdParts(t, distroSnmpdConf, s)), 0o600)
 	p := startProc(t, filepath.Join(e.dir, "snmpd.log"), env, snmpd, "-f", "-Lf", filepath.Join(e.dir, "snmpd.log"), "-p", filepath.Join(e.dir, "snmpd.pid"))
 	udpHeld(t, agentPort, p)
 
 	// The shortest interval (30 s), so the first cycle comes soon.
-	target := map[string]any{"address": "127.0.0.1", "port": agentPort, "version": "2c", "community": setupCommunity, "interval_s": 30}
-	if transport == "v3" {
-		e.addUser(t, auth)
-		target = map[string]any{"address": "127.0.0.1", "port": agentPort, "version": "3", "v3_user": setupUser, "interval_s": 30}
+	target := map[string]any{"address": addr, "port": agentPort, "version": "2c", "community": setupCommunity, "interval_s": 30}
+	if c.transport == "v3" {
+		e.addUser(t, user, auth)
+		target = map[string]any{"address": addr, "port": agentPort, "version": "3", "v3_user": user, "interval_s": 30}
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -500,12 +699,7 @@ func runSnmpPoll(t *testing.T, transport string) string {
 	}
 	// The form's Test poll, then the first scheduled cycle.
 	var res struct {
-		Exit  string `json:"exit"`
-		Steps []struct {
-			Name   string `json:"name"`
-			OK     bool   `json:"ok"`
-			Detail string `json:"detail"`
-		} `json:"steps"`
+		Exit string `json:"exit"`
 	}
 	b, _ := json.Marshal(map[string]any{"id": created.ID})
 	code, _, body := e.r.doRaw(t, "POST", "/api/poll/test", b)
@@ -608,17 +802,19 @@ func TestSetupTestedTemplatesHaveCI(t *testing.T) {
 // "-i <INTERFACE>" becomes "-r <the synthetic pcap>" and "-d" keeps softflowd
 // in the foreground until the file is done; every other option is the
 // snippet's own.
-func runSoftflowd(t *testing.T, transport string) string {
+func runSoftflowd(t *testing.T, c setupCase) string {
+	transport := c.transport
 	bin := tool(t, "softflowd")
-	r, flowPort, ipfixPort := flowServer(t, nil)
+	addr := caseAddr(c)
+	r, flowPort, ipfixPort := flowServer(t, func(cf *config.Config) { cf.Listeners.Flow.Addr = addr })
 	e := &setupEnv{r: r, dir: t.TempDir()}
-	s := e.snippet(t, map[string]any{"family": "softflowd", "what": "flow", "transport": transport, "address": "127.0.0.1"})
+	s := e.snippet(t, map[string]any{"family": "softflowd", "what": "flow", "transport": transport, "address": addr})
 	port, ver := flowPort, uint8(flow.V9)
 	if transport == "ipfix" {
 		port, ver = ipfixPort, flow.IPFIX
 	}
 	cmdText := strings.TrimSpace(part(t, s, setuphelper.PartCommand, "Run softflowd").Text)
-	if !strings.Contains(cmdText, fmt.Sprintf("-n 127.0.0.1:%d ", port)) || !strings.Contains(cmdText, "-i <INTERFACE>") {
+	if want := "-n " + hostPort(addr, port) + " "; !strings.Contains(cmdText, want) || !strings.Contains(cmdText, "-i <INTERFACE>") {
 		t.Fatalf("the snippet doesn't send to the server's %s port %d: %s", transport, port, cmdText)
 	}
 	pcap := filepath.Join(e.dir, "synthetic.pcap")

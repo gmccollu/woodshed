@@ -266,7 +266,11 @@ jobs:
   # snmptrap (traps v2c and v3, and snmpd answering the poller v2c and v3).
   # Each message or trap must arrive exactly once. softflowd replays the flow
   # interop test's synthetic pcap (written in Go) as flow v9 and IPFIX, and
-  # every flow must be stored once with the pcap's counts.
+  # every flow must be stored once with the pcap's counts. Beside the defaults:
+  # one case per family over IPv6 loopback (::1), one with non-default choices,
+  # the net-snmp poll snippet applied to a distribution-style snmpd.conf, and
+  # rsyslog TCP and TLS with Woodshed down until the queue overflows (local
+  # logging must keep flowing; later messages must arrive once it's back).
   # TestSetupTestedTemplatesHaveCI fails a template marked Tested that no case
   # here applies.
   setup-snippets:
@@ -290,7 +294,7 @@ jobs:
         env:
           WOODSHED_SETUP_INTEROP: "1"
           WOODSHED_SETUP_INTEROP_REQUIRE: sha-256
-        run: PATH="$PATH:/usr/sbin" go test -count=1 -timeout 15m -run '^TestSetupSnippets$' -v ./internal/server/
+        run: PATH="$PATH:/usr/sbin" go test -count=1 -timeout 30m -run '^TestSetupSnippets$' -v ./internal/server/
 
   packaging:
     name: packaging (goreleaser, deb, rpm)
