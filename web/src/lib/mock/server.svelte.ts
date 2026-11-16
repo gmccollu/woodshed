@@ -81,6 +81,8 @@ import {
   trapStats, senderAt, type StoredTrap,
 } from './traps';
 import { createUser, deleteUser, failures as snmpFailures, listUsers, mibsJSON, snmpMock, snmpState, unreadableUsers, updateUser } from './snmp';
+import { setupFamilies, setupSnippet } from './setup';
+import type { SnippetBody } from '../setup';
 import { POLL_SCHEMA, devicePoll, deviceRoute as pollDeviceRoute, pollBanners, pollDefaults, pollRoute, seriesRoute as pollSeriesRoute, setPollUsers, timelineRoute as pollTimelineRoute } from './poll';
 import { POLL_RANGES } from '../poll';
 
@@ -2753,6 +2755,11 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     return json(estimateFor(n));
   }
   if (method === 'GET' && p === '/api/rejected') return json(rejected(now));
+  if (method === 'GET' && p === '/api/setup/families') return json(setupFamilies());
+  if (method === 'POST' && p === '/api/setup/snippet') {
+    const r = setupSnippet(body as SnippetBody);
+    return json(r.body, r.status);
+  }
   if (method === 'GET' && p === '/api/tls') return json(tlsJSON());
   if (method === 'GET' && p === '/api/tls/failures') return json(tlsFailures(now));
   if (method === 'POST' && p === '/api/tls/renew') {

@@ -4,6 +4,7 @@
 // server) is updated. Pure, no Svelte state: it runs under plain node.
 import { newPollForm, pollSettingsBody, pollSettingsForm, pollTargetBody, type PollSettings, type PollTarget, type PollTargetInput } from '../poll.ts';
 import { userBody } from '../traps.ts';
+import { newSetupForm, snippetBody, type SetupFamily } from '../setup.ts';
 
 /** Placeholders the replay substitutes (strings in the JSON, numbers here). */
 export const AGENT_PORT = 16161;
@@ -56,6 +57,41 @@ function withPlaceholders<T>(b: T): T {
   return JSON.parse(JSON.stringify(b), (k, v) => (k === 'port' && PLACEHOLDERS[v] ? PLACEHOLDERS[v] : v));
 }
 
+/** The families the setup page's form needs (only the fields it reads), as GET /api/setup/families serves them. */
+const SETUP_FAMILIES: SetupFamily[] = [
+  { id: 'line-cli', label: '', what: ['syslog', 'trap', 'poll', 'flow'], verification: 'reference', reference: '', notes: [],
+    transports: { syslog: ['udp', 'tcp', 'tls'], trap: ['v2c', 'v3'], poll: ['v2c', 'v3'], flow: ['netflow9', 'ipfix'] },
+    choices: { syslog: ['source_interface', 'severity', 'facility'], trap: ['source_interface', 'v3_user', 'auth', 'priv'], poll: ['v3_user', 'auth', 'priv'], flow: ['source_interface'] } },
+  { id: 'rsyslog', label: '', what: ['syslog'], verification: 'tested', reference: '', notes: [],
+    transports: { syslog: ['udp', 'tcp', 'tls'] }, choices: { syslog: ['severity', 'facility'] } },
+  { id: 'net-snmp', label: '', what: ['trap', 'poll'], verification: 'tested', reference: '', notes: [],
+    transports: { trap: ['v2c', 'v3'], poll: ['v2c', 'v3'] },
+    choices: { trap: ['v3_user', 'auth', 'priv'], poll: ['agent_port', 'v3_user', 'auth', 'priv'] } },
+  { id: 'softflowd', label: '', what: ['flow'], verification: 'reference', reference: '', notes: [],
+    transports: { flow: ['netflow9', 'ipfix'] }, choices: { flow: ['interface'] } },
+];
+
+/** Set up a device: the form as the user leaves it, and the body it sends. */
+function setupSteps(): Step[] {
+  const fam = (id: string) => SETUP_FAMILIES.find((f) => f.id === id)!;
+  const rs = newSetupForm(fam('rsyslog'));
+  Object.assign(rs, { transport: 'tls', severity: 'warning', facility: 'local4' });
+  const trap = newSetupForm(fam('line-cli'), 'trap');
+  // Switched to v3 with an interface and a user; the address picked from the list.
+  Object.assign(trap, { transport: 'v3', sourceInterface: 'mgmt0', v3User: 'monitor', address: '127.0.0.1' });
+  const poll = newSetupForm(fam('net-snmp'), 'poll');
+  // A v2c form keeps a v3 user typed earlier, but doesn't send it.
+  Object.assign(poll, { agentPort: '1161', v3User: 'left-from-v3' });
+  const flow = newSetupForm(fam('softflowd'));
+  Object.assign(flow, { transport: 'ipfix', iface: 'eth1' });
+  return [
+    { name: 'setup_snippet_rsyslog_tls', method: 'POST', path: '/api/setup/snippet', if_match: false, body: snippetBody(fam('rsyslog'), rs) },
+    { name: 'setup_snippet_line_cli_trap_v3', method: 'POST', path: '/api/setup/snippet', if_match: false, body: snippetBody(fam('line-cli'), trap) },
+    { name: 'setup_snippet_net_snmp_poll_v2c', method: 'POST', path: '/api/setup/snippet', if_match: false, body: snippetBody(fam('net-snmp'), poll) },
+    { name: 'setup_snippet_softflowd_ipfix', method: 'POST', path: '/api/setup/snippet', if_match: false, body: snippetBody(fam('softflowd'), flow) },
+  ];
+}
+
 export function buildSteps(): Step[] {
   const user = { name: 'monitor', auth: 'sha-256', priv: 'aes-128', keyExt: 'draft', engineIds: [] as string[] } as const;
   // Settings → Polling: the user changes every default (the form sends the whole poll object).
@@ -104,6 +140,7 @@ export function buildSteps(): Step[] {
       body: withPlaceholders(pinBody) },
     { name: 'poll_delete_v3', method: 'DELETE', path: '/api/poll/targets/{poll_v3_id}', if_match: false },
     { name: 'poll_delete', method: 'DELETE', path: '/api/poll/targets/{poll_id}', if_match: false },
+    ...setupSteps(),
   ];
 }
 
@@ -115,4 +152,5 @@ export const NOTES = [
   'Poll target bodies carry every field (the form fills the Settings defaults in when it opens); community is sent only when typed, or on a new target; an edit that leaves it empty omits it (kept). pinned (SPEC §12.11 #3) is always sent, [] when none.',
   'SNMP user: key_ext is "draft" unless priv is aes-192 or aes-256 (the form\'s choice is sent only then); empty passphrases are omitted (kept).',
   'Test poll of an edited target that keeps its stored community is sent as {"id": …} (the UI can\'t resend a community it never sees).',
+  'Set up a device: the body has only the choices that apply to the family, data type and transport, and only those set (the server fills in its defaults); it never carries a secret.',
 ];

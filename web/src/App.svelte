@@ -20,6 +20,7 @@
   import Settings from './pages/Settings.svelte';
   import About from './pages/About.svelte';
   import DevicePage from './pages/Device.svelte';
+  import DeviceSetup from './pages/DeviceSetup.svelte';
 
   // Session first: in LAN mode every other route needs a login.
   loadSession().then(startPolling);
@@ -42,6 +43,7 @@
     { r: 'devices', label: 'Devices', icon: 'devices' },
     { r: 'events', label: 'Events', icon: 'search' },
     { r: 'export', label: 'Export', icon: 'export' },
+    { r: 'device-setup', label: 'Connect', icon: 'plug' },
     { r: 'settings', label: 'Settings', icon: 'settings' },
     { r: 'about', label: 'About', icon: 'about' },
     { r: 'welcome', label: 'Setup', icon: 'welcome' },
@@ -56,6 +58,7 @@
     settings: 'Settings',
     about: 'About',
     device: 'Device',
+    'device-setup': 'Set up a device',
   };
 
   // First run: with no page in the URL and no message received yet, open on the welcome page.
@@ -141,6 +144,8 @@
           <Devices />
         {:else if router.route === 'device'}
           <DevicePage />
+        {:else if router.route === 'device-setup'}
+          <DeviceSetup />
         {:else if router.route === 'events'}
           <Events />
         {:else if router.route === 'export'}

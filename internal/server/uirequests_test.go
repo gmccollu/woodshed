@@ -60,6 +60,16 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 	if len(fx.Steps) < 8 {
 		t.Fatalf("only %d steps", len(fx.Steps))
 	}
+	// 2.0: the Set up a device form's bodies are in it too.
+	setup := 0
+	for _, st := range fx.Steps {
+		if st.Path == "/api/setup/snippet" {
+			setup++
+		}
+	}
+	if setup < 3 {
+		t.Fatalf("only %d Set up a device steps", setup)
+	}
 	// The agents the targets point at, with the fixture's test credentials.
 	u := snmp.User{Name: "monitor", Auth: snmp.AuthSHA256, Priv: snmp.PrivAES128, AuthPass: []byte("fixture-auth-pass"),
 		PrivPass: []byte("fixture-priv-pass"), Level: snmp.AuthPriv}

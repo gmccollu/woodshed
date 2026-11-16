@@ -2160,6 +2160,33 @@ const SHOTS = [
     check: `[...document.querySelectorAll('.typesw button')].map((b) => b.textContent.trim()).join() === 'Syslog,SNMP traps'
       && document.querySelector('.typesw button[aria-checked=true]').textContent.trim() === 'Syslog'`,
   },
+  // Set up a device (2.0): a Tested snippet (rsyslog over TLS) and a Reference-only one (line CLI over TCP,
+  // with the TCP warning), then picking a family by clicking it.
+  ...both({
+    name: 'device-setup-tested',
+    url: '/?mock_panel=0#/device-setup?family=rsyslog&what=syslog&transport=tls',
+    wait: 1500,
+    check: `!!document.querySelector('[data-verification=tested]') && document.body.innerText.includes('StreamDriverPermittedPeers')
+      && document.body.innerText.includes('CI applies this snippet') && document.title.startsWith('Set up a device')`,
+  }),
+  ...both({
+    name: 'device-setup-reference',
+    url: '/?mock_panel=0#/device-setup?family=line-cli&what=syslog&transport=tcp',
+    wait: 1500,
+    check: `!!document.querySelector('[data-verification=reference]') && document.body.innerText.includes("Reference only: not tested on a device; check your device's documentation.")
+      && document.body.innerText.includes('permit traffic when the log host is down') && document.body.innerText.includes('logging host 10.1.0.50 transport tcp port 514')`,
+  }),
+  {
+    name: 'device-setup-pick-family',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device-setup',
+    wait: 1500,
+    act: `[...document.querySelectorAll('button[role=radio]')].find((b) => b.textContent.includes('net-snmp')).click(); await __tick(); await __tick(); await __tick();
+      [...document.querySelectorAll('button[role=radio]')].find((b) => b.textContent.trim() === 'SNMPv3').click();`,
+    after: 600,
+    check: `document.body.innerText.includes('trapsess -v 3') && location.hash.includes('family=net-snmp') && !!document.querySelector('[data-verification=tested]')`,
+  },
   {
     // The shared request fixture (src/lib/fixtures/ui-requests.json): every step the forms send, through the mock, must
     // answer 2xx. Whole-object PUTs start from their GET (deep-merged), If-Match carries the GET's ETag. The mock already
@@ -2187,7 +2214,7 @@ const SHOTS = [
       window.__fx = out;`,
     after: 200,
     report: `window.__fx.join(' | ')`,
-    check: `window.__fx.length === 11 && window.__fx.every((l) => / 20[014]$/.test(l))`,
+    check: `window.__fx.length === 15 && window.__fx.every((l) => / 20[014]$/.test(l))`,
   },
   ...both({
     name: 'poll-devices-polled',

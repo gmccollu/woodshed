@@ -2,6 +2,7 @@
 // server only through this module. In mock mode (VITE_MOCK=1) main.ts swaps the
 // transport for the in-browser fake in ./mock, and nothing else changes.
 
+import type { SetupFamily, Snippet, SnippetBody } from './setup';
 import { SseParser, type SseEvent } from './sse';
 import type {
   PollDevicePanel,
@@ -1228,6 +1229,8 @@ export const getStorageEstimate = (retentionBytes: number, signal?: AbortSignal)
   request<StorageEstimate>('GET', `/api/storage/estimate${query({ retention_bytes: Math.round(retentionBytes) })}`, undefined, signal);
 
 export const getTls = () => request<TlsState>('GET', '/api/tls');
+export const getSetupFamilies = () => request<SetupFamily[]>('GET', '/api/setup/families');
+export const getSetupSnippet = (b: SnippetBody, signal?: AbortSignal) => request<Snippet>('POST', '/api/setup/snippet', b, signal);
 export const getSnmp = () => request<SnmpState>('GET', '/api/snmp');
 export const reloadMibs = () => request<SnmpMibs>('POST', '/api/snmp/mibs/reload');
 export const getSnmpFailures = () => request<SnmpFailure[]>('GET', '/api/snmp/failures');

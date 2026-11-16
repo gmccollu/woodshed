@@ -89,6 +89,7 @@
         {/each}
       </ul>
       <p class="mt-3 mb-0 text-[13px] text-muted">This machine's addresses. Use the one your devices can reach.</p>
+      <p class="mt-2 mb-0 text-[13px]"><a class="text-link underline" href="#/device-setup">Configuration for your device: Set up a device</a></p>
     </section>
 
     <section class="card">

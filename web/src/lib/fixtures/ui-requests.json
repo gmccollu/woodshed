@@ -6,7 +6,8 @@
     "Settings: the form PUTs the WHOLE settings object, rebuilt from GET /api/settings (fromForm(toForm(GET)) with the edits); body here is only the changed key (\"poll\"), to be deep-merged into the GET result (objects merge, arrays and scalars replace). The rebuild also drops read-only keys the GET returns (listeners.tls.password_set) and sends listeners.snmp.communities as their #hash8 values.",
     "Poll target bodies carry every field (the form fills the Settings defaults in when it opens); community is sent only when typed, or on a new target; an edit that leaves it empty omits it (kept). pinned (SPEC §12.11 #3) is always sent, [] when none.",
     "SNMP user: key_ext is \"draft\" unless priv is aes-192 or aes-256 (the form's choice is sent only then); empty passphrases are omitted (kept).",
-    "Test poll of an edited target that keeps its stored community is sent as {\"id\": …} (the UI can't resend a community it never sees)."
+    "Test poll of an edited target that keeps its stored community is sent as {\"id\": …} (the UI can't resend a community it never sees).",
+    "Set up a device: the body has only the choices that apply to the family, data type and transport, and only those set (the server fills in its defaults); it never carries a secret."
   ],
   "steps": [
     {
@@ -241,6 +242,59 @@
       "method": "DELETE",
       "path": "/api/poll/targets/{poll_id}",
       "if_match": false
+    },
+    {
+      "name": "setup_snippet_rsyslog_tls",
+      "method": "POST",
+      "path": "/api/setup/snippet",
+      "if_match": false,
+      "body": {
+        "family": "rsyslog",
+        "what": "syslog",
+        "transport": "tls",
+        "severity": "warning",
+        "facility": "local4"
+      }
+    },
+    {
+      "name": "setup_snippet_line_cli_trap_v3",
+      "method": "POST",
+      "path": "/api/setup/snippet",
+      "if_match": false,
+      "body": {
+        "family": "line-cli",
+        "what": "trap",
+        "transport": "v3",
+        "address": "127.0.0.1",
+        "source_interface": "mgmt0",
+        "v3_user": "monitor",
+        "auth": "sha-256",
+        "priv": "aes-128"
+      }
+    },
+    {
+      "name": "setup_snippet_net_snmp_poll_v2c",
+      "method": "POST",
+      "path": "/api/setup/snippet",
+      "if_match": false,
+      "body": {
+        "family": "net-snmp",
+        "what": "poll",
+        "transport": "v2c",
+        "agent_port": 1161
+      }
+    },
+    {
+      "name": "setup_snippet_softflowd_ipfix",
+      "method": "POST",
+      "path": "/api/setup/snippet",
+      "if_match": false,
+      "body": {
+        "family": "softflowd",
+        "what": "flow",
+        "transport": "ipfix",
+        "interface": "eth1"
+      }
     }
   ]
 }

@@ -91,9 +91,11 @@ type Family struct {
 	// CheckedOn is the date of a lab check (lab_checked only).
 	CheckedOn string `json:"checked_on,omitempty"`
 	Reference string `json:"reference"`
-	// Transports per data type, the default first.
+	// Transports per data type, the default first; every data type is a key,
+	// [] for the ones the family has no template for.
 	Transports map[string][]string `json:"transports"`
-	// Choices per data type: the Request fields that change its snippet.
+	// Choices per data type: the Request fields that change its snippet
+	// (every data type is a key, like Transports).
 	Choices map[string][]string `json:"choices"`
 	// Notes about the family as a whole.
 	Notes []string `json:"notes"`
@@ -520,6 +522,9 @@ func Families() []Family {
 	for _, f := range families {
 		fam := Family{ID: f.id, Label: f.label, Reference: f.reference, What: []string{}, Transports: map[string][]string{},
 			Choices: map[string][]string{}, Notes: slices.Clone(f.notes), Verification: Tested}
+		for _, w := range whatOrder {
+			fam.Transports[w], fam.Choices[w] = []string{}, []string{}
+		}
 		for _, t := range loaded {
 			if t.Family != f.id {
 				continue

@@ -36,4 +36,8 @@ test('the fixture covers the poller and the user form as the contract expects', 
   assert.ok(!('community' in (by.poll_pin.body as object)), 'pinning keeps the stored community');
   assert.deepEqual(by.poll_test_id.body, { id: '{poll_id}' });
   for (const s of built.steps) if (s.if_match) assert.ok(s.etag_get, `${s.name}: if_match needs etag_get`);
+  assert.deepEqual(by.setup_snippet_rsyslog_tls.body, { family: 'rsyslog', what: 'syslog', transport: 'tls', severity: 'warning', facility: 'local4' });
+  assert.deepEqual(by.setup_snippet_net_snmp_poll_v2c.body, { family: 'net-snmp', what: 'poll', transport: 'v2c', agent_port: 1161 },
+    'a v2c body leaves out the v3 user');
+  assert.equal((by.setup_snippet_line_cli_trap_v3.body as Record<string, unknown>).source_interface, 'mgmt0');
 });
