@@ -424,6 +424,18 @@ func (w *Writer) Blocks() int {
 	return len(w.st.blocks)
 }
 
+// DirEntryBytes is what the writer keeps for each block written.
+const DirEntryBytes = int64(unsafe.Sizeof(dirEntry{}))
+
+// DirBytes is what the writer keeps for the sections written so far: a
+// DirEntryBytes entry a block and a raw chunk's entry each (the store keeps
+// every writer's together under its budget, SPEC §13.10 decision 58).
+func (w *Writer) DirBytes() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return int64(len(w.st.blocks))*DirEntryBytes + int64(len(w.st.rawChunks))*int64(unsafe.Sizeof(RawChunk{}))
+}
+
 // Footer is Snapshot's running totals (an alias kept for callers that only
 // want the counts).
 func (w *Writer) Footer() *Footer { return w.Snapshot() }

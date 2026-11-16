@@ -66,6 +66,7 @@ type Options struct {
 
 	PartBytes      int64 // close the active file at this size (uncompressed)
 	FlowPartBlocks int   // start a flow segment's next part at this many blocks (tests lower it)
+	FlowDirBudget  int64 // every flow writer's directory together (DefaultFlowDirBudget; SPEC §13.10 decision 58)
 	RetentionDays  int   // delete compressed files older than this
 	RetentionBytes int64 // delete the oldest compressed files while all logs exceed this
 	// Low-disk guard reserve: keep max(MinFreeBytes, min(MinFreePercent of the
@@ -313,6 +314,7 @@ func Open(opts Options) (*Store, error) {
 	}
 	setDefault(&opts.PartBytes, DefaultPartBytes)
 	setDefault(&opts.FlowPartBlocks, FlowPartBlocks)
+	setDefault(&opts.FlowDirBudget, DefaultFlowDirBudget)
 	setDefault(&opts.RetentionDays, DefaultRetentionDays)
 	setDefault(&opts.RetentionBytes, DefaultRetentionBytes)
 	setDefault(&opts.MinFreeBytes, DefaultMinFreeBytes)
@@ -972,6 +974,8 @@ type Usage struct {
 	LastRefused       time.Time // zero if none
 	DeviceLimited     bool      // a new sender was refused in the last DeviceLimitWindow (device_limit banner)
 	DeviceLimitReason string    // "cap", "rate", "prefix" or "churn": why the latest one was refused
+
+	FlowPartsEarly int64 // flow segments closed early since Open to keep the writers' directories under FlowDirBudget
 }
 
 // DeviceLimitWindow is how long Usage.DeviceLimited stays set after a refusal.
@@ -980,11 +984,12 @@ const DeviceLimitWindow = 5 * time.Minute
 // Usage returns the current storage summary.
 func (s *Store) Usage() Usage {
 	u := Usage{
-		CapBytes:      s.retentionBytes.Load(),
-		RetentionDays: int(s.retentionDays.Load()),
-		WritesPaused:  s.paused.Load(),
-		Dropped:       s.dropped.Load(),
-		Written:       s.written.Load(),
+		CapBytes:       s.retentionBytes.Load(),
+		RetentionDays:  int(s.retentionDays.Load()),
+		WritesPaused:   s.paused.Load(),
+		Dropped:        s.dropped.Load(),
+		Written:        s.written.Load(),
+		FlowPartsEarly: s.fl.partsEarly.Load(),
 	}
 	if u.WritesPaused {
 		u.PausedSince = time.UnixMilli(s.pausedSince.Load()).UTC()

@@ -1,15 +1,19 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/metrics"
 	"sort"
 	"testing"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/flow"
+	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/flowseg"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
@@ -398,4 +402,150 @@ func TestFlowHourOfBlocksIsOnePart(t *testing.T) {
 	if r.Blocks() != 4500 || r.Footer().Totals.Records != int64(n) {
 		t.Fatalf("%d blocks, %d records (want 4,500, %d)", r.Blocks(), r.Footer().Totals.Records, n)
 	}
+}
+
+// Over many exporters the writers' directories stay under FlowDirBudget:
+// the maintenance pass closes the segments keeping the most, so their
+// exporters go on in new parts, and every record is still read exactly
+// once (in the parts' blocks, the index, a reindex and a query). The
+// budget here is a third of what the run's directories would take
+// uncapped, so every exporter rolls at least once.
+func TestFlowDirBudget(t *testing.T) {
+	exporters, seconds := 300, 600
+	if testing.Short() {
+		exporters, seconds = 60, 240
+	}
+	budget := int64(exporters) * int64(seconds/3) * flowseg.DirEntryBytes
+	e := newEnv(t, func(o *Options) { o.FlowDirBudget = budget })
+	addr := func(i int) netip.Addr { return netip.AddrFrom4([4]byte{198, 18, byte(i / 250), byte(i%250 + 1)}) }
+	h := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	e.clock.Set(h)
+	seq := make([]int, exporters)
+	runtime.GC()
+	live0 := heapLiveStore()
+	maxDir := int64(0)
+	for sec := 0; sec < seconds; sec++ {
+		for i := 0; i < exporters; i++ {
+			e.writeFlows(addr(i), 2, seq[i])
+			seq[i] += 2
+		}
+		if err := e.s.flushFlows(e.clock.Now(), false); err != nil {
+			t.Fatal(err)
+		}
+		// One block an exporter past the budget at most, between passes.
+		maxDir = max(maxDir, e.s.FlowDirBytes())
+		if d := e.s.FlowDirBytes(); d > budget+int64(exporters)*flowseg.DirEntryBytes {
+			t.Fatalf("second %d: the writers keep %d bytes, budget %d", sec, d, budget)
+		}
+		if sec%60 == 59 {
+			e.maintain()
+		}
+		e.clock.Add(time.Second)
+	}
+	e.maintain()
+	runtime.GC()
+	grown := int64(heapLiveStore()) - int64(live0)
+	early := e.s.Usage().FlowPartsEarly
+	t.Logf("%d exporters, %d s: %d early parts (%.1f an exporter), the writers kept at most %.2f MiB (budget %.2f MiB), "+
+		"live heap grew %.1f MiB", exporters, seconds, early, float64(early)/float64(exporters), float64(maxDir)/(1<<20),
+		float64(budget)/(1<<20), float64(grown)/(1<<20))
+	if early < int64(exporters) || early > int64(4*exporters) {
+		t.Fatalf("%d early parts for %d exporters", early, exporters)
+	}
+	// Live: the capped directories and every stream's writer and open
+	// block, far under the uncapped directories' 3 times the budget (the
+	// race detector's build allocates differently).
+	if lim := budget + int64(exporters)*24<<10 + 8<<20; !raceEnabled && grown > lim {
+		t.Fatalf("live heap grew %d bytes, ceiling %d", grown, lim)
+	}
+
+	want := exporters * seconds * 2
+	nfiles := 0
+	count := func(what string, files func(i int) []string) {
+		t.Helper()
+		got := 0
+		for i := 0; i < exporters; i++ {
+			nfiles += len(files(i))
+			seen := map[string]int{} // a record's batch is in its source address, its place in the batch in its bytes
+			for _, name := range files(i) {
+				path := filepath.Join(e.dir, "logs", addr(i).String(), "flows", name)
+				r, err := flowseg.Open(path)
+				if errors.Is(err, flowseg.ErrNoFooter) {
+					r, err = flowseg.OpenLive(path) // the open part
+				}
+				if err != nil {
+					t.Fatalf("%s: %s: %v", what, name, err)
+				}
+				for b := 0; b < r.Blocks(); b++ {
+					recs, err := r.ReadBlock(b, flowseg.ColAll, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, rec := range recs {
+						seen[fmt.Sprint(rec.Src, rec.Bytes)]++
+					}
+				}
+				r.Close()
+			}
+			for k, n := range seen {
+				if n != 1 {
+					t.Fatalf("%s: exporter %d's record %s read %d times", what, i, k, n)
+				}
+			}
+			if len(seen) != seconds*2 {
+				t.Fatalf("%s: exporter %d: %d records, want %d", what, i, len(seen), seconds*2)
+			}
+			got += len(seen)
+		}
+		if got != want {
+			t.Fatalf("%s: %d records, want %d", what, got, want)
+		}
+	}
+	count("the files", func(i int) []string { return e.flowFiles(addr(i)) })
+	indexed := func(what string) {
+		t.Helper()
+		segs, err := e.idx.AllFlowSegments(bg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recs int64
+		for _, sg := range segs {
+			recs += sg.Records
+		}
+		if recs != int64(want) || len(segs) != nfiles || int64(nfiles) < int64(exporters)+early-1 {
+			t.Fatalf("%s: %d segments, %d files (early parts %d), %d records", what, len(segs), nfiles, early, recs)
+		}
+	}
+	indexed("the index")
+	q := flowquery.Query{From: h.Add(-time.Minute), To: h.Add(time.Hour)}
+	eng := flowquery.New(flowquery.Options{DataDir: e.dir, Index: e.idx, Open: func(ids []string) []flowquery.OpenSegment {
+		var out []flowquery.OpenSegment
+		for _, s := range e.s.OpenFlowList(ids) {
+			out = append(out, flowquery.OpenSegment{DeviceID: s.DeviceID, Rel: s.Rel, Path: s.Path, Snap: s.Snap})
+		}
+		return out
+	}})
+	n, err := eng.Count(bg, q)
+	var c int64
+	for _, v := range n {
+		c += v
+	}
+	if err != nil || c != int64(want) || len(n) != exporters {
+		t.Fatalf("query: %d records over %d exporters (want %d): %v", c, len(n), want, err)
+	}
+	// A reindex after the store has closed finds the same parts.
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.s = nil
+	if _, err := e.idx.Reindex(bg, e.dir); err != nil {
+		t.Fatal(err)
+	}
+	indexed("after a reindex")
+}
+
+func heapLiveStore() uint64 {
+	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(s)
+	return s[0].Value.Uint64()
 }

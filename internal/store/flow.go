@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/flow"
@@ -56,6 +57,15 @@ const FlowPartBytes = 256 << 20
 // first (about 200 blocks of 65,536 records).
 const FlowPartBlocks = 8192
 
+// DefaultFlowDirBudget bounds what every open segment's writer keeps for
+// the blocks it has written (flowseg.Writer.DirBytes, 216 bytes a block),
+// all exporters together (SPEC §13.10 decision 58). Past it, the maintenance
+// pass closes the segments with the most, largest first, until it's back
+// under: their exporters' next records start a new part. One block a second
+// is 0.8 MiB an exporter-hour, so the budget holds an hour in one part for
+// about 43 exporters at that rate (300 make about 4 parts an exporter-hour).
+const DefaultFlowDirBudget = 32 << 20
+
 // FlowOpenBytesCap bounds the open blocks of every writer together; a writer
 // over its share flushes early (SPEC §13.6).
 const FlowOpenBytesCap = 64 << 20
@@ -88,8 +98,9 @@ type flowStream struct {
 	rel, abs    string
 	hour        time.Time // the segment's received hour
 	first, last time.Time
-	dirty       bool // flushed since the last fsync
-	pending     bool // appended to since the last flush
+	dirBytes    int64 // the writer's DirBytes as last added to flows.dirBytes
+	dirty       bool  // flushed since the last fsync
+	pending     bool  // appended to since the last flush
 	failed      time.Time
 	meta        []byte    // the exporter's latest metadata blob, given to every segment it opens
 	lastWrite   time.Time // the latest batch's received time (the stream is forgotten an hour after it)
@@ -105,6 +116,81 @@ type flows struct {
 	streams  map[string]*flowStream // by device ID
 	cat      map[string]*flowSeg    // closed segments by rel path
 	catBytes int64
+
+	dirBytes   atomic.Int64 // every open writer's DirBytes
+	partsEarly atomic.Int64 // segments closed early for the budget, since Open
+	earlyLog   time.Time    // the last log line about them (mu)
+	earlyLast  int64        // partsEarly then
+}
+
+// noteFlowDirLocked brings flows.dirBytes up to date with the stream's
+// writer (st.mu held).
+func (s *Store) noteFlowDirLocked(st *flowStream) {
+	n := int64(0)
+	if st.w != nil {
+		n = st.w.DirBytes()
+	}
+	if d := n - st.dirBytes; d != 0 {
+		s.fl.dirBytes.Add(d)
+		st.dirBytes = n
+	}
+}
+
+// FlowDirBytes is what every open flow writer keeps for its written blocks.
+func (s *Store) FlowDirBytes() int64 { return s.fl.dirBytes.Load() }
+
+// keepFlowDirBudget closes open segments, the writer keeping the most
+// first, while every writer's directory together is over FlowDirBudget
+// (SPEC §13.10 decision 58). It runs in the maintenance pass, one stream lock
+// at a time.
+func (s *Store) keepFlowDirBudget(now time.Time) {
+	budget := s.opts.FlowDirBudget
+	if s.fl.dirBytes.Load() <= budget {
+		return
+	}
+	s.fl.mu.Lock()
+	streams := make([]*flowStream, 0, len(s.fl.streams))
+	for _, st := range s.fl.streams {
+		streams = append(streams, st)
+	}
+	s.fl.mu.Unlock()
+	type held struct {
+		st *flowStream
+		n  int64
+	}
+	hs := make([]held, 0, len(streams))
+	for _, st := range streams {
+		st.mu.Lock()
+		if st.w != nil {
+			hs = append(hs, held{st, st.dirBytes})
+		}
+		st.mu.Unlock()
+	}
+	sort.Slice(hs, func(i, j int) bool {
+		if hs[i].n != hs[j].n {
+			return hs[i].n > hs[j].n
+		}
+		return hs[i].st.id < hs[j].st.id
+	})
+	for _, h := range hs {
+		if s.fl.dirBytes.Load() <= budget {
+			break
+		}
+		h.st.mu.Lock()
+		if h.st.w != nil {
+			s.closeFlowLocked(h.st, "")
+			s.fl.partsEarly.Add(1)
+		}
+		h.st.mu.Unlock()
+	}
+	s.fl.mu.Lock()
+	if now.Sub(s.fl.earlyLog) >= time.Hour {
+		n := s.fl.partsEarly.Load()
+		s.log.Info("store: flow segments closed early to keep the writers' memory under its budget; their exporters continue in new parts",
+			"since_last", n-s.fl.earlyLast, "total", n, "budget_bytes", budget)
+		s.fl.earlyLog, s.fl.earlyLast = now, n
+	}
+	s.fl.mu.Unlock()
 }
 
 // FlowBudget returns the flow budget in effect.
@@ -191,6 +277,7 @@ func (s *Store) WriteFlows(addr netip.Addr, b FlowBatch) error {
 	st := s.flowStream(d.id)
 	st.mu.Lock()
 	err := s.appendFlowsLocked(st, rec, &b)
+	s.noteFlowDirLocked(st)
 	st.mu.Unlock()
 
 	d.mu.Lock()
@@ -313,6 +400,7 @@ func (s *Store) flushFlowLocked(st *flowStream) error {
 	err := st.w.Flush()
 	st.dirty, st.pending = true, false
 	s.queueFlowRows(st, false, nil)
+	s.noteFlowDirLocked(st)
 	return err
 }
 
@@ -372,6 +460,7 @@ func (s *Store) closeFlowLocked(st *flowStream, why string) {
 	}
 	st.w = nil
 	st.dirty, st.pending = false, false
+	s.noteFlowDirLocked(st)
 }
 
 // flushFlows writes every open block; with rotate set (the maintenance pass)
@@ -406,6 +495,7 @@ func (s *Store) flushFlows(now time.Time, rotate bool) error {
 			s.fl.mu.Unlock()
 		}
 	}
+	s.keepFlowDirBudget(now)
 	return first
 }
 
