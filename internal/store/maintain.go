@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -577,7 +576,7 @@ func (s *Store) checkFloods(now time.Time) {
 	var total int64
 	senders := 0
 	for id, c := range per {
-		if strings.HasPrefix(id, "_") || c.Bytes == 0 {
+		if id == index.RefusedDeviceID || c.Bytes == 0 {
 			continue
 		}
 		total += c.Bytes
@@ -593,7 +592,7 @@ func (s *Store) checkFloods(now time.Time) {
 	sort.Strings(ids)
 	for _, id := range ids {
 		b := per[id].Bytes
-		if strings.HasPrefix(id, "_") || float64(b) <= floodShare*float64(total) {
+		if id == index.RefusedDeviceID || float64(b) <= floodShare*float64(total) {
 			continue
 		}
 		s.event(index.LevelWarn, index.KindFlood, id, fmt.Sprintf(
