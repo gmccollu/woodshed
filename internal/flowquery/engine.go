@@ -998,32 +998,39 @@ func (e *Engine) Count(ctx context.Context, q Query) (map[string]int64, error) {
 // Raw calls fn with the raw sets of the window's segments whose received
 // time is in [from, to), for the devices.
 func (e *Engine) Raw(ctx context.Context, q Query, fn func(deviceID string, rs *flow.RawSet) error) error {
-	segs, err := e.o.Index.FlowSegmentsWithRaw(ctx, q.DeviceIDs)
-	if err != nil {
-		return err
-	}
 	from, to := q.From.UnixMilli(), q.To.UnixMilli()
-	for _, s := range segs {
-		rd, _, err := openSeg(filepath.Join(e.o.DataDir, filepath.FromSlash(s.Path)))
+	for after := ""; ; {
+		// A page of the window's segments at a time, so a bundle's raw.txt
+		// doesn't hold every raw-holding segment's row.
+		segs, err := e.o.Index.FlowSegmentsWithRaw(ctx, q.DeviceIDs, q.From, q.To, after, planPage)
 		if err != nil {
-			continue
+			return err
 		}
-		var ferr error
-		rd.Raw(func(rs *flow.RawSet) bool {
-			if rs.Received < from || rs.Received >= to {
-				return true
+		for _, s := range segs {
+			rd, _, err := openSeg(filepath.Join(e.o.DataDir, filepath.FromSlash(s.Path)))
+			if err != nil {
+				continue
 			}
-			if ferr = fn(s.DeviceID, rs); ferr != nil {
-				return false
+			var ferr error
+			rd.Raw(func(rs *flow.RawSet) bool {
+				if rs.Received < from || rs.Received >= to {
+					return true
+				}
+				if ferr = fn(s.DeviceID, rs); ferr != nil {
+					return false
+				}
+				return ctx.Err() == nil
+			})
+			rd.Close()
+			if ferr != nil {
+				return ferr
 			}
-			return ctx.Err() == nil
-		})
-		rd.Close()
-		if ferr != nil {
-			return ferr
 		}
+		if len(segs) < planPage || ctx.Err() != nil {
+			return ctx.Err()
+		}
+		after = segs[len(segs)-1].Path
 	}
-	return ctx.Err()
 }
 
 // RuleIDIEs returns the rule IEs in effect.

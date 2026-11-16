@@ -315,15 +315,8 @@ func (b *backend) flowDays(ctx context.Context, rate float64, bud api.FlowBudget
 	if rate <= 0 || bud.UsedBytes <= 0 {
 		return 0, false
 	}
-	segs, err := b.idx.AllFlowSegments(ctx)
-	if err != nil {
-		return 0, false
-	}
-	var recs int64
-	for _, s := range segs {
-		recs += s.Records
-	}
-	if recs == 0 {
+	_, recs, err := b.idx.FlowSegmentsCount(ctx, nil, time.Time{}, time.Time{})
+	if err != nil || recs == 0 {
 		return 0, false
 	}
 	perDay := float64(bud.UsedBytes) / float64(recs) * rate * 86400

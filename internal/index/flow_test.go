@@ -1,6 +1,8 @@
 package index
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -153,5 +155,80 @@ func TestFlowSegmentsPage(t *testing.T) {
 	}
 	if rows, _ := d.FlowSegmentsPage(ctx, []string{}, from, to, false, nil, 4); rows != nil {
 		t.Fatal("an empty device list has rows")
+	}
+}
+
+// A plan's pages (no device list, either direction, from the first or a
+// cursor) walk an order index: no scan and sort of flow_segments a page.
+func TestFlowSegmentsPageUsesIndex(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	from, to := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	for _, asc := range []bool{false, true} {
+		for _, c := range []*FlowSegCursor{nil, {Key: from.UnixMilli() + 1, Path: "logs/x/flows/a.wsf"}} {
+			q, args, ok := flowSegPageSQL(nil, from, to, asc, c, 256)
+			if !ok {
+				t.Fatal("no query")
+			}
+			rows, err := d.db.QueryContext(ctx, `EXPLAIN QUERY PLAN `+q, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var plan []string
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				plan = append(plan, detail)
+			}
+			rows.Close()
+			got := strings.Join(plan, "; ")
+			want := "flow_segments_end"
+			if asc {
+				want = "flow_segments_start"
+			}
+			if !strings.Contains(got, want) || strings.Contains(got, "TEMP B-TREE") {
+				t.Errorf("asc %v cursor %v: %s", asc, c != nil, got)
+			}
+		}
+	}
+}
+
+// FlowSegmentsWithRaw lists only the window's raw-holding segments (by their
+// files rows' received times), a page at a time by path.
+func TestFlowSegmentsWithRawWindowed(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	h := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	var ops []FileOp
+	for i := 0; i < 6; i++ {
+		path := "logs/10.1.0.1/flows/" + h.Add(time.Duration(i)*time.Hour).Format("2006-01-02T15") + ".wsf"
+		recv := h.Add(time.Duration(i) * time.Hour)
+		ops = append(ops, FileOp{Kind: OpUpsert, File: File{DeviceID: "10.1.0.1", Type: TypeFlow, Path: path, Day: "2026-11-16",
+			FirstReceived: recv, LastReceived: recv.Add(59 * time.Minute), Size: 1, RawSize: 1, Lines: 1},
+			Flow: &FlowSegment{Path: path, DeviceID: "10.1.0.1", Start: recv.UnixMilli(), End: recv.UnixMilli(), Raw: int64(i % 3)}})
+	}
+	if err := d.Apply(ctx, Batch{Files: ops}); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for after := ""; ; {
+		rows, err := d.FlowSegmentsWithRaw(ctx, nil, h.Add(90*time.Minute), h.Add(5*time.Hour), after, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		got = append(got, rows[0].Path[len("logs/10.1.0.1/flows/"):])
+		after = rows[0].Path
+	}
+	// Hours 1 to 4 overlap; of those, 1, 2 and 4 hold raw sets.
+	if want := "[2026-11-16T01.wsf 2026-11-16T02.wsf 2026-11-16T04.wsf]"; fmt.Sprint(got) != want {
+		t.Fatalf("got %v, want %s", got, want)
+	}
+	all, _ := d.FlowSegmentsWithRaw(ctx, nil, time.Time{}, time.Time{}, "", 100)
+	if len(all) != 4 {
+		t.Fatalf("%d with open bounds, want 4", len(all))
 	}
 }
