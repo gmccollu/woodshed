@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"runtime/metrics"
 	"slices"
 	"sort"
 	"sync"
@@ -44,12 +45,19 @@ type Options struct {
 	DataDir string
 	Index   *index.DB
 	// Open returns the open segments of deviceIDs (nil: all).
-	Open    func(deviceIDs []string) []OpenSegment
-	Workers int // default GOMAXPROCS
+	Open func(deviceIDs []string) []OpenSegment
+	// Workers read blocks in parallel, shared by every query on the engine
+	// (default GOMAXPROCS, at most DefaultWorkers): each holds a block's
+	// decode buffers (about 10 MiB).
+	Workers int
 	Clock   func() time.Time
 	Logger  *slog.Logger
 	// MaxExactKeys overrides DefaultExactKeys (tests).
 	MaxExactKeys int
+	// PoolBytes is the bytes all queries' exact top-N tables and summary
+	// values may take (default DefaultPoolBytes); saved states are dropped,
+	// least recently used first, to make room, then tables turn approximate.
+	PoolBytes int64
 	// RuleIDIEs fill rule_id in raw sets decoded on read (as the collector does).
 	RuleIDIEs []flow.IEKey
 }
@@ -60,6 +68,53 @@ type Engine struct {
 	mu     sync.Mutex
 	states map[string]*state
 	rules  atomic.Pointer[[]flow.IEKey] // RuleIDIEs in effect (SetRuleIDIEs)
+	pool   *Pool
+	slots  chan *slot
+
+	gcMu                  sync.Mutex
+	gcCycles, gcAllocBase uint64
+}
+
+// While a query holds a big exact table (at least gcNudgePool of the pool),
+// the engine runs a collection after any wave that follows gcNudgeBytes of
+// allocation. Go's pacer lets garbage reach the live heap's size before
+// collecting, so a long scan beside a 130 MiB table would otherwise peak
+// near twice that; the table holds no pointers, so a collection is cheap.
+const (
+	gcNudgePool  = 32 << 20
+	gcNudgeBytes = 16 << 20
+)
+
+var gcSamples = []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}, {Name: "/gc/cycles/total:gc-cycles"}}
+
+func (e *Engine) gcNudge() {
+	if e.pool.Used() < gcNudgePool {
+		return
+	}
+	e.gcMu.Lock()
+	defer e.gcMu.Unlock()
+	s := slices.Clone(gcSamples)
+	metrics.Read(s)
+	allocs, cycles := s[0].Value.Uint64(), s[1].Value.Uint64()
+	if cycles != e.gcCycles {
+		e.gcCycles, e.gcAllocBase = cycles, allocs // collected since: count from here
+		return
+	}
+	if allocs-e.gcAllocBase >= gcNudgeBytes {
+		runtime.GC()
+		metrics.Read(s)
+		e.gcAllocBase, e.gcCycles = s[0].Value.Uint64(), s[1].Value.Uint64()
+	}
+}
+
+// DefaultWorkers caps the default worker count (the reference box's 4
+// vCPU), which bounds the block buffers (SPEC §13.6).
+const DefaultWorkers = 4
+
+// slot is a worker's reusable decode buffers.
+type slot struct {
+	blk flowseg.Block
+	rec flow.Record
 }
 
 // SetRuleIDIEs changes the IEs that fill rule_id in raw sets decoded on read
@@ -92,7 +147,10 @@ var ErrCursor = errors.New("cursor: from another query; start again without it."
 // New returns an engine.
 func New(o Options) *Engine {
 	if o.Workers <= 0 {
-		o.Workers = runtime.GOMAXPROCS(0)
+		o.Workers = min(runtime.GOMAXPROCS(0), DefaultWorkers)
+	}
+	if o.PoolBytes <= 0 {
+		o.PoolBytes = DefaultPoolBytes
 	}
 	if o.Clock == nil {
 		o.Clock = time.Now
@@ -103,7 +161,11 @@ func New(o Options) *Engine {
 	if o.MaxExactKeys <= 0 {
 		o.MaxExactKeys = DefaultExactKeys
 	}
-	e := &Engine{o: o, states: map[string]*state{}}
+	e := &Engine{o: o, states: map[string]*state{}, pool: NewPool(o.PoolBytes), slots: make(chan *slot, o.Workers)}
+	for range o.Workers {
+		e.slots <- &slot{}
+	}
+	e.pool.full = e.evictOne
 	e.SetRuleIDIEs(o.RuleIDIEs)
 	return e
 }
@@ -313,11 +375,38 @@ func (p *plan) frontier(done int) time.Time {
 	return time.UnixMilli(max(p.blocks[done].maxEnd, p.from)).UTC()
 }
 
-// readers opens the segments a range of blocks needs, shared by the workers.
+// readers opens the segments a range of blocks needs, shared by the workers,
+// and closes each once its last block in the range is read, so only the
+// segments being read hold their footers.
 type readers struct {
-	mu  sync.Mutex
-	p   *plan
-	rds map[int]*flowseg.Reader
+	mu   sync.Mutex
+	p    *plan
+	rds  map[int]*flowseg.Reader
+	left map[int]int // blocks still to read, by segment (nil: never close early)
+}
+
+// from counts the blocks to read from plan block lo on.
+func (r *readers) from(lo int) *readers {
+	r.left = map[int]int{}
+	for _, b := range r.p.blocks[lo:] {
+		r.left[b.seg]++
+	}
+	return r
+}
+
+// done records a block of segment si read.
+func (r *readers) done(si int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.left == nil {
+		return
+	}
+	if r.left[si]--; r.left[si] <= 0 {
+		if rd := r.rds[si]; rd != nil {
+			rd.Close()
+			delete(r.rds, si)
+		}
+	}
 }
 
 func (r *readers) get(si int) (*flowseg.Reader, error) {
@@ -385,61 +474,42 @@ func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, lo, hi int, f *
 		return nil
 	}
 	useIndex := !f.Empty()
+	// The workers' buffers are the engine's, shared with other queries: wait
+	// for one, take any others free.
+	var got []*slot
+	select {
+	case sl := <-e.slots:
+		got = append(got, sl)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+more:
+	for len(got) < min(e.o.Workers, hi-lo) {
+		select {
+		case sl := <-e.slots:
+			got = append(got, sl)
+		default:
+			break more
+		}
+	}
+	defer func() {
+		for _, sl := range got {
+			e.slots <- sl
+		}
+	}()
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	var firstErr error
 	var errMu sync.Mutex
-	workers := min(e.o.Workers, hi-lo)
-	for w := 0; w < workers; w++ {
+	for w := range got {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			var blk flowseg.Block
-			var rec flow.Record
+			blk, rec := &got[w].blk, &got[w].rec
 			for bi := range jobs {
 				b := &p.blocks[bi]
-				r, err := rd.get(b.seg)
-				if err == nil && b.raw {
-					err = rawRecords(r, e.ruleIEs(), func(i int, rec *flow.Record) {
-						s, en := flowseg.EffectiveTimes(rec)
-						if en >= p.from && s < p.to && f.Match(rec) {
-							fn(w, b, -1-i, rec)
-						}
-					})
-					if err != nil {
-						errMu.Lock()
-						if firstErr == nil {
-							firstErr = fmt.Errorf("flows: %s raw sets: %w", p.segs[b.seg].Rel, err)
-						}
-						errMu.Unlock()
-					}
-					continue
-				}
-				if err == nil && useIndex {
-					var info *flowseg.BlockInfo
-					if info, err = r.Block(b.block); err == nil && !f.BlockMay(info) {
-						continue
-					}
-				}
-				if err == nil {
-					err = r.Decode(b.block, cols, &blk)
-				}
-				if err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = fmt.Errorf("flows: %s block %d: %w", p.segs[b.seg].Rel, b.block, err)
-					}
-					errMu.Unlock()
-					continue
-				}
-				for row := 0; row < blk.Rows; row++ {
-					blk.Record(row, &rec)
-					s, en := flowseg.EffectiveTimes(&rec)
-					if en < p.from || s >= p.to || !f.Match(&rec) {
-						continue
-					}
-					fn(w, b, row, &rec)
-				}
+				e.scanBlock(p, rd, b, w, blk, rec, useIndex, f, cols, fn, &errMu, &firstErr)
+				rd.done(b.seg)
 			}
 		}(w)
 	}
@@ -457,6 +527,52 @@ func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, lo, hi int, f *
 	return ctx.Err()
 }
 
+// scanBlock reads one planned block for a scan's worker w.
+func (e *Engine) scanBlock(p *plan, rd *readers, b *planned, w int, blk *flowseg.Block, rec *flow.Record, useIndex bool,
+	f *Filter, cols flowseg.Cols, fn scanFn, errMu *sync.Mutex, firstErr *error) {
+	fail := func(err error) {
+		errMu.Lock()
+		if *firstErr == nil {
+			*firstErr = err
+		}
+		errMu.Unlock()
+	}
+	r, err := rd.get(b.seg)
+	if err == nil && b.raw {
+		err = rawRecords(r, e.ruleIEs(), func(i int, rec *flow.Record) {
+			s, en := flowseg.EffectiveTimes(rec)
+			if en >= p.from && s < p.to && f.Match(rec) {
+				fn(w, b, -1-i, rec)
+			}
+		})
+		if err != nil {
+			fail(fmt.Errorf("flows: %s raw sets: %w", p.segs[b.seg].Rel, err))
+		}
+		return
+	}
+	if err == nil && useIndex {
+		var info *flowseg.BlockInfo
+		if info, err = r.Block(b.block); err == nil && !f.BlockMay(info) {
+			return
+		}
+	}
+	if err == nil {
+		err = r.Decode(b.block, cols, blk)
+	}
+	if err != nil {
+		fail(fmt.Errorf("flows: %s block %d: %w", p.segs[b.seg].Rel, b.block, err))
+		return
+	}
+	for row := 0; row < blk.Rows; row++ {
+		blk.Record(row, rec)
+		s, en := flowseg.EffectiveTimes(rec)
+		if en < p.from || s >= p.to || !f.Match(rec) {
+			continue
+		}
+		fn(w, b, row, rec)
+	}
+}
+
 // wave is how many blocks are read between budget checks.
 func (e *Engine) wave() int { return max(e.o.Workers*waveBlocksPerW, 4) }
 
@@ -469,9 +585,41 @@ type state struct {
 	plan     *plan
 	done     int // blocks done
 	recsDone int64
-	top      *Top
+	agg      aggregator // a top-N's
+	total    Sums
 	sum      *summaryAcc
 	mu       sync.Mutex
+}
+
+// free returns a state's pool bytes.
+func (st *state) free() {
+	if st.agg != nil {
+		st.agg.free()
+	}
+	if st.sum != nil {
+		st.sum.free()
+	}
+}
+
+// evictOne drops the least recently used saved state (the pool's full
+// hook) and reports whether there was one.
+func (e *Engine) evictOne() bool {
+	e.mu.Lock()
+	var old *state
+	for _, s := range e.states {
+		if old == nil || s.used.Before(old.used) {
+			old = s
+		}
+	}
+	if old != nil {
+		delete(e.states, old.id)
+	}
+	e.mu.Unlock()
+	if old == nil {
+		return false
+	}
+	old.free()
+	return true
 }
 
 func (e *Engine) newState(key string, p *plan) *state {
@@ -481,6 +629,12 @@ func (e *Engine) newState(key string, p *plan) *state {
 }
 
 func (e *Engine) saveState(st *state) {
+	var gone []*state
+	defer func() {
+		for _, s := range gone {
+			s.free()
+		}
+	}()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.o.Clock()
@@ -488,6 +642,7 @@ func (e *Engine) saveState(st *state) {
 	for id, s := range e.states {
 		if now.Sub(s.used) > StateTTL {
 			delete(e.states, id)
+			gone = append(gone, s)
 		}
 	}
 	e.states[st.id] = st
@@ -499,6 +654,7 @@ func (e *Engine) saveState(st *state) {
 			}
 		}
 		delete(e.states, old.id)
+		gone = append(gone, old)
 	}
 }
 
@@ -508,6 +664,9 @@ func (e *Engine) takeState(cursor, key string) (*state, error) {
 	st := e.states[cursor]
 	if st == nil || e.o.Clock().Sub(st.used) > StateTTL {
 		delete(e.states, cursor)
+		if st != nil {
+			go st.free() // not under e.mu
+		}
 		return nil, ErrExpired
 	}
 	if st.key != key {
@@ -521,12 +680,16 @@ func (e *Engine) takeState(cursor, key string) (*state, error) {
 
 // TopResult is a top-N answer.
 type TopResult struct {
-	Rows     []Row
-	Total    Sums
-	Approx   bool
-	Progress Progress
-	Partial  bool
-	Cursor   string
+	Rows   []Row
+	Total  Sums
+	Approx bool
+	// ErrorBound: a key not in Rows has at most this of the metric beyond
+	// what the exact rows show (0 while exact); each approximate row has its
+	// own Err.
+	ErrorBound int64
+	Progress   Progress
+	Partial    bool
+	Cursor     string
 }
 
 // Top ranks the window's records by by and metric, within budget.
@@ -539,49 +702,41 @@ func (e *Engine) Top(ctx context.Context, q Query, by, metric string, n int, bud
 			return TopResult{}, err
 		}
 	} else {
+		if !contains(ByKeys, by) {
+			return TopResult{}, fmt.Errorf("by: %q isn't one of %v", by, ByKeys)
+		}
+		if !contains(Metrics, metric) {
+			return TopResult{}, fmt.Errorf("metric: %q isn't one of %v", metric, Metrics)
+		}
 		p, err := e.planFor(ctx, &q, false)
 		if err != nil {
 			return TopResult{}, err
 		}
-		top, err := NewTop(by, metric)
-		if err != nil {
-			return TopResult{}, err
-		}
-		top.MaxExact = e.o.MaxExactKeys
 		st = e.newState(key, p)
-		st.top = top
+		st.agg = newAggregator(by, metric, aggOptions{maxKeys: e.o.MaxExactKeys, pool: e.pool, size: querySize})
 	}
+	saved := false
+	defer func() {
+		if !saved {
+			st.free()
+		}
+	}()
 	f := q.filter()
 	cols := colsFor(f, flowseg.Cols(KeyCols(by)|CounterCols)|flowseg.ColSampling)
-	// Each worker counts into its own table for the whole request; they're
-	// merged into the running counts once at the end (merging after every
-	// wave cost more than the scan when there are many distinct keys).
-	// A worker's table that reaches its share of the exact limit flushes into
-	// the running table at once, so memory stays bounded (about twice the
-	// limit's entries) while the running table is exact up to the limit.
-	share := max(e.o.MaxExactKeys/e.o.Workers, 1024)
-	newTop := func() *Top {
-		t, _ := NewTop(by, metric)
-		t.MaxExact = share + 1 // flushed before it would turn approximate
-		return t
+	// The workers share the state's one table (agg.go): each combines repeated
+	// keys locally and hands them over in batches, flushed before reading.
+	conv := by == "conversation"
+	locals := make([]local, e.o.Workers)
+	totals := make([]Sums, e.o.Workers)
+	for i := range locals {
+		locals[i] = st.agg.newLocal()
 	}
-	tops := make([]*Top, e.o.Workers)
-	for i := range tops {
-		tops[i] = newTop()
-	}
-	var mergeMu sync.Mutex
 	add := func(w int, _ *planned, _ int, r *flow.Record) {
-		t := tops[w]
-		t.Add(r)
-		if t.Keys() >= share {
-			mergeMu.Lock()
-			st.top.Merge(t)
-			mergeMu.Unlock()
-			tops[w] = newTop()
-		}
+		totals[w].add(r, conv)
+		locals[w].add(r)
 	}
 	deadline := time.Now().Add(budget)
-	rd := &readers{p: st.plan}
+	rd := (&readers{p: st.plan}).from(st.done)
 	defer rd.close()
 	// At least one wave per request, so a continuation always progresses.
 	for first := true; st.done < len(st.plan.blocks) && (first || time.Now().Before(deadline)); first = false {
@@ -591,19 +746,22 @@ func (e *Engine) Top(ctx context.Context, q Query, by, metric string, n int, bud
 		if err := e.scan(ctx, st.plan, rd, st.done, hi, f, cols, add); err != nil {
 			return TopResult{}, err
 		}
+		e.gcNudge()
 		for _, b := range st.plan.blocks[st.done:hi] {
 			st.recsDone += int64(b.rows)
 		}
 		st.done = hi
 	}
-	for _, t := range tops {
-		st.top.Merge(t)
+	for i := range locals {
+		locals[i].flush()
+		st.total.merge(&totals[i])
 	}
-	res := TopResult{Rows: st.top.Rows(n), Total: st.top.Total, Approx: st.top.Approx(),
+	res := TopResult{Rows: st.agg.rows(n), Total: st.total, Approx: st.agg.approx(), ErrorBound: st.agg.errorBound(),
 		Progress: Progress{BlocksDone: int64(st.done), BlocksTotal: int64(len(st.plan.blocks)), RecordsDone: st.recsDone,
 			RecordsTotal: st.plan.rows, CompleteFrom: st.plan.frontier(st.done)}}
 	if st.done < len(st.plan.blocks) {
 		res.Partial = true
+		saved = true
 		e.saveState(st)
 		res.Cursor = st.id
 	}
@@ -734,7 +892,7 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 	h := &hitHeap{asc: asc}
 	var mu sync.Mutex
 	deadline := time.Now().Add(budget)
-	rd := &readers{p: p}
+	rd := (&readers{p: p}).from(0)
 	defer rd.close()
 	done := 0
 	var recs int64
@@ -854,11 +1012,16 @@ func (e *Engine) Each(ctx context.Context, q Query, fn func(deviceID string, r *
 		return false
 	})
 	f := q.filter()
-	rd := &readers{p: p}
+	rd := (&readers{p: p}).from(0)
 	defer rd.close()
 	var blk flowseg.Block
 	var rec flow.Record
+	prev := -1
 	for _, b := range p.blocks {
+		if prev >= 0 {
+			rd.done(prev)
+		}
+		prev = b.seg
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -925,7 +1088,7 @@ func (e *Engine) Count(ctx context.Context, q Query) (map[string]int64, error) {
 	for i := range counts {
 		counts[i] = map[string]int64{}
 	}
-	rd := &readers{p: p}
+	rd := (&readers{p: p}).from(0)
 	defer rd.close()
 	if err := e.scan(ctx, p, rd, 0, len(p.blocks), f, colsFor(f, 0), func(w int, b *planned, _ int, _ *flow.Record) {
 		counts[w][p.segs[b.seg].DeviceID]++
