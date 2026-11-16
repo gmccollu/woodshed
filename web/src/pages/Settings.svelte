@@ -383,7 +383,7 @@
     pollPresets: 'Default presets',
     flowEnabled: 'Flows',
     flowAddr: 'Flow bind address',
-    flowNetflowPort: 'NetFlow port',
+    flowPort: 'Flow port',
     flowIpfixPort: 'IPFIX port',
     flowTimeout: 'Template timeout',
     flowRuleIes: 'Rule ID fields',
@@ -473,7 +473,7 @@
     'poll.presets',
     'listeners.flow.enabled',
     'listeners.flow.addr',
-    'listeners.flow.netflow_port',
+    'listeners.flow.flow_port',
     'listeners.flow.ipfix_port',
     'listeners.flow.template_timeout',
     'listeners.flow.rule_id_ies',
@@ -1045,7 +1045,7 @@
       <section class="card" id="flows">
         <h2 class="sec">Flows</h2>
         <p class="hint mt-0">
-          NetFlow v5, v9 and IPFIX from routers, switches and firewalls, kept beside their logs: who talked to whom, on which ports, how much, and the
+          Flow export (flow v5, flow v9 (RFC 3954) and IPFIX (RFC 7011)) from routers, switches and firewalls, kept beside their logs: who talked to whom, on which ports, how much, and the
           firewall's created, deleted and denied connections with their NAT. Both ports accept every version. Flows are searched in
           <a class="text-link underline" href="#/events?type=flow&r=1h">Events → Flows</a>.
         </p>
@@ -1053,7 +1053,7 @@
           <legend class="sr-only">Flow listener</legend>
           <label class="flex items-center gap-2 font-semibold sm:col-span-4">
             <input type="checkbox" bind:checked={form.flowEnabled} aria-invalid={!!err('listeners.flow.enabled')} aria-describedby="err-listeners.flow.enabled" />
-            Flows (NetFlow, IPFIX)
+            Flows (flow v5, v9, IPFIX)
           </label>
           <label class="lbl">
             <span>Bind address</span>
@@ -1061,9 +1061,9 @@
             {@render fieldError('listeners.flow.addr')}
           </label>
           <label class="lbl">
-            <span>NetFlow port</span>
-            <input class="field" type="number" min="0" max="65535" bind:value={form.flowNetflowPort} aria-invalid={!!err('listeners.flow.netflow_port')} aria-describedby="err-listeners.flow.netflow_port" />
-            {@render fieldError('listeners.flow.netflow_port')}
+            <span>Flow port</span>
+            <input class="field" type="number" min="0" max="65535" bind:value={form.flowPort} aria-invalid={!!err('listeners.flow.flow_port')} aria-describedby="err-listeners.flow.flow_port" />
+            {@render fieldError('listeners.flow.flow_port')}
           </label>
           <label class="lbl">
             <span>IPFIX port</span>
@@ -1077,7 +1077,7 @@
             <span class="hint" id="hint-ftt">A template not refreshed for this long expires (1m to 24h).</span>
           </label>
           <span class="hint sm:col-span-4">
-            Defaults 2055 for NetFlow and 4739 for IPFIX; 0 turns one port off. The Windows installer adds the firewall rules "Woodshed flows (UDP 2055)"
+            Defaults 2055 for the flow port (v5 and v9; any version is accepted on either port) and 4739 for IPFIX; 0 turns one port off. The Windows installer adds the firewall rules "Woodshed flows (UDP 2055)"
             and "Woodshed flows (UDP 4739)" turned off; <code>woodshed flow on</code>, in an administrator prompt{isWindows ? '' : ' or with sudo'}, turns
             them on with the listener, and on Linux opens the ports in ufw or firewalld when one is active.
           </span>

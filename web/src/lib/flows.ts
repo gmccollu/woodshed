@@ -1,4 +1,4 @@
-// Flows (NetFlow v5/v9 and IPFIX, SPEC §13, docs/api.md → 2.0): the API's shapes, the filter
+// Flows (flow v5, flow v9 and IPFIX, SPEC §13, docs/api.md → 2.0): the API's shapes, the filter
 // parameters, the Top views, and the formatters the Flows tab, the flow strip, the device page,
 // Settings and the bundle share. Pure functions only, so `npm test` runs them under plain node.
 
@@ -11,8 +11,8 @@ export const FLOW = 'flow';
 export interface FlowListenerSettings {
   enabled: boolean;
   addr: string;
-  /** NetFlow v5 and v9 (any version is accepted on either port); 0 turns it off. */
-  netflow_port: number;
+  /** The flow port: v5 and v9 (any version is accepted on either port); 0 turns it off. */
+  flow_port: number;
   ipfix_port: number;
   /** A duration, "30m" (1 min to 24 h). */
   template_timeout: string;
@@ -629,7 +629,7 @@ export function flowReadme(s: FlowBundleSummary): string {
 export interface FlowSettingsForm {
   flowEnabled: boolean;
   flowAddr: string;
-  flowNetflowPort: number;
+  flowPort: number;
   flowIpfixPort: number;
   /** As typed: "30m", "1h". */
   flowTimeout: string;
@@ -642,7 +642,7 @@ export interface FlowSettingsForm {
 export const DEFAULT_FLOW: FlowListenerSettings = {
   enabled: false,
   addr: '0.0.0.0',
-  netflow_port: 2055,
+  flow_port: 2055,
   ipfix_port: 4739,
   template_timeout: '30m',
   rule_id_ies: [],
@@ -655,7 +655,7 @@ export function flowSettingsForm(l: FlowListenerSettings | undefined, budgetByte
   return {
     flowEnabled: s.enabled,
     flowAddr: s.addr,
-    flowNetflowPort: s.netflow_port,
+    flowPort: s.flow_port,
     flowIpfixPort: s.ipfix_port,
     flowTimeout: s.template_timeout,
     flowRuleIes: (s.rule_id_ies ?? []).join('\n'),
@@ -674,7 +674,7 @@ export function flowListenerBody(f: FlowSettingsForm): FlowListenerSettings {
   return {
     enabled: f.flowEnabled,
     addr: f.flowAddr.trim(),
-    netflow_port: num0(f.flowNetflowPort),
+    flow_port: num0(f.flowPort),
     ipfix_port: num0(f.flowIpfixPort),
     template_timeout: Number.isFinite(t) && t > 0 ? formatDuration(t) : f.flowTimeout.trim(),
     rule_id_ies: ruleIesOf(f.flowRuleIes),
@@ -687,10 +687,10 @@ export const flowBudgetBody = (f: FlowSettingsForm) => Math.round(num0(f.flowBud
 /** The form's own checks, shown before saving (the server checks the same). */
 export function flowFormErrors(f: FlowSettingsForm, retentionBytes: number): Record<string, string> {
   const e: Record<string, string> = {};
-  for (const [k, v] of [['listeners.flow.netflow_port', f.flowNetflowPort], ['listeners.flow.ipfix_port', f.flowIpfixPort]] as const)
+  for (const [k, v] of [['listeners.flow.flow_port', f.flowPort], ['listeners.flow.ipfix_port', f.flowIpfixPort]] as const)
     if (!Number.isInteger(v) || v < 0 || v > 65535) e[k] = 'Use 0 (off) or a port from 1 to 65535.';
-  if (f.flowEnabled && !num0(f.flowNetflowPort) && !num0(f.flowIpfixPort)) e['listeners.flow.ipfix_port'] = 'Turn at least one port on while flows are on.';
-  if (f.flowEnabled && num0(f.flowNetflowPort) && num0(f.flowNetflowPort) === num0(f.flowIpfixPort)) e['listeners.flow.ipfix_port'] = 'Use two different ports, or 0 to turn one off.';
+  if (f.flowEnabled && !num0(f.flowPort) && !num0(f.flowIpfixPort)) e['listeners.flow.ipfix_port'] = 'Turn at least one port on while flows are on.';
+  if (f.flowEnabled && num0(f.flowPort) && num0(f.flowPort) === num0(f.flowIpfixPort)) e['listeners.flow.ipfix_port'] = 'Use two different ports, or 0 to turn one off.';
   const t = parseDuration(f.flowTimeout);
   if (!Number.isFinite(t) || t < 60_000 || t > 24 * 3600_000) e['listeners.flow.template_timeout'] = 'Use 1m to 24h, e.g. 30m.';
   const ies = ruleIesOf(f.flowRuleIes);

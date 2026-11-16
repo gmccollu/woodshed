@@ -42,7 +42,7 @@ test('the fixture covers the 2.0 flow forms as the contract expects', () => {
   const by = Object.fromEntries(built.steps.map((s) => [s.name, s]));
   const fs = by.settings_flow_save.body as { listeners: { flow: Record<string, unknown> }; storage: { flow_budget_bytes: number } };
   assert.deepEqual(fs.listeners.flow, {
-    enabled: true, addr: '0.0.0.0', netflow_port: '{flow_netflow_port}', ipfix_port: '{flow_ipfix_port}', template_timeout: '45m', rule_id_ies: ['32473:7', '32473:9'],
+    enabled: true, addr: '0.0.0.0', flow_port: '{flow_port}', ipfix_port: '{flow_ipfix_port}', template_timeout: '45m', rule_id_ies: ['32473:7', '32473:9'],
   });
   assert.equal(fs.storage.flow_budget_bytes, 2 * 1024 ** 3);
   const all = by.export_every_type.body as Record<string, unknown>;

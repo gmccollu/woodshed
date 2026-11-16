@@ -7,7 +7,7 @@
 //   edge-fw-01 (10.1.0.1)    an event-style firewall over IPFIX, domain 1, unsampled: created, update,
 //                            deleted (with initiator and responder totals) and denied events, NAT to
 //                            192.0.2.10, a rule ID in an enterprise IE (32473:7)
-//   core-sw-01 (10.1.0.10)   NetFlow v9, source ID 256, sampled 1 in 1,000, interface names from options data
+//   core-sw-01 (10.1.0.10)   flow v9, source ID 256, sampled 1 in 1,000, interface names from options data
 //   branch-fw-08 (10.8.0.1)  IPFIX biflows (RFC 5103 reverse counters), domain 1 unsampled and domain 2
 //                            with no sampling information (scaled sums are lower bounds)
 // URL parameters: mock_flows=0 (no flows and the listener off), mock_flow_partial=1 (each top-N and
@@ -34,7 +34,7 @@ export const flowMock = {
   banners: P.get('mock_flow_banners') === '1',
 };
 
-export const flowDefaults = () => ({ enabled: ON, addr: '0.0.0.0', netflow_port: 2055, ipfix_port: 4739, template_timeout: '30m', rule_id_ies: ['32473:7'] });
+export const flowDefaults = () => ({ enabled: ON, addr: '0.0.0.0', flow_port: 2055, ipfix_port: 4739, template_timeout: '30m', rule_id_ies: ['32473:7'] });
 
 export const FLOW_EXPORTERS = ['10.1.0.1', '10.1.0.10', '10.8.0.1'];
 

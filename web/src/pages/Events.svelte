@@ -246,7 +246,7 @@
   /** The Flows tab shows when the flow listener is on or flow segments exist (SPEC §13.3). */
   const showFlows = $derived(
     !!flowType &&
-      (dtype === FLOW || flowFilesSeen || !!live.status?.listeners.some((l) => l.proto === 'netflow' || l.proto === 'ipfix') || !!live.devices?.some((d) => d.types?.includes(FLOW))),
+      (dtype === FLOW || flowFilesSeen || !!live.status?.listeners.some((l) => l.proto === 'flow' || l.proto === 'ipfix') || !!live.devices?.some((d) => d.types?.includes(FLOW))),
   );
   const showTraps = $derived(
     !!trapType && (dtype === TRAP || trapFilesSeen || !!live.status?.listeners.some((l) => l.proto === 'snmp') || !!live.devices?.some((d) => d.types?.includes(TRAP))),

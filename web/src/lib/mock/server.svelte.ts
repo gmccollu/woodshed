@@ -777,13 +777,13 @@ function validate(s: Settings): Record<string, string> {
   // 2.0: the flow listener and its budget (docs/api.md → Flow listener).
   const fl = s.listeners.flow;
   if (fl) {
-    for (const k of ['netflow_port', 'ipfix_port'] as const) {
+    for (const k of ['flow_port', 'ipfix_port'] as const) {
       const v = fl[k];
       if (!Number.isInteger(v) || v < 0 || v > 65535) e[`listeners.flow.${k}`] = 'Use 0 (off) or a port from 1 to 65535.';
     }
-    if (fl.enabled && !fl.netflow_port && !fl.ipfix_port) e['listeners.flow.ipfix_port'] = 'Turn at least one flow port on, or turn flows off.';
-    if (fl.enabled && fl.netflow_port && fl.netflow_port === fl.ipfix_port) e['listeners.flow.ipfix_port'] = 'The NetFlow and IPFIX ports must differ.';
-    for (const k of ['netflow_port', 'ipfix_port'] as const)
+    if (fl.enabled && !fl.flow_port && !fl.ipfix_port) e['listeners.flow.ipfix_port'] = 'Turn at least one flow port on, or turn flows off.';
+    if (fl.enabled && fl.flow_port && fl.flow_port === fl.ipfix_port) e['listeners.flow.ipfix_port'] = 'The flow and IPFIX ports must differ.';
+    for (const k of ['flow_port', 'ipfix_port'] as const)
       if (fl.enabled && fl[k] && s.listeners.udp.enabled && fl[k] === s.listeners.udp.port) e[`listeners.flow.${k}`] = `UDP ${fl[k]} is the syslog listener's port.`;
     if (!isIP(fl.addr)) e['listeners.flow.addr'] = 'Not an IP address.';
     const t = parseDuration(fl.template_timeout);
@@ -1182,7 +1182,7 @@ function statusJSON(): Status {
   if (l.tls?.enabled) listeners.push({ proto: 'tls', addr: l.tls.addr, port: l.tls.port, ok: true, error: '' });
   if (l.snmp?.enabled) listeners.push({ proto: 'snmp', addr: l.snmp.addr, port: l.snmp.port, ok: true, error: '' });
   if (l.flow?.enabled) {
-    if (l.flow.netflow_port) listeners.push({ proto: 'netflow', addr: l.flow.addr, port: l.flow.netflow_port, ok: true, error: '' });
+    if (l.flow.flow_port) listeners.push({ proto: 'flow', addr: l.flow.addr, port: l.flow.flow_port, ok: true, error: '' });
     if (l.flow.ipfix_port) listeners.push({ proto: 'ipfix', addr: l.flow.addr, port: l.flow.ipfix_port, ok: true, error: '' });
   }
   const banners: Status['banners'] = [];
