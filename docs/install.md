@@ -63,7 +63,7 @@ From 1.0.0, `https://github.com/gmccollu/woodshed/releases/latest` works as usua
 | System | File |
 |---|---|
 | Windows 10/11, Server 2016+ (x64, ARM64) | `woodshed_X.Y.Z_windows_amd64.msi` / `..._arm64.msi` |
-| macOS 13 or later (Apple silicon and Intel) | `woodshed_X.Y.Z_macos_universal.pkg` |
+| macOS 13 or later (x64 and ARM64) | `woodshed_X.Y.Z_macos_universal.pkg` |
 | Debian, Ubuntu | `woodshed_X.Y.Z_amd64.deb` / `..._arm64.deb` |
 | Fedora, RHEL, Rocky, Alma, openSUSE | `woodshed-X.Y.Z-1.x86_64.rpm` / `...aarch64.rpm` |
 | Any Linux, or no service | `woodshed_X.Y.Z_linux_amd64.tar.gz` (and `_arm64`, `_darwin_universal`, `_windows_*.zip`) |
@@ -167,7 +167,7 @@ To decide the update check for a silent install, see [The update check on many m
 
 The installer:
 - creates a hidden system user and group, `_woodshed`, that the service runs as;
-- installs `/usr/local/bin/woodshed` (one binary for Apple silicon and Intel) and the launchd daemon
+- installs `/usr/local/bin/woodshed` (one binary for x64 and ARM64) and the launchd daemon
   `/Library/LaunchDaemons/com.woodshed.daemon.plist`, which starts at boot and is restarted if it stops;
 - creates `/Library/Application Support/Woodshed` and `/Library/Logs/Woodshed`, owned by `_woodshed`.
 
@@ -181,7 +181,7 @@ sudo /usr/local/share/woodshed/uninstall.sh --delete-logs  # also deletes them a
 ```
 
 **Gatekeeper (while the installer is unsigned and not notarized):** macOS says the package "can't be opened"
-because Apple can't check it. Click **Done**, open **System Settings → Privacy & Security**, scroll to the message
+because macOS can't check it. Click **Done**, open **System Settings → Privacy & Security**, scroll to the message
 about the Woodshed package and click **Open Anyway**, then confirm. (On current macOS, Control-click → Open no longer
 skips this.) The `sudo installer` command above doesn't show the prompt.
 

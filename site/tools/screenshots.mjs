@@ -75,7 +75,7 @@ const SHOTS = [
       && document.querySelector('#dl-status b').textContent === 'Release candidate 0.9.0-rc2 is available for testing.'
       && !!document.getElementById('dl-rc-note') && [...document.querySelectorAll('#dl-primary .asset .f')][0].textContent.startsWith('woodshed_0.9.0-rc2_windows_amd64.msi')` },
   { name: 'home-mac-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: MAC, rel: 'release',
-    check: `[...document.querySelectorAll('#dl-primary .asset .n')].map((x) => x.textContent).join('|') === 'macOS installer (Intel and Apple silicon)|macOS portable (Intel and Apple silicon)'` },
+    check: `[...document.querySelectorAll('#dl-primary .asset .n')].map((x) => x.textContent).join('|') === 'macOS installer (x64 and ARM64)|macOS portable (x64 and ARM64)'` },
   { name: 'home-linux-arm-dark', mode: 'dark', path: '/#download', w: 1400, h: 900, client: LINUX_ARM, rel: 'release',
     check: `document.querySelectorAll('#dl-primary .asset.best').length === 3 && document.querySelector('#dl-status').textContent.includes('on ARM')` },
   { name: 'home-fallback-light', mode: 'light', path: '/#download', w: 1400, h: 900, client: WIN, rel: 'none',

@@ -67,14 +67,14 @@ test('"other downloads" lists everything else, and nothing is lost', () => {
 const LABELS = [
   'Windows installer (x64)',
   'Windows installer (ARM64)',
-  'macOS installer (Intel and Apple silicon)',
+  'macOS installer (x64 and ARM64)',
   'Debian / Ubuntu package (x64)',
   'Debian / Ubuntu package (ARM64)',
   'Fedora / RHEL package (x64)',
   'Fedora / RHEL package (ARM64)',
   'Windows portable (x64)',
   'Windows portable (ARM64)',
-  'macOS portable (Intel and Apple silicon)',
+  'macOS portable (x64 and ARM64)',
   'Linux portable (x64)',
   'Linux portable (ARM64)',
 ];
@@ -108,7 +108,7 @@ test('the broken rc1 forms ("~", and GitHub\'s ".rc1" rename) still get the righ
     'woodshed-0.9.0.rc1-1.aarch64.rpm': 'Fedora / RHEL package (ARM64)',
     'woodshed_0.9.0.rc1_linux_amd64.tar.gz': 'Linux portable (x64)',
     'woodshed_0.9.0.rc1_windows_arm64.msi': 'Windows installer (ARM64)',
-    'woodshed_0.9.0.rc1_macos_universal.pkg': 'macOS installer (Intel and Apple silicon)',
+    'woodshed_0.9.0.rc1_macos_universal.pkg': 'macOS installer (x64 and ARM64)',
   };
   for (const [name, label] of Object.entries(broken)) assert.equal(classify(name)?.label, label, name);
   // Nothing that merely looks similar is offered: a deb/rpm without its arch, or other files.

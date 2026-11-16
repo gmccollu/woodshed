@@ -52,8 +52,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   beside it: all 30 million records and 3 million messages stored, 0.43 of a core and 153 MiB peak RSS for the whole
   pipeline, 20.4 bytes per stored record; a 150,000 records/s burst for 10 s lost nothing. Top talkers over 18 million
   records took under 0.8 s, and a one-address search's first page 0.1 s. Measured in-process with `woodshed bench
-  --proto ipfix --rate 50000 --duration 10m --syslog-rate 5000` (the sender in a child process) on a 14-core Apple M4
-  Pro; the reference-spec (4 vCPU) runner and the lab's 24-hour run will replace these before release.
+  --proto ipfix --rate 50000 --duration 10m --syslog-rate 5000` (the sender in a child process) on a 14-core
+  laptop; the reference-spec (4 vCPU) runner and the lab's 24-hour run will replace these before release.
 
 ## [1.3.0] - unreleased
 
@@ -93,7 +93,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - Polling 500 devices with 64 interfaces each every 60 s (v2c) took 0.07 of a core and 129 MiB of memory for the
   whole server, every cycle on time; with syslog at 10,000 msg/s beside it, 0.26 of a core, and 600,000 of 600,000
   messages stored. 100 devices every 30 s with v3 authPriv (SHA-256, AES-128): 0.03 of a core (0.24 with the syslog
-  run, again with nothing lost). Measured in-process on a 14-core Apple M4 Pro with the test agents in another
+  run, again with nothing lost). Measured in-process on a 14-core laptop with the test agents in another
   process (`TestPollLoad`); the reference-spec (4 vCPU) runner and lab numbers will replace these before release.
 
 ## [1.2.0] - 2026-11-16

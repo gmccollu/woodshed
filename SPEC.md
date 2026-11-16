@@ -67,7 +67,7 @@ the owner can still overrule them. Everything else is a proposal and can change.
 | UDP buffer on macOS | macOS refuses (rather than caps) requests above `kern.ipc.maxsockbuf` (8 MiB), so the listener steps down to the largest size accepted. 10k msg/s passes with 8 MiB |
 | Rejected/drop counters | Hourly buckets; "24 h" is the current hour plus the 23 before it. A refused TCP connection counts once |
 | Live-tail sampling | Token bucket, 50 lines/s per subscriber; `sampled.rate` is that subscriber's matching rate |
-| Measured (M1, Apple M4 Pro) | 10k msg/s for 30 s over UDP, TCP-LF and TCP-octet: 300,000 sent, 300,000 on disk, 0 missing each. Zero loss up to 60k msg/s (UDP) and 100k (TCP) |
+| Measured (M1, a 14-core laptop) | 10k msg/s for 30 s over UDP, TCP-LF and TCP-octet: 300,000 sent, 300,000 on disk, 0 missing each. Zero loss up to 60k msg/s (UDP) and 100k (TCP) |
 
 ## 3. Architecture
 
@@ -262,8 +262,8 @@ configurable.
 - Builds run on GitHub Actions from a tag. GoReleaser OSS handles the binaries, nfpm (deb/rpm), Homebrew,
   Scoop and checksums. The MSI and `.pkg` are built in separate jobs on Windows and macOS runners (GoReleaser's
   MSI support is a paid feature).
-- Signing: none at first. Add an Apple Developer ID (notarization) and Windows signing (SignPath's free OSS
-  program, or Azure Trusted Signing) before promoting it widely. Until then the README documents the
+- Signing: none at first. Add macOS signing and notarization and Windows signing (a free open-source signing
+  program, or a cloud signing service) before promoting it widely. Until then the README documents the
   Gatekeeper and SmartScreen prompts.
 - Uninstall stops and removes the service but **keeps the logs** unless the user ticks "also delete logs".
 - Upgrade in place: the config and data folder are kept, and the index schema migrates on start.
@@ -1928,7 +1928,7 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
 34. The `udp_queue_full` banner names the limit that refused the latest drop (`udp_queue_bytes` with a size, or
     `udp_queue_messages` with a count); several UDP listeners share one banner with the counts summed.
 35. `woodshed bench` gains `--stall-every`, `--stall-for` and `--udp-queue-messages`, so §11.6's fake-slow-disk run
-    needs no test build. Measured on the build Mac (Apple M4 Pro, macOS, loopback), 10,000 msg/s for 130 s with a
+    needs no test build. Measured on the 14-core build laptop (macOS, loopback), 10,000 msg/s for 130 s with a
     3 s stall every minute: the default queue lost 0 of 1,300,000 (high-water 30,000); a 1,000-message queue lost
     57,998, all counted as `queue_full` by the listener and the store alike (sent = stored + counted).
 
@@ -1975,8 +1975,8 @@ the interop job) made where §11.2 and §11.6 left room. Nothing here is user-fa
     too, for `generic` and `specific`).
 55. `woodshed bench --proto trap` gives its own in-process receiver reply limits of twice the bench rate: §11.6's 500
     informs a second from one sender would otherwise hit §11.2.3's 100 a second per source. The load and soak targets
-    for informs need several senders (or this bench); the limits have their own tests. Measured on the build Mac
-    (Apple M4 Pro, macOS, loopback, 30 s each, every trap read back): 2,000 v2c traps/s with 10 varbinds, 60,000 of
+    for informs need several senders (or this bench); the limits have their own tests. Measured on the 14-core build
+    laptop (macOS, loopback, 30 s each, every trap read back): 2,000 v2c traps/s with 10 varbinds, 60,000 of
     60,000 stored once (queue high-water 6); 1,000 v3 authPriv (SHA-256, AES-128) traps/s, 30,000 of 30,000;
     500 v3 authPriv informs/s, 15,000 of 15,000 stored and answered, Response p50 0.31 ms, p99 1.06 ms; and
     10,000 v2c traps/s for 10 s, 100,000 of 100,000 (high-water 13). The 10-minute runs beside 5,000 syslog
@@ -2367,7 +2367,7 @@ Simple and fast: every view reads the headline rollups or one device's poll file
   at 30 s, from many test agents on loopback addresses, with v2c and v3 authPriv: every cycle completes on time, the
   poller's CPU stays under half a core on the reference spec (4 cores), memory under 200 MiB, and syslog's 10,000
   msg/s bench beside it still loses nothing. The numbers go into the release notes like the syslog and trap benches.
-  **First measurement (build, 2026-11-15**, `TestPollLoad`, agents in a child process, a 14-core Apple M4 Pro, not
+  **First measurement (build, 2026-11-15**, `TestPollLoad`, agents in a child process, a 14-core laptop, not
   the reference spec): 500 × 64 at 60 s v2c, 0.071 cores and 129 MiB RSS for the whole server over 3 min, 1,500 of
   1,500 cycles, no failure or overrun; with 10,000 msg/s of syslog beside it for 1 min, 0.26 cores, 156 MiB, 600,000
   of 600,000 stored. 100 × 64 at 30 s v3 authPriv (SHA-256, AES-128): 0.031 cores, 56 MiB; 0.24 cores and 74 MiB with
@@ -2870,8 +2870,8 @@ the first bench, which records the measured numbers here:
   exporters (a segment is closed early to stay under it, decision 58); the queue's bytes (128 MiB); query state at most
   256 MiB, whatever the window's size or key count (decision 51). 512 MiB for flows in all at the targets.
 - **Disk:** 12–20 bytes per stored record (to be measured).
-- **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core Apple
-  M4 Pro under other load; the reference box and the lab runs replace these):
+- **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core laptop
+  under other load; the reference box and the lab runs replace these):
   - 50,000 records/s for 10 min (30 a packet, 2 domains) with UDP syslog at 5,000 msg/s: all 30,000,000 records and
     3,000,186 messages stored, 0.43 of a core, peak RSS 153 MiB (Go heap 90 MiB), 20.4 bytes per stored record (19.2
     in blocks, 20.0 for a closed segment in the format bench).
@@ -2883,7 +2883,7 @@ the first bench, which records the measured numbers here:
     newest 500, 0.16 s. Memory: the `flows top` process peaks at about 480 MiB RSS for top talkers (mostly the 14
     workers' block buffers) and 1.8 GiB for conversations past the exact limit, over the 256 MiB query-state target.
     The reference box's 4 workers would need less; a hard cap is open.
-  - **Bounded (build, 2026-11-16, third round;** decision 51; the same data regenerated, the same M4 Pro under load
+  - **Bounded (build, 2026-11-16, third round;** decision 51; the same data regenerated, the same laptop under load
     average 5–6): every query now uses at most 4 workers and a 128 MiB shared table budget. Peak RSS of the whole
     `flows top` process, 3 runs each: top talkers 7.5–8.5 s, 99–102 MiB; top destination ports 6.4–7.0 s, 89–91 MiB;
     top conversations (approximate past 1,000,000 keys) 14.4–15.1 s, 216–219 MiB, with the heaviest conversations
