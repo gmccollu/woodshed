@@ -1292,11 +1292,13 @@ start:
 - `/api/exports/estimate` gains `"by_type": {"syslog": {"lines", "bytes"}, "flow": {"records", "bytes"}, …}`. More than
   20,000,000 flow records for one device is a `400` at estimate and at build: "Too many flow records for one zip
   (24,113,002 for 10.1.0.1); narrow the window or add a flow filter."
-- A bundle's manifest `summary` entries gain `"flow": {"records", "domains", "sampling", "bytes", "bytes_scaled",
+- A bundle's manifest `summary` entries gain `"flow": {"records", "domains", "sampling": [{"domain", "sampling": [rates seen]}], "scaled_complete", "bytes", "bytes_scaled",
   "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
   "fw_events": {"created", "deleted", "denied"}, "top_denied_sources": [{"key", "count"}], "top_denied_ports": [...],
   "nat_connections", "top_post_nat_sources": [...],
-  "sequence_gaps", "lost_estimate", "no_template", "malformed"}`.
+  "sequence_gaps", "lost_estimate", "no_template", "malformed"}`. `sequence_gaps` and `lost_estimate` are the
+  collector's last 24 hours (`null` from `woodshed bundle`, which has no collector); entries whose count is 0 are left
+  out of the top lists, which hold at most 3.
 
 ### Banners
 - `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives
