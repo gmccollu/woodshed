@@ -14,6 +14,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/datatype"
+	"github.com/gmccollu/woodshed/internal/export"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/fwrule"
@@ -699,4 +700,15 @@ func (b *backend) flowFirewall(nf, ix int, now time.Time) (string, string) {
 	fs.fwState, fs.fwRule = fs.fwCheck(nf, ix)
 	fs.fwAt = now
 	return fs.fwState, fs.fwRule
+}
+
+// flowStats is the collector's last-24-hour sequence gaps for an exporter,
+// for bundle summaries (nil when it hasn't heard from it).
+func (b *backend) flowStats(deviceID string) *export.FlowStats {
+	for _, es := range b.flows.coll.Stats(b.now()) {
+		if model.DeviceID(es.Addr) == deviceID {
+			return &export.FlowStats{SequenceGaps: es.Counts24h.SequenceGaps, LostEstimate: es.Counts24h.LostEstimate}
+		}
+	}
+	return nil
 }

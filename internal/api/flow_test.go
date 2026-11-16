@@ -19,7 +19,7 @@ func (b *fakeBackend) FlowState(context.Context) (FlowState, error) {
 	days := 4.8
 	at := ts("2026-11-16T09:58:01Z")
 	return FlowState{Enabled: true, Budget: FlowBudget{Bytes: 8589934592, UsedBytes: 5100000000, EstimatedDays: &days},
-		Exporters: []FlowExporter{{DeviceID: "10.1.0.1", Domains: []FlowDomain{{ID: 1, Sampling: 1000, Templates: 6, LastTemplate: &at}},
+		Exporters: []FlowExporter{{DeviceID: "10.1.0.1", LastSeen: &at, Domains: []FlowDomain{{ID: 1, Sampling: 1000, Templates: 6, LastTemplate: &at}},
 			RecordsPerSec: 1180.5, Counts24h: FlowCounts{Records: 101000000, Late: 120, SequenceGaps: 3}, ClockSkewMS: 210,
 			TimeSource: "exporter"}}}, nil
 }
@@ -28,8 +28,10 @@ func (b *fakeBackend) FlowTop(_ context.Context, r FlowTopRequest) (FlowTopPage,
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.flowTops = append(b.flowTops, r)
+	at := ts("2026-11-16T09:00:02Z")
 	return FlowTopPage{By: r.By, Metric: r.Metric, From: r.From, To: r.To, Total: FlowTopTotal{Flows: 10, Bytes: 100},
-		Rows: []FlowTopRow{{Key: "10.20.0.5", Label: "10.20.0.5", Flows: 4, Bytes: 31, Share: 0.31}}}, nil
+		Rows: []FlowTopRow{{Key: "10.20.0.5", Label: "10.20.0.5", Flows: 4, Bytes: 31, Share: 0.31, First: &at, Last: &at}},
+		Progress: &FlowProgress{BlocksDone: 1, BlocksTotal: 1, RecordsDone: 10, RecordsTotal: 10, CompleteFrom: r.From}}, nil
 }
 
 func (b *fakeBackend) FlowTimeline(_ context.Context, q FlowTimelineQuery) (FlowTimeline, error) {

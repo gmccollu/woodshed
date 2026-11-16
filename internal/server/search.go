@@ -179,7 +179,17 @@ func toAPIExport(e export.Info) api.ExportInfo {
 			Facilities: fromFacilitySet(e.Filters.Facilities), ExcludeDevices: e.Filters.ExcludeDevices,
 			ExcludeApp: e.Filters.ExcludeApps, ExcludeHost: e.Filters.ExcludeHosts,
 			Kind: export.KindExport, Types: e.Filters.TypesOrSyslog(), Trap: api.TrapListsOf(e.Filters.Trap),
-			Poll: api.PollListsOf(e.Filters.Poll)},
+			Poll: api.PollListsOf(e.Filters.Poll), FlowFormats: e.Filters.FlowFormats},
+	}
+	if len(e.Filters.Flow) > 0 {
+		fl, status := api.FlowListsOf(api.FlowParams(e.Filters.Flow))
+		out.Filters.Flow = fl
+		if len(status) > 0 {
+			if out.Filters.Trap == nil {
+				out.Filters.Trap = &api.TrapLists{}
+			}
+			out.Filters.Trap.Status = status
+		}
 	}
 	if ts := e.Filters.TypesOrSyslog(); len(ts) == 1 {
 		out.Filters.Type = ts[0]
@@ -217,11 +227,23 @@ func (b *backend) CreateExport(ctx context.Context, r api.ExportRequest) (api.Ex
 }
 
 func (b *backend) EstimateExport(ctx context.Context, r api.ExportRequest) (api.ExportEstimate, error) {
-	est, err := b.exports.Estimate(ctx, toExportRequest(r))
+	req := toExportRequest(r)
+	est, err := b.exports.Estimate(ctx, req)
 	if err != nil {
 		return api.ExportEstimate{}, requestError(err)
 	}
-	return api.ExportEstimate{Lines: est.Lines, Bytes: est.Bytes, Files: est.Files}, nil
+	out := api.ExportEstimate{Lines: est.Lines, Bytes: est.Bytes, Files: est.Files}
+	by, err := b.exports.EstimateByType(ctx, req)
+	if err != nil {
+		return api.ExportEstimate{}, requestError(err)
+	}
+	if len(by) > 0 {
+		out.ByType = map[string]api.TypeEstimate{}
+		for t, e := range by {
+			out.ByType[t] = api.TypeEstimate{Lines: e.Lines, Records: e.Records, Bytes: e.Bytes}
+		}
+	}
+	return out, nil
 }
 
 func (b *backend) Exports(ctx context.Context) ([]api.ExportInfo, error) {
