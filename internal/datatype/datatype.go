@@ -145,8 +145,11 @@ func CheckParams(t Type, has func(string) bool) error {
 
 // labelLower is a type's label as it reads inside a sentence.
 func labelLower(t Type) string {
-	if t.Name() == Syslog {
+	switch t.Name() {
+	case Syslog:
 		return "syslog"
+	case Flow:
+		return "flows"
 	}
 	return t.Label()
 }

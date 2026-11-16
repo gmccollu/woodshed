@@ -175,6 +175,8 @@ type Backend interface {
 	SNMPBackend
 	// The SNMP poller (poll.go).
 	PollBackend
+	// Flows (flow.go).
+	FlowBackend
 }
 
 // ErrNotFound is returned (possibly wrapped) by UpdateDevice, Context and the
@@ -408,7 +410,9 @@ type ListenersSettings struct {
 	TCP ListenerSettings    `json:"tcp"`
 	TLS TLSListenerSettings `json:"tls"`
 	// SNMP is the trap receiver; a PUT without it (a 1.1 client) leaves it as it is.
-	SNMP      *SNMPListenerSettings `json:"snmp,omitempty"`
+	SNMP *SNMPListenerSettings `json:"snmp,omitempty"`
+	// Flow is the flow listener (2.0); a PUT without it leaves it as it is.
+	Flow      *FlowListenerSettings `json:"flow,omitempty"`
 	Allowlist []string              `json:"allowlist"`
 	Blocklist []string              `json:"blocklist"`
 	// New-sender limits (the device_limit banner).
@@ -454,6 +458,19 @@ type StorageSettings struct {
 	RetentionDays  int    `json:"retention_days"`
 	RetentionBytes int64  `json:"retention_bytes"`
 	PartBytes      int64  `json:"part_bytes"`
+	// FlowBudgetBytes (2.0): 0 is 40 % of retention_bytes; a PUT without it
+	// leaves it as it is.
+	FlowBudgetBytes *int64 `json:"flow_budget_bytes,omitempty"`
+}
+
+// FlowListenerSettings is the flow listener's settings (SPEC §13.1).
+type FlowListenerSettings struct {
+	Enabled         bool     `json:"enabled"`
+	Addr            string   `json:"addr"`
+	NetFlowPort     int      `json:"netflow_port"`
+	IPFIXPort       int      `json:"ipfix_port"`
+	TemplateTimeout string   `json:"template_timeout"`
+	RuleIDIEs       []string `json:"rule_id_ies"`
 }
 
 // UISettings holds the web UI settings.
