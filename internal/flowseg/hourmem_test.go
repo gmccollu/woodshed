@@ -52,7 +52,8 @@ type hourCase struct {
 
 type hourStats struct {
 	fixed      uint64 // an exporter's heap at the hour's start (its writer, one block written)
-	peak       uint64 // heap above the start, over the hour (part closes included)
+	peak       uint64 // heap above the start, over the hour (part closes included), sampled
+	peakLive   uint64 // the live heap above the start, after a collection every 5 minutes of the hour
 	closePeak  uint64 // above the heap before the hour mark, while every exporter closes
 	closeAlloc uint64 // allocated by those closes in all (a sampled peak can miss a spike)
 	grown      uint64 // live heap the hour added (after a GC, before the hour mark)
@@ -125,6 +126,23 @@ func (e *hourExporter) close(t *testing.T, s *hourStats) {
 	os.Remove(path)
 }
 
+// heapLive is the heap's objects, live ones only just after a collection
+// (heapInuse also counts the free room left in their spans).
+func heapLive() uint64 {
+	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(s)
+	return s[0].Value.Uint64()
+}
+
+// notePeakLive collects and keeps the live heap above base if it's the
+// hour's most.
+func (s *hourStats) notePeakLive(base uint64) {
+	runtime.GC()
+	if h := heapLive(); h > base && h-base > s.peakLive {
+		s.peakLive = h - base
+	}
+}
+
 func heapAllocs() uint64 {
 	s := []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
 	metrics.Read(s)
@@ -176,9 +194,13 @@ func runHour(t *testing.T, c hourCase, gc int) hourStats {
 	}
 	s.parts = c.exporters
 	a0 := heapAllocs()
-	var grownBase uint64
-	s.peak, grownBase = peakDuring(func() {
+	runtime.GC()
+	liveBase := heapLive()
+	s.peak, _ = peakDuring(func() {
 		for sec := 0; sec < c.seconds; sec++ {
+			if sec%300 == 299 {
+				s.notePeakLive(liveBase)
+			}
 			for _, e := range exps {
 				for k := 0; k < c.perSec; k++ {
 					if sec == 0 && k == 0 {
@@ -192,10 +214,10 @@ func runHour(t *testing.T, c hourCase, gc int) hourStats {
 	s.alloc = heapAllocs() - a0
 	s.blocks = c.seconds * c.perSec
 	runtime.GC()
-	runtime.GC()
-	if h := heapInuse(); h > grownBase {
-		s.grown = h - grownBase
+	if h := heapLive(); h > liveBase {
+		s.grown = h - liveBase
 	}
+	s.notePeakLive(liveBase)
 	s.closePeak, _ = peakDuring(func() {
 		a0 := heapAllocs()
 		for _, e := range exps {
@@ -210,10 +232,10 @@ func runHour(t *testing.T, c hourCase, gc int) hourStats {
 func (s hourStats) log(t *testing.T, c hourCase) {
 	mib := func(v uint64) float64 { return float64(v) / (1 << 20) }
 	t.Logf("%s: %d exporters x %d blocks (%d-byte blocks, %d-byte headers), %d segments, largest footer %.1f MB: "+
-		"%.2f MiB an exporter at the start; peak %.1f MiB over the hour, %.1f MiB at the hour mark; the hour kept %.1f MiB "+
-		"(%.0f B a block); %.0f MiB allocated",
+		"%.2f MiB an exporter at the start; peak %.1f MiB over the hour (%.1f MiB live), %.1f MiB at the hour mark; "+
+		"the hour kept %.1f MiB (%.0f B a block); %.0f MiB allocated",
 		c.name, c.exporters, s.blocks, s.secLen, s.hdrLen, s.parts, float64(s.footer)/1e6, mib(s.fixed), mib(s.peak),
-		mib(s.closePeak), mib(s.grown), float64(s.grown)/float64(c.exporters*s.blocks), mib(s.alloc))
+		mib(s.peakLive), mib(s.closePeak), mib(s.grown), float64(s.grown)/float64(c.exporters*s.blocks), mib(s.alloc))
 }
 
 // hourCases are the three ingest shapes (SPEC §13.6): 50,000 records a second
@@ -238,8 +260,12 @@ func hourCases(short bool) []hourCase {
 // 216 bytes a block (at most FlowPartBlocks of them a segment), and the
 // hour mark, when every exporter closes, adds about nothing: the footers
 // are streamed, the index rows come from Summary, and CloseSummary builds
-// no directory. Measured at GOGC 10, so the peak is what's live plus any
-// spike (the old writer held about 4 times each footer while closing it).
+// no directory. The ceilings are on what's live (after collections) and on
+// what's allocated, which don't depend on how far the collector lags a
+// starved CPU (the sampled peak does: 49 MiB on many cores, 121 MiB on one,
+// for the same hour). The old writer allocated 1.2 GB an hour on one
+// exporter and 147 GB over 50, most of it each flush's copy of the
+// directory and each close's copies of its footer.
 func TestWriterHourHeapBounded(t *testing.T) {
 	if raceEnabled {
 		t.Skip("race: the heap ceilings are for the real build")
@@ -248,8 +274,14 @@ func TestWriterHourHeapBounded(t *testing.T) {
 		s := runHour(t, c, 10)
 		s.log(t, c)
 		dir := uint64(c.exporters) * uint64(min(s.blocks, hourPartBlocks)) * 216
-		if lim := dir*5/4 + 24<<20; s.peak > lim {
-			t.Errorf("%s: peak %.1f MiB over the hour, ceiling %.1f MiB", c.name, float64(s.peak)/(1<<20), float64(lim)/(1<<20))
+		if lim := dir*5/4 + 8<<20; s.peakLive > lim {
+			t.Errorf("%s: %.1f MiB live over the hour, ceiling %.1f MiB", c.name, float64(s.peakLive)/(1<<20), float64(lim)/(1<<20))
+		}
+		// A flush's rows (Summary) and the directory's growth; a part's
+		// close (its summary, table and pooled tail buffer).
+		blocks := uint64(c.exporters * s.blocks)
+		if lim := blocks*2048 + uint64(s.parts)*(320<<10) + 8<<20; s.alloc > lim {
+			t.Errorf("%s: %.1f MiB allocated over the hour, ceiling %.1f MiB", c.name, float64(s.alloc)/(1<<20), float64(lim)/(1<<20))
 		}
 		if per := s.grown / uint64(c.exporters*min(s.blocks, hourPartBlocks)); per > 300 {
 			t.Errorf("%s: the hour kept %d bytes a block", c.name, per)
