@@ -2160,8 +2160,10 @@ const SHOTS = [
     name: 'poll-events-strips',
     url: '/?mock_panel=0#/events?dev=10.1.0.1&r=24h',
     wait: 3500,
+    // The mock's edge-fw-01 restarts once, eth3 goes down and up, and eth5 goes down: 1 restart and 3 oper marks on
+    // the histogram, and the same 4 on each of the 3 strips.
     check: `document.querySelectorAll('.strips .strip').length === 3 && document.querySelectorAll('.hist .pmark.restart').length === 1
-      && document.querySelectorAll('.hist .pmark.oper').length === 2 && document.querySelectorAll('.strips .mark').length === 9`,
+      && document.querySelectorAll('.hist .pmark.oper').length === 3 && document.querySelectorAll('.strips .mark').length === 12`,
     maxh: 1200,
   }),
   {
