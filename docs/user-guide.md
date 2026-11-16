@@ -73,7 +73,7 @@ on its TLS certificate.
 
 Each snippet carries a badge:
 - **Tested**: CI applies it to the real tool (rsyslog, net-snmp, softflowd) against a running Woodshed on every change,
-  and checks that the data arrives exactly once.
+  and checks that the data arrives exactly once. The line under the badge says what CI covers, and what it can't.
 - **Lab-checked**: applied by hand on lab equipment, on the date shown.
 - **Reference only**: not tested on a device; check your device's documentation. The commands follow common,
   documented syntax, and the notes say where devices are known to differ.

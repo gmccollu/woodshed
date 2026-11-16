@@ -1032,6 +1032,7 @@ snippet: communities, passphrases and the CA file are placeholders (`<COMMUNITY>
 "logs-01.example.net"}` →
 ```json
 {"family": "rsyslog", "what": "syslog", "transport": "tls", "address": "logs-01.example.net", "verification": "tested",
+ "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), …",
  "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
  "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TLS.",
  "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog …\n…",
@@ -1048,18 +1049,29 @@ snippet: communities, passphrases and the CA file are placeholders (`<COMMUNITY>
   - `address`: Woodshed's address as the device should use it, an IP address or a DNS name. Default: the first of
     `addresses`, which lists the listener's own address when it's bound to one, else this machine's addresses (IPv4
     first), then the TLS certificate's DNS names and `ui.extra_hostnames`; loopback only when there's nothing else.
+    Addresses are unmapped (`::ffff:192.0.2.10` is `192.0.2.10`), and names that can't go in a device's configuration
+    (a wildcard, or one with a quote, space or newline) are left out of the list and never reach a snippet.
   - `source_interface` (line-oriented CLI: the interface the device's packets leave from; left out when empty),
     `interface` (softflowd: the interface it watches), `severity` (syslog: the lowest to send, an RFC 5424 keyword
     `emerg` … `debug`, default `info`), `facility` (syslog: `local0`–`local7`, default the device's own, for rsyslog
     every facility), `v3_user` (default a `<V3-USER>` placeholder), `auth` (`sha-256` default, or `sha`), `priv`
-    (`aes-128`), `agent_port` (poll: the device's SNMP agent port, default 161).
+    (`aes-128`), `agent_port` (poll: the device's SNMP agent port, 1–65535; absent is 161, and `0` is a `400`, as
+    in the query form).
 - A choice that doesn't apply to the family, data type and transport, or a value it can't take, is
   `400 {"error": "<field>: …", "errors": {"<field>": "…"}}`.
 - Filled from the live settings: each listener's port, whether it's on (a listener that's off gets a note saying how
-  to turn it on, first), and for TLS the name a client should check (the address when it's a name, else a DNS name on
-  the certificate) and the CA's SHA-256 fingerprint.
-- `parts`: `kind` `file` (a file to create or add to, at its usual `path`), `command` (shell commands), `cli` (lines
-  for a device's configuration mode) or `steps` (fields to fill in on a web page). `text` is every part, for one Copy.
+  to turn it on, first), and for TLS the name a client should check and the CA's SHA-256 fingerprint. The name is the
+  address when it's a name on the certificate, else the certificate's first DNS name that isn't `localhost`. Before
+  the certificate exists, a host name is used but the notes don't call it a name on the certificate, and an IP
+  address gets the `<WOODSHED-TLS-NAME>` placeholder.
+- `parts`: `kind` `file` (a file to create or add to, at its usual `path`; a part's title says when it replaces a
+  line, as net-snmp's `agentaddress` does), `command` (shell commands), `cli` (lines for a device's configuration
+  mode) or `steps` (fields to fill in on a web page). `text` is every part, for one Copy.
+- `verification_detail` (Tested snippets): what CI applies, and what it can't (softflowd's interface: CI replays a
+  capture with `-r`).
+- The line-oriented CLI's snippets give as text only lines most such devices share; keywords that differ are
+  placeholders (`<TCP-OPTION>`, `<TLS-OPTION>`, `<UDP-PORT-OPTION>`, `<SHA-256-KEYWORD>`, `<AES-128-KEYWORD>`). Neither
+  CLI family has a flow snippet; the web UI checklist lists the values to set.
 - `notes` start with anything to do first, then, for `reference` snippets, "Reference only: not tested on a device;
   check your device's documentation.", and on every TCP and TLS syslog snippet for a network device the warning about
   firewalls that block traffic while the log host is down. `placeholders` are the values to fill in, in order.

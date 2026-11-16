@@ -178,16 +178,21 @@ func TestNoVendorNames(t *testing.T) {
 
 	// The setup page and its docs.
 	root := filepath.Join("..", "..")
-	page, err := os.ReadFile(filepath.Join(root, "web", "src", "pages", "DeviceSetup.svelte"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, hit := range denied(string(page)) {
-		t.Errorf("DeviceSetup.svelte: %s", hit)
+	// Whole files: the page, its form and mock, and the CLI's help.
+	for _, f := range []string{"web/src/pages/DeviceSetup.svelte", "web/src/lib/setup.ts", "web/src/lib/mock/setup.ts",
+		"web/src/lib/mock/setupcore.ts", "cmd/woodshed/setup.go"} {
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, hit := range denied(string(b)) {
+			t.Errorf("%s: %s", f, hit)
+		}
 	}
 	for _, d := range []struct{ file, from, to string }{
 		{"docs/user-guide.md", "### Setting up devices", "\n#"},
 		{"FAQ.md", "## Why no vendor-specific instructions?", "\n#"},
+		{"docs/api.md", "## Device setup helper", "\n## "},
 	} {
 		raw, err := os.ReadFile(filepath.Join(root, d.file))
 		if err != nil {

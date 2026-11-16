@@ -3286,20 +3286,28 @@ Made while building it, each **decided (build, 2026-11-16)**:
     each with a header (family, what, transports, reference, verification, `checked_on` for lab_checked) and
     `does`, `parts`, `notes` and `check` blocks; parts are split on `@@part` marker lines. Golden files pin every
     family, type and transport.
-63. **Coverage:** the line-oriented CLI and the web UI checklist cover all four types; the set-style CLI covers
-    syslog, traps and polling, with no flow template, because flow export statements differ too much between
-    set-style devices to give one that's useful (a family note says so). rsyslog covers syslog; net-snmp traps and
-    polling; softflowd flows.
+63. **Coverage:** the web UI checklist covers all four types; the line-oriented and set-style CLIs cover syslog,
+    traps and polling, with no flow template, because flow export commands differ too much between devices of either
+    style to give one that's useful (a family note points to the checklist's values). rsyslog covers syslog; net-snmp
+    traps and polling; softflowd flows. The line-oriented CLI gives as text only lines most such devices share
+    (`logging host`, `logging trap`, a v2c community or host line); keywords that differ are placeholders
+    (`<TCP-OPTION>`, `<SHA-256-KEYWORD>`) with notes. (Review, 2026-11-16: the first version had a flow template with
+    an invented keyword in one maker's structure, and mixed makers' keywords in the syslog and SNMPv3 lines.)
 64. **Verification:** rsyslog and net-snmp are Tested by the CI job `setup-snippets` (TestSetupSnippets in
     internal/server, against a real running server, each record exactly once). softflowd is Tested too since the
     flow listener merged: the runner replays the flow interop test's synthetic pcap with `-r` in place of the
     snippet's `-i <INTERFACE>` (a CI runner has no traffic to watch), every other option as generated, and each flow
     must be stored once with the pcap's packet and byte counts, for v9 and IPFIX. TestSetupTestedTemplatesHaveCI and
-    the deny-list test both fail a Tested template no unskipped case applies.
+    the deny-list test both fail a Tested template no unskipped case applies. Beside the defaults, CI runs one case per
+    family over IPv6 loopback, one with non-default choices (severity and facility; SHA-1 and another user), the
+    net-snmp poll snippet applied to a distribution-style snmpd.conf, and rsyslog TCP and TLS with Woodshed down until
+    the queue overflows. A tested template's `ci:` header says what CI applies, served as `verification_detail`.
 65. **Choices:** source interface (line-oriented CLI), the interface softflowd watches, severity (RFC 5424 keywords,
     default `info`), facility (`local0`–`local7` or the device's default), SNMPv3 user, SHA-256 (default) or SHA-1,
     AES-128 (the protocols most devices and net-snmp share; the notes say to match both sides), and the polled
-    agent's port. Values are checked against strict patterns, so nothing a user types can add a line to a snippet.
+    agent's port. Values are checked against strict patterns, so nothing a user types can add a line to a snippet;
+    names from the certificate and the config go through the same host-name pattern (wildcards are dropped). A typed
+    agent port of 0 is an error, not the default.
 66. **Filled from live state:** the listener's own address when it's bound to one, else the host's addresses, then the
     TLS certificate's DNS names and `ui.extra_hostnames`; each listener's port and whether it's on (a note says how to
     turn it on, first); for TLS, the name a client should check (the address when it's a name on the certificate,
@@ -3308,9 +3316,13 @@ Made while building it, each **decided (build, 2026-11-16)**:
 67. **rsyslog:** one omfwd action in `/etc/rsyslog.d/60-woodshed.conf`, RFC 5424 format, octet-counted framing for
     TCP and TLS, an in-memory queue that retries while Woodshed is down, and for TLS the gtls driver with
     `x509/name` and the action-level `StreamDriver.CAFile` (rsyslog 8.2108 or later), so it never touches the main
-    config's `global()`. **net-snmp:** `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start), the
-    test trap's secrets in `~/.snmp/snmp.conf` rather than the command line, and `rocommunity` limited to Woodshed's
-    address for polling.
+    config's `global()`. The queue has `queue.timeoutEnqueue="0"`: once it's full, new messages for Woodshed are
+    dropped at once, because by default each enqueue to a full queue waits 2 s and holds up all of rsyslog's logging.
+    No disk-assisted queue, to keep the snippet one file with nothing to clean up. **net-snmp:**
+    `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start), the test trap's secrets in
+    `~/.snmp/snmp.conf` (mode 600) rather than the command line, and `rocommunity` (`rocommunity6` for IPv6) limited
+    to Woodshed's address for polling. The poll snippet replaces the distribution's `agentaddress` line rather than
+    adding one: snmpd joins every `agentaddress` line it reads.
 68. **The page:** "Set up a device" at `#/device-setup`, **Connect** in the navigation (the existing **Setup** label
     stays the Welcome page, which now links to it). The mock answers from `web/src/lib/mock/setup-fixture.json`,
     which a Go test generates from the real templates, so it can't drift.
