@@ -112,7 +112,7 @@ export function buildSteps(): Step[] {
   const all = exportJson(allTypesExport(dev, from, to, ALL_TYPES, true, ['csv', 'ipfix'], []));
   const allNoFlows = exportJson(allTypesExport(dev, from, to, ALL_TYPES, false, ['csv', 'ipfix'], []));
   const flowOnly = exportJson(flowExport(dev, from, to, { proto: ['tcp'], dst_port: ['443'], fw_event: ['denied'] }, ['csv'], []));
-  const b = { ...newBundle('2026-11-16T09:30:00Z', { mode: 'devices', group: '', devices: ['127.0.0.1'] }) };
+  const b = { ...newBundle('{at}', { mode: 'devices', group: '', devices: ['127.0.0.1'] }) };
   const bundleIpfix = bundleBody({ ...b, flowFormats: ['ipfix'] }, ALL_TYPES);
   const bundleNoFlows = bundleBody({ ...b, noFlows: true }, ALL_TYPES);
 
@@ -152,5 +152,5 @@ export const NOTES = [
   'Poll target bodies carry every field (the form fills the Settings defaults in when it opens); community is sent only when typed, or on a new target; an edit that leaves it empty omits it (kept). pinned (SPEC §12.11 #3) is always sent, [] when none.',
   'SNMP user: key_ext is "draft" unless priv is aes-192 or aes-256 (the form\'s choice is sent only then); empty passphrases are omitted (kept).',
   'Test poll of an edited target that keeps its stored community is sent as {"id": …} (the UI can\'t resend a community it never sees).',
-  '2.0 flows: {flow_netflow_port} and {flow_ipfix_port} are two free UDP ports the replay picks (never 2055 or 4739); the settings step turns the flow listener on there. Export steps name device 127.0.0.1 and a fixed past hour; "Every type" lists the types a 2.0 server has (syslog, trap, poll, flow), and Leave flows out lists them without flow. flow_formats is sent only when it isn\'t both; flow filters are top-level lists like the trap filters.',
+  '2.0 flows: {flow_netflow_port} and {flow_ipfix_port} are two free UDP ports the replay picks (never 2055 or 4739); the settings step turns the flow listener on there. Export steps name device 127.0.0.1 and a fixed past hour; bundle steps\' at is {at} (the replay substitutes now minus 30 min, RFC 3339 UTC); "Every type" lists the types a 2.0 server has (syslog, trap, poll, flow), and Leave flows out lists them without flow. flow_formats is sent only when it isn\'t both; flow filters are top-level lists like the trap filters.',
 ];

@@ -56,6 +56,7 @@ test('the fixture covers the 2.0 flow forms as the contract expects', () => {
   assert.ok(!('q' in fo) && !('flow' in fo), 'flow filters are top-level lists, and flows have no q');
   const bi = by.bundle_estimate_flows_ipfix.body as Record<string, unknown>;
   assert.equal(bi.kind, 'bundle');
+  assert.equal(bi.at, '{at}');
   assert.deepEqual(bi.types, []);
   assert.deepEqual(bi.flow_formats, ['ipfix']);
   assert.deepEqual((by.bundle_leave_flows_out.body as Record<string, unknown>).types, ['syslog', 'trap', 'poll']);

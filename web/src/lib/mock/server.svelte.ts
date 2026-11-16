@@ -2949,7 +2949,12 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const f: MockFilters = { devices: b.devices, group: b.group || undefined, ungrouped: !!b.ungrouped, sev: null };
     const anySelector = b.all_devices || !!b.devices?.length || !!b.group || !!b.ungrouped;
     const known = [...new Set([...FLEET.map((d) => d.ip), ...devs.keys()])];
-    const ids = anySelector ? known.filter((ip) => deviceMatches(ip, f, true) && !b.exclude_devices?.includes(ip)) : [];
+    // Named devices are exported as named, even ones with nothing stored (as the server does; the request fixture names 127.0.0.1).
+    const ids = !anySelector
+      ? []
+      : b.devices?.length
+        ? b.devices.filter((ip) => !b.exclude_devices?.includes(ip))
+        : known.filter((ip) => deviceMatches(ip, f, true) && !b.exclude_devices?.includes(ip));
     // 1.2: types (["syslog"] by default); type (1.1) is a one-entry types, and both must agree.
     if (b.type !== undefined && !DATA_TYPES.includes(b.type)) return err(400, `type: unknown data type "${b.type}".`);
     for (const t of b.types ?? []) if (!DATA_TYPES.includes(t)) return err(400, `types: unknown data type "${t}".`);
