@@ -335,25 +335,26 @@ func (e *Engine) Summary(ctx context.Context, q Query, sq SummaryQuery, budget t
 	f := q.filter()
 	extra := fieldCols(sq.Fields) | flowseg.Cols(CounterCols) | flowseg.ColSampling
 	cols := colsFor(f, extra)
+	// Per-worker counts for the whole request, merged once at its end.
 	accs := make([]*summaryAcc, e.o.Workers)
+	for i := range accs {
+		accs[i] = newSummaryAcc(sq.Fields, sq.Histogram, bucket, sq.Origin.UnixMilli())
+	}
 	deadline := time.Now().Add(budget)
 	rd := &readers{p: st.plan}
 	defer rd.close()
 	for first := true; st.done < len(st.plan.blocks) && (first || time.Now().Before(deadline)); first = false {
 		hi := min(st.done+e.wave(), len(st.plan.blocks))
-		for i := range accs {
-			accs[i] = newSummaryAcc(sq.Fields, sq.Histogram, bucket, sq.Origin.UnixMilli())
-		}
 		if err := e.scan(ctx, st.plan, rd, st.done, hi, f, cols, func(w int, _ *planned, _ int, r *flow.Record) { accs[w].add(r) }); err != nil {
 			return SummaryResult{}, err
-		}
-		for _, a := range accs {
-			st.sum.merge(a)
 		}
 		for _, b := range st.plan.blocks[st.done:hi] {
 			st.recsDone += int64(b.rows)
 		}
 		st.done = hi
+	}
+	for _, a := range accs {
+		st.sum.merge(a)
 	}
 	res := SummaryResult{Fields: st.sum.result(max(sq.Top, 1)), Matched: st.sum.matched, Buckets: map[int64]Bucket{},
 		Progress: Progress{BlocksDone: int64(st.done), BlocksTotal: int64(len(st.plan.blocks)), RecordsDone: st.recsDone,

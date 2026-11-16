@@ -553,29 +553,51 @@ func (e *Engine) Top(ctx context.Context, q Query, by, metric string, n int, bud
 	}
 	f := q.filter()
 	cols := colsFor(f, flowseg.Cols(KeyCols(by)|CounterCols)|flowseg.ColSampling)
+	// Each worker counts into its own table for the whole request; they're
+	// merged into the running counts once at the end (merging after every
+	// wave cost more than the scan when there are many distinct keys).
+	// A worker's table that reaches its share of the exact limit flushes into
+	// the running table at once, so memory stays bounded (about twice the
+	// limit's entries) while the running table is exact up to the limit.
+	share := max(e.o.MaxExactKeys/e.o.Workers, 1024)
+	newTop := func() *Top {
+		t, _ := NewTop(by, metric)
+		t.MaxExact = share + 1 // flushed before it would turn approximate
+		return t
+	}
 	tops := make([]*Top, e.o.Workers)
+	for i := range tops {
+		tops[i] = newTop()
+	}
+	var mergeMu sync.Mutex
+	add := func(w int, _ *planned, _ int, r *flow.Record) {
+		t := tops[w]
+		t.Add(r)
+		if t.Keys() >= share {
+			mergeMu.Lock()
+			st.top.Merge(t)
+			mergeMu.Unlock()
+			tops[w] = newTop()
+		}
+	}
 	deadline := time.Now().Add(budget)
 	rd := &readers{p: st.plan}
 	defer rd.close()
 	// At least one wave per request, so a continuation always progresses.
 	for first := true; st.done < len(st.plan.blocks) && (first || time.Now().Before(deadline)); first = false {
 		hi := min(st.done+e.wave(), len(st.plan.blocks))
-		for i := range tops {
-			tops[i], _ = NewTop(by, metric)
-			tops[i].MaxExact = e.o.MaxExactKeys
-		}
 		// A wave, once started, finishes (only the client's cancel stops it),
 		// so the counts always cover whole blocks.
-		if err := e.scan(ctx, st.plan, rd, st.done, hi, f, cols, func(w int, _ *planned, _ int, r *flow.Record) { tops[w].Add(r) }); err != nil {
+		if err := e.scan(ctx, st.plan, rd, st.done, hi, f, cols, add); err != nil {
 			return TopResult{}, err
-		}
-		for _, t := range tops {
-			st.top.Merge(t)
 		}
 		for _, b := range st.plan.blocks[st.done:hi] {
 			st.recsDone += int64(b.rows)
 		}
 		st.done = hi
+	}
+	for _, t := range tops {
+		st.top.Merge(t)
 	}
 	res := TopResult{Rows: st.top.Rows(n), Total: st.top.Total, Approx: st.top.Approx(),
 		Progress: Progress{BlocksDone: int64(st.done), BlocksTotal: int64(len(st.plan.blocks)), RecordsDone: st.recsDone,
