@@ -72,5 +72,11 @@ the verifyseq JSON lines and the samples.
   source address, so an inform step above 100/s per sender times out by design.
 - `remote/labcheck.py` (Linux VMs, read-only): `secret-scan` (needles on stdin), `window` (an export or bundle zip
   against its window and the data dir) and `missing` (a run's missing numbers, mapped to send times).
+  For the SNMP poller (1.3): `netdev` samples `/proc/net/dev` for one interface, `poll-rates` compares a poller's
+  per-cycle bit and packet rates with those samples, `poll-cycles` reports cycle spacing, failures, restarts and rate
+  continuity, `poll-size` the poll bytes per day (raw and gzipped), and `poll-csv` checks a bundle's `poll/` CSVs
+  row by row against the poll lines (a data dir, or `woodshed search --type poll --json` output from any OS).
+  `secret-scan` also reads inside zips. The polled agent is the distribution's net-snmp `snmpd`, configured by the
+  lab's own tooling with that run's test secrets (never in this repo).
 - `remote/linux-lab.sh` and `remote/win-lab.ps1` are the VM-side halves; `wl stage` copies them with verifyseq,
   the package and the portable binary.
