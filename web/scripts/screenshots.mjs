@@ -2096,6 +2096,30 @@ const SHOTS = [
       && !document.querySelector('#exq') && document.querySelector('li[data-id]').innerText.includes('Syslog and SNMP traps')`,
   },
   // 1.3: the SNMP poller (SPEC §12.5). `npm run screenshots -- poll` takes only these.
+  // Every interface's up/down, charted or not (a 1.3 fix): the mock's eth5 went down 3 h ago and, with no
+  // traffic, is never in the default chart set. Its change is in the list and on every chart, and the
+  // list's "Chart eth5" puts it on the interface chart.
+  ...both({
+    name: 'poll-device-changes',
+    url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',
+    wait: 3000,
+    clip: 'section[aria-labelledby="poll-h"]',
+    check: `(() => { const items = [...document.querySelectorAll('ul.changes li')].map((li) => li.textContent);
+      return items.some((t) => t.includes('eth5 down') && t.includes('not charted')) && items.some((t) => t.includes('rebooted'))
+        && !!__btn('Chart eth5') && [...document.querySelectorAll('figure.chartcard')].every((f) => f.querySelector('.mark.oper'))
+        && ![...document.querySelectorAll('figure.chartcard')].some((f) => f.textContent.includes('Interfaces:') && f.textContent.includes('eth5')); })()`,
+  }),
+  {
+    name: 'poll-device-changes-chart-it',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',
+    wait: 3000,
+    act: `__btn('Chart eth5').focus(); __btn('Chart eth5').click();`,
+    after: 1500,
+    check: `[...document.querySelectorAll('figure.chartcard')].some((f) => f.textContent.includes('Interfaces:') && f.textContent.includes('eth5'))
+      && !__btn('Chart eth5') && [...document.querySelectorAll('ul.changes li')].some((t) => t.textContent.includes('eth5 down') && !t.textContent.includes('not charted'))`,
+  },
   ...both({
     name: 'poll-device-panel',
     url: '/?mock_panel=0#/device?id=10.1.0.1&r=6h',

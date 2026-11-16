@@ -146,6 +146,9 @@ test('markers: titles name the device and source; the cap keeps restarts', () =>
   assert.match(markerTitle({ ...r, reboot: '?' }), /may have rebooted/);
   assert.equal(markerTitle({ time: r.time, kind: 'oper', if: 'eth3', oper: 'down', detail: '' }), 'eth3 down');
   assert.equal(markerTitle({ time: r.time, kind: 'oper', detail: 'eth3 down' }, 'x'), 'x: eth3 down');
+  // The server's own detail ("eth3 down (was up)") isn't repeated after the change it starts with.
+  assert.equal(markerTitle({ time: r.time, kind: 'oper', if: 'eth3', oper: 'down', was: 'up', detail: 'eth3 down (was up)' }), 'eth3 down (was up)');
+  assert.equal(markerTitle({ time: r.time, kind: 'oper', if: 'eth3', oper: 'down', was: 'up', detail: '' }), 'eth3 down (was up)');
   const many: PollMarker[] = Array.from({ length: 50 }, (_, i) => ({ time: new Date(Date.parse(r.time) + i * 1000).toISOString(), kind: 'oper', detail: '' }));
   many.push({ ...r, time: '2026-11-15T11:00:00Z' });
   const c = capMarkers(many, 10);

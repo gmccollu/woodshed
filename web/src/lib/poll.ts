@@ -333,7 +333,10 @@ export function markerTitle(m: PollMarker, name?: string): string {
   }
   if (m.kind === 'oper') {
     const what = m.if && m.oper ? `${m.if} ${m.oper}` : m.detail;
-    return `${who}${what || 'interface status changed'}${m.if && m.oper && m.detail && m.detail !== what ? ` (${m.detail})` : ''}`;
+    // The server's detail is already "eth3 down (was up)": use it as it is rather than repeat the change.
+    if (m.detail && what && m.detail.startsWith(what)) return `${who}${m.detail}`;
+    const was = m.was ? ` (was ${m.was})` : '';
+    return `${who}${what || 'interface status changed'}${was}${m.if && m.oper && m.detail && m.detail !== what && !was ? ` (${m.detail})` : ''}`;
   }
   return `${who}${m.kind}${m.detail ? `: ${m.detail}` : ''}`;
 }
