@@ -3191,9 +3191,11 @@ Made while building it, each **decided (build, 2026-11-16)**:
 56. **A query's plan streams the window** (`internal/flowquery/plan.go`):
     - Segments come from the index a page at a time (256 rows, `FlowSegmentsPage`: newest end first, or lowest start
       first ascending) and load a batch at a time, sorted within the batch. A batch stops at **16,384 directory
-      entries loaded**, always a whole segment: every block of a loaded segment, in the window or not, since its
-      footer (or snapshot) holds them all. Counting only the window's blocks let a minute over 300 exporters' hour
-      segments load 273 of them a batch (579 MiB closed, 730 MiB open; 15 and 28 MiB now).
+      entries loaded or 256 segments**, always a whole segment: every block and raw chunk of a loaded segment counts,
+      in the window or not, since its footer (or snapshot) holds them all, and a segment counts one more for itself.
+      Counting only the window's blocks let a minute over 300 exporters' hour segments load 273 of them a batch
+      (579 MiB closed, 730 MiB open; 15 and 28 MiB now), and raw-only segments without limit. A closed segment with
+      nothing in the window closes its file as soon as it's planned; the others hold one until their blocks are read.
     - `complete_from` and a search page's certainty are the bound of everything unread: the batch's next block and
       the next segment (an open segment the index lists late: any end, or its indexed start less an hour, ascending).
       A search page past its budget reads on until that bound passes its cursor, so pages always progress.
