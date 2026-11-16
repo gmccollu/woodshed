@@ -47,10 +47,20 @@ func v1Record(t testing.TB, community, enterprise string, generic, specific int6
 var ifOper = snmp.Varbind{OID: oid("1.3.6.1.2.1.2.2.1.8.3"), Value: snmp.Value{Kind: snmp.KindInteger, Int: 2}}
 
 func TestRegistryMatchesStorage(t *testing.T) {
-	if len(Types()) != len(logfile.DataTypes) {
+	// The line types are logfile.DataTypes, in order; flows (segments) come after.
+	if len(LineNames()) != len(logfile.DataTypes) || len(Types()) != len(logfile.DataTypes)+1 {
 		t.Fatalf("%d types, %d folders", len(Types()), len(logfile.DataTypes))
 	}
+	if f := Get(Flow); f == nil || f.Dir() != logfile.FlowDir || !IsSegments(f.Name()) {
+		t.Fatalf("flow type %v", f)
+	}
 	for i, ty := range Types() {
+		if IsSegments(ty.Name()) {
+			if ty.Fields()[0].Key != FieldDevice {
+				t.Errorf("%s: device isn't the first field", ty.Name())
+			}
+			continue
+		}
 		if ty.Name() != logfile.DataTypes[i].Name || ty.Dir() != logfile.DataTypes[i].Dir {
 			t.Errorf("%s/%q vs %+v", ty.Name(), ty.Dir(), logfile.DataTypes[i])
 		}
@@ -58,7 +68,7 @@ func TestRegistryMatchesStorage(t *testing.T) {
 			t.Errorf("%s: device isn't the first field", ty.Name())
 		}
 	}
-	if Get("") != Get(Syslog) || !Get("").Default() || Get("flow") != nil || Get(Trap).Label() != "SNMP traps" {
+	if Get("") != Get(Syslog) || !Get("").Default() || Get("sflow") != nil || Get(Trap).Label() != "SNMP traps" {
 		t.Fatal("Get")
 	}
 }

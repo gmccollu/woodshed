@@ -418,7 +418,7 @@ func TestBundleCLIExitCodes(t *testing.T) {
 		{[]string{"--data", f.dir, "--at", "now", "--before", "0s", "--after", "0"}, exitUsage, "can't both be 0s"},
 		{[]string{"--data", f.dir, "--at", "2026-11-15T00:00:00Z"}, exitUsage, "is in the future"},
 		{[]string{"--data", f.dir, "--at", "now", "--group", "HQ", "--active"}, exitUsage, "alternatives"},
-		{[]string{"--data", f.dir, "--at", "now", "--types", "flow"}, exitUsage, `--types: unknown data type "flow"`},
+		{[]string{"--data", f.dir, "--at", "now", "--types", "sflow"}, exitUsage, `--types: unknown data type "sflow"`},
 		{[]string{"--data", f.dir, "--at", "now", "extra"}, exitUsage, `unexpected argument "extra"`},
 		{[]string{"--data", f.dir, "--at", "now", "--out", filepath.Join(f.dir, "logs", "b.zip")}, exitUsage, "is inside the data folder"},
 		{[]string{"--data", f.dir, "--at", "now", "--group", "nobody"}, exitUsage, "No device matches the selection."},
@@ -458,7 +458,7 @@ func TestBundleIsReadOnly(t *testing.T) {
 		{"--at", "2026-11-14T09:31:00Z", "--types", "trap", "--group", "HQ"},
 		{"--at", "2026-11-10T00:00:00Z"},
 		{"--at", "now", "--before", "7d", "--after", "0s"},
-		{"--at", "now", "--types", "flow"},
+		{"--at", "now", "--types", "sflow"},
 	} {
 		runBundle(t, bxZone, append([]string{"--data", f.dir, "--out", filepath.Join(tmp, fmt.Sprintf("%d.zip", i))}, args...)...)
 	}
