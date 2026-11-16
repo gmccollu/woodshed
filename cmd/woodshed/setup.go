@@ -165,6 +165,7 @@ func setupServerFromConfig(cfg config.Config) setuphelper.Server {
 		TCP:     setuphelper.Listener{Enabled: l.TCP.Enabled, Addr: l.TCP.Addr, Port: l.TCP.Port},
 		TLS:     setuphelper.Listener{Enabled: l.TLS.Enabled, Addr: l.TLS.Addr, Port: l.TLS.Port},
 		Trap:    setuphelper.Listener{Enabled: l.SNMP.Enabled, Addr: l.SNMP.Addr, Port: l.SNMP.Port},
+		Flow:    &setuphelper.FlowListener{Enabled: l.Flow.Enabled, Addr: l.Flow.Addr, FlowPort: l.Flow.FlowPort, IPFIXPort: l.Flow.IPFIXPort},
 	}
 	var st tlscert.Status
 	if cfg.Storage.DataDir != "" {

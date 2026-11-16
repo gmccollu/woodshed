@@ -24,6 +24,7 @@ func TestMockFixture(t *testing.T) {
 		TCP:       Listener{Enabled: true, Addr: "0.0.0.0", Port: 514},
 		TLS:       Listener{Enabled: true, Addr: "0.0.0.0", Port: 6514},
 		Trap:      Listener{Enabled: true, Addr: "0.0.0.0", Port: 162},
+		Flow:      &FlowListener{Enabled: true, Addr: "0.0.0.0", FlowPort: 2055, IPFIXPort: 4739},
 	}
 	fx := struct {
 		Note     string             `json:"note"`

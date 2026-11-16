@@ -89,6 +89,23 @@ func TestSetupSnippet(t *testing.T) {
 		t.Errorf("an unknown field (a secret) was accepted: %d", code)
 	}
 
+	// The flow listener's live ports and state (listeners.flow): off, then on
+	// with the flow port off, where v9 goes to the IPFIX port (either port
+	// takes every version).
+	b.settings.Listeners.Flow = &FlowListenerSettings{Addr: "0.0.0.0", FlowPort: 12055, IPFIXPort: 14739}
+	code, m = post(`{"family": "softflowd", "what": "flow", "transport": "v9"}`)
+	notes, _ = json.Marshal(m["notes"])
+	if code != 200 || !strings.Contains(m["text"].(string), "-n 10.1.0.50:12055 -v 9") || !strings.Contains(string(notes), "flow listener is off") {
+		t.Errorf("flow off: %d %v", code, m)
+	}
+	b.settings.Listeners.Flow = &FlowListenerSettings{Enabled: true, Addr: "0.0.0.0", IPFIXPort: 14739}
+	code, m = post(`{"family": "softflowd", "what": "flow", "transport": "v9"}`)
+	notes, _ = json.Marshal(m["notes"])
+	if code != 200 || !strings.Contains(m["text"].(string), "-n 10.1.0.50:14739 -v 9") || strings.Contains(string(notes), "listener is off") ||
+		m["verification"] != "tested" {
+		t.Errorf("ipfix port only: %d %v", code, m)
+	}
+
 	// GET with query parameters gives the same snippet; type= is what=.
 	q := url.Values{"family": {"net-snmp"}, "type": {"poll"}, "transport": {"v3"}, "v3_user": {"monitor"}, "agent_port": {"1161"}}
 	r := do(t, c, "GET", srv.url("/api/setup/snippet?"+q.Encode()), "")

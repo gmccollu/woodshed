@@ -19,6 +19,8 @@ func TestSetupSnippetCLI(t *testing.T) {
 	c.Listeners.SNMP.Enabled = true
 	c.Listeners.SNMP.Port = 10162
 	c.UI.ExtraHostnames = []string{"logs.example.net"}
+	c.Listeners.Flow.Enabled = true
+	c.Listeners.Flow.FlowPort, c.Listeners.Flow.IPFIXPort = 12055, 14739
 	cfg := filepath.Join(dir, "woodshed.toml")
 	if err := config.Save(cfg, c); err != nil {
 		t.Fatal(err)
@@ -36,6 +38,12 @@ func TestSetupSnippetCLI(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "udp-port 10162") || !strings.Contains(out, "snmp-server trap-source Vlan10") ||
 		!strings.Contains(errOut, setuphelper.ReferenceOnlyNote) {
 		t.Errorf("line-cli trap: %d\n%s\n%s", code, out, errOut)
+	}
+	// The flow listener's ports from the config, per version.
+	code, out, errOut = runCLI("setup", "snippet", "--config", cfg, "--family", "softflowd", "--what", "flow", "--transport", "ipfix",
+		"--interface", "eth1", "--address", "192.0.2.10")
+	if code != 0 || !strings.Contains(out, "softflowd -i eth1 -n 192.0.2.10:14739 -v 10") || strings.Contains(errOut, "listener is off") {
+		t.Errorf("softflowd ipfix: %d\n%s\n%s", code, out, errOut)
 	}
 	// --json is the API's shape.
 	code, out, _ = runCLI("setup", "snippet", "--config", cfg, "--family", "net-snmp", "--what", "poll", "--transport", "v3", "--json")

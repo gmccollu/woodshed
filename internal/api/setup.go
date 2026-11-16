@@ -43,6 +43,9 @@ func SetupServer(set Settings, st Status, tls TLSState) setuphelper.Server {
 		srv.CASHA256 = tls.CA.SHA256
 	}
 	srv.Names = append(srv.Names, set.UI.ExtraHostnames...)
+	if f := set.Listeners.Flow; f != nil {
+		srv.Flow = &setuphelper.FlowListener{Enabled: f.Enabled, Addr: f.Addr, FlowPort: f.FlowPort, IPFIXPort: f.IPFIXPort}
+	}
 	return srv
 }
 

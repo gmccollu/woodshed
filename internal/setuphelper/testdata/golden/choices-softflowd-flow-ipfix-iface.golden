@@ -2,7 +2,7 @@ family: softflowd
 what: flow
 transport: ipfix
 address: 192.0.2.10
-verification: reference
+verification: tested
 reference: softflowd(8) manual page (-i, -n, -v, -t)
 does: Runs softflowd on eth1 and exports the flows it sees to Woodshed as IPFIX (RFC 7011).
 check: Woodshed's Flows view lists this machine as an exporter within a minute or two; `softflowctl statistics` shows the flows it has sent.
@@ -10,7 +10,6 @@ placeholders:
 addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
 notes:
 - This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.
-- Reference only: not tested on a device; check your device's documentation.
 - -t maxlife=60 exports long-running flows every minute, so they show up during an incident rather than when they end.
 - softflowd sees only the traffic that passes the interface it watches.
 ---- part command "": Run softflowd (as root), or put the same options in your distribution's softflowd service settings

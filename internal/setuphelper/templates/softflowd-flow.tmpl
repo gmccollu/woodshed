@@ -3,7 +3,7 @@ family: softflowd
 what: flow
 transports: v9, ipfix
 reference: softflowd(8) manual page (-i, -n, -v, -t)
-verification: reference
+verification: tested
 */}}
 {{define "does"}}Runs softflowd on {{.Interface}} and exports the flows it sees to Woodshed as {{if eq .Transport "ipfix"}}IPFIX (RFC 7011){{else}}flow v9 (RFC 3954){{end}}.{{end}}
 

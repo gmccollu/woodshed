@@ -55,7 +55,11 @@ func goldenCases(t *testing.T) []goldenCase {
 	noTLS := sample()
 	noTLS.TLSNames, noTLS.TLSSource, noTLS.CASHA256 = nil, "", ""
 	flow := sample()
-	flow.Flow = &FlowListener{Enabled: true, Addr: "0.0.0.0", V9Port: 2056, IPFIXPort: 4740}
+	flow.Flow = &FlowListener{Enabled: true, Addr: "0.0.0.0", FlowPort: 2056, IPFIXPort: 4740}
+	flowOff := sample()
+	flowOff.Flow = &FlowListener{Addr: "0.0.0.0", FlowPort: 2055, IPFIXPort: 4739}
+	ipfixOnly := sample()
+	ipfixOnly.Flow = &FlowListener{Enabled: true, Addr: "0.0.0.0", IPFIXPort: 4739}
 	cs = append(cs,
 		goldenCase{"choices-line-cli-syslog-tcp", sample(), Request{Family: "line-cli", What: "syslog", Transport: "tcp", Severity: "warning",
 			Facility: "local5", SourceInterface: "Vlan10"}},
@@ -70,6 +74,9 @@ func goldenCases(t *testing.T) []goldenCase {
 			V3User: "monitor"}},
 		goldenCase{"choices-softflowd-flow-ipfix-iface", sample(), Request{Family: "softflowd", What: "flow", Transport: "ipfix", Interface: "eth1"}},
 		goldenCase{"choices-line-cli-flow-listener", flow, Request{Family: "line-cli", What: "flow", Transport: "ipfix", SourceInterface: "Loopback0"}},
+		goldenCase{"flow-listener-off-softflowd-v9", flowOff, Request{Family: "softflowd", What: "flow", Transport: "v9"}},
+		// The flow port is off: v9 goes to the IPFIX port, which takes every version.
+		goldenCase{"flow-ipfix-port-only-line-cli-v9", ipfixOnly, Request{Family: "line-cli", What: "flow", Transport: "v9"}},
 		goldenCase{"listener-off-web-ui-syslog-tls", off, Request{Family: "web-ui", What: "syslog", Transport: "tls"}},
 		goldenCase{"listener-off-line-cli-trap", off, Request{Family: "line-cli", What: "trap"}},
 		goldenCase{"bound-line-cli-syslog-udp", bound, Request{Family: "line-cli", What: "syslog", Transport: "udp"}},
@@ -229,7 +236,7 @@ func TestFamilies(t *testing.T) {
 		got = append(got, f.ID+":"+strings.Join(f.What, ",")+":"+f.Verification)
 	}
 	want := []string{"line-cli:syslog,trap,poll,flow:reference", "set-cli:syslog,trap,poll:reference", "rsyslog:syslog:tested",
-		"net-snmp:trap,poll:tested", "softflowd:flow:reference", "web-ui:syslog,trap,poll,flow:reference"}
+		"net-snmp:trap,poll:tested", "softflowd:flow:tested", "web-ui:syslog,trap,poll,flow:reference"}
 	if !slices.Equal(got, want) {
 		t.Errorf("families\n got %v\nwant %v", got, want)
 	}

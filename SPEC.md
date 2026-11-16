@@ -3134,11 +3134,11 @@ Made while building it, each **decided (build, 2026-11-16)**:
     set-style devices to give one that's useful (a family note says so). rsyslog covers syslog; net-snmp traps and
     polling; softflowd flows.
 55. **Verification:** rsyslog and net-snmp are Tested by the CI job `setup-snippets` (TestSetupSnippets in
-    internal/server, against a real running server, each record exactly once). softflowd stays **Reference only**
-    on this branch: its CI cases exist but skip until the flow listener lands, and §13.11 #5 allows Tested only with a
-    CI test that applies it. When feat-flows merges, write the softflowd runner, drop the cases' skip and mark
-    `softflowd-flow.tmpl` tested. TestSetupTestedTemplatesHaveCI and the deny-list test both fail a Tested template
-    no unskipped case applies.
+    internal/server, against a real running server, each record exactly once). softflowd is Tested too since the
+    flow listener merged: the runner replays the flow interop test's synthetic pcap with `-r` in place of the
+    snippet's `-i <INTERFACE>` (a CI runner has no traffic to watch), every other option as generated, and each flow
+    must be stored once with the pcap's packet and byte counts, for v9 and IPFIX. TestSetupTestedTemplatesHaveCI and
+    the deny-list test both fail a Tested template no unskipped case applies.
 56. **Choices:** source interface (line-oriented CLI), the interface softflowd watches, severity (RFC 5424 keywords,
     default `info`), facility (`local0`–`local7` or the device's default), SNMPv3 user, SHA-256 (default) or SHA-1,
     AES-128 (the protocols most devices and net-snmp share; the notes say to match both sides), and the polled

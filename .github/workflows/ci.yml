@@ -264,8 +264,9 @@ jobs:
   # the distribution's own tools, installed in CI only and never a dependency:
   # rsyslog (syslog over UDP, TCP and TLS, with Woodshed's CA), snmpd and
   # snmptrap (traps v2c and v3, and snmpd answering the poller v2c and v3).
-  # Each message or trap must arrive exactly once. softflowd is installed for
-  # the flow cases, which skip until the flow listener lands (feat-flows).
+  # Each message or trap must arrive exactly once. softflowd replays the flow
+  # interop test's synthetic pcap (written in Go) as flow v9 and IPFIX, and
+  # every flow must be stored once with the pcap's counts.
   # TestSetupTestedTemplatesHaveCI fails a template marked Tested that no case
   # here applies.
   setup-snippets:

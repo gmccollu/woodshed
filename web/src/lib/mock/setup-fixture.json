@@ -182,7 +182,7 @@
    "what": [
     "flow"
    ],
-   "verification": "reference",
+   "verification": "tested",
    "reference": "softflowd(8) manual page",
    "transports": {
     "flow": [
@@ -276,7 +276,6 @@
     }
    ],
    "notes": [
-    "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.",
     "Reference only: not tested on a device; check your device's documentation.",
     "Flow export commands differ more than any other here: some devices use one `ip flow-export destination 10.1.0.50 4739` line with a version keyword, some an exporter and monitor pair as above, some a policy that matches traffic first. Treat this as the list of values to set.",
     "The export version keyword differs too: use your device's keyword for IPFIX.",
@@ -314,7 +313,6 @@
     }
    ],
    "notes": [
-    "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.",
     "Reference only: not tested on a device; check your device's documentation.",
     "Flow export commands differ more than any other here: some devices use one `ip flow-export destination 10.1.0.50 2055` line with a version keyword, some an exporter and monitor pair as above, some a policy that matches traffic first. Treat this as the list of values to set.",
     "The export version keyword differs too: use your device's keyword for version 9.",
@@ -1113,7 +1111,7 @@
    "what": "flow",
    "transport": "ipfix",
    "address": "10.1.0.50",
-   "verification": "reference",
+   "verification": "tested",
    "reference": "softflowd(8) manual page (-i, -n, -v, -t)",
    "does": "Runs softflowd on \u003cINTERFACE\u003e and exports the flows it sees to Woodshed as IPFIX (RFC 7011).",
    "text": "# Run softflowd (as root), or put the same options in your distribution's softflowd service settings\nsoftflowd -i \u003cINTERFACE\u003e -n 10.1.0.50:4739 -v 10 -t maxlife=60\n\n# See what it's exporting\nsoftflowctl statistics\n",
@@ -1132,8 +1130,6 @@
     }
    ],
    "notes": [
-    "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.",
-    "Reference only: not tested on a device; check your device's documentation.",
     "\u003cINTERFACE\u003e is the network interface to watch, as `ip link` names it.",
     "-t maxlife=60 exports long-running flows every minute, so they show up during an incident rather than when they end.",
     "softflowd sees only the traffic that passes the interface it watches."
@@ -1155,7 +1151,7 @@
    "what": "flow",
    "transport": "v9",
    "address": "10.1.0.50",
-   "verification": "reference",
+   "verification": "tested",
    "reference": "softflowd(8) manual page (-i, -n, -v, -t)",
    "does": "Runs softflowd on \u003cINTERFACE\u003e and exports the flows it sees to Woodshed as flow v9 (RFC 3954).",
    "text": "# Run softflowd (as root), or put the same options in your distribution's softflowd service settings\nsoftflowd -i \u003cINTERFACE\u003e -n 10.1.0.50:2055 -v 9 -t maxlife=60\n\n# See what it's exporting\nsoftflowctl statistics\n",
@@ -1174,8 +1170,6 @@
     }
    ],
    "notes": [
-    "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.",
-    "Reference only: not tested on a device; check your device's documentation.",
     "\u003cINTERFACE\u003e is the network interface to watch, as `ip link` names it.",
     "-t maxlife=60 exports long-running flows every minute, so they show up during an incident rather than when they end.",
     "softflowd sees only the traffic that passes the interface it watches."
@@ -1210,7 +1204,6 @@
     }
    ],
    "notes": [
-    "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.",
     "Reference only: not tested on a device; check your device's documentation.",
     "Field names differ between devices; some call the collector a target or a server.",
     "If the page offers sampling, note the rate: Woodshed shows counts as exported and scaled by it."
@@ -1243,7 +1236,6 @@
     }
    ],
    "notes": [
-    "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default.",
     "Reference only: not tested on a device; check your device's documentation.",
     "Field names differ between devices; some call the collector a target or a server.",
     "If the page offers sampling, note the rate: Woodshed shows counts as exported and scaled by it."

@@ -4,6 +4,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -11,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/setuphelper"
 )
 
@@ -33,7 +34,9 @@ import (
 //   - net-snmp: snmpd's own coldStart trap and snmptrap's test trap, v2c and
 //     v3 (the v3 user added through /api/snmp/users);
 //   - net-snmp: snmpd answering Woodshed's poller, v2c and v3;
-//   - softflowd: flows, only once the flow listener exists (feat-flows).
+//   - softflowd: flow v9 and IPFIX, replaying the flow interop test's
+//     synthetic pcap (writePcap) with -r in place of the snippet's -i, each
+//     flow stored once with the pcap's packet and byte counts.
 //
 // Each snippet comes from the server's own POST /api/setup/snippet, so it's
 // filled from the live settings. The test writes each "file" part where the
@@ -42,7 +45,8 @@ import (
 // high ports on loopback, and stops every process it starts by PID.
 //
 // It runs only with WOODSHED_SETUP_INTEROP=1 (the CI job "setup-snippets"
-// installs rsyslog, its TLS driver, snmpd, snmp and softflowd).
+// installs rsyslog, its TLS driver, snmpd, snmp and softflowd; the pcap is
+// written in Go, so no capture tool is needed).
 // WOODSHED_SETUP_INTEROP_ONLY=net-snmp,rsyslog limits it to some families (for
 // a machine with only some of the tools); WOODSHED_SETUP_INTEROP_REQUIRE=sha-256
 // fails instead of falling back to SHA-1 when the tools lack SHA-256.
@@ -89,8 +93,6 @@ type setupCase struct {
 	skip                    string
 }
 
-const skipNoFlow = "the flow listener isn't on this branch yet; enable the softflowd cases (and mark softflowd-flow.tmpl tested) when feat-flows merges"
-
 // setupInteropCases: one line per case, in a form internal/setuphelper's
 // TestNoVendorNames also reads (family: "…", what: "…", transport: "…").
 var setupInteropCases = []setupCase{
@@ -101,15 +103,8 @@ var setupInteropCases = []setupCase{
 	{family: "net-snmp", what: "trap", transport: "v3"},
 	{family: "net-snmp", what: "poll", transport: "v2c"},
 	{family: "net-snmp", what: "poll", transport: "v3"},
-	{family: "softflowd", what: "flow", transport: "v9", skip: skipNoFlow},
-	{family: "softflowd", what: "flow", transport: "ipfix", skip: skipNoFlow},
-}
-
-// flowListenerExists reports whether this build's config has a flow
-// listener (it arrives with feat-flows).
-func flowListenerExists() bool {
-	_, ok := reflect.TypeOf(config.Listeners{}).FieldByName("Flow")
-	return ok
+	{family: "softflowd", what: "flow", transport: "v9"},
+	{family: "softflowd", what: "flow", transport: "ipfix"},
 }
 
 // setupRunners apply one family and data type's snippet; each returns a note
@@ -118,13 +113,7 @@ var setupRunners = map[string]func(t *testing.T, transport string) string{
 	"rsyslog/syslog": runRsyslog,
 	"net-snmp/trap":  runSnmpTrap,
 	"net-snmp/poll":  runSnmpPoll,
-	"softflowd/flow": func(t *testing.T, _ string) string {
-		if !flowListenerExists() {
-			t.Skip(skipNoFlow)
-		}
-		t.Fatal("the flow listener exists now: write the softflowd case (softflowd -r a fixed pcap, or -i lo with traffic, to the flow listener)")
-		return ""
-	},
+	"softflowd/flow": runSoftflowd,
 }
 
 // The tools' test secrets: fixed values, written into the tools' config files
@@ -609,4 +598,73 @@ func TestSetupTestedTemplatesHaveCI(t *testing.T) {
 			t.Errorf("the setup-snippets job lacks %q", want)
 		}
 	}
+}
+
+// ---- softflowd ----
+
+// runSoftflowd applies the softflowd snippet to a server whose flow listener
+// is on, from its own settings (POST /api/setup/snippet picks the port per
+// version). On a CI runner there's no traffic to watch, so the snippet's
+// "-i <INTERFACE>" becomes "-r <the synthetic pcap>" and "-d" keeps softflowd
+// in the foreground until the file is done; every other option is the
+// snippet's own.
+func runSoftflowd(t *testing.T, transport string) string {
+	bin := tool(t, "softflowd")
+	r, flowPort, ipfixPort := flowServer(t, nil)
+	e := &setupEnv{r: r, dir: t.TempDir()}
+	s := e.snippet(t, map[string]any{"family": "softflowd", "what": "flow", "transport": transport, "address": "127.0.0.1"})
+	port, ver := flowPort, uint8(flow.V9)
+	if transport == "ipfix" {
+		port, ver = ipfixPort, flow.IPFIX
+	}
+	cmdText := strings.TrimSpace(part(t, s, setuphelper.PartCommand, "Run softflowd").Text)
+	if !strings.Contains(cmdText, fmt.Sprintf("-n 127.0.0.1:%d ", port)) || !strings.Contains(cmdText, "-i <INTERFACE>") {
+		t.Fatalf("the snippet doesn't send to the server's %s port %d: %s", transport, port, cmdText)
+	}
+	pcap := filepath.Join(e.dir, "synthetic.pcap")
+	want := writePcap(t, pcap, time.Now().Add(-10*time.Minute).Truncate(time.Second))
+	args := strings.Fields(strings.Replace(cmdText, "-i <INTERFACE>", "-r "+pcap, 1))
+	if args[0] != "softflowd" {
+		t.Fatalf("the command doesn't start with softflowd: %s", cmdText)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, append(args[1:], "-d")...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s -d: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	var total uint64
+	for _, f := range want {
+		total += f.packets
+	}
+	// Exactly once: every flow with the pcap's own counts (a duplicate would
+	// double them), the same after 3 s more, and no record of another version.
+	check := func() (map[tuple]*pcapFlow, uint64, int) {
+		r.srv.be.store.Flush()
+		all := storedByVersion(t, r)
+		got := all[ver]
+		var n uint64
+		for _, f := range got {
+			n += f.packets
+		}
+		return got, n, len(all)
+	}
+	deadline := time.Now().Add(45 * time.Second)
+	got, n, versions := check()
+	for n < total && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		got, n, versions = check()
+	}
+	time.Sleep(3 * time.Second)
+	got, n, versions = check()
+	if n != total || versions != 1 || len(got) != len(want) {
+		t.Fatalf("%s: %d packets in %d flows (%d versions) stored, the pcap has %d packets in %d flows", transport, n, len(got), versions, total, len(want))
+	}
+	for _, f := range want {
+		if g := got[f.tuple]; g == nil || g.packets != f.packets || g.bytes != f.bytes {
+			t.Errorf("%s %v: stored %+v, the pcap has %d packets, %d bytes", transport, f.tuple, g, f.packets, f.bytes)
+		}
+	}
+	ver2, _ := exec.Command(bin, "-h").CombinedOutput()
+	return " (" + strings.SplitN(strings.TrimSpace(string(ver2)), "\n", 2)[0] + ")"
 }

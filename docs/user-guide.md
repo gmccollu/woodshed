@@ -72,8 +72,8 @@ on its TLS certificate.
    `<AUTH-PASSPHRASE>`, `<CA-FILE>`), and check that it worked as the snippet's last line says.
 
 Each snippet carries a badge:
-- **Tested**: CI applies it to the real tool (rsyslog, net-snmp) against a running Woodshed on every change, and checks
-  that the data arrives exactly once.
+- **Tested**: CI applies it to the real tool (rsyslog, net-snmp, softflowd) against a running Woodshed on every change,
+  and checks that the data arrives exactly once.
 - **Lab-checked**: applied by hand on lab equipment, on the date shown.
 - **Reference only**: not tested on a device; check your device's documentation. The commands follow common,
   documented syntax, and the notes say where devices are known to differ.

@@ -235,15 +235,18 @@ type Listener struct {
 
 // FlowListener is the flow collector's listener (2.0).
 type FlowListener struct {
-	Enabled   bool
-	Addr      string
-	V9Port    int // flow v9, RFC 3954 (0: off)
-	IPFIXPort int // IPFIX (0: off)
+	Enabled bool
+	Addr    string
+	// FlowPort is listeners.flow.flow_port (flow v5 and v9 by default) and
+	// IPFIXPort listeners.flow.ipfix_port; 0 is off. Either port accepts
+	// every version.
+	FlowPort  int
+	IPFIXPort int
 }
 
 // Default flow ports (SPEC §13.1).
 const (
-	DefaultV9Port    = 2055
+	DefaultFlowPort  = 2055
 	DefaultIPFIXPort = 4739
 )
 
@@ -886,16 +889,24 @@ func (s Server) listenerFor(what, transport string) (Listener, string) {
 	case WhatTrap:
 		return s.Trap, "SNMP trap"
 	case WhatFlow:
-		f := FlowListener{V9Port: DefaultV9Port, IPFIXPort: DefaultIPFIXPort}
-		if s.Flow != nil {
-			f = *s.Flow
+		if s.Flow == nil {
+			port := DefaultFlowPort
+			if transport == "ipfix" {
+				port = DefaultIPFIXPort
+			}
+			return Listener{Port: port}, "flow"
 		}
-		port := cmp.Or(f.V9Port, DefaultV9Port)
-		name := "flow v9"
+		// Each port accepts every version: a version's usual port when it's
+		// on, else the other one.
+		f := *s.Flow
+		port := cmp.Or(f.FlowPort, f.IPFIXPort)
 		if transport == "ipfix" {
-			port, name = cmp.Or(f.IPFIXPort, DefaultIPFIXPort), "IPFIX"
+			port = cmp.Or(f.IPFIXPort, f.FlowPort)
 		}
-		return Listener{Enabled: f.Enabled, Addr: f.Addr, Port: port}, name
+		if port == 0 {
+			return Listener{Addr: f.Addr, Port: DefaultFlowPort}, "flow"
+		}
+		return Listener{Enabled: f.Enabled, Addr: f.Addr, Port: port}, "flow"
 	}
 	return Listener{Enabled: true}, ""
 }
@@ -905,7 +916,7 @@ func listenerOffNote(what, transport, name string, noFlow bool) string {
 	case what == WhatFlow && noFlow:
 		return "This Woodshed doesn't receive flows yet, so nothing will arrive. The port is the flow listener's default."
 	case what == WhatFlow:
-		return "Woodshed's " + name + " listener is off: turn it on with `woodshed flow on` (as an administrator) first."
+		return "Woodshed's flow listener is off: turn it on in Settings → Flows (or `woodshed flow on`, as an administrator) first."
 	case what == WhatTrap:
 		return "Woodshed's SNMP trap listener is off: turn it on in Settings → Listeners (or `woodshed snmp on`) first."
 	case transport == "tls":
