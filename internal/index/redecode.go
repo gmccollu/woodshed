@@ -11,10 +11,10 @@ import (
 
 // RedecodeResult is what RedecodeFlows did.
 type RedecodeResult struct {
-	Segments  int // segments rewritten
-	Decoded   int // raw sets decoded
-	Records   int // records they gave
-	StillRaw  int // raw sets left (no template in the segment, or malformed)
+	Segments   int // segments rewritten
+	Decoded    int // raw sets decoded
+	Records    int // records they gave
+	StillRaw   int // raw sets left (no template in the segment, or malformed)
 	Unreadable []string
 }
 

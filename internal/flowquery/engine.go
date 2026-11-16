@@ -573,9 +573,10 @@ type SearchResult struct {
 
 // searchCursor resumes after a key.
 type searchCursor struct {
-	Key      hitKey `json:"k"`
-	Query    string `json:"q"`
-	From, To int64  `json:"f,omitempty"` // the first page's range (unix ms)
+	Key   hitKey `json:"k"`
+	Query string `json:"q"`
+	From  int64  `json:"f,omitempty"` // the first page's range (unix ms)
+	To    int64  `json:"t,omitempty"`
 }
 
 // Search returns up to limit records, newest first by flow end (asc: oldest

@@ -30,7 +30,7 @@ func (b *fakeBackend) FlowTop(_ context.Context, r FlowTopRequest) (FlowTopPage,
 	b.flowTops = append(b.flowTops, r)
 	at := ts("2026-11-16T09:00:02Z")
 	return FlowTopPage{By: r.By, Metric: r.Metric, From: r.From, To: r.To, Total: FlowTopTotal{Flows: 10, Bytes: 100},
-		Rows: []FlowTopRow{{Key: "10.20.0.5", Label: "10.20.0.5", Flows: 4, Bytes: 31, Share: 0.31, First: &at, Last: &at}},
+		Rows:     []FlowTopRow{{Key: "10.20.0.5", Label: "10.20.0.5", Flows: 4, Bytes: 31, Share: 0.31, First: &at, Last: &at}},
 		Progress: &FlowProgress{BlocksDone: 1, BlocksTotal: 1, RecordsDone: 10, RecordsTotal: 10, CompleteFrom: r.From}}, nil
 }
 

@@ -299,3 +299,29 @@ func TestEngineSummaryEachCount(t *testing.T) {
 	}
 	_ = sort.Strings
 }
+
+// A search continued with the default range keeps the first page's range.
+func TestEngineSearchCursorKeepsDefaultRange(t *testing.T) {
+	fx := newFixture(t, 500)
+	q := Query{From: fx.h, To: fx.h.Add(2 * time.Hour), DefaultRange: true}
+	res, err := fx.eng.Search(bg, q, 10, false, "", time.Minute)
+	if err != nil || res.Cursor == "" {
+		t.Fatal(err)
+	}
+	q2 := Query{From: fx.h.Add(time.Hour), To: fx.h.Add(90 * time.Minute), DefaultRange: true} // "now" moved on
+	res2, err := fx.eng.Search(bg, q2, 10, false, res.Cursor, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, last := flowseg.EffectiveTimes(&res.Hits[len(res.Hits)-1].Record)
+	for _, h := range res2.Hits {
+		if _, e := flowseg.EffectiveTimes(&h.Record); e > last || e < fx.h.UnixMilli() {
+			t.Fatalf("hit outside the first page's range: %d (last %d)", e, last)
+		}
+	}
+	// The next page follows straight on: newer than the second request's own
+	// (later) range would allow.
+	if _, e := flowseg.EffectiveTimes(&res2.Hits[0].Record); len(res2.Hits) != 10 || e <= fx.h.Add(90*time.Minute).UnixMilli() {
+		t.Fatalf("second page %d hits, first end %d", len(res2.Hits), e)
+	}
+}
