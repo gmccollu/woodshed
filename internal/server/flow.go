@@ -151,10 +151,10 @@ func (b *backend) openFlows(cfg config.Config) {
 	}
 	fs.eng = flowquery.New(flowquery.Options{DataDir: cfg.Storage.DataDir, Index: b.idx, Logger: b.log, RuleIDIEs: ruleIEs(l),
 		Open: func(ids []string) []flowquery.OpenSegment {
-			snaps := b.store.OpenFlowSegments(ids)
+			snaps := b.store.OpenFlowList(ids)
 			out := make([]flowquery.OpenSegment, len(snaps))
 			for i, s := range snaps {
-				out[i] = flowquery.OpenSegment{DeviceID: s.DeviceID, Rel: s.Rel, Path: s.Path, Footer: s.Footer}
+				out[i] = flowquery.OpenSegment{DeviceID: s.DeviceID, Rel: s.Rel, Path: s.Path, Snap: s.Snap}
 			}
 			return out
 		}})

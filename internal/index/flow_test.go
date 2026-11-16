@@ -89,3 +89,69 @@ func TestFloorDiv(t *testing.T) {
 		}
 	}
 }
+
+// FlowSegmentsPage walks FlowSegments' rows in pages either way, ties by
+// path, with the same filter; the count and the devices agree.
+func TestFlowSegmentsPage(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	h := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	var ops []FileOp
+	for i := 0; i < 23; i++ {
+		dev := []string{"10.1.0.1", "10.1.0.2", "10.1.0.3"}[i%3]
+		path := "logs/" + dev + "/flows/" + h.Add(time.Duration(i/3)*time.Hour).Format("2006-01-02T15") + ".wsf"
+		start, end := h.Add(time.Duration(i/3)*time.Hour), h.Add(time.Duration(i/3+1)*time.Hour) // ties of 3
+		ops = append(ops, FileOp{Kind: OpUpsert, File: File{DeviceID: dev, Type: TypeFlow, Path: path, Day: "2026-11-16",
+			FirstReceived: start, LastReceived: end, Size: 1, RawSize: 1, Lines: int64(i + 1)},
+			Flow: &FlowSegment{Path: path, DeviceID: dev, Start: start.UnixMilli(), End: end.UnixMilli(), Records: int64(i + 1)}})
+	}
+	if err := d.Apply(ctx, Batch{Files: ops}); err != nil {
+		t.Fatal(err)
+	}
+	from, to := h.Add(90*time.Minute), h.Add(6*time.Hour)
+	for _, devs := range [][]string{nil, {"10.1.0.2", "10.1.0.3"}} {
+		all, _ := d.FlowSegments(ctx, devs, from, to)
+		for _, asc := range []bool{false, true} {
+			var got []FlowSegment
+			var c *FlowSegCursor
+			for {
+				page, err := d.FlowSegmentsPage(ctx, devs, from, to, asc, c, 4)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, page...)
+				if len(page) < 4 {
+					break
+				}
+				last := page[len(page)-1]
+				c = &FlowSegCursor{Key: last.End, Path: last.Path}
+				if asc {
+					c.Key = last.Start
+				}
+			}
+			if len(got) != len(all) || len(all) == 0 {
+				t.Fatalf("devs %v asc %v: %d rows paged, %d in all", devs, asc, len(got), len(all))
+			}
+			for i := 1; i < len(got); i++ {
+				a, b := got[i-1], got[i]
+				if (!asc && (a.End < b.End || a.End == b.End && a.Path <= b.Path)) || (asc && (a.Start > b.Start || a.Start == b.Start && a.Path >= b.Path)) {
+					t.Fatalf("asc %v: out of order at %d: %s %s", asc, i, a.Path, b.Path)
+				}
+			}
+		}
+		n, recs, err := d.FlowSegmentsCount(ctx, devs, from, to)
+		var want int64
+		for _, s := range all {
+			want += s.Records
+		}
+		if err != nil || n != int64(len(all)) || recs != want {
+			t.Fatalf("count %d %d (want %d %d) %v", n, recs, len(all), want, err)
+		}
+		ids, _ := d.FlowDevices(ctx, devs, from, to)
+		if (devs == nil && len(ids) != 3) || (devs != nil && len(ids) != 2) || ids[0] > ids[len(ids)-1] {
+			t.Fatalf("devices %v", ids)
+		}
+	}
+	if rows, _ := d.FlowSegmentsPage(ctx, []string{}, from, to, false, nil, 4); rows != nil {
+		t.Fatal("an empty device list has rows")
+	}
+}

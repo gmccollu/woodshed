@@ -398,11 +398,14 @@ func (e *Engine) Summary(ctx context.Context, q Query, sq SummaryQuery, budget t
 		accs[i] = newSummaryAcc(sq.Fields, sq.Histogram, bucket, sq.Origin.UnixMilli())
 	}
 	deadline := time.Now().Add(budget)
-	rd := (&readers{p: st.plan}).from(st.done)
+	rd := newReaders(st.plan)
 	defer rd.close()
-	for first := true; st.done < len(st.plan.blocks) && (first || time.Now().Before(deadline)); first = false {
-		hi := min(st.done+e.wave(), len(st.plan.blocks))
-		if err := e.scan(ctx, st.plan, rd, st.done, hi, f, cols, func(w int, _ *planned, _ int, r *flow.Record) {
+	for first := true; st.plan.more(ctx) && (first || time.Now().Before(deadline)); first = false {
+		blocks := st.plan.take(ctx, rd, e.wave())
+		if len(blocks) == 0 {
+			break
+		}
+		if err := e.scan(ctx, st.plan, rd, blocks, f, cols, func(w int, _ *planned, _ int, r *flow.Record) {
 			a := accs[w]
 			a.add(r)
 			if a.full() {
@@ -413,21 +416,23 @@ func (e *Engine) Summary(ctx context.Context, q Query, sq SummaryQuery, budget t
 			return SummaryResult{}, err
 		}
 		e.gcNudge()
-		for _, b := range st.plan.blocks[st.done:hi] {
+		for _, b := range blocks {
 			st.recsDone += int64(b.rows)
 		}
-		st.done = hi
+		st.done += len(blocks)
+	}
+	if err := st.plan.err; err != nil {
+		return SummaryResult{}, err
 	}
 	for _, a := range accs {
 		st.sum.merge(a)
 	}
 	res := SummaryResult{Fields: st.sum.result(max(sq.Top, 1)), Matched: st.sum.matched, Buckets: map[int64]Bucket{},
-		Progress: Progress{BlocksDone: int64(st.done), BlocksTotal: int64(len(st.plan.blocks)), RecordsDone: st.recsDone,
-			RecordsTotal: st.plan.rows, CompleteFrom: st.plan.frontier(st.done)}}
+		Progress: st.plan.progress(ctx, int64(st.done), st.recsDone)}
 	for k, b := range st.sum.buckets {
 		res.Buckets[k] = *b
 	}
-	if st.done < len(st.plan.blocks) {
+	if st.plan.more(ctx) {
 		res.Partial = true
 		saved = true
 		e.saveState(st)

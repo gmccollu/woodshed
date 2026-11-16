@@ -439,6 +439,44 @@ type FlowSnapshot struct {
 	Rel      string
 	Path     string
 	Footer   *flowseg.Footer
+	// Snap (OpenFlowList) takes the snapshot when called; nil once the
+	// segment has closed (read it from its file then).
+	Snap func() *flowseg.Footer
+}
+
+// OpenFlowList lists the open segments (deviceIDs nil: all) without taking
+// their snapshots: a query takes each when its plan reaches it, so a query
+// over many exporters doesn't copy every open segment's directory at once.
+func (s *Store) OpenFlowList(deviceIDs []string) []FlowSnapshot {
+	want := map[string]bool{}
+	for _, id := range deviceIDs {
+		want[id] = true
+	}
+	s.fl.mu.Lock()
+	streams := make([]*flowStream, 0, len(s.fl.streams))
+	for id, st := range s.fl.streams {
+		if deviceIDs == nil || want[id] {
+			streams = append(streams, st)
+		}
+	}
+	s.fl.mu.Unlock()
+	var out []FlowSnapshot
+	for _, st := range streams {
+		st.mu.Lock()
+		if st.w != nil {
+			st, rel := st, st.rel
+			out = append(out, FlowSnapshot{DeviceID: st.id, Rel: rel, Path: st.abs, Snap: func() *flowseg.Footer {
+				st.mu.Lock()
+				defer st.mu.Unlock()
+				if st.w == nil || st.rel != rel {
+					return nil
+				}
+				return st.w.Snapshot()
+			}})
+		}
+		st.mu.Unlock()
+	}
+	return out
 }
 
 // OpenFlowSegments returns the open segments' snapshots (deviceIDs nil: all),

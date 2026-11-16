@@ -440,3 +440,127 @@ func TestLateRowsAreApprox(t *testing.T) {
 	}
 	t.Fatal("the late key isn't listed")
 }
+
+// writeWeek writes a week of hourly segments for exporters exporters, each
+// with blocks blocks of 2 records (one segment per hour, written once and
+// copied to every exporter's path), indexes them, and returns an engine with
+// the defaults.
+func writeWeek(t *testing.T, exporters, blocks int) (*Engine, time.Time) {
+	t.Helper()
+	dir := t.TempDir()
+	idx, err := index.Open(filepath.Join(dir, index.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	week := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+	tmpl := filepath.Join(dir, "tmpl")
+	os.MkdirAll(tmpl, 0o750)
+	var batch index.Batch
+	apply := func() {
+		if err := idx.Apply(bg, batch); err != nil {
+			t.Fatal(err)
+		}
+		batch = index.Batch{}
+	}
+	for h := 0; h < 7*24; h++ {
+		hour := week.Add(time.Duration(h) * time.Hour)
+		name := flowseg.NameFor(hour)
+		src := filepath.Join(tmpl, name.String())
+		w, err := flowseg.Create(src, "tmpl", hour, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := flow.Record{Has: flow.HasStart | flow.HasEnd | flow.HasSrc | flow.HasDst | flow.HasBytes | flow.HasPackets, Sampling: 1,
+			Bytes: 100, Packets: 1}
+		for b := 0; b < blocks; b++ {
+			ms := hour.UnixMilli() + int64(b)*3_600_000/int64(blocks)
+			for i := 0; i < 2; i++ {
+				r.Received, r.End, r.Start = ms+int64(i), ms+int64(i), ms-500
+				r.Src, r.Dst = addrN(b%50), addrN(1<<20+i)
+				if err := w.Append(&r); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w.Flush()
+		}
+		foot, err := w.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for x := 0; x < exporters; x++ {
+			dev := fmt.Sprintf("10.9.%d.%d", x/250, x%250+1)
+			fdir := filepath.Join(dir, "logs", dev, "flows")
+			os.MkdirAll(fdir, 0o750)
+			path := filepath.Join(fdir, name.String())
+			if err := os.WriteFile(path, data, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			ff := index.FlowFile{DeviceID: dev, Name: name, Rel: "logs/" + dev + "/flows/" + name.String(), Path: path}
+			rows := index.FlowRowsOf(ff, foot, int64(len(data)), true)
+			batch.Files = append(batch.Files, index.FileOp{Kind: index.OpUpsert, File: rows.File, Flow: &rows.Segment})
+			if len(batch.Files) >= 2000 {
+				apply()
+			}
+		}
+	}
+	apply()
+	return New(Options{DataDir: dir, Index: idx}), week
+}
+
+// A week over 50 exporters (8,400 segments): the plan streams the window, so
+// a top-N's and a search's peak heap is the same with 4 times the blocks,
+// and far under the query ceiling (SPEC §13.10 decision 56). At one block a
+// second a real week is 30 million blocks: the old plan's 64 bytes each
+// would have been 1.9 GB, before the segments' directories.
+func TestWeekPlanBounded(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("short or race: writes 8,400 segments")
+	}
+	const exporters = 50
+	var peaks []uint64
+	for _, blocks := range []int{15, 60} {
+		e, week := writeWeek(t, exporters, blocks)
+		q := Query{From: week, To: week.Add(7 * 24 * time.Hour)}
+		var top TopResult
+		var err error
+		peak, _ := peakDuring(func() { top, err = e.Top(bg, q, "src", "flows", 10, time.Hour, "") })
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := int64(exporters * 7 * 24 * blocks * 2)
+		if top.Partial || top.Total.Flows != want || top.Progress.RecordsDone != want || top.Progress.BlocksDone != int64(exporters*7*24*blocks) {
+			t.Fatalf("%d blocks: partial %v flows %d (want %d) progress %+v", blocks, top.Partial, top.Total.Flows, want, top.Progress)
+		}
+		// A search's pages walk the week newest first; the first and a later one.
+		var sres SearchResult
+		speak, _ := peakDuring(func() { sres, err = e.Search(bg, q, 500, false, "", time.Hour) })
+		if err != nil || len(sres.Hits) != 500 || sres.Cursor == "" {
+			t.Fatalf("search: %v hits %d", err, len(sres.Hits))
+		}
+		if _, err := e.Search(bg, q, 500, false, sres.Cursor, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		n, err := e.Count(bg, q)
+		var c int64
+		for _, v := range n {
+			c += v
+		}
+		if err != nil || c != want || len(n) != exporters {
+			t.Fatalf("count %d (want %d) devices %d: %v", c, want, len(n), err)
+		}
+		t.Logf("%d exporters, a week, %d blocks a segment (%d blocks): top peak %.1f MiB, search peak %.1f MiB",
+			exporters, blocks, exporters*7*24*blocks, float64(peak)/(1<<20), float64(speak)/(1<<20))
+		peaks = append(peaks, max(peak, speak))
+		if p := max(peak, speak); p > 192<<20 {
+			t.Fatalf("peak %.1f MiB over the ceiling", float64(p)/(1<<20))
+		}
+	}
+	if d := int64(peaks[1]) - int64(peaks[0]); d > 16<<20 {
+		t.Fatalf("4 times the blocks grew the peak by %.1f MiB", float64(d)/(1<<20))
+	}
+}

@@ -68,8 +68,7 @@ func OpenSnapshot(path string, snap *Footer) (*Reader, error) {
 		f.Close()
 		return nil, err
 	}
-	foot := *snap
-	foot.Blocks = slices.Clone(snap.Blocks)
+	foot := *snap // the blocks are shared: a reader never changes them (Block doesn't cache)
 	return &Reader{f: f, size: st.Size(), h: h, foot: &foot}, nil
 }
 
