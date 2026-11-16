@@ -2,6 +2,7 @@ package flowseg
 
 import (
 	"encoding/binary"
+	"io"
 	"math/bits"
 	"os"
 	"slices"
@@ -18,12 +19,15 @@ import (
 // Records collect in the open block, which is written as one section when it
 // reaches MaxBlockRows, when a record arrives 1 s or more after the block's
 // first, and on Flush (the store calls it every second). A failed write
-// drops the open block (and its raw sets) and returns the error; the file is
-// cut back to the last complete section, so later writes still land after
-// good data.
+// drops what it was writing (the open block with the template chunk before
+// it, or the waiting raw sets) and returns the error; the file is cut back to
+// the last complete section, so later writes still land after good data, and
+// a cut that fails only leaves torn bytes the next write overwrites (and
+// readers and Recover stop at). An Append whose flush fails drops its own
+// record too. TakeMinutes never counts a dropped block (fault_test.go).
 type Writer struct {
 	mu     sync.Mutex
-	f      *os.File
+	f      segFile
 	path   string
 	st     *segState
 	enc    encoder
@@ -78,8 +82,29 @@ func Create(path, deviceID string, hour time.Time, version string) (*Writer, err
 		os.Remove(path)
 		return nil, err
 	}
-	return &Writer{f: f, path: path, st: newSegState(h), tmplPtr: map[*flow.Template]uint32{},
+	return &Writer{f: wrapFile(f), path: path, st: newSegState(h), tmplPtr: map[*flow.Template]uint32{},
 		tmplKey: map[string]uint32{}, pending: minuteAcc{}, perRow: 20}, nil
+}
+
+// segFile is what a Writer needs of its file (an *os.File; tests wrap it to
+// inject failures).
+type segFile interface {
+	io.ReaderAt
+	io.WriterAt
+	Truncate(size int64) error
+	Close() error
+	Sync() error
+}
+
+// wrapFile is the seam tests use to put a failing file under a Writer.
+var wrapFile = func(f *os.File) segFile { return f }
+
+// syncSeg fsyncs a segment file through syncFile when it's a real file.
+func syncSeg(f segFile) error {
+	if of, ok := f.(*os.File); ok {
+		return syncFile(of)
+	}
+	return f.Sync()
 }
 
 // Path returns the segment's path.
@@ -292,7 +317,7 @@ func (w *Writer) Sync() error {
 	if w.closed {
 		return ErrClosed
 	}
-	return syncFile(w.f)
+	return syncSeg(w.f)
 }
 
 // Close flushes, writes the template table, the footer and the trailer,
