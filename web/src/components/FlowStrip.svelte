@@ -76,9 +76,9 @@
 </script>
 
 {#if strips.length && n}
-  <div class="strips" aria-label="Flows exported by the selected devices" data-flow-strip>
+  <div class="fstrips" aria-label="Flows exported by the selected devices" data-flow-strip>
     {#each strips as s, k (s.device)}
-      <div class="strip">
+      <div class="fstrip">
         <div class="lab">
           <span class="dev">{deviceName(s.device)}</span>
           <span>Flows, bytes/s</span>
@@ -107,14 +107,14 @@
 {/if}
 
 <style>
-  .strips {
+  .fstrips {
     padding: 4px 18px 8px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     font-family: var(--font-sans);
     font-size: 12px;
     color: var(--log-dim);
   }
-  .strip + .strip {
+  .fstrip + .fstrip {
     margin-top: 4px;
   }
   .lab {

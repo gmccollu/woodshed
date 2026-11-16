@@ -629,7 +629,7 @@
     <div class="fres res-body overflow-auto px-[18px] py-2">
       {#if results.length}
         <div class="frow head" aria-hidden="true">
-          <span>Flow end</span><span>Exporter</span><span>Source → destination</span><span>Proto</span><span class="r">Packets</span><span class="r">Bytes (scaled)</span><span>Event</span>
+          <span>Flow end</span><span>Exporter</span><span>Source → destination</span><span>Proto</span><span class="r">Packets</span><span class="r">Bytes</span><span>Event</span>
         </div>
       {/if}
       {#if error}
@@ -645,13 +645,13 @@
         <div class="frow" role="button" tabindex="0" data-ref={r.ref} onclick={() => (open = r)} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), (open = r))}>
           <span class="t">{stamp(r.fields.end, prefs.utc)}</span>
           <span class="h">{deviceName(r.device_id)}</span>
-          <span class="ep">{endpoint(r.fields.src, r.fields.src_port)} → {endpoint(r.fields.dst, r.fields.dst_port)}</span>
+          <span class="ep" title="{endpoint(r.fields.src, r.fields.src_port)} → {endpoint(r.fields.dst, r.fields.dst_port)}">{endpoint(r.fields.src, r.fields.src_port)} → {endpoint(r.fields.dst, r.fields.dst_port)}</span>
           <span>{protoName(r.fields.proto, r.fields.proto_name)}</span>
           <span class="r">{pktText(r)}</span>
           <span class="r" title={r.fields.bytes === null ? '' : amountText('bytes', r.fields.bytes, r.fields.bytes_scaled, { sampling: r.fields.sampling }) + (sampled(r) ? '' : ', unsampled')}
-            >{bytesText(r)}{#if scaledText(r)}<span class="samp"> {scaledText(r)}</span>{/if}</span
+            >{bytesText(r)}{#if scaledText(r)}<span class="samp">&nbsp;{scaledText(r)}</span>{/if}</span
           >
-          <span class="ev" class:den={r.fields.fw_event === 'denied'}>{eventNote(r.fields)}</span>
+          <span class="ev" class:den={r.fields.fw_event === 'denied'} title={eventNote(r.fields)}>{eventNote(r.fields)}</span>
         </div>
       {/each}
       {#if results.length && cursor}
@@ -682,7 +682,10 @@
     </div>
     <div class="overflow-auto px-[18px] py-3 font-sans text-[13.5px]">
       <dl class="dkv">
-        {#each detailRows(f) as [k, v] (k)}<dt>{k}</dt><dd class:font-mono={/\d/.test(v)}>{v}</dd>{/each}
+        {#each detailRows(f) as [k, raw] (k)}
+          {@const v = k === 'Start' || k === 'End' || k === 'Event time' ? `${stamp(raw, prefs.utc)}${prefs.utc ? ' UTC' : ''}` : raw}
+          <dt>{k}</dt><dd class:font-mono={/\d/.test(v)}>{v}</dd>
+        {/each}
       </dl>
       <h3 class="dh">Other fields</h3>
       {#if f.extras.length}
@@ -801,7 +804,7 @@
   }
   .frow {
     display: grid;
-    grid-template-columns: 19ch 12ch minmax(17rem, 2fr) 6ch 7ch 19ch minmax(9rem, 1.3fr);
+    grid-template-columns: 19ch 12ch minmax(0, 2.2fr) 5ch 6ch 18ch minmax(0, 1.4fr);
     gap: 0 14px;
     padding: 2px 4px;
     border-radius: 6px;
@@ -843,8 +846,6 @@
   }
   .frow > span.ev {
     color: var(--log-dim);
-    white-space: normal;
-    overflow-wrap: anywhere;
   }
   .ev.den {
     color: var(--sev-err);

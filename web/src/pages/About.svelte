@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getStats, type Stats } from '../lib/api';
-  import { bytes, dateTime, duration, num } from '../lib/format';
+  import { bytes, dateTime, duration, num, protoLabel } from '../lib/format';
   import { live } from '../lib/status.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import QueueChart from '../components/QueueChart.svelte';
@@ -18,7 +18,7 @@
   });
   const reasons = $derived(stats?.dropped_by_reason);
   const anyReason = $derived(!!reasons && reasons.paused + reasons.write_error + reasons.refused + reasons.queue_full > 0);
-  const queueName = (l: string) => (l === 'udp' ? 'Syslog over UDP' : l === 'snmp' ? 'SNMP traps' : l.toUpperCase());
+  const queueName = (l: string) => (l === 'udp' ? 'Syslog over UDP' : l === 'snmp' ? 'SNMP traps' : l === 'netflow' || l === 'ipfix' ? `Flows (${protoLabel(l)})` : l.toUpperCase());
   const pct = (a: number, b: number) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
 
   const st = $derived(live.status);
@@ -137,7 +137,7 @@
         {#each st.listeners as l (l.proto + l.port)}
           <li class="flex items-center gap-2">
             <span class="inline-block size-[9px] rounded-full" style:background={l.ok ? 'var(--ok)' : 'var(--bad)'} aria-hidden="true"></span>
-            <span class="font-mono text-[13.5px]">{l.proto.toUpperCase()} {l.addr}:{l.port}</span>
+            <span class="font-mono text-[13.5px]">{protoLabel(l.proto)} {l.addr}:{l.port}</span>
             <span class:text-ok-fg={l.ok} class:text-bad-fg={!l.ok}>{l.ok ? 'listening' : l.error}</span>
           </li>
         {/each}

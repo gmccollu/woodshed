@@ -102,7 +102,7 @@ test('Leave flows out: over 4 h and above 1 GB', () => {
   assert.deepEqual(flowFormatsBody(['ipfix']), ['ipfix']);
   assert.equal(
     byTypeText({ syslog: { lines: 12_400, bytes: 1_700_000 }, flow: { records: 3_100_000, bytes: 52e6 }, trap: { lines: 0, bytes: 0 } }),
-    'syslog 12,400 lines (1.7 MB), flows 3.1 M records (52 MB)',
+    '12,400 syslog lines (1.7 MB), 3.1 M flow records (52 MB)',
   );
 });
 

@@ -563,19 +563,19 @@ export function flowEstimate(by: EstimateByType | undefined): { records: number;
   return { records: f.records ?? f.lines ?? 0, bytes: f.bytes };
 }
 
-/** The estimate's types in words: "syslog 12,400 lines (1.7 MB), flows 3.1 M records (52 MB)". */
+/** The estimate's types in words: "12,400 syslog lines (1.7 MB), 575 SNMP traps (236 kB), 3.1 M flow records (52 MB)". */
 export function byTypeText(by: EstimateByType | undefined, labels: Record<string, string> = TYPE_LABELS): string {
   if (!by) return '';
   return Object.entries(by)
     .filter(([, v]) => (v.records ?? v.lines ?? 0) > 0)
     .map(([t, v]) => {
       const n = v.records ?? v.lines ?? 0;
-      const unit = t === FLOW ? 'record' : t === 'trap' ? 'trap' : 'line';
-      return `${labels[t] ?? t} ${t === FLOW ? short(n) : enUS.format(n)} ${unit}${n === 1 ? '' : 's'} (${dbytes(v.bytes)})`;
+      const what = labels[t] ?? t;
+      return `${t === FLOW ? short(n) : enUS.format(n)} ${what} (${dbytes(v.bytes)})`;
     })
     .join(', ');
 }
-export const TYPE_LABELS: Record<string, string> = { syslog: 'syslog', trap: 'SNMP traps', poll: 'SNMP polls', flow: 'flows' };
+export const TYPE_LABELS: Record<string, string> = { syslog: 'syslog lines', trap: 'SNMP traps', poll: 'poll records', flow: 'flow records' };
 
 /** The server's 400 for a zip over the per-device flow record cap (docs/api.md), so the page can offer Leave flows out. */
 export const isTooManyFlows = (msg: string) => /^Too many flow records for one zip/.test(msg);

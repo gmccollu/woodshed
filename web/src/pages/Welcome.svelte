@@ -1,6 +1,6 @@
 <script lang="ts">
   import { openLive, type Listener } from '../lib/api';
-  import { dateTime } from '../lib/format';
+  import { dateTime, protoLabel } from '../lib/format';
   import { firstDevice, live, refreshDevices, refreshStatus } from '../lib/status.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import Icon from '../components/Icon.svelte';
@@ -61,7 +61,7 @@
   });
 
   const listenerText = (l: Listener) =>
-    `${l.proto.toUpperCase()} ${l.port}${l.addr === '0.0.0.0' || l.addr === '::' ? ' on all addresses' : ` on ${l.addr}`}`;
+    `${protoLabel(l.proto)} ${l.port}${l.addr === '0.0.0.0' || l.addr === '::' ? ' on all addresses' : ` on ${l.addr}`}`;
 </script>
 
 <div class="mx-auto max-w-4xl space-y-4">

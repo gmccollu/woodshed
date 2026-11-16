@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { protoLabel } from '../lib/format';
   import { dismissUpdate, getUpdates, putUpdates, retryListeners, type Banner, type Listener } from '../lib/api';
   import { live, refreshStatus } from '../lib/status.svelte';
   import { dismiss, isDismissed, prune } from '../lib/alerts.svelte';
@@ -27,7 +28,7 @@
       return `Another copy of Woodshed is using ${port}: the installed service. This copy can't receive logs; stop it, or use the service's page.`;
     if (l.holder_kind === 'woodshed')
       return `Another copy of Woodshed is using ${port}. This copy can't receive logs; stop the other copy, or use its page.`;
-    return `${l.proto.toUpperCase()} ${l.addr}:${l.port}: ${l.error}${l.holder ? ` (held by ${l.holder})` : ''}`;
+    return `${protoLabel(l.proto)} ${l.addr}:${l.port}: ${l.error}${l.holder ? ` (held by ${l.holder})` : ''}`;
   }
   const isWoodshed = (l: Listener) => l.holder_kind === 'woodshed_service' || l.holder_kind === 'woodshed';
   // The same holder on UDP and TCP gets one sentence, not two.
