@@ -2767,8 +2767,10 @@ rule_id, time_source, status, extras}}`. There's no `raw`: a record isn't a line
 - **Exact vs sampled:** exported counts are exact (what the exporter reported); scaled counts multiply each record by
   its own sampling rate. Both are shown whenever any record was sampled: "312 MB exported (≈ 312 GB at 1:1000)".
   Nothing is scaled silently, and `sampling: 0` records are never scaled.
-- Aggregation is exact (a hash table) up to 1,000,000 distinct keys per request; past that it switches to a
-  space-saving top-K for the rest and the response says `approx: true`.
+- Aggregation is exact up to 1,000,000 distinct keys per request (across its workers), within the server's shared
+  query budget; past that, the keys already counted stay exact, and new ones go to a fixed-size space-saving table
+  with a count-min check. The response says `approx: true`, each estimated row carries `approx` and `max_error`, and
+  `error_bound` caps any key not counted (§13.10 decision 51; docs/api.md).
 
 **Budget and partial semantics, like Events v2:** a search, a summary or a top-N request has the summary's 2 s
 default budget (at most 10 s) and continues with a cursor, keeping running totals on the server (§10.1.5's rules: 10
@@ -2865,7 +2867,7 @@ the first bench, which records the measured numbers here:
   at 5,000 msg/s; bursts of 150,000 records/s for 10 s absorbed by the queue. Under 2 cores at 50,000/s.
 - **Memory:** at most 16 MiB of templates and exporter metadata; `pending_bytes` 32 MiB; open blocks at most 64 MiB
   across exporters (a block is flushed early to stay under it); the queue's bytes (128 MiB); query state at most
-  256 MiB. 512 MiB for flows in all at the targets.
+  256 MiB, whatever the window's size or key count (decision 51). 512 MiB for flows in all at the targets.
 - **Disk:** 12–20 bytes per stored record (to be measured).
 - **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core Apple
   M4 Pro under other load; the reference box and the lab runs replace these):
@@ -2880,6 +2882,16 @@ the first bench, which records the measured numbers here:
     newest 500, 0.16 s. Memory: the `flows top` process peaks at about 480 MiB RSS for top talkers (mostly the 14
     workers' block buffers) and 1.8 GiB for conversations past the exact limit, over the 256 MiB query-state target.
     The reference box's 4 workers would need less; a hard cap is open.
+  - **Bounded (build, 2026-11-16, third round;** decision 51; the same data regenerated, the same M4 Pro under load
+    average 5–6): every query now uses at most 4 workers and a 128 MiB shared table budget. Peak RSS of the whole
+    `flows top` process, 3 runs each: top talkers 7.5–8.5 s, 99–102 MiB; top destination ports 6.4–7.0 s, 89–91 MiB;
+    top conversations (approximate past 1,000,000 keys) 14.4–15.1 s, 216–219 MiB, with the heaviest conversations
+    still counted exactly and `error_bound` 64.5 GB beside a top row of 287 GB. Top talkers are slower than with 14
+    workers (2.75–3.8 s) but stay inside the 10 s budget; the memory target comes first.
+  - Test ceilings (`internal/flowquery/mem_test.go`): a conversation top over 1.6 and 4.5 million distinct keys peaks
+    at 154 and 158 MiB of heap (ceiling 192 MiB, and the peak may not grow by more than 24 MiB with the key count).
+    Exact keys cost 131 bytes for a conversation, 115 for an address and 99 for a port, checked against the heap up to
+    1,000,000 keys.
   - A 150,000 records/s burst for 10 s: all 1,500,000 stored, nothing dropped by the queue, 0.33 of a core.
   - At 5,000 records/s a segment takes 21.9 bytes a record (the per-block index and the Bloom filter over random
     source ports weigh more in smaller blocks).
@@ -2989,7 +3001,7 @@ Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
 8. A per-type flow budget, 40 % of the cap by default; flows go first under the budget and the low-disk guard; no
    2-day protection for flows (§13.2).
 9. `q` is a 400 for flows; flows have their own address, port and protocol filters (§13.3).
-10. Top-N is exact up to 1,000,000 keys, then approximate and flagged (§13.3).
+10. Top-N is exact up to 1,000,000 keys, then approximate and flagged (§13.3; bounded memory, decision 51).
 11. Partial flow answers report progress and `complete_from`, not `counted_from` (§13.3).
 12. Events gets a Flows tab and a flow strip on the other tabs (§13.3).
 13. Flows in the zip: CSV and an IPFIX file, both by default; at most 20 million records per device per zip (§13.4).
@@ -3114,6 +3126,43 @@ Made while building it, each **decided (build, 2026-11-16)**:
 49. A settings save applies `rule_id_ies` to the collector and to raw sets decoded on read at once, no restart.
 50. The segment writer's cut-back after a failed write is tested by fault injection (every section kind, whole and
     short writes, a failing truncate, at Close); no writer bug was found.
+
+*Third round, query memory (build, 2026-11-16; the coordinator asked for a hard bound under §13.6's 256 MiB):*
+
+51. **Every flow query's memory is bounded, whatever the window's size or key count** (`internal/flowquery/agg.go`):
+    - One top-N table per request, shared by its workers and split in 64 shards by key hash. Each worker combines
+      repeated keys in a 1,024-entry cache and hands them to a shard 32 at a time.
+    - Exact up to 1,000,000 keys in all, not per worker, and within the engine's pool: 128 MiB shared by every running
+      query, saved continuation and summary. When a request needs room, the least recently used saved continuation
+      is dropped (its cursor expires).
+    - The exact table is a pointer-free slab with an extendible hash index that splits in place, so it leaves no
+      growth garbage. A key costs 131 bytes for a conversation, 115 for an address and 99 for a port; the pool charges
+      that, and a test checks it against the heap. 1,000,000 conversations fit in 128 MiB.
+    - A shard that can't take a new key keeps its exact keys and counts new ones in a fixed-size space-saving table
+      (256 entries a shard, 16,384 in all) with a count-min sketch (4 × 1,024 a shard), about 5 MiB in all, outside
+      the pool. A newcomer to a full table replaces the lightest entry only if the smaller of the lightest count and
+      its sketch count, plus its own, beats it. That estimate is the row's `max_error`.
+    - Rows admitted to a full table are always marked `approx`; their other counts cover only the records since they
+      entered. A key in neither table has at most `error_bound`. The totals stay exact.
+52. **The engine's workers are shared by every query** (the default is GOMAXPROCS, at most 4, the reference box's
+    vCPU), with their decode buffers reused, about 8 MiB each. Big queries queue for workers rather than add buffers.
+    While the pool holds 32 MiB or more, a collection runs after any wave that follows 16 MiB of allocation; without
+    it, Go's pacer let garbage grow to the live table's size beside a 130 MiB table.
+53. **A closed segment's footer is read streamed** (CRC checked as it goes). Only each block's directory entry is kept
+    (472 bytes), with where its header copy sits; a block's Bloom filter loads from there when a filtered scan needs
+    it and isn't kept. Before, every query held every one of its segments' whole footers, a few bytes a record. A
+    query closes a segment once its last block is read, and decoding reuses each column's inflate buffer and the
+    address dictionary.
+54. **Summary values come from the same pool.** Per-worker counts flush into the shared ones at 1,024 values a field,
+    and a field that once turns a value away takes no new ones, so a value can't miss its earlier counts. A bundle's
+    README top-N tables share one 64 MiB pool, with small approximate tables (1,024 entries).
+55. **Still proportional to the window, and left as is (flagged):**
+    - the plan: 64 bytes for each block the window touches, one block a second per exporter at most, about 5.5 MiB
+      per exporter-day;
+    - the open segments' directories: 472 bytes a block, about 1.7 MiB per open exporter-hour.
+
+    A week over 50 exporters would plan about 1.9 GiB. Planning by segment instead of by block is the follow-up. The
+    writer still builds a closing segment's whole footer in memory (ingest side, at hour close).
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
