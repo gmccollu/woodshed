@@ -19,6 +19,7 @@ import (
 	_ "time/tzdata" // America/New_York on every OS, for the DST case
 
 	"github.com/gmccollu/woodshed/internal/export"
+	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -473,5 +474,72 @@ func TestBundleIsReadOnly(t *testing.T) {
 				t.Errorf("gone: %s", k)
 			}
 		}
+	}
+}
+
+// `woodshed bundle --types flow --flow-formats ipfix`: the flows from the
+// closed segments as an IPFIX file per exporter, no CSV.
+func TestBundleCLIFlows(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := index.Open(filepath.Join(dir, index.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 14, 9, 30, 0, 0, time.UTC)
+	st, err := store.Open(store.Options{DataDir: dir, Index: idx, Manual: true, Clock: func() time.Time { return now },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), DiskUsage: func(string) (uint64, uint64, error) { return 1 << 40, 1 << 41, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := netip.MustParseAddr("192.0.2.60")
+	n := 0
+	for at := time.Date(2026, 11, 14, 9, 30, 0, 0, time.UTC); at.Before(time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)); at = at.Add(10 * time.Second) {
+		now = at
+		ms := at.UnixMilli()
+		r := &flow.Record{Has: flow.HasStart | flow.HasEnd | flow.HasSrc | flow.HasDst | flow.HasProto | flow.HasDstPort | flow.HasBytes | flow.HasPackets,
+			Received: ms, Start: ms - 5000, End: ms, Src: netip.MustParseAddr("10.20.0.5"), Dst: netip.MustParseAddr("198.51.100.7"),
+			Proto: 6, DstPort: 443, Bytes: 1000, Packets: 2, Sampling: 1, Domain: 1, Version: flow.IPFIX}
+		if err := st.WriteFlows(exp, store.FlowBatch{Received: at, Records: []*flow.Record{r}}); err != nil {
+			t.Fatal(err)
+		}
+		if at.Before(time.Date(2026, 11, 14, 9, 52, 0, 0, time.UTC)) && !at.Before(time.Date(2026, 11, 14, 9, 12, 0, 0, time.UTC)) {
+			n++
+		}
+	}
+	now = bxNow
+	st.Maintain()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.AddEvent(context.Background(), index.Event{Time: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC), Level: index.LevelInfo,
+		Kind: index.KindStart, Source: index.SourceService, Text: "Woodshed started."}); err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
+	out := filepath.Join(t.TempDir(), "flows.zip")
+	code, stdout, stderr := runBundle(t, time.UTC, "--data", dir, "--at", "2026-11-14T09:42:00Z", "--types", "flow", "--flow-formats", "ipfix",
+		"--out", out)
+	if code != 0 {
+		t.Fatalf("exit %d: %s %s", code, stdout, stderr)
+	}
+	files, names := readZipFile(t, out)
+	if _, ok := files["flows/192.0.2.60/flows.csv"]; ok {
+		t.Fatalf("csv with --flow-formats ipfix: %v", names)
+	}
+	got := 0
+	if err := flow.ReadFile(bytes.NewReader(files["flows/192.0.2.60/flows.ipfix"]), flow.FileReadOptions{}, func(*flow.Record) { got++ }); err != nil {
+		t.Fatal(err)
+	}
+	// Flow time overlaps the window: one record whose start is before the
+	// window's end but whose end (and receipt) is after it counts too.
+	if got != n+1 {
+		t.Fatalf("%d records, want %d", got, n+1)
+	}
+	if !strings.Contains(stdout, "flows ") || !strings.Contains(string(files["README.txt"]), "Flows        ") {
+		t.Errorf("stdout %s\nREADME %s", stdout, files["README.txt"])
+	}
+	if code, _, stderr := runBundle(t, time.UTC, "--data", dir, "--at", "2026-11-14T09:42:00Z", "--flow-formats", "pcap",
+		"--out", filepath.Join(t.TempDir(), "x.zip")); code != exitUsage || !strings.Contains(stderr, `--flow-formats: "pcap" isn't csv or ipfix`) {
+		t.Errorf("bad format: %d %s", code, stderr)
 	}
 }

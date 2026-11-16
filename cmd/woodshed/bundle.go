@@ -20,6 +20,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/export"
+	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -39,7 +40,8 @@ every device that sent anything then (or the devices you name), in one zip
 with a summary per device (counts by severity and by trap, the polls' traffic,
 errors and cycles, first and last, reboots from traps and polls, gaps when
 Woodshed wasn't running, drops), the manifest with SHA-256s and Woodshed's own
-events. SNMP polls go in as CSV files (poll/<device>/*.csv). It's the zip the UI's "Bundle around this" builds,
+events. SNMP polls go in as CSV files (poll/<device>/*.csv), flows as CSV and
+IPFIX files (flows/<device>/; --flow-formats). It's the zip the UI's "Bundle around this" builds,
 made from the data folder directly: the service can be stopped, the UI off or
 in LAN mode. It reads the data folder and never writes to it.
 
@@ -68,7 +70,7 @@ interrupted (Ctrl-C; the partial zip is removed).`
 
 func cmdBundle(args []string, stdout, stderr io.Writer) int {
 	fset := newFlagSet("bundle", "", bundleDesc, stderr)
-	var at, before, after, devices, group, types, out string
+	var at, before, after, devices, group, types, out, flowFormats string
 	var ungrouped, active, utc bool
 	sf := searchFlags{}
 	fset.StringVar(&at, "at", "", "the `time` the bundle is around (required)")
@@ -78,7 +80,8 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 	fset.StringVar(&group, "group", "", "the devices of this `group`")
 	fset.BoolVar(&ungrouped, "ungrouped", false, "the devices in no group")
 	fset.BoolVar(&active, "active", false, "every device that sent anything in the window (the default)")
-	fset.StringVar(&types, "types", "", "the data `types` (comma-separated: syslog, trap, poll; default: every type with data in the window)")
+	fset.StringVar(&types, "types", "", "the data `types` (comma-separated: syslog, trap, poll, flow; default: every type with data in the window)")
+	fset.StringVar(&flowFormats, "flow-formats", "csv,ipfix", "the flow `files` in the zip: csv, ipfix or both (flows/<device>/flows.csv, flows.ipfix)")
 	fset.StringVar(&out, "out", "", "the zip `file` to write (default woodshed-bundle-<host>-<at, UTC>.zip here); never overwritten")
 	fset.BoolVar(&utc, "utc", false, "read --at in the local form as UTC")
 	fset.StringVar(&sf.config, "config", config.DefaultConfigPath(), "config `file` that names the data folder")
@@ -162,6 +165,23 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 	if types != "" && len(req.Types) == 0 {
 		return usageErr("--types: name at least one type (%s)", strings.Join(datatype.Names(), ", "))
 	}
+	for _, ff := range strings.Split(flowFormats, ",") {
+		if ff = strings.ToLower(strings.TrimSpace(ff)); ff == "" {
+			continue
+		}
+		if ff != export.FlowCSV && ff != export.FlowIPFIX {
+			return usageErr("--flow-formats: %q isn't csv or ipfix", ff)
+		}
+		if !slices.Contains(req.FlowFormats, ff) {
+			req.FlowFormats = append(req.FlowFormats, ff)
+		}
+	}
+	if len(req.FlowFormats) == 0 {
+		return usageErr("--flow-formats: name csv, ipfix or both")
+	}
+	if len(req.FlowFormats) == 2 {
+		req.FlowFormats = nil // both, the default, as the API's bundle
+	}
 
 	// The data folder, as for woodshed search.
 	cmdline := "woodshed bundle"
@@ -208,7 +228,11 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := searchSignals(context.Background())
 	defer stop()
 
-	opts := export.Options{Index: idx, Search: eng, Version: version, Now: searchNow, Location: searchLocation(), Logger: logger}
+	// Flows are read from the closed segments (a segment the service is still
+	// writing has no footer yet, so the current hour of a running service's
+	// exporters isn't in the zip; the API's bundle has it).
+	flows := flowquery.New(flowquery.Options{DataDir: dataDir, Index: idx, Logger: logger})
+	opts := export.Options{Index: idx, Search: eng, Flows: flows, Version: version, Now: searchNow, Location: searchLocation(), Logger: logger}
 	plan, err := export.Prepare(ctx, opts, req)
 	var re *export.RequestError
 	switch {
