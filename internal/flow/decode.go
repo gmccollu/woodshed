@@ -656,6 +656,7 @@ func (ds *decState) optionsRecord(m *msg, t *Template, b []byte) (int, error) {
 		}
 	}
 	c := ds.c
+	c.keepOptions(ds.e, m.d, t, vals, m.hdr.received)
 	if haveIf && (haveName || haveDesc) {
 		n := name
 		if !haveName || n == "" {
@@ -665,6 +666,9 @@ func (ds *decState) optionsRecord(m *msg, t *Template, b []byte) (int, error) {
 	}
 	if haveSysInit {
 		c.mu.Lock()
+		if m.d.sysInitMs != sysInit {
+			ds.e.metaVer.Add(1)
+		}
 		m.d.sysInitMs = sysInit
 		c.mu.Unlock()
 		m.hdr.sysInitMs = sysInit
@@ -679,10 +683,16 @@ func (ds *decState) optionsRecord(m *msg, t *Template, b []byte) (int, error) {
 			if m.d.samplers == nil {
 				m.d.samplers = map[uint32]uint32{}
 			}
-			if _, ok := m.d.samplers[sampler]; ok || len(m.d.samplers) < maxSamplers {
+			if old, ok := m.d.samplers[sampler]; ok || len(m.d.samplers) < maxSamplers {
+				if old != rate || !ok {
+					ds.e.metaVer.Add(1)
+				}
 				m.d.samplers[sampler] = rate
 			}
 		} else {
+			if m.d.sampling != rate {
+				ds.e.metaVer.Add(1)
+			}
 			m.d.sampling = rate
 		}
 		c.mu.Unlock()

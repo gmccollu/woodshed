@@ -43,7 +43,8 @@ func checkDecode(t *testing.T, c *Collector, data []byte, at time.Time) {
 	if c.PendingBytes() > c.opts.PendingBytes {
 		t.Fatalf("pending %d over %d", c.PendingBytes(), c.opts.PendingBytes)
 	}
-	if c.nTmpl > c.opts.MaxTemplates || c.tmplBytes > maxTemplateBytes || c.metaBytes > maxMetaBytes {
+	if c.nTmpl > c.opts.MaxTemplates || c.tmplBytes > maxTemplateBytes || c.metaBytes > maxMetaBytes ||
+		c.rawOptBytes < 0 || c.rawOptBytes > maxRawOptBytes {
 		t.Fatalf("cache over its bounds: %d templates, %d bytes, %d meta", c.nTmpl, c.tmplBytes, c.metaBytes)
 	}
 }
