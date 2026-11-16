@@ -199,15 +199,20 @@ const SHOTS = [
     name: 'about-udp-queue-full',
     url: '/?mock_panel=0&mock_queue_full=1&mock_uptime_hours=30#/about',
     wait: 1500,
-    check: `document.body.innerText.includes('UDP receive queue') && document.querySelectorAll('.plot .col').length === 24
-      && document.querySelectorAll('.plot .bar.warn').length >= 1 && document.body.innerText.includes('UDP queue full')`,
+    // Three queues (syslog, traps, flows), each its own section and chart; only syslog's overflows.
+    check: `(() => { const sec = (l) => document.querySelector('[aria-labelledby=queue-' + l + ']');
+      return ['udp', 'snmp', 'flow'].every((l) => sec(l) && sec(l).querySelectorAll('.plot .col').length === 24)
+        && sec('udp').querySelectorAll('.plot .bar.warn').length >= 1 && document.body.innerText.includes('UDP queue full')
+        && sec('snmp').querySelectorAll('.plot .bar.warn').length === 0 && sec('flow').querySelectorAll('.plot .bar.warn').length === 0
+        && sec('flow').innerText.includes('Flows (flow and IPFIX ports)') && sec('flow').innerText.includes('50,000'); })()`,
   }),
   {
     name: 'about-udp-queue-calm-light',
     mode: 'light',
     url: '/?mock_panel=0&mock_uptime_hours=30#/about',
     wait: 1500,
-    check: `document.body.innerText.includes('Most at once, 24 h') && document.querySelectorAll('.plot .bar.warn').length === 0
+    check: `document.querySelectorAll('[aria-labelledby^=queue-]').length === 3 && document.body.innerText.includes('Most at once, 24 h')
+      && document.querySelectorAll('.plot .bar.warn').length === 0
       && document.body.innerText.includes('lost before Woodshed read them')
       && ![...document.querySelectorAll('.banner')].some((b) => b.textContent.includes('UDP messages were dropped'))`,
   },

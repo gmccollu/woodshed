@@ -145,6 +145,15 @@ func TestHelpNeverRunsTheCommand(t *testing.T) {
 	tr.quiet(t, 300*time.Millisecond)
 }
 
+// Every command is in the top-level help (flow and flows once weren't).
+func TestUsageListsEveryCommand(t *testing.T) {
+	for _, c := range commands {
+		if !strings.Contains(usage, "\n  "+c.name+" ") {
+			t.Errorf("woodshed --help doesn't list %q", c.name)
+		}
+	}
+}
+
 func TestTopLevel(t *testing.T) {
 	if code, out, _ := runCLI("--help"); code != 0 || !strings.Contains(out, "reset-password") || !strings.Contains(out, "bench") {
 		t.Errorf("--help: %d %q", code, out)
