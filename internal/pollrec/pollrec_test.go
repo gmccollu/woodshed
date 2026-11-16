@@ -2,6 +2,7 @@ package pollrec
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -104,4 +105,41 @@ func FuzzPollRecord(f *testing.F) {
 			t.Fatalf("line with CR/LF: %q", out)
 		}
 	})
+}
+
+// A restart's reasons say what the uptime did: an uptime lower than the last
+// sample is a reset; one that went up, but by less than the time since the
+// last poll (an agent restarted soon after its previous start), isn't, and
+// mustn't be called one (the 1.3 lab).
+func TestRestartReasons(t *testing.T) {
+	rec := func(line string) *Record {
+		t.Helper()
+		r, err := Parse([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &r
+	}
+	for _, c := range []struct {
+		line string
+		want []string
+	}{
+		{"kind=restart cycle=2 reboot=1 uptime=1532 prev_uptime=104518345 hr_uptime=1600 prev_hr_uptime=104519000 source=sysUpTime,hrSystemUptime",
+			[]string{"sysUpTime and hrSystemUptime reset"}},
+		{"kind=restart cycle=2 reboot=? uptime=650 prev_uptime=640 source=sysUpTime",
+			[]string{"sysUpTime rose less than the time since the last poll"}},
+		{"kind=restart cycle=2 reboot=1 uptime=650 prev_uptime=640 hr_uptime=12 prev_hr_uptime=9000 source=sysUpTime,hrSystemUptime",
+			[]string{"hrSystemUptime reset", "sysUpTime rose less than the time since the last poll"}},
+		{"kind=restart cycle=2 reboot=0 uptime=650 prev_uptime=640 boots=8 prev_boots=7 source=sysUpTime,engineBoots",
+			[]string{"sysUpTime rose less than the time since the last poll", "engineBoots went up"}},
+		{"kind=restart cycle=2 reboot=? boots=8 prev_boots=7 source=engineBoots", []string{"engineBoots went up"}},
+		// No values to compare (an older line): a reset, as before.
+		{"kind=restart cycle=2 reboot=? source=sysUpTime", []string{"sysUpTime reset"}},
+		{"kind=restart cycle=2 reboot=? source=", nil},
+	} {
+		got := RestartReasons(rec(c.line))
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s:\n got %q\nwant %q", c.line, got, c.want)
+		}
+	}
 }

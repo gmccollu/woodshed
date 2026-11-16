@@ -16,6 +16,7 @@
     markers = [],
     utc = false,
     note = '',
+    caption = '',
     fixedTop = 0,
   }: {
     title: string;
@@ -30,6 +31,8 @@
     utc?: boolean;
     /** Shown instead of the chart when there's nothing to draw ("not available on this device"). */
     note?: string;
+    /** A short line under the chart (what the numbers mean on some devices). */
+    caption?: string;
     /** A fixed top for the axis (100 for percentages); 0 rounds up the peak. */
     fixedTop?: number;
   } = $props();
@@ -116,6 +119,7 @@
       {#each lines as l, i (i)}<li><span class="sw" class:dash={l.dash} style:border-color={l.color}></span>{l.label}</li>{/each}
     </ul>
   {/if}
+  {#if caption && !note}<p class="caption">{caption}</p>{/if}
 </figure>
 
 <style>
@@ -132,6 +136,11 @@
   .more {
     font-size: 12px;
     font-weight: 400;
+    color: var(--muted);
+  }
+  .caption {
+    margin: 4px 0 0;
+    font-size: 12px;
     color: var(--muted);
   }
   .note {

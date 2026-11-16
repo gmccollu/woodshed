@@ -187,7 +187,9 @@ OIDs aren't supported.
 
 **What's polled.** Every 60 s by default (30 s to 10 min per device), with only standard MIBs:
 - *system*: `sysUpTime`, and from HOST-RESOURCES `hrSystemUptime`, the processors' load (averaged) and RAM used and
-  size. Devices without HOST-RESOURCES show "CPU and memory: not available on this device".
+  size. Devices without HOST-RESOURCES show "CPU and memory: not available on this device". Memory is the agent's own
+  "used" figure: on Linux hosts running net-snmp it includes the page cache, so an idle machine can show about 90 %
+  used. The device page says so under the memory chart; 1.3 shows the figure as the agent reports it.
 - *interfaces*: for every interface up to the limit (64 by default), the 64-bit in and out octets and unicast,
   multicast and broadcast packets, errors, discards, up/down state and the discontinuity time; names, aliases and
   speeds hourly. A device without 64-bit counters (or SNMPv1) gets the 32-bit ones, and its page warns that rates
@@ -206,6 +208,12 @@ time since the last poll (a second restart soon after the first), the agent rest
 `hrSystemUptime` went down too. Without HOST-RESOURCES the marker says "the device may have
 rebooted". Restarts show on the device page, on the Events timeline and in incident bundles, where a coldStart trap
 within 2 minutes of a poll restart is the same reboot.
+
+**How fresh a rate is.** A rate is the change in a counter between two polls, so it's only as fresh as the agent's
+counters. Some agents refresh their interface counters only every few seconds, so a single 60 s cycle can read a few
+percent high or low (about ±5 % in the 1.3 lab) while the next one evens it out; the totals over a window are exact,
+because every octet is counted once. In the lab, steady traffic read within 0.1 % on average, and totals were within
+0.22 % of what was sent. For a short burst, look at a few cycles rather than one.
 
 **When a device stops answering**, each failed poll is recorded with its reason (`timeout`, `auth_failed`,
 `unknown_user`, `not_in_time`, …) so "it didn't answer from 10:02 to 10:09" is evidence too. After 3 failures in a row

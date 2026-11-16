@@ -105,6 +105,25 @@ type Reboot struct {
 	// Detail is a poll restart's evidence ("sysUpTime and hrSystemUptime
 	// reset"); absent for a trap's.
 	Detail string `json:"detail,omitempty"`
+	// Reboot is a poll restart's reboot value: "1" the device rebooted, "0"
+	// only its SNMP agent restarted, "?" can't tell. Absent for a trap's
+	// (coldStart and warmStart count as reboots).
+	Reboot string `json:"reboot,omitempty"`
+}
+
+// IsReboot reports whether the restart counts as a reboot: everything but a
+// poll restart known to be the agent's alone (reboot=0).
+func (r Reboot) IsReboot() bool { return r.Reboot != "0" }
+
+// CountReboots is how many of rs are reboots (IsReboot).
+func CountReboots(rs []Reboot) int {
+	n := 0
+	for _, r := range rs {
+		if r.IsReboot() {
+			n++
+		}
+	}
+	return n
 }
 
 // Thousands formats n with commas (12,408), as README.txt shows counts.

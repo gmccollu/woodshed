@@ -343,25 +343,7 @@ func PollResultOf(rec []byte) PollResult {
 // may have rebooted", "engineBoots went up; the agent restarted, not the
 // device".
 func RestartDetail(r *pollrec.Record) string {
-	var reset []string
-	boots := false
-	for _, s := range strings.Split(r.Value("source"), ",") {
-		switch s = strings.TrimSpace(s); s {
-		case "":
-		case "engineBoots":
-			boots = true
-		default:
-			reset = append(reset, s)
-		}
-	}
-	var parts []string
-	if len(reset) > 0 {
-		parts = append(parts, strings.Join(reset, " and ")+" reset")
-	}
-	if boots {
-		parts = append(parts, "engineBoots went up")
-	}
-	d := strings.Join(parts, ", ")
+	d := strings.Join(pollrec.RestartReasons(r), ", ")
 	if d == "" {
 		d = "the agent restarted"
 	}
