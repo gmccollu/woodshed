@@ -17,15 +17,18 @@ import (
 // A query's plan streams the window (SPEC §13.10 decision 56): segments come
 // from the index a page at a time, in time order (newest end first, or with
 // asc lowest start first), and their blocks are loaded a batch of segments at
-// a time, at most planBatch blocks (but always a whole segment), sorted within
-// the batch. So what a plan holds doesn't depend on the window's length or its
-// exporter count. Reading isn't in one global block order any more, but every
+// a time, sorted within the batch. A batch stops at planBatch directory
+// entries loaded (always a whole segment): a loaded segment holds every
+// block's entry, its footer's or its snapshot's, in the window or not, so
+// a narrow window over many segments can't fill memory with directories
+// while it plans few blocks. So what a plan holds doesn't depend on the
+// window's length or its exporter count. Reading isn't in one global block order any more, but every
 // bound a caller uses (complete_from, a search page's certainty) is the bound
 // of everything still unread: the batch's next block and the next segment.
 
 const (
 	planPage  = 256    // index rows read at a time
-	planBatch = 16_384 // blocks loaded at a time (at least one whole segment)
+	planBatch = 16_384 // directory entries loaded at a time (at least one whole segment)
 )
 
 // pageRows and batchBlocks are the engine's (tests make them small).
@@ -251,7 +254,7 @@ func (p *plan) peekKey(ctx context.Context) (int64, bool) {
 func (p *plan) load(ctx context.Context, rd *readers) {
 	rd.reset(p)
 	p.segs, p.blocks, p.done = p.segs[:0], p.blocks[:0], 0
-	for len(p.blocks) < p.e.batchBlocks() {
+	for entries := 0; entries < p.e.batchBlocks(); {
 		ref, ok := p.nextSeg(ctx)
 		if !ok {
 			break
@@ -279,6 +282,7 @@ func (p *plan) load(ctx context.Context, rd *readers) {
 		if r != nil {
 			rd.put(si, r)
 		}
+		entries += len(foot.Blocks)
 		var rows int64
 		for i := range foot.Blocks {
 			b := &foot.Blocks[i]

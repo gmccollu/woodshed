@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/metrics"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -447,13 +448,19 @@ func TestLateRowsAreApprox(t *testing.T) {
 // the defaults.
 func writeWeek(t *testing.T, exporters, blocks int) (*Engine, time.Time) {
 	t.Helper()
+	week := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+	return writeHours(t, week, 7*24, exporters, blocks), week
+}
+
+// writeHours is writeWeek over hours hours from start.
+func writeHours(t *testing.T, start time.Time, hours, exporters, blocks int) *Engine {
+	t.Helper()
 	dir := t.TempDir()
 	idx, err := index.Open(filepath.Join(dir, index.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { idx.Close() })
-	week := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
 	tmpl := filepath.Join(dir, "tmpl")
 	os.MkdirAll(tmpl, 0o750)
 	var batch index.Batch
@@ -463,8 +470,8 @@ func writeWeek(t *testing.T, exporters, blocks int) (*Engine, time.Time) {
 		}
 		batch = index.Batch{}
 	}
-	for h := 0; h < 7*24; h++ {
-		hour := week.Add(time.Duration(h) * time.Hour)
+	for h := 0; h < hours; h++ {
+		hour := start.Add(time.Duration(h) * time.Hour)
 		name := flowseg.NameFor(hour)
 		src := filepath.Join(tmpl, name.String())
 		w, err := flowseg.Create(src, "tmpl", hour, "test")
@@ -509,7 +516,7 @@ func writeWeek(t *testing.T, exporters, blocks int) (*Engine, time.Time) {
 		}
 	}
 	apply()
-	return New(Options{DataDir: dir, Index: idx}), week
+	return New(Options{DataDir: dir, Index: idx})
 }
 
 // A week over 50 exporters (8,400 segments): the plan streams the window, so
@@ -586,5 +593,62 @@ func TestOpenSegmentClosedSinceListing(t *testing.T) {
 	c, err := e.Count(bg, hourQuery())
 	if err != nil || c[segs[0].DeviceID] != n {
 		t.Fatalf("count %v %v", c, err)
+	}
+}
+
+// A minute's window over 300 exporters' hour-long segments of 3,600 blocks
+// (one a second): each segment gives the plan 60 blocks but holds its whole
+// directory (472 bytes a block, its footer's or an open segment's snapshot),
+// so a batch is bounded by the directory entries it loads, not only by the
+// blocks it plans. Before, a batch of 16,384 planned blocks loaded 273 such
+// segments: about 460 MiB. Closed segments, then the same as open ones.
+func TestNarrowWindowPlanBounded(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("short or race: writes 300 segments of 3,600 blocks")
+	}
+	const exporters, blocks = 300, 3600
+	hour := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	e := writeHours(t, hour, 1, exporters, blocks)
+	segs, err := e.o.Index.FlowSegments(bg, nil, time.Time{}, time.Time{})
+	if err != nil || len(segs) != exporters {
+		t.Fatalf("%d segments: %v", len(segs), err)
+	}
+	q := Query{From: hour.Add(30 * time.Minute), To: hour.Add(31 * time.Minute)}
+	want := int64(exporters * 61 * 2) // blocks 1,800 to 1,860: the last one's flows start 500 ms before its end
+	for _, open := range []bool{false, true} {
+		if open {
+			// Every segment as an open one, its snapshot a fresh copy of
+			// the directory per call, as Writer.Snapshot makes.
+			e.o.Open = func([]string) []OpenSegment {
+				out := make([]OpenSegment, len(segs))
+				for i, sg := range segs {
+					path := filepath.Join(e.o.DataDir, sg.Path)
+					out[i] = OpenSegment{DeviceID: sg.DeviceID, Rel: sg.Path, Path: path, Snap: func() *flowseg.Footer {
+						r, err := flowseg.Open(path)
+						if err != nil {
+							return nil
+						}
+						defer r.Close()
+						f := *r.Footer()
+						f.Blocks = slices.Clone(f.Blocks)
+						return &f
+					}}
+				}
+				return out
+			}
+		}
+		var top TopResult
+		peak, _ := peakDuring(func() { top, err = e.Top(bg, q, "src", "flows", 10, time.Hour, "") })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if top.Partial || top.Total.Flows != want {
+			t.Fatalf("open %v: partial %v flows %d, want %d", open, top.Partial, top.Total.Flows, want)
+		}
+		t.Logf("open %v: a minute over %d exporters' %d-block segments: peak %.1f MiB", open, exporters, blocks,
+			float64(peak)/(1<<20))
+		if peak > 64<<20 {
+			t.Errorf("open %v: peak %.1f MiB, over the 64 MiB ceiling", open, float64(peak)/(1<<20))
+		}
 	}
 }
