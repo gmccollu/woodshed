@@ -116,5 +116,5 @@ export function date(iso: string): string {
   return Number.isNaN(d.getTime()) ? '—' : df.format(d);
 }
 
-/** A listener's protocol as the UI names it: "UDP", "TLS", "SNMP"; 2.0's flow ports "NetFlow" and "IPFIX". */
-export const protoLabel = (p: string) => (p === 'netflow' ? 'NetFlow' : p === 'ipfix' ? 'IPFIX' : p.toUpperCase());
+/** A listener's protocol as the UI names it: "UDP", "TLS", "SNMP"; 2.0's flow ports "Flow" and "IPFIX". */
+export const protoLabel = (p: string) => (p === 'flow' ? 'Flow' : p === 'ipfix' ? 'IPFIX' : p.toUpperCase());

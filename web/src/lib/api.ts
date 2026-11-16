@@ -32,7 +32,7 @@ export { ALL_SEVS, exportJson, sevParam, type SevKey };
 // ---------- Types (docs/api.md) ----------
 
 /** "tls" from 1.1: the TLS syslog listener (docs/api.md → TLS syslog listener); "snmp" from 1.2: the SNMP trap receiver. */
-export type Proto = 'udp' | 'tcp' | 'tls' | 'snmp' | 'netflow' | 'ipfix';
+export type Proto = 'udp' | 'tcp' | 'tls' | 'snmp' | 'flow' | 'ipfix';
 
 export interface Listener {
   proto: Proto;
@@ -500,7 +500,7 @@ export interface Settings {
     tls?: TlsListenerSettings;
     /** 1.2: the SNMP trap receiver. Older servers omit it; a PUT without it keeps it. */
     snmp?: SnmpListenerSettings;
-    /** 2.0: the flow collector (NetFlow v5/v9 and IPFIX). Older servers omit it; a PUT without it keeps it. */
+    /** 2.0: the flow collector (flow v5, flow v9 and IPFIX). Older servers omit it; a PUT without it keeps it. */
     flow?: FlowListenerSettings;
     allowlist: string[];
     /** Senders refused at the listener (IPs or CIDRs); checked before the allowlist and wins. */

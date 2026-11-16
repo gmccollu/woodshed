@@ -2172,7 +2172,7 @@ const SHOTS = [
     url: '/?mock_panel=0&mock_latency=0#/about',
     wait: 1500,
     act: `const fx = ${JSON.stringify(JSON.parse(readFileSync(new URL('../src/lib/fixtures/ui-requests.json', import.meta.url), 'utf8')))};
-      const f = window.__woodshedMockFetch; const vars = { '{agent_port}': 16161, '{agent_v3_port}': 16162, '{flow_netflow_port}': 12055, '{flow_ipfix_port}': 14739, '{at}': new Date(Date.now() - 30 * 60_000).toISOString().replace(/[.][0-9]+Z$/, 'Z') }; const out = [];
+      const f = window.__woodshedMockFetch; const vars = { '{agent_port}': 16161, '{agent_v3_port}': 16162, '{flow_port}': 12055, '{flow_ipfix_port}': 14739, '{at}': new Date(Date.now() - 30 * 60_000).toISOString().replace(/[.][0-9]+Z$/, 'Z') }; const out = [];
       const sub = (x) => JSON.parse(JSON.stringify(x ?? null), (k, v) => (typeof v === 'string' && v in vars ? vars[v] : v));
       const path = (p) => p.replace(/[{][a-z0-9_]+[}]/g, (m) => vars[m] ?? m);
       const merge = (a, b) => { if (!b || typeof b !== 'object' || Array.isArray(b) || !a || typeof a !== 'object' || Array.isArray(a)) return b;

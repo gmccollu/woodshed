@@ -149,14 +149,14 @@ test('the README Flows block matches SPEC §13.4', () => {
 
 test('Settings → Flows round trip and checks', () => {
   const f = flowSettingsForm(undefined, 0);
-  assert.deepEqual(flowListenerBody(f), { enabled: false, addr: '0.0.0.0', netflow_port: 2055, ipfix_port: 4739, template_timeout: '30m', rule_id_ies: [] });
+  assert.deepEqual(flowListenerBody(f), { enabled: false, addr: '0.0.0.0', flow_port: 2055, ipfix_port: 4739, template_timeout: '30m', rule_id_ies: [] });
   assert.equal(flowBudgetBody(f), 0);
   const g = { ...f, flowEnabled: true, flowTimeout: '90 min', flowRuleIes: '32473:7\n32473:7, 9:12001', flowBudgetGiB: 6 };
   assert.deepEqual(flowListenerBody(g).rule_id_ies, ['32473:7', '9:12001']);
   assert.equal(flowListenerBody(g).template_timeout, '1h30m');
   assert.equal(flowBudgetBody(g), 6 * 1024 ** 3);
   assert.deepEqual(flowFormErrors(g, 20 * 1024 ** 3), {});
-  const bad = flowFormErrors({ ...g, flowNetflowPort: 0, flowIpfixPort: 0, flowTimeout: '10s', flowRuleIes: 'acl', flowBudgetGiB: 19 }, 20 * 1024 ** 3);
+  const bad = flowFormErrors({ ...g, flowPort: 0, flowIpfixPort: 0, flowTimeout: '10s', flowRuleIes: 'acl', flowBudgetGiB: 19 }, 20 * 1024 ** 3);
   assert.deepEqual(Object.keys(bad).sort(), ['listeners.flow.ipfix_port', 'listeners.flow.rule_id_ies', 'listeners.flow.template_timeout', 'storage.flow_budget_bytes']);
   assert.ok(ruleIeOk('32473:7') && !ruleIeOk('32473:40000') && !ruleIeOk('7'));
   assert.equal(flowSettingsForm({ ...flowListenerBody(g) }, 6 * 1024 ** 3).flowBudgetGiB, 6);
