@@ -36,6 +36,11 @@ type faultCfg struct {
 	nth       int    // fail the nth such write (1-based)
 	mode      faultMode
 	truncFail bool // the Truncate right after the fault fails
+	// The tail after the template table (the footer body's buffered writes,
+	// its prefix, the trailer): fail the tailNth write, or with tailRead the
+	// first read (a header copied from its block).
+	tailNth  int
+	tailRead bool
 }
 
 // faultFile is an *os.File whose nth write of a section kind fails once, and
@@ -47,16 +52,26 @@ type faultFile struct {
 	seen      int
 	fired     bool
 	truncNext bool
+	inTail    bool // the template table has been written
+	tailW     int  // writes since
 }
 
 func (f *faultFile) WriteAt(p []byte, off int64) (int, error) {
 	f.mu.Lock()
 	hit := false
-	if !f.fired && len(p) >= 4 && string(p[:4]) == f.magic {
+	if f.inTail {
+		f.tailW++
+		if !f.fired && f.tailW == f.tailNth {
+			hit, f.fired, f.truncNext = true, true, f.truncFail
+		}
+	} else if !f.fired && len(p) >= 4 && string(p[:4]) == f.magic {
 		f.seen++
 		if f.seen == f.nth {
 			hit, f.fired, f.truncNext = true, true, f.truncFail
 		}
+	}
+	if len(p) >= 4 && string(p[:4]) == "WST1" {
+		f.inTail = true
 	}
 	f.mu.Unlock()
 	if !hit {
@@ -70,6 +85,25 @@ func (f *faultFile) WriteAt(p []byte, off int64) (int, error) {
 		return n, errInjected
 	}
 	return 0, errInjected
+}
+
+func (f *faultFile) ReadAt(p []byte, off int64) (int, error) {
+	f.mu.Lock()
+	hit := f.inTail && f.tailRead && !f.fired
+	if hit {
+		f.fired, f.truncNext = true, f.truncFail
+	}
+	f.mu.Unlock()
+	if hit {
+		return 0, errInjected
+	}
+	return f.File.ReadAt(p, off)
+}
+
+func (f *faultFile) tailWrites() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tailW
 }
 
 func (f *faultFile) Truncate(size int64) error {
@@ -372,6 +406,52 @@ func TestWriterCloseFaults(t *testing.T) {
 						nth = faultPhases + 1
 					}
 					run, ff := runFaulted(t, faultCfg{magic: tc.magic, nth: nth, mode: mode, truncFail: truncFail}, false, tc.meta)
+					if !ff.didFire() || !errors.Is(run.closeErr, errInjected) {
+						t.Fatalf("fired %v, Close: %v", ff.didFire(), run.closeErr)
+					}
+					if _, err := Open(run.path); !errors.Is(err, ErrNoFooter) {
+						t.Fatalf("Open after a failed Close: %v, want ErrNoFooter", err)
+					}
+					checkRun(t, run)
+				})
+			}
+		}
+	}
+}
+
+// Close failing inside the streamed tail, at every write after the
+// template table (each buffered piece of the footer body, its prefix, the
+// trailer) and at a header's read, whole, short or with the truncate
+// failing: Close returns the error, nothing opens as closed, and Recover
+// finishes the segment with every block written before.
+func TestWriterTailFaults(t *testing.T) {
+	old := tailBufSize
+	tailBufSize = 64 // many small writes, each header split over several
+	defer func() { tailBufSize = old }()
+	// An unarmed run counts the tail's writes.
+	_, ff := runFaulted(t, faultCfg{tailNth: -1}, false, false)
+	total := ff.tailWrites()
+	if total < 10 {
+		t.Fatalf("only %d writes after the table", total)
+	}
+	type tc struct {
+		nth  int
+		read bool
+	}
+	var cases []tc
+	for n := 1; n <= total; n++ {
+		cases = append(cases, tc{nth: n})
+	}
+	cases = append(cases, tc{read: true})
+	for _, c := range cases {
+		for _, mode := range []faultMode{faultFail, faultShort} {
+			for _, truncFail := range []bool{false, true} {
+				if c.read && mode == faultShort {
+					continue
+				}
+				name := fmt.Sprintf("write%d of %d/read=%v/mode%d/truncfail=%v", c.nth, total, c.read, mode, truncFail)
+				t.Run(name, func(t *testing.T) {
+					run, ff := runFaulted(t, faultCfg{tailNth: c.nth, tailRead: c.read, mode: mode, truncFail: truncFail}, false, false)
 					if !ff.didFire() || !errors.Is(run.closeErr, errInjected) {
 						t.Fatalf("fired %v, Close: %v", ff.didFire(), run.closeErr)
 					}
