@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -484,5 +486,61 @@ func midReaders(t *testing.T, w *Writer, run faultRun) {
 	checkSeqs(t, "OpenSnapshot mid-run", ss, run.wantSeqs)
 	if lr != run.wantRaws || sr != run.wantRaws {
 		t.Fatalf("mid-run raw sets: live %d, snapshot %d, want %d", lr, sr, run.wantRaws)
+	}
+}
+
+// opFile records a segment file's writes and fsyncs, in order.
+type opFile struct {
+	*os.File
+	mu  sync.Mutex
+	ops []string // "w" a write, "t" the trailer's write (it ends with the end magic), "s" an fsync
+}
+
+func (f *opFile) WriteAt(p []byte, off int64) (int, error) {
+	op := "w"
+	if bytes.HasSuffix(p, []byte(endMagic)) {
+		op = "t"
+	}
+	f.mu.Lock()
+	f.ops = append(f.ops, op)
+	f.mu.Unlock()
+	return f.File.WriteAt(p, off)
+}
+
+func (f *opFile) Sync() error {
+	f.mu.Lock()
+	f.ops = append(f.ops, "s")
+	f.mu.Unlock()
+	return nil
+}
+
+// Close writes the trailer only after an fsync of everything before it,
+// then fsyncs again: a crash leaves either no trailer (Recover finishes the
+// segment) or the whole tail on disk, never a trailer over a torn footer.
+func TestCloseTrailerAfterSync(t *testing.T) {
+	old := tailBufSize
+	tailBufSize = 64 // the footer body in many writes
+	defer func() { tailBufSize = old }()
+	var of *opFile
+	oldWrap := wrapFile
+	wrapFile = func(f *os.File) segFile {
+		of = &opFile{File: f}
+		return of
+	}
+	defer func() { wrapFile = oldWrap }()
+	r := rand.New(rand.NewPCG(9, 9))
+	recs := make([]flow.Record, 0, 400)
+	for i := 0; i < cap(recs); i++ {
+		recs = append(recs, randRecord(r, testHour.UnixMilli()+int64(i)*11, i%2 == 0))
+	}
+	path, _ := writeSegment(t, t.TempDir(), recs, nil, 40)
+	ops := strings.Join(of.ops, "")
+	// The tail: writes (the table, the footer body, its prefix), an fsync,
+	// the trailer, an fsync, and nothing after.
+	if !strings.HasSuffix(ops, "wst"+"s") || strings.Count(ops, "t") != 1 {
+		t.Fatalf("writes and fsyncs: %s", ops)
+	}
+	if _, err := Open(path); err != nil {
+		t.Fatal(err)
 	}
 }

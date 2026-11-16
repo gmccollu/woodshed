@@ -299,6 +299,13 @@ func (s *segState) writeTailAt(fl segFile) (*Footer, error) {
 	if _, err := fl.WriteAt(p, start-prefixLen); err != nil {
 		return nil, err
 	}
+	// The trailer goes last, after an fsync: the tail is several writes, and
+	// without it a crash could keep the trailer and lose a page of the body.
+	// Open calls that segment corrupt, not unfinished, so recovery would
+	// leave it out; this way it's only ever unfinished (no trailer).
+	if err := syncSeg(fl); err != nil {
+		return nil, err
+	}
 	var tr [trailerLen]byte
 	binary.LittleEndian.PutUint32(tr[:], uint32(w.n))
 	binary.LittleEndian.PutUint32(tr[4:], w.crc)
