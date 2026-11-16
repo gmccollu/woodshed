@@ -15,6 +15,7 @@ import (
 
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
+	"github.com/gmccollu/woodshed/internal/flowseg"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -495,13 +496,28 @@ func TestFlowBundle(t *testing.T) {
 	}
 }
 
-// With a segment's part limit at 10 blocks, every exporter's hours are
-// many parts (closed, and the open one): a bundle's records and a flow
-// count over the window still find every record once.
+// With a segment's part limit at 10 blocks, or the writers' directory
+// budget at a few blocks (the store closes the segment keeping the most),
+// every exporter's hours are many parts (closed, and the open one): a
+// bundle's records and a flow count over the window still find every
+// record once.
 func TestFlowBundleOverParts(t *testing.T) {
-	fe := newFlowEnvWith(t, func(o *store.Options) { o.FlowPartBlocks = 10 })
+	for _, c := range []struct {
+		name  string
+		mod   func(o *store.Options)
+		parts int // at least (the budget closes segments at maintenance passes, every 40 batches here)
+	}{
+		{"block limit", func(o *store.Options) { o.FlowPartBlocks = 10 }, 20},
+		{"directory budget", func(o *store.Options) { o.FlowDirBudget = flowseg.DirEntryBytes }, 4},
+	} {
+		t.Run(c.name, func(t *testing.T) { bundleOverParts(t, c.mod, c.parts) })
+	}
+}
+
+func bundleOverParts(t *testing.T, mod func(o *store.Options), minParts int) {
+	fe := newFlowEnvWith(t, mod)
 	parts, _ := filepath.Glob(filepath.Join(fe.dir, "logs", "*", "flows", "*.0[0-9][0-9].wsf"))
-	if len(parts) < 20 {
+	if len(parts) < minParts {
 		t.Fatalf("%d numbered parts", len(parts))
 	}
 	m := fe.flowManager()
