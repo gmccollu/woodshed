@@ -21,6 +21,8 @@ type ReindexResult struct {
 	Skipped   []string // files not indexed (for example a .log.gz whose .log is still there)
 	// PollRollups is the poll_hourly rows Reindex rebuilt.
 	PollRollups int
+	// FlowRecovered is the flow segments Reindex closed (no footer: a crash).
+	FlowRecovered int
 }
 
 // Reindex rebuilds the files and checkpoints tables from the log files under dataDir,
@@ -78,6 +80,12 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexRes
 	onDisk := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		onDisk[e.Rel] = true
+	}
+	// Flow segments (SPEC §13.2): every row is rebuilt from its footer, which
+	// is cheap (no records are read).
+	flows, err := readFlowFiles(dataDir, full, &res)
+	if err != nil {
+		return res, err
 	}
 
 	var out []rebuilt
@@ -139,21 +147,40 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexRes
 	defer st.close()
 
 	if full {
-		if _, err := st.exec(`DELETE FROM files`); err != nil {
-			return res, err
+		for _, q := range []string{`DELETE FROM files`, `DELETE FROM flow_segments`, `DELETE FROM flow_minute`} {
+			if _, err := st.exec(q); err != nil {
+				return res, err
+			}
 		}
 	} else {
-		kept := make(map[string]bool, len(out))
+		kept := make(map[string]bool, len(out)+len(flows))
 		for _, r := range out {
 			kept[r.f.Path] = true
+		}
+		for _, fr := range flows {
+			kept[fr.rows.File.Path] = true
 		}
 		for _, f := range rows {
 			if !kept[f.Path] {
 				if _, err := st.exec(`DELETE FROM files WHERE id = ?`, f.ID); err != nil {
 					return res, err
 				}
+				if fileType(f.Type) == TypeFlow {
+					if err := st.deleteFlowRows(f.Path); err != nil {
+						return res, err
+					}
+				}
 				res.Removed++
 			}
+		}
+	}
+	for i := range flows {
+		fr := &flows[i].rows
+		if _, err := st.upsertFile(fr.File); err != nil {
+			return res, err
+		}
+		if err := st.replaceFlowRows(&fr.Segment, fr.Minutes); err != nil {
+			return res, err
 		}
 	}
 
@@ -202,6 +229,22 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexRes
 		} else {
 			a.msgs += r.f.Lines
 		}
+	}
+	for _, fr := range flows {
+		id := fr.rows.File.DeviceID
+		a := devs[id]
+		if a == nil {
+			a = &devAgg{}
+			devs[id] = a
+			devOrder = append(devOrder, id)
+		}
+		if !fr.first.IsZero() && (a.first.IsZero() || fr.first.Before(a.first)) {
+			a.first = fr.first
+		}
+		if fr.last.After(a.last) {
+			a.last = fr.last
+		}
+		a.msgs += fr.rows.Segment.Records
 	}
 	for _, id := range devOrder {
 		a := devs[id]
