@@ -650,7 +650,9 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 	for _, es := range b.flows.coll.Stats(now) {
 		id := model.DeviceID(es.Addr)
 		rate += b.flows.rates.perSec(id, now)
-		if es.PendingBytes > 0 && es.Counts24h.NoTemplate > 0 || es.Counts24h.NoTemplate > 0 {
+		// Stored raw for lack of a template in the last 24 h (data still waiting
+		// shows in /api/flows' pending_bytes; the collector keeps no age for it).
+		if es.Counts24h.NoTemplate > 0 {
 			waiting = append(waiting, id)
 		}
 		if es.TimeSource == flow.TimeReceived.String() {
