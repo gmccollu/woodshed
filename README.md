@@ -1,7 +1,7 @@
 # Woodshed
 
 A syslog and SNMP trap collector for the box on site. When something breaks, pick the moment and how far before and
-after, and get one zip with every device's logs, traps and polled counters for that window: checksums, a summary per
+after, and get one zip with every device's logs and traps for that window: checksums, a summary per
 device (counts by severity, first and last message, reboots) and any gaps where Woodshed wasn't running. It installs in a minute on
 Windows, macOS or Linux.
 
