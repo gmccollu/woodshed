@@ -214,7 +214,12 @@ func newSnmpd(t *testing.T, bin string) *snmpd {
 	if err := os.MkdirAll(filepath.Join(dir, "persist"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	d.env = append(os.Environ(), "SNMP_PERSISTENT_DIR="+filepath.Join(dir, "persist"), "SNMPCONFPATH="+dir, "HOME="+dir, "MIBS=", "MIBDIRS="+dir)
+	// SNMPCONFPATH replaces the whole search path, the persistent folder
+	// included, so it's listed too: without it snmpd writes engineBoots there at
+	// stop but never reads it back, and boots never rise across a restart.
+	persist := filepath.Join(dir, "persist")
+	d.env = append(os.Environ(), "SNMP_PERSISTENT_DIR="+persist, "SNMPCONFPATH="+dir+string(os.PathListSeparator)+persist, "HOME="+dir,
+		"MIBS=", "MIBDIRS="+dir)
 	out, _ := exec.Command(bin, "-v").CombinedOutput()
 	for _, l := range strings.Split(string(out), "\n") {
 		if strings.Contains(l, "version:") {
