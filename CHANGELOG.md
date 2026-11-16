@@ -48,11 +48,12 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   sender allowlist, blocklist and new-sender limits apply to exporters as to any sender.
 
 ### Performance
-- IPFIX at 50,000 records a second for 20 s (30 records a packet, 2 domains) with UDP syslog at 5,000 msg/s beside
-  it: every record and message stored, 0.49 of a core and 116 MiB peak RSS for the whole pipeline, 20.4 bytes per
-  stored record. Measured in-process with `woodshed bench --proto ipfix --rate 50000 --syslog-rate 5000` (the sender
-  in a child process) on a 14-core Apple M4 Pro under other load; the reference-spec (4 vCPU) runner and the lab's
-  10-minute and 24-hour runs will replace these before release.
+- IPFIX at 50,000 records a second for 10 minutes (30 records a packet, 2 domains) with UDP syslog at 5,000 msg/s
+  beside it: all 30 million records and 3 million messages stored, 0.43 of a core and 153 MiB peak RSS for the whole
+  pipeline, 20.4 bytes per stored record; a 150,000 records/s burst for 10 s lost nothing. Top talkers over 18 million
+  records took under 0.8 s, and a one-address search's first page 0.1 s. Measured in-process with `woodshed bench
+  --proto ipfix --rate 50000 --duration 10m --syslog-rate 5000` (the sender in a child process) on a 14-core Apple M4
+  Pro; the reference-spec (4 vCPU) runner and the lab's 24-hour run will replace these before release.
 
 ## [1.3.0] - unreleased
 

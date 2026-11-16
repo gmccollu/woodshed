@@ -2869,9 +2869,12 @@ the first bench, which records the measured numbers here:
 - **Disk:** 12–20 bytes per stored record (to be measured).
 - **First bench (build, 2026-11-16,** `woodshed bench --proto ipfix`, the sender in a child process, a 14-core Apple
   M4 Pro under other load; the reference box and the lab runs replace these):
-  - 50,000 records/s for 20 s (30 a packet, 2 domains) with UDP syslog at 5,000 msg/s: every record and message
-    stored, 0.49 of a core, peak RSS 116 MiB, 20.4 bytes per stored record (19.2 in blocks, 20.0 for a closed segment
-    in the format bench).
+  - 50,000 records/s for 10 min (30 a packet, 2 domains) with UDP syslog at 5,000 msg/s: all 30,000,000 records and
+    3,000,186 messages stored, 0.43 of a core, peak RSS 153 MiB (Go heap 90 MiB), 20.4 bytes per stored record (19.2
+    in blocks, 20.0 for a closed segment in the format bench).
+  - Queries over 18,000,000 records (the 1 h at 5,000/s case): top talkers (`woodshed flows top --by src`, bytes)
+    0.34–0.72 s, complete; a search for one source address, first 500, 0.10 s. The 180-million-record case wasn't run;
+    at this rate it would be about 4 s, inside the 10 s budget.
   - A 150,000 records/s burst for 10 s: all 1,500,000 stored, nothing dropped by the queue, 0.33 of a core.
   - At 5,000 records/s a segment takes 21.9 bytes a record (the per-block index and the Bloom filter over random
     source ports weigh more in smaller blocks).
