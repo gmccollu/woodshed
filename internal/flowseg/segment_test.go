@@ -407,14 +407,14 @@ func TestInvalidAddressAndLongID(t *testing.T) {
 }
 
 func TestNames(t *testing.T) {
-	for _, s := range []string{"2026-11-16T09.wsf", "2026-11-16T00.001.wsf", "2026-11-16T23.999.wsf"} {
+	for _, s := range []string{"2026-11-16T09.wsf", "2026-11-16T00.001.wsf", "2026-11-16T23.999.wsf", "2026-11-16T23.1000.wsf"} {
 		n, ok := ParseName(s)
 		if !ok || n.String() != s {
 			t.Errorf("%s: %+v %v", s, n, ok)
 		}
 	}
 	for _, s := range []string{"2026-11-16T24.wsf", "2026-11-16.log", "2026-11-16T09.000.wsf", "2026-11-16T09.1.wsf",
-		"2026-13-16T09.wsf", "2026-11-16T9.wsf", "2026-11-16T09.wsf.tmp", "2026-11-16T-1.wsf"} {
+		"2026-13-16T09.wsf", "2026-11-16T9.wsf", "2026-11-16T09.wsf.tmp", "2026-11-16T-1.wsf", "2026-11-16T09.0001.wsf", "2026-11-16T09.+12.wsf"} {
 		if _, ok := ParseName(s); ok {
 			t.Errorf("%s parsed", s)
 		}

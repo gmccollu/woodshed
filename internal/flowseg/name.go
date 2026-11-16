@@ -12,7 +12,7 @@ const Ext = ".wsf"
 
 // Name is a segment's file name (SPEC §13.2): "<YYYY-MM-DD>T<HH>.wsf" for the
 // hour's first part, "<YYYY-MM-DD>T<HH>.<NNN>.wsf" for the next ones (part 1
-// up), received hour UTC.
+// up; at least three digits), received hour UTC.
 type Name struct {
 	Day  string // YYYY-MM-DD
 	Hour int    // 0–23
@@ -72,7 +72,7 @@ func ParseName(s string) (Name, bool) {
 	if rest == "" {
 		return n, true
 	}
-	if len(rest) != 4 || rest[0] != '.' {
+	if len(rest) < 4 || rest[0] != '.' {
 		return Name{}, false
 	}
 	p, err := strconv.Atoi(rest[1:])
