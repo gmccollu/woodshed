@@ -140,9 +140,11 @@ func (s *segState) summary() *Footer {
 // header at the block's own copy).
 func (s *segState) footer() *Footer {
 	f := s.summary()
-	f.Blocks = make([]BlockInfo, len(s.blocks))
-	for i := range s.blocks {
-		f.Blocks[i] = s.blocks[i].info()
+	if len(s.blocks) > 0 { // nil for none, as slices.Clone gave
+		f.Blocks = make([]BlockInfo, len(s.blocks))
+		for i := range s.blocks {
+			f.Blocks[i] = s.blocks[i].info()
+		}
 	}
 	f.RawChunks, f.Templates, f.Meta = slices.Clone(s.rawChunks), slices.Clip(s.templates), s.meta
 	return f
