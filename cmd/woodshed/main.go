@@ -36,6 +36,7 @@ commands:
   tls             syslog over TLS: on, off, renew the certificate, status
   snmp            the SNMP trap receiver: on, off, status
   poll            SNMP polling: test a device's poll from here
+  setup           print the configuration a device needs to send to Woodshed
   update-check    turn the daily update check on or off (or back to asking)
   reset-password  remove the UI password and turn LAN mode off
   send            send test messages to a syslog server
@@ -68,6 +69,7 @@ func init() {
 		{"tls", cmdTLS},
 		{"snmp", cmdSNMP},
 		{"poll", cmdPoll},
+		{"setup", cmdSetup},
 		{"update-check", cmdUpdateCheck},
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},
