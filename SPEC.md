@@ -2960,6 +2960,14 @@ the first bench, which records the measured numbers here:
 columnar storage per device per hour, shared retention and disk guard, search and top views for a window, CSV or
 IPFIX export, the export covering every type, the setup helper; no long-term analytics.
 
+**Owner (2026-11-16):** the flow protocols' trademarked name is used nowhere in the project: not in code
+identifiers, file names, fuzz targets, CLI flags or values, config or API values, UI text, docs, the CHANGELOG or
+tests. The protocols are "flow v5", "flow v9 (RFC 3954)" and "IPFIX (RFC 7011)", and the general noun is "flows" or
+"flow export". Config and API values are `v5`, `v9` and `ipfix`; the 2055 socket is the flow port (`flow_port`,
+`proto: "flow"`); `woodshed send` and `bench` take `--proto flow-v5|flow-v9|ipfix`. Third-party tools we invoke keep
+their own names (softflowd, pmacct's nfprobe, tshark's `cflow.*` fields). `internal/repocheck` fails `go test` on the
+word in any tracked file or file name.
+
 Everything below is **decided (coordinator, 2026-11-16, owner-delegated)**:
 1. The flow listener is off by default; both ports accept every version (§13.1).
 2. IPFIX over UDP only; TCP (and TLS) later if asked; no SCTP (§13.1).
