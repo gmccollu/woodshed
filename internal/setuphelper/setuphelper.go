@@ -672,10 +672,24 @@ func (s Server) Addresses(bound string) []string {
 	return out
 }
 
+// The choices' patterns, in a syntax Go and JavaScript share (the UI's mock
+// validates with the same ones, from the generated fixture). hostname is
+// matched ignoring case.
+const (
+	hostnamePattern  = `^[a-z0-9]([a-z0-9-]{0,62})(\.[a-z0-9]([a-z0-9-]{0,62}))*\.?$`
+	interfacePattern = `^[A-Za-z0-9][A-Za-z0-9/._:@-]{0,63}$`
+	userPattern      = `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`
+)
+
+// Patterns are the choices' patterns (hostname ignoring case).
+func Patterns() map[string]string {
+	return map[string]string{"hostname": hostnamePattern, "interface": interfacePattern, "user": userPattern}
+}
+
 var (
-	hostnameRe  = regexp.MustCompile(`^(?i)[a-z0-9]([a-z0-9-]{0,62})(\.[a-z0-9]([a-z0-9-]{0,62}))*\.?$`)
-	interfaceRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9/._:@-]{0,63}$`)
-	userRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`)
+	hostnameRe  = regexp.MustCompile(`(?i)` + hostnamePattern)
+	interfaceRe = regexp.MustCompile(interfacePattern)
+	userRe      = regexp.MustCompile(userPattern)
 	placeRe     = regexp.MustCompile(`<[A-Z][A-Z0-9-]*>`)
 )
 
