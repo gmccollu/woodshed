@@ -3037,6 +3037,8 @@ Made while building it, each **decided (build, 2026-11-16)**:
     up to its last complete block, read-only (`flowseg.OpenLive`).
 34. `woodshed reindex --flows-redecode` rewrites a segment with its raw sets decoded by the segment's own template of
     that exporter port, domain and ID (the first received after the set, else the latest), the records marked late.
+    Queries decode the same sets on read, with the same choice, placed in the plan by the segment's received range
+    (records may start up to an hour before it).
 
 *Query and API (§13.3):*
 

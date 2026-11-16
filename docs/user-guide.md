@@ -272,8 +272,9 @@ with the time they arrived (its own times are kept), and a banner names it.
 **Waiting and broken data.** Data that arrives before its template waits (up to 32 MiB in all, 1 MiB per exporter,
 for the template timeout, 30 minutes) and is decoded with its original time, marked `late`. If the template never
 comes, the data is kept undecoded (`status=no_template`), and so are malformed packets (`status=malformed`), never
-dropped silently; `woodshed reindex --flows-redecode` (with the service stopped) decodes the kept sets whose template
-turned up later. Sequence numbers show loss between the exporter and Woodshed: **Settings → Flows** and
+dropped silently. When the template turns up later in the same hour, searches, Top and exports decode the kept data
+on read (marked `late`), and `woodshed reindex --flows-redecode` (with the service stopped) rewrites the segments with
+it decoded. Sequence numbers show loss between the exporter and Woodshed: **Settings → Flows** and
 `woodshed flow status` give each exporter's gaps, duplicates, late and undecoded counts.
 
 **Where it's kept.** Flows are a fourth kind of data, stored as compact columnar segments, one per device per hour
