@@ -171,11 +171,17 @@ Examples:
 }
 
 func cmdBench(args []string, stdout, stderr io.Writer) int {
+	if benchFlowProto(args) != "" {
+		return cmdBenchFlow(args, stdout, stderr) // benchflow.go
+	}
 	fs := newFlagSet("bench", "", `
 Measure sustained throughput: run an in-process Woodshed (listener on
 127.0.0.1, store and live hub) in a temporary data folder, send to it at --rate
 for --duration, then read the files back and check that every message arrived
 exactly once. It doesn't touch a running Woodshed or its data.
+
+--proto ipfix, netflow9 or netflow5 runs the flow bench instead (woodshed bench
+--proto ipfix --help).
 
 --proto trap runs the SNMP trap listener and receiver instead (SPEC §11.6):
 --snmp-version 1, 2c or 3, --inform to send InformRequests (each Response is
