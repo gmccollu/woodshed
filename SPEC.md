@@ -3095,6 +3095,21 @@ Made while building it, each **decided (build, 2026-11-16)**:
 45. `woodshed bench --proto ipfix` runs the sender in a child process (`woodshed send`), so the CPU it reports is the
     pipeline's.
 
+*Second round (build, 2026-11-16):*
+
+46. Options records are kept raw (§13.1.2) when any non-scope field is one the collector doesn't interpret (sampling,
+    sampler and selector, interface index and name, systemInitTime are interpreted): keyed by template ID and scope
+    values per exporter port, domain and version, up to 4 versions per key (identical values only refresh), at most
+    1,024 keys per scope and 2 MiB of the 4 MiB metadata cap.
+47. The exporter's metadata (sampling, samplers, system init time, interface names, the raw options records) is one
+    JSON blob in each segment's template table, given to the store when its version changes; the store keeps a stream
+    (and its blob) for an hour after its last batch, so every later segment carries it.
+48. `flow_templates` also fires when an exporter's oldest pending data has waited over 10 minutes
+    (`ExporterStats.PendingOldest`).
+49. A settings save applies `rule_id_ies` to the collector and to raw sets decoded on read at once, no restart.
+50. The segment writer's cut-back after a failed write is tested by fault injection (every section kind, whole and
+    short writes, a failing truncate, at Close); no writer bug was found.
+
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
    justify a major version even with an additive API (§13.9).
