@@ -33,6 +33,8 @@ const H_JS = `
     el.dispatchEvent(new Event('input', { bubbles: true }));
   };
   window.__tick = () => new Promise((r) => setTimeout(r, 120));
+  // Waits (up to 5 s) for f() to return something, and returns it: for an element a page renders after its data loads.
+  window.__until = async (f, ms = 5000) => { const t0 = Date.now(); let v; while (!(v = f()) && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 50)); return v; };
   // Shows only the card with this id on the Settings page, so a long page's section fits one shot.
   window.__only = (id) => document.querySelectorAll('section.card').forEach((c) => { if (c.id !== id) c.style.display = 'none'; });
   window.__field = (label) => [...document.querySelectorAll('label')].find((l) => l.textContent.trim().startsWith(label))?.querySelector('input,textarea');
@@ -2017,7 +2019,7 @@ const SHOTS = [
     name: 'bundle-export-around',
     url: '/?mock_panel=0#/export',
     wait: 1500,
-    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click();`,
+    act: `(await __until(() => [...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time'))).click();`,
     after: 2000,
     check: `document.body.innerText.includes('15 min / 5 min') && document.body.innerText.includes('24 h / 1 h') && !!__btn('Custom')
       && /Up to [\\d,]+ lines/.test(document.querySelector('[data-bundle-estimate]').innerText) && !!__btn('Preview in Events')
@@ -2030,8 +2032,8 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/export',
     wait: 1500,
-    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
-      __btn('Custom').click(); await __tick();
+    act: `(await __until(() => [...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time'))).click(); await __tick();
+      (await __until(() => __btn('Custom'))).click(); await __tick();
       const ins = document.querySelectorAll('input.dur'); __set(ins[0], '2 h'); __set(ins[1], '0');`,
     after: 1500,
     report: `window.__woodshedMock.lastExportBody`,
@@ -2044,8 +2046,8 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/export',
     wait: 1500,
-    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
-      [...document.querySelectorAll('[aria-label="Type the time in"] button')].find((b) => b.textContent === 'UTC').click(); await __tick();
+    act: `(await __until(() => [...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time'))).click(); await __tick();
+      (await __until(() => [...document.querySelectorAll('[aria-label="Type the time in"] button')].find((b) => b.textContent === 'UTC'))).click(); await __tick();
       window.__day = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
       const set = (el, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v); el.dispatchEvent(new Event('change', { bubbles: true })); };
       set(document.querySelector('input[type=date]'), window.__day); await __tick();
@@ -2063,7 +2065,7 @@ const SHOTS = [
     mode: 'light',
     url: '/?mock_panel=0#/export',
     wait: 1500,
-    act: `[...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time').click(); await __tick();
+    act: `(await __until(() => [...document.querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Around a time'))).click(); await __tick();
       __btn('4 h / 1 h').click(); await new Promise((r) => setTimeout(r, 800)); __btn('Preview in Events').click();`,
     after: 3500,
     check: `location.hash.startsWith('#/events?') && new URLSearchParams(location.hash.split('?')[1]).get('bb') === '4h'
