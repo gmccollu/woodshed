@@ -42,13 +42,34 @@ type waiter struct {
 }
 
 func openSocket(onSend func(netip.AddrPort)) (*socket, error) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{})
+	conn, err := listenWildcard()
 	if err != nil {
 		return nil, err
 	}
 	s := &socket{conn: conn, onSend: onSend, waiters: map[int64]*waiter{}, closed: make(chan struct{})}
 	go s.read()
 	return s, nil
+}
+
+// listenWildcard opens the dual-stack wildcard socket on a port no IPv4
+// socket holds. macOS hands a dual-stack [::]:0 an ephemeral port a socket on
+// 127.0.0.1 may already hold (seen as 3 in 30,000); replies from a target on
+// loopback then go to that socket, not ours. An explicit bind is checked
+// against IPv4 sockets, so the port is picked on IPv4 first, then bound on
+// the wildcard; a race lost to another program is retried.
+func listenWildcard() (*net.UDPConn, error) {
+	for range 20 {
+		pick, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
+		if err != nil {
+			break
+		}
+		port := pick.LocalAddr().(*net.UDPAddr).Port
+		pick.Close()
+		if conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port}); err == nil {
+			return conn, nil
+		}
+	}
+	return net.ListenUDP("udp", &net.UDPAddr{})
 }
 
 func (s *socket) close() {

@@ -678,10 +678,22 @@ func TestTargetAddedLater(t *testing.T) {
 	s2 := s
 	s2.DeviceID = "127.0.0.2"
 	p.SetTargets([]Target{{ID: "pt_1", Settings: s}, {ID: "pt_2", Settings: s2}})
-	eventually(t, 60*time.Second, "both targets answering", func() bool {
+	deadline := time.Now().Add(60 * time.Second)
+	for {
 		st := p.States()
-		return st["pt_1"].Status == StateOK && st["pt_2"].Status == StateOK
-	})
+		if st["pt_1"].Status == StateOK && st["pt_2"].Status == StateOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			p.mu.Lock()
+			local := p.sock.conn.LocalAddr().String()
+			un := p.sock.unmatched.Load()
+			p.mu.Unlock()
+			t.Fatalf("states %+v; poller socket %s, agent %s, agent saw %v from %v, unexpected %d, unmatched %d",
+				st, local, a.Addr(), a.Requests(), a.Sources(), a.Unexpected(), un)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestTestPoll(t *testing.T) {
