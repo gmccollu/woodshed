@@ -2,7 +2,6 @@ package flowseg
 
 import (
 	"io"
-	"os"
 	"slices"
 	"time"
 
@@ -109,7 +108,7 @@ func (s *segState) footer() *Footer {
 // writeTail writes the template table, the footer and the trailer at s.off,
 // cutting the file there first, then fsyncs. It returns the footer, with
 // the blocks' index loaded.
-func (s *segState) writeTail(fl *os.File) (*Footer, error) {
+func (s *segState) writeTail(fl segFile) (*Footer, error) {
 	if err := fl.Truncate(s.off); err != nil {
 		return nil, err
 	}
@@ -133,7 +132,7 @@ func (s *segState) writeTail(fl *os.File) (*Footer, error) {
 		fl.Truncate(s.off)
 		return nil, err
 	}
-	if err := syncFile(fl); err != nil {
+	if err := syncSeg(fl); err != nil {
 		return nil, err
 	}
 	size := s.off + int64(len(out))
