@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -154,7 +155,7 @@ func (r Request) typeFilter(typ string) search.Filter {
 }
 
 // Folders maps the zip's folders to the data types (manifest.json).
-var Folders = map[string]string{"logs": datatype.Syslog, "traps": datatype.Trap, "poll": datatype.Poll}
+var Folders = map[string]string{"logs": datatype.Syslog, "traps": datatype.Trap, "poll": datatype.Poll, "flows": datatype.Flow}
 
 // FolderOf is a type's folder in the zip: syslog stays in logs/ as in 1.1;
 // another type gets its folder name ("traps/" for traps).
@@ -210,6 +211,11 @@ type Options struct {
 	// Location is the local time zone a bundle's README names (default
 	// time.Local).
 	Location *time.Location
+	// Flows is the flow query engine, for zips with flows (SPEC §13.4); a
+	// Manager can get it later through SetFlows. FlowStats gives the running
+	// collector's sequence-gap counts for a bundle's summary (nil: not known).
+	Flows     *flowquery.Engine
+	FlowStats func(deviceID string) *FlowStats
 	// zip64Limit lowers the zip64 threshold, for tests.
 	zip64Limit int64
 	// janitor is how often expiry runs (default 1 min).
@@ -243,6 +249,10 @@ type Manager struct {
 // and bundles (SPEC §13.4).
 func (m *Manager) SetFlows(e *flowquery.Engine) { m.flows.Store(e) }
 
+// SetFlowStats gives the manager the collector's per-exporter counts for
+// bundle summaries (sequence gaps; Options.FlowStats). Call it before Start.
+func (m *Manager) SetFlowStats(fn func(deviceID string) *FlowStats) { m.builder.flowStats = fn }
+
 type entry struct {
 	info   Info
 	seq    int64              // creation order in this process (ties in Created)
@@ -274,6 +284,10 @@ func Open(opts Options) (*Manager, error) {
 	}
 	m := &Manager{builder: newBuilder(opts), opts: opts, dir: filepath.Join(opts.DataDir, Dir), log: opts.Logger,
 		entries: map[string]*entry{}, wake: make(chan struct{}, 1), stop: make(chan struct{})}
+	if opts.Flows != nil {
+		m.flows.Store(opts.Flows)
+	}
+	m.builder.flows = m.flows.Load
 	if err := os.MkdirAll(m.dir, 0o750); err != nil {
 		return nil, fmt.Errorf("export: %w", err)
 	}
@@ -406,7 +420,15 @@ func (b *builder) resolve(ctx context.Context, r *Request) ([]string, error) {
 	if len(r.TypesOrSyslog()) > 1 && !r.filtersEmpty() {
 		return nil, &RequestError{Msg: "types: Filters apply to one data type; pick one, or leave the filters out."}
 	}
-	if err := b.eng.CheckFilter(r.typeFilter(r.TypesOrSyslog()[0])); err != nil {
+	first := r.TypesOrSyslog()[0]
+	if first == datatype.Flow {
+		if _, err := r.flowFilter(); err != nil {
+			return nil, err
+		}
+		if b.flowEngine() == nil {
+			return nil, &RequestError{Msg: "types: flows can't be exported by this build (no flow engine)."}
+		}
+	} else if err := b.eng.CheckFilter(r.typeFilter(first)); err != nil {
 		var qe *search.QueryError
 		if errors.As(err, &qe) {
 			return nil, &RequestError{Msg: qe.Msg}
@@ -420,6 +442,11 @@ func (b *builder) resolve(ctx context.Context, r *Request) ([]string, error) {
 	if len(devs) == 0 {
 		return nil, &RequestError{Msg: "No device matches the selection."}
 	}
+	if slices.Contains(r.TypesOrSyslog(), datatype.Flow) {
+		if _, err := b.countFlows(ctx, *r, devs); err != nil {
+			return nil, err
+		}
+	}
 	return devs, nil
 }
 
@@ -431,6 +458,15 @@ func (m *Manager) Estimate(ctx context.Context, r Request) (search.Estimate, err
 	}
 	var est search.Estimate
 	for _, t := range r.TypesOrSyslog() {
+		if t == datatype.Flow {
+			fe, err := m.flowEstimate(ctx, r, devs)
+			if err != nil {
+				return search.Estimate{}, err
+			}
+			est.Lines += fe.Records
+			est.Bytes += fe.Bytes
+			continue
+		}
 		e, err := m.eng.Estimate(ctx, devs, r.typeFilter(t))
 		if err != nil {
 			return search.Estimate{}, err
@@ -449,7 +485,7 @@ func (r Request) filtersEmpty() bool {
 	f := r.Filters
 	return f.Q == "" && f.Exclude == "" && f.Severities == 0 && f.Facilities == 0 && len(f.Apps) == 0 && len(f.Hosts) == 0 &&
 		len(f.ExcludeApps) == 0 && len(f.ExcludeHosts) == 0 && (f.Trap == nil || f.Trap.Empty()) &&
-		(f.Poll == nil || f.Poll.Empty())
+		(f.Poll == nil || f.Poll.Empty()) && len(f.Flow) == 0
 }
 
 // Create queues an export.
