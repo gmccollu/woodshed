@@ -18,17 +18,20 @@ import (
 // from the index a page at a time, in time order (newest end first, or with
 // asc lowest start first), and their blocks are loaded a batch of segments at
 // a time, sorted within the batch. A batch stops at planBatch directory
-// entries loaded (always a whole segment): a loaded segment holds every
-// block's entry, its footer's or its snapshot's, in the window or not, so
-// a narrow window over many segments can't fill memory with directories
-// while it plans few blocks. So what a plan holds doesn't depend on the
-// window's length or its exporter count. Reading isn't in one global block order any more, but every
-// bound a caller uses (complete_from, a search page's certainty) is the bound
-// of everything still unread: the batch's next block and the next segment.
+// entries loaded or planBatchSegs segments (always a whole segment): a
+// loaded segment holds every block's entry and raw chunk, its footer's or its
+// snapshot's, in the window or not, and a closed one an open file until its
+// planned blocks are read, so a narrow window over many segments can't fill
+// memory with directories, or run out of files, while it plans few blocks.
+// So what a plan holds doesn't depend on the window's length or its exporter
+// count. Reading isn't in one global block order any more, but every bound a
+// caller uses (complete_from, a search page's certainty) is the bound of
+// everything still unread: the batch's next block and the next segment.
 
 const (
-	planPage  = 256    // index rows read at a time
-	planBatch = 16_384 // directory entries loaded at a time (at least one whole segment)
+	planPage      = 256    // index rows read at a time
+	planBatch     = 16_384 // directory entries loaded at a time (at least one whole segment)
+	planBatchSegs = 256    // segments loaded at a time
 )
 
 // pageRows and batchBlocks are the engine's (tests make them small).
@@ -254,7 +257,7 @@ func (p *plan) peekKey(ctx context.Context) (int64, bool) {
 func (p *plan) load(ctx context.Context, rd *readers) {
 	rd.reset(p)
 	p.segs, p.blocks, p.done = p.segs[:0], p.blocks[:0], 0
-	for entries := 0; entries < p.e.batchBlocks(); {
+	for entries := 0; entries < p.e.batchBlocks() && len(p.segs) < planBatchSegs; {
 		ref, ok := p.nextSeg(ctx)
 		if !ok {
 			break
@@ -279,10 +282,9 @@ func (p *plan) load(ctx context.Context, rd *readers) {
 		}
 		si := len(p.segs)
 		p.segs = append(p.segs, ref)
-		if r != nil {
-			rd.put(si, r)
-		}
-		entries += len(foot.Blocks)
+		planned0 := len(p.blocks)
+		// A segment costs an entry even with no blocks (its footer, its file).
+		entries += 1 + len(foot.Blocks) + len(foot.RawChunks)
 		var rows int64
 		for i := range foot.Blocks {
 			b := &foot.Blocks[i]
@@ -303,6 +305,13 @@ func (p *plan) load(ctx context.Context, rd *readers) {
 			lo, hi := foot.MinReceived-rawSpan.Milliseconds(), foot.MaxReceived
 			if hi >= p.from && lo < p.to {
 				p.blocks = append(p.blocks, planned{seg: si, block: -1, raw: true, minStart: lo, maxStart: hi, minEnd: lo, maxEnd: hi})
+			}
+		}
+		if r != nil {
+			if len(p.blocks) > planned0 {
+				rd.put(si, r)
+			} else {
+				r.Close() // nothing to read: don't hold its file for the batch
 			}
 		}
 	}

@@ -652,3 +652,64 @@ func TestNarrowWindowPlanBounded(t *testing.T) {
 		}
 	}
 }
+
+// Many small segments: a batch loads at most planBatchSegs of them, so a
+// plan never holds more footers and open files than that, and a segment
+// with nothing in the window keeps no file open; every segment still loads
+// once, and a count over the window finds every record.
+func TestPlanBatchSegmentsBounded(t *testing.T) {
+	const exporters = 700
+	hour := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	e := writeHours(t, hour, 1, exporters, 2) // blocks at 09:00 and 09:30
+	q := Query{From: hour.Add(20 * time.Minute), To: hour.Add(time.Hour)}
+	p, err := e.planFor(bg, &q, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd := newReaders(p)
+	defer rd.close()
+	segs, batches := 0, 0
+	for p.more(bg) {
+		p.load(bg, rd)
+		if len(p.segs) == 0 {
+			break
+		}
+		batches++
+		segs += len(p.segs)
+		rd.mu.Lock()
+		open := len(rd.rds)
+		rd.mu.Unlock()
+		if len(p.segs) > planBatchSegs || open > len(p.segs) || len(p.blocks) != len(p.segs) {
+			t.Fatalf("batch %d: %d segments, %d files open, %d blocks", batches, len(p.segs), open, len(p.blocks))
+		}
+		p.done = len(p.blocks)
+		for _, b := range p.blocks {
+			rd.done(b.seg)
+		}
+	}
+	if p.err != nil || segs != exporters || batches != (exporters+planBatchSegs-1)/planBatchSegs {
+		t.Fatalf("%d segments in %d batches: %v", segs, batches, p.err)
+	}
+	// Outside the window's blocks: the 09:00 one; a whole-window count.
+	n, err := e.Count(bg, q)
+	var c int64
+	for _, v := range n {
+		c += v
+	}
+	if err != nil || c != exporters*2 {
+		t.Fatalf("count %d, want %d: %v", c, exporters*2, err)
+	}
+	// A window inside the segments' index ranges with no block in it
+	// (09:10 to 09:11): they load, and no file is held at all.
+	q = Query{From: hour.Add(10 * time.Minute), To: hour.Add(11 * time.Minute)}
+	p, err = e.planFor(bg, &q, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd2 := newReaders(p)
+	defer rd2.close()
+	p.load(bg, rd2)
+	if len(p.segs) == 0 || len(p.blocks) != 0 || len(rd2.rds) != 0 {
+		t.Fatalf("an empty window: %d segments, %d blocks, %d files open", len(p.segs), len(p.blocks), len(rd2.rds))
+	}
+}
