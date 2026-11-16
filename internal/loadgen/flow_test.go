@@ -113,12 +113,14 @@ func TestFlowGenEventSums(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// A connection is its 5-tuple and start; a reused tuple after a
+		// deleted record is a new connection.
 		type key struct {
-			src   netip.Addr
-			sport uint16
+			src, dst     netip.Addr
+			sport, dport uint16
+			start        int64
 		}
 		added := map[key]uint64{}  // what the connection's records add to sums
-		final := map[key]uint64{}  // the deleted record's totals (or the deltas' sum)
 		deltas := map[key]uint64{} // biflow: deltas so far
 		deleted := 0
 		now := flowT0
@@ -132,7 +134,7 @@ func TestFlowGenEventSums(t *testing.T) {
 					}
 					continue
 				}
-				k := key{r.Src, r.SrcPort}
+				k := key{r.Src, r.Dst, r.SrcPort, r.DstPort, r.Start}
 				added[k] += r.SumBytes()
 				deltas[k] += r.Bytes
 				switch r.FwEvent {
@@ -142,22 +144,21 @@ func TestFlowGenEventSums(t *testing.T) {
 					}
 				case flow.FwDeleted:
 					deleted++
+					want := r.InitiatorBytes
 					if biflow {
-						final[k] = deltas[k]
-					} else {
-						final[k] = r.InitiatorBytes
+						want = deltas[k]
 					}
+					if added[k] != want {
+						t.Fatalf("biflow %v: connection %v adds %d, its totals are %d", biflow, k, added[k], want)
+					}
+					delete(added, k)
+					delete(deltas, k)
 				}
 			}
 			now = now.Add(time.Millisecond)
 		}
 		if deleted == 0 {
 			t.Fatal("no connection closed")
-		}
-		for k, f := range final {
-			if added[k] != f {
-				t.Fatalf("biflow %v: connection %v adds %d, its totals are %d", biflow, k, added[k], f)
-			}
 		}
 	}
 }
