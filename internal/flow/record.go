@@ -353,7 +353,10 @@ func (r *Record) SumBytes() uint64 {
 	if r.Is(HasBytes) {
 		return r.Bytes
 	}
-	return r.InitiatorBytes
+	if r.Is(HasInitiatorBytes) {
+		return r.InitiatorBytes
+	}
+	return 0
 }
 
 // SumPackets: see SumBytes.
@@ -364,7 +367,10 @@ func (r *Record) SumPackets() uint64 {
 	if r.Is(HasPackets) {
 		return r.Packets
 	}
-	return r.InitiatorPackets
+	if r.Is(HasInitiatorPackets) {
+		return r.InitiatorPackets
+	}
+	return 0
 }
 
 // ConvBytes is what a record adds to a conversation (both directions): its
@@ -375,9 +381,17 @@ func (r *Record) ConvBytes() uint64 {
 		return 0
 	}
 	if r.Is(HasBytes) {
-		return r.Bytes + r.RevBytes
+		return r.Bytes + r.opt(HasRevBytes, r.RevBytes)
 	}
-	return r.InitiatorBytes + r.ResponderBytes
+	return r.opt(HasInitiatorBytes, r.InitiatorBytes) + r.opt(HasResponderBytes, r.ResponderBytes)
+}
+
+// opt is v when the record has the column, else 0.
+func (r *Record) opt(bit, v uint64) uint64 {
+	if r.Has&bit != 0 {
+		return v
+	}
+	return 0
 }
 
 // ConvPackets: see ConvBytes.
@@ -386,9 +400,9 @@ func (r *Record) ConvPackets() uint64 {
 		return 0
 	}
 	if r.Is(HasPackets) {
-		return r.Packets + r.RevPackets
+		return r.Packets + r.opt(HasRevPackets, r.RevPackets)
 	}
-	return r.InitiatorPackets + r.ResponderPackets
+	return r.opt(HasInitiatorPackets, r.InitiatorPackets) + r.opt(HasResponderPackets, r.ResponderPackets)
 }
 
 // IsConnection reports whether a record counts toward the connections metric:
