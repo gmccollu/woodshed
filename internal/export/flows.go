@@ -1,6 +1,7 @@
 package export
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -291,7 +292,8 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 	for i, format := range formats {
 		var hw *hashWriter
 		var mf ManifestFile
-		var cw *csv.Writer
+		var cw *bufio.Writer // flows.csv
+		var row []byte
 		var fw *flow.FileWriter
 		var n int64
 		open := func(first int64) error {
@@ -305,9 +307,14 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 			hw = &hashWriter{zw: zw, sum: sha256.New()}
 			mf = ManifestFile{Path: name, DeviceID: dev, First: time.UnixMilli(first).UTC()}
 			if format == FlowCSV {
-				cw = csv.NewWriter(hw)
-				cw.UseCRLF = true
-				return cw.Write(FlowCSVColumns)
+				cw = bufio.NewWriterSize(hw, 64<<10)
+				hdr := csv.NewWriter(cw)
+				hdr.UseCRLF = true
+				if err := hdr.Write(FlowCSVColumns); err != nil {
+					return err
+				}
+				hdr.Flush()
+				return hdr.Error()
 			}
 			fw = flow.NewFileWriter(hw, flow.FileOptions{Version: b.version, ExportTime: exportedAt})
 			return nil
@@ -326,7 +333,8 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 			}
 			var err error
 			if cw != nil {
-				err = cw.Write(FlowCSVRow(r))
+				row = AppendFlowCSVRow(row[:0], r)
+				_, err = cw.Write(row)
 			} else {
 				err = fw.Write(r)
 			}
@@ -351,8 +359,7 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 		})
 		if err == nil && hw != nil {
 			if cw != nil {
-				cw.Flush()
-				err = cw.Error()
+				err = cw.Flush()
 			} else {
 				err = fw.Close()
 			}
@@ -965,14 +972,3 @@ func flowReadmeFiles(info Info) string {
 // FlowCSVHeader is flows.csv's header row's columns (`woodshed search
 // --type flow` prints the same).
 func FlowCSVHeader() []string { return slices.Clone(FlowCSVColumns) }
-
-// AppendFlowCSVRow appends a record's flows.csv row to dst: RFC 4180 quoting,
-// CRLF at the end.
-func AppendFlowCSVRow(dst []byte, r *flow.Record) []byte {
-	var b bytes.Buffer
-	cw := csv.NewWriter(&b)
-	cw.UseCRLF = true
-	_ = cw.Write(FlowCSVRow(r))
-	cw.Flush()
-	return append(dst, b.Bytes()...)
-}
