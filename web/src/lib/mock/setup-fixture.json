@@ -197,7 +197,8 @@
     "trap": []
    },
    "notes": [
-    "softflowd watches a network interface and exports the flows it sees, for machines that have no flow export of their own."
+    "softflowd watches a network interface and exports the flows it sees, for machines that have no flow export of their own.",
+    "softflowd exports a flow when it ends or times out (its -t timeouts), so Woodshed's counts can trail the traffic until then."
    ]
   },
   {

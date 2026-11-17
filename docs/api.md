@@ -1282,7 +1282,8 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
 ```json
 {"enabled": true,
  "budget": {"bytes": 8589934592, "used_bytes": 5100000000, "estimated_days": 4.8},
- "exporters": [{"device_id": "10.1.0.1", "domains": [{"id": 1, "sampling": 1000, "templates": 6, "last_template": "2026-11-16T09:58:01Z"}],
+ "exporters": [{"device_id": "10.1.0.1", "domains": [{"id": 1, "sampling": 1000, "templates": 6, "last_template": "2026-11-16T09:58:01Z",
+                             "seq_mode": "rfc"}],
                 "records_per_sec": 1180.5, "pending_bytes": 0,
                 "counts_24h": {"records": 101000000, "late": 120, "no_template": 0, "malformed": 0, "sequence_gaps": 3, "duplicates": 0},
                 "clock_skew_ms": 210, "time_source": "exporter",
@@ -1290,6 +1291,10 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
                 "time_offsets_1h": {"ahead": 0, "behind": 0, "max_ahead_ms": 0, "max_behind_ms": 0},
                 "last_seen": "2026-11-16T10:00:01Z"}]}
 ```
+- `seq_mode` (IPFIX domains, since 2.0, SPEC §13.10 decision 78): how the domain numbers its messages, learned from
+  its stream: `"rfc"` (RFC 7011 §3.1: the data records sent before the message) or `"after"` (counting the message's
+  own records too). Absent while undecided (messages of equal size don't tell them apart) and for v5 and v9.
+  `counts_24h.sequence_gaps` counts a jump only when the conventions still in play can't explain it.
 - `time_offsets_24h` and `time_offsets_1h` (since 2.0, SPEC §13.10 decision 70): the exporter's records, over the last
   24 hours (by hour) and the last hour (by 5 minutes), whose flow end was more than 1 h after the datagram arrived
   (`ahead`) or more than 24 h before it (`behind`), and the largest offset each way in ms (`0` when none). Such records
@@ -1438,7 +1443,7 @@ v9 vendor-range field type is `{"pen": 0, "id": 40003, …}` (the whole type), t
   have times up to 49.7 days ahead of when they arrived: the exporter's clock or uptime is probably wrong. They're kept
   as sent, at their own times." Several exporters share one banner (at most 5 named).
 - `flow_firewall` (warn, action `""`): Windows only, while the flow listener is on and a rule is disabled, missing or on
-  another port; the text gives `woodshed flow on`.
+  another port; the text names every such rule and gives `woodshed flow on`.
 
 
 **CLI** (not HTTP): `woodshed search --type flow`, `woodshed flows top`, `woodshed flow on|off|status`, `woodshed send

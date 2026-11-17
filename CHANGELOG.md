@@ -18,6 +18,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   `GET /api/flows` (`time_offsets_24h`, `time_offsets_1h`), the device page, **Settings → Flows** and `woodshed flow
   status`; a `flow_time` banner names an exporter with 10 or more in the last hour, and the bundle README's Flows
   block gets a "times off arrival" line.
+- IPFIX sequence numbers: each exporter's observation domain learns whether it numbers a message by the records sent
+  before it (RFC 7011) or counting its own records too, and whether options records count, so an exporter of the
+  second kind no longer shows a false sequence gap per multi-message export; a real loss still counts.
+  `GET /api/flows` gives the learned `seq_mode` per domain (`"rfc"` or `"after"`), and `woodshed flow status` notes
+  an `after` domain. A run of messages behind the expected number is an exporter restart (also for v5 and v9).
 - Firewall-event, NAT and bidirectional records are first-class: `fw_event` (created, deleted, denied, …),
   `nat_event`, post-NAT addresses and ports, initiator and responder counters and RFC 5103 reverse counters are
   columns and filters, sums follow a no-double-count rule for event records, and a rule or ACL ID can be read from

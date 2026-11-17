@@ -143,6 +143,14 @@ func (ds *decState) v5(b []byte) {
 	n := min(count, fit)
 	k := tkey{port: ds.port, version: V5}
 	d := ds.c.domainFor(ds.e, k)
+	// The domain reports the header's rate, as its records carry it
+	// (/api/flows, woodshed flow status). Only Decode's goroutine writes it.
+	if d.sampling != rate {
+		ds.c.mu.Lock()
+		d.sampling = rate
+		ds.c.mu.Unlock()
+		ds.e.metaVer.Add(1)
+	}
 	if gap, dup := d.seq.check(seq, uint32(count), n == count, ds.received); dup {
 		ds.counts.Duplicates++
 	} else if gap > 0 {
@@ -231,6 +239,7 @@ type msg struct {
 	k        tkey
 	d        *domainState
 	records  int  // data records decoded (and options data records)
+	opts     int  // of those, options data records
 	unknown  bool // a data set waited or went raw: the record count is unknown
 	brokeOff bool
 }
@@ -297,11 +306,19 @@ func (ds *decState) ipfix(b []byte) {
 		ds.malformed(b, IPFIX, m.header, dom)
 		m.unknown = true
 	}
-	if gap, dup := m.d.seq.check(seq, uint32(m.records), !m.unknown, ds.received); dup {
+	// IPFIX learns the domain's numbering from its stream (decision 78).
+	m.d.seq.learn = true
+	sm := seqMsg{seq: seq, data: uint32(m.records - m.opts), opts: uint32(m.opts), known: !m.unknown}
+	if gap, dup := m.d.seq.checkMsg(sm, ds.received); dup {
 		ds.counts.Duplicates++
 	} else if gap > 0 {
 		ds.counts.SequenceGaps++
 		ds.counts.LostEstimate += gap
+	}
+	if mode := m.d.seq.mode(); mode != m.d.seqMode {
+		ds.c.mu.Lock()
+		m.d.seqMode = mode
+		ds.c.mu.Unlock()
 	}
 }
 
@@ -522,6 +539,7 @@ func (ds *decState) decodeSet(m *msg, te *tmplEntry, body []byte, status Status,
 			}
 			body = body[n:]
 			m.records++
+			m.opts++
 			continue
 		}
 		*r = Record{}

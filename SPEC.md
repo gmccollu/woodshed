@@ -2593,7 +2593,8 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
 
 #### 13.1.1 Versions
 - **Flow v5:** the fixed 48-byte record; the header's `sampling_interval` (mode and 14-bit rate) is the records'
-  sampling; `unix_secs`, `unix_nsecs` and `sys_uptime` turn the records' uptime-relative times into UTC.
+  sampling and the domain's (v5 is always domain 0); `unix_secs`, `unix_nsecs` and `sys_uptime` turn the records'
+  uptime-relative times into UTC.
 - **Flow v9** (RFC 3954): template, options template and data FlowSets, per (exporter address, source ID).
 - **IPFIX** (RFC 7011): template, options template and data sets, per (exporter address, observation domain ID),
   with variable-length fields, enterprise-specific IEs, and the RFC 7011 time IEs (seconds, milliseconds,
@@ -3109,9 +3110,10 @@ Made while building it, each **decided (build, 2026-11-16)**:
 18. Both flow ports feed one receive queue (shown as `flow` in `udp_queues`) and one drainer, so the collector's
     template state stays single-threaded; there's no inline fast path for flows (exporters send steadily, and a
     packet carries ~30 records).
-19. A v5 header sampling interval of 0 or 1 is unsampled. Domain-level sampling comes from options data without a
-    sampler ID (v9 scope System, IPFIX scope observationDomainId); sampler tables from 48/302 with 34, 50, 305/306,
-    309/310 or 311.
+19. A v5 header sampling interval of 0 or 1 is unsampled, for the records and domain 0. An exporter's scopes with
+    one domain ID (other ports or versions) show the highest rate among them in `/api/flows`. Domain-level sampling
+    comes from options data without a sampler ID (v9 scope System, IPFIX scope observationDomainId); sampler tables
+    from 48/302 with 34, 50, 305/306, 309/310 or 311.
 20. `rule_id`: a fixed-length field of 1–8 bytes is a big-endian unsigned integer in decimal; a variable-length or
     longer one is printable ASCII as text (trailing NULs trimmed), else hex. The IE also stays in extras.
 21. An exporter clock more than 1 h off: end = received, start = received − duration, event time = received,
@@ -3478,6 +3480,28 @@ couldn't name one, so v9 event runs never filled `rule_id`):
     the bundle's `flows.csv`; the CI job `flow-interop` runs it with tshark required (`TestFlowV9VendorRuleIDEndToEnd`:
     every record's 5-tuple equals the CSV, no malformed frames). Alongside: `woodshed flow status` validates the config
     as `run` and `reindex` do (exit 1 with the same message), and `woodshed search --help` lists `flow` under `-type`.
+
+**IPFIX sequence conventions, decided (build, 2026-11-17)** (the 2.0.0-rc1 lab: an open-source exporter numbers each
+message after counting its own data records, where RFC 7011 §3.1 counts the records sent before it. Its capture: 21
+data + 1 options records carried 21, then 22, 21 and 20 data records carried 43, 64 and 84. Nothing was lost, but the
+RFC check saw 64 as reordered and 84 as a gap of 19, so every export of more than one message added a false gap to
+`flow status`, `/api/flows` and the bundle README):
+78. **Learned per scope:** each IPFIX (exporter, port, observation domain) learns its convention from its own stream.
+    Timing is `rfc` (`seq[n+1] = seq[n] + records[n]`) or `after` (`seq[n+1] = seq[n] + records[n+1]`), and,
+    separately, whether options data records count (the capture's first message says they don't there: 21 data + 1
+    options gave 21). A message whose counts and predecessor's are known is a vote for a side when only that side
+    explains its number; 3 votes in a row decide it (messages of equal size tell timing nothing, so it may take a
+    while). The same 3 in a row for the other side change a decided one (another exporter on that address).
+    - **Gaps:** while a side is undecided, a jump is a gap only when neither side explains it (the smaller jump is
+      the estimate); once decided, only the decided side explains, so a real loss always counts. A loss that happens
+      to equal the difference between the two sides, before they're decided, is the one case missed.
+    - **Behind the expected number:** a late (reordered) message is ignored, as before (the jump it left counts as a
+      gap). Three messages behind in a row, each following the one before, are an exporter restart, so a restart to
+      low numbers resyncs too (before, only a jump back of over 100,000 did); this applies to v5 and v9 as well.
+    - A message with no records (templates only) shares its number with the next one and isn't a duplicate.
+    - v5 and v9 don't learn: v5 counts records and v9 packets, as decision 23 says.
+    - `/api/flows` shows the decided timing per domain as `seq_mode` (`"rfc"` or `"after"`, absent while undecided);
+      `woodshed flow status` notes an `after` domain.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
