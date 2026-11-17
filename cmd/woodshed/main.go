@@ -1,4 +1,4 @@
-// Command woodshed is a simple, reliable syslog server with a web UI.
+// Command woodshed is a syslog, SNMP and flow collector with a web UI.
 package main
 
 import (

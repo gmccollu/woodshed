@@ -12,7 +12,7 @@ machine (localhost only until you turn on LAN mode in Settings).
 
 ## Portable mode: no install
 
-To spin up a syslog server on the spot (for a case, a lab, a laptop), download the program for your system (the
+To spin up Woodshed on the spot (for a case, a lab, a laptop), download the program for your system (the
 `.zip`/`.tar.gz` archive), unpack it and **double-click `woodshed`** (`woodshed.exe` on Windows), or run `./woodshed`
 in a terminal. Nothing is installed. A window shows:
 
