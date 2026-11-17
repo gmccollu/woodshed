@@ -2,8 +2,11 @@ package fwrule
 
 import (
 	"errors"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -130,7 +133,11 @@ func (f *fakeLinux) run(name string, args ...string) (string, error) {
 		switch {
 		case args[0] == "status":
 			if f.ufw {
-				return "Status: active\n\nTo Action From", nil
+				out := "Status: active\n\nTo                         Action      From\n--                         ------      ----\n"
+				for _, r := range slices.Sorted(maps.Keys(f.ufwRules)) {
+					out += fmt.Sprintf("%-26s ALLOW       Anywhere\n%-26s ALLOW       Anywhere (v6)\n", r, r+" (v6)")
+				}
+				return out, nil
 			}
 			return "Status: inactive", nil
 		case args[0] == "allow":

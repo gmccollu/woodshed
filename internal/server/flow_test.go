@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
+	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
@@ -53,6 +55,36 @@ func waitFlows(t *testing.T, r *running, q string, want int64) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("%s: %d flows, want %d", q, got, want)
+}
+
+// Flow v5's header sampling interval reaches /api/flows (the domain), the
+// stored records and the scaled totals: 100, and 0 (every packet, so 1)
+// (lab, 2.0.0-rc1: the domain said 0, unknown).
+func TestFlowV5Sampling(t *testing.T) {
+	for _, x := range []struct{ interval, want int }{{100, 100}, {0, 1}} {
+		r, nf, _ := flowServer(t, nil)
+		if _, err := loadgen.SendFlows(context.Background(), loadgen.FlowOptions{Proto: loadgen.ProtoFlowV5,
+			Addr: fmt.Sprintf("127.0.0.1:%d", nf), Count: 60, Rate: 20000, Sampling: x.interval, RunID: "00001111"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		waitFlows(t, r, "", 60)
+		var st api.FlowState
+		if code := r.do(t, "GET", "/api/flows", nil, &st); code != 200 || len(st.Exporters) != 1 {
+			t.Fatalf("flows: %d %+v", code, st)
+		}
+		if d := st.Exporters[0].Domains; len(d) != 1 || d[0].ID != 0 || d[0].Sampling != uint32(x.want) {
+			t.Errorf("interval %d: domains %+v, want domain 0 sampling %d", x.interval, d, x.want)
+		}
+		var top api.FlowTopPage
+		if code := r.do(t, "GET", "/api/flows/top?by=src&metric=bytes&budget_ms=10000", nil, &top); code != 200 {
+			t.Fatalf("top: %d", code)
+		}
+		if tt := top.Total; tt.Flows != 60 || tt.Bytes == 0 || tt.BytesScaled != tt.Bytes*int64(x.want) ||
+			tt.PacketsScaled != tt.Packets*int64(x.want) || !tt.ScaledComplete {
+			t.Errorf("interval %d: totals %+v, want scaled = %d x", x.interval, tt, x.want)
+		}
+		r.stop(t)
+	}
 }
 
 // Flows end to end, in process: IPFIX event records and flow v5 and v9 from the
@@ -354,5 +386,54 @@ func TestFlowTemplatesBannerPendingAge(t *testing.T) {
 	}
 	if !has(time.Now().Add(11 * time.Minute)) {
 		t.Fatal("no banner for data waiting over 10 minutes")
+	}
+}
+
+// The flow_firewall banner names every rule that's off (lab, 2.0.0-rc1: with
+// both disabled it named only the flow port's).
+func TestFlowFirewallBanner(t *testing.T) {
+	r, _, _ := flowServer(t, nil)
+	fs := r.srv.be.flows
+	var rules []fwrule.FlowRuleState
+	set := func(rs ...fwrule.FlowRuleState) {
+		fs.fwMu.Lock()
+		rules = rs
+		fs.fwCheck = func(nf, ix int) []fwrule.FlowRuleState { return rules }
+		fs.fwAt = time.Time{}
+		fs.fwMu.Unlock()
+	}
+	banner := func(goos string) string {
+		for _, b := range r.srv.be.flowBanners(context.Background(), r.srv.be.config(), time.Now(), goos) {
+			if b.Kind == "flow_firewall" {
+				return b.Text
+			}
+		}
+		return ""
+	}
+	nf, ix := fwrule.FlowPortRuleName, fwrule.FlowIPFIXRuleName
+	for _, x := range []struct {
+		rules []fwrule.FlowRuleState
+		want  string // "" for no banner
+	}{
+		{nil, ""},
+		{[]fwrule.FlowRuleState{{Rule: nf, State: fwrule.StateUnknown}}, ""},
+		{[]fwrule.FlowRuleState{{Rule: ix, State: fwrule.StateWrongPort}}, `The Windows firewall rule "` + ix + `" is wrong port, so`},
+		{[]fwrule.FlowRuleState{{Rule: nf, State: fwrule.StateDisabled}, {Rule: ix, State: fwrule.StateDisabled}},
+			`The Windows firewall rules "` + nf + `" and "` + ix + `" are disabled, so exporters can't reach the flow listener. ` +
+				"Run `woodshed flow on` as an administrator."},
+		{[]fwrule.FlowRuleState{{Rule: nf, State: fwrule.StateMissing}, {Rule: ix, State: fwrule.StateDisabled}},
+			`The Windows firewall rules "` + nf + `" (missing) and "` + ix + `" (disabled) are off or wrong, so`},
+		{[]fwrule.FlowRuleState{{Rule: nf, State: fwrule.StateUnknown}, {Rule: ix, State: fwrule.StateDisabled}},
+			`The Windows firewall rule "` + ix + `" is disabled, so`},
+	} {
+		set(x.rules...)
+		got := banner("windows")
+		if x.want == "" && got != "" || x.want != "" && !strings.HasPrefix(got, x.want) {
+			t.Errorf("%v: banner %q, want %q", x.rules, got, x.want)
+		}
+	}
+	set(fwrule.FlowRuleState{Rule: nf, State: fwrule.StateDisabled})
+	if got := banner("linux"); got != "" {
+		t.Errorf("linux: %q", got)
 	}
 }

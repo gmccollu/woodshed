@@ -87,7 +87,7 @@ Examples:
 	duration := fs.Duration("duration", 0, "send at --rate for this `duration`, instead of --count")
 	rpp := fs.Int("records-per-packet", 30, "records per `packet` (v5: at most 30)")
 	domains := fs.Int("domains", 1, "observation `domains` (v9 source IDs) 1..N, in turn")
-	sampling := fs.Int("sampling", 0, "say the records are sampled 1 in `N` (0: no sampling information)")
+	sampling := fs.Int("sampling", 0, "say the records are sampled 1 in `N` (0: no sampling information; in v5 a header interval of 0, which is unsampled)")
 	sampled := fs.Int("sampled-domains", 0, "with --sampling, how many of the `domains` are sampled, from 1 (0: all)")
 	every := fs.Int("template-every", 20, "resend the templates every `N` packets of a domain")
 	firstDelay := fs.Duration("template-first-delay", 0, "send no template until this `long` after the start")

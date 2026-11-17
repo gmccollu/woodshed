@@ -1438,7 +1438,7 @@ v9 vendor-range field type is `{"pen": 0, "id": 40003, …}` (the whole type), t
   have times up to 49.7 days ahead of when they arrived: the exporter's clock or uptime is probably wrong. They're kept
   as sent, at their own times." Several exporters share one banner (at most 5 named).
 - `flow_firewall` (warn, action `""`): Windows only, while the flow listener is on and a rule is disabled, missing or on
-  another port; the text gives `woodshed flow on`.
+  another port; the text names every such rule and gives `woodshed flow on`.
 
 
 **CLI** (not HTTP): `woodshed search --type flow`, `woodshed flows top`, `woodshed flow on|off|status`, `woodshed send

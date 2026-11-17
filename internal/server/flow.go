@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,11 +60,10 @@ type flowSide struct {
 
 	lastExpire time.Time
 	rates      flowRates
-	fwCheck    func(nf, ix int) (string, string)
+	fwCheck    func(nf, ix int) []fwrule.FlowRuleState
 	fwMu       sync.Mutex
 	fwAt       time.Time
-	fwState    string
-	fwRule     string
+	fwRules    []fwrule.FlowRuleState // the rules that aren't ok, as of fwAt
 
 	stop chan struct{}
 	done chan struct{}
@@ -158,7 +158,7 @@ func (b *backend) openFlows(cfg config.Config) {
 			}
 			return out
 		}})
-	fs.fwCheck = func(nf, ix int) (string, string) { return fwrule.FlowWindowsState(fwrule.Exec, nf, ix) }
+	fs.fwCheck = func(nf, ix int) []fwrule.FlowRuleState { return fwrule.FlowWindowsStates(fwrule.Exec, nf, ix) }
 	b.flows = fs
 	go fs.expireLoop(b)
 }
@@ -722,11 +722,8 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 	}
 	if goos == "windows" && cfg.Listeners.Flow.Enabled {
 		l := cfg.Listeners.Flow
-		state, rule := b.flowFirewall(l.FlowPort, l.IPFIXPort, now)
-		if state != fwrule.StateOK && state != fwrule.StateUnknown {
-			out = append(out, api.Banner{Kind: "flow_firewall", Level: "warn", Text: fmt.Sprintf(
-				"The Windows firewall rule %q is %s, so exporters can't reach the flow listener. Run `woodshed flow on` as an administrator.",
-				rule, strings.ReplaceAll(state, "_", " "))})
+		if text := flowFirewallText(b.flowFirewall(l.FlowPort, l.IPFIXPort, now)); text != "" {
+			out = append(out, api.Banner{Kind: "flow_firewall", Level: "warn", Text: text})
 		}
 	}
 	return out
@@ -780,16 +777,48 @@ func flowTimeText(offs []flowTimeOff) string {
 }
 
 // flowFirewall reads the Windows rules' state, at most once a minute.
-func (b *backend) flowFirewall(nf, ix int, now time.Time) (string, string) {
+func (b *backend) flowFirewall(nf, ix int, now time.Time) []fwrule.FlowRuleState {
 	fs := b.flows
 	fs.fwMu.Lock()
 	defer fs.fwMu.Unlock()
-	if now.Sub(fs.fwAt) < time.Minute && fs.fwState != "" {
-		return fs.fwState, fs.fwRule
+	if !fs.fwAt.IsZero() && now.Sub(fs.fwAt) < time.Minute {
+		return fs.fwRules
 	}
-	fs.fwState, fs.fwRule = fs.fwCheck(nf, ix)
+	fs.fwRules = fs.fwCheck(nf, ix)
 	fs.fwAt = now
-	return fs.fwState, fs.fwRule
+	return fs.fwRules
+}
+
+// flowFirewallText is the flow_firewall banner for the rules that aren't ok,
+// naming every one whose state is known to be wrong ("" when none is).
+func flowFirewallText(rules []fwrule.FlowRuleState) string {
+	var bad []fwrule.FlowRuleState
+	for _, r := range rules {
+		if r.State != fwrule.StateOK && r.State != fwrule.StateUnknown {
+			bad = append(bad, r)
+		}
+	}
+	state := func(s string) string { return strings.ReplaceAll(s, "_", " ") }
+	const tail = ", so exporters can't reach the flow listener. Run `woodshed flow on` as an administrator."
+	switch {
+	case len(bad) == 0:
+		return ""
+	case len(bad) == 1:
+		return fmt.Sprintf("The Windows firewall rule %q is %s", bad[0].Rule, state(bad[0].State)) + tail
+	}
+	names := make([]string, len(bad))
+	same := true
+	for i, r := range bad {
+		names[i] = strconv.Quote(r.Rule)
+		same = same && r.State == bad[0].State
+	}
+	if same {
+		return fmt.Sprintf("The Windows firewall rules %s are %s", strings.Join(names, " and "), state(bad[0].State)) + tail
+	}
+	for i, r := range bad {
+		names[i] += " (" + state(r.State) + ")"
+	}
+	return "The Windows firewall rules " + strings.Join(names, " and ") + " are off or wrong" + tail
 }
 
 // flowStats is the collector's last-24-hour sequence gaps for an exporter,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -148,11 +149,30 @@ func TestFlowCommandLinux(t *testing.T) {
 			t.Errorf("record %s: %v", rf, err)
 		}
 	}
+	// status names what flow on opened, not "open the ports" (lab, 2.0.0-rc1).
+	if _, out, _ := runCLI("flow", "status", "--config", cfgPath); !strings.Contains(out, "opened by woodshed flow on: ufw 2055/udp, ufw 4739/udp") ||
+		strings.Contains(out, "open the ports") || strings.Contains(out, "don't arrive") {
+		t.Errorf("status after on: %q", out)
+	}
 	if code, out, _ := runCLI("flow", "on", "--ipfix-port", "0", "--config", cfgPath); code != 0 || !strings.Contains(out, "(flow UDP 2055)") {
 		t.Fatalf("ipfix off: %d %q", code, out)
 	}
-	if code, out, _ := runCLI("flow", "status", "--config", cfgPath); code != 0 || !strings.Contains(out, "on, flow UDP 2055; template timeout 30m") {
+	if code, out, _ := runCLI("flow", "status", "--config", cfgPath); code != 0 || !strings.Contains(out, "on, flow UDP 2055; template timeout 30m") ||
+		!strings.Contains(out, "opened by woodshed flow on: ufw 2055/udp\n") || strings.Contains(out, "4739") {
 		t.Fatalf("status: %d %q", code, out)
+	}
+	// Without a record (the firewall wasn't active at flow on): the commands, for the ports on only.
+	rec := filepath.Join(dataDir, fwrule.FlowPortRecordFile)
+	saved, err := os.ReadFile(rec)
+	if err != nil || os.Remove(rec) != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := runCLI("flow", "status", "--config", cfgPath); !strings.Contains(out, "if exporters' flows don't arrive, open 2055/udp:") ||
+		!strings.Contains(out, "sudo ufw allow 2055/udp") || strings.Contains(out, "opened by") || strings.Contains(out, "4739") {
+		t.Errorf("status without a record: %q", out)
+	}
+	if err := os.WriteFile(rec, saved, 0o640); err != nil {
+		t.Fatal(err)
 	}
 	code, out, _ = runCLI("flow", "off", "--config", cfgPath)
 	if code != 0 || !strings.Contains(out, "Turned the flow listener off") || !strings.Contains(strings.Join(fw.calls, "\n"), "ufw delete allow 2055/udp") {
@@ -173,15 +193,19 @@ func TestFlowStatusRows(t *testing.T) {
 	fs := &api.FlowState{Enabled: true, Budget: api.FlowBudget{Bytes: 8 << 30, UsedBytes: 2 << 30, EstimatedDays: &days},
 		Exporters: []api.FlowExporter{{DeviceID: "10.1.0.1", RecordsPerSec: 1180.5, Domains: []api.FlowDomain{{ID: 1, Sampling: 1000, Templates: 6}},
 			Counts24h: api.FlowCounts{Records: 100, SequenceGaps: 3}, TimeSource: "received", ClockSkewMS: 4000000,
-			TimeOffsets24h: api.FlowTimeOffsets{Ahead: 40, MaxAheadMS: 1 << 32}}}}
+			TimeOffsets24h: api.FlowTimeOffsets{Ahead: 40, MaxAheadMS: 1 << 32}},
+			// v5: domain 0, the header's interval (0 is every packet).
+			{DeviceID: "10.1.0.2", Domains: []api.FlowDomain{{ID: 0, Sampling: 1}}},
+			{DeviceID: "10.1.0.3", Domains: []api.FlowDomain{{ID: 0, Sampling: 100}}}}}
 	var b strings.Builder
 	statusFlowRows(&tabw{w: &b}, &server.RunState{Flows: fs})
-	if got := b.String(); !strings.Contains(got, "Flows:      on; 1 exporter, 1180 records/s; budget 25 % used (2.0 GiB of 8.0 GiB)") {
+	if got := b.String(); !strings.Contains(got, "Flows:      on; 3 exporters, 1180 records/s; budget 25 % used (2.0 GiB of 8.0 GiB)") {
 		t.Fatalf("status row %q", got)
 	}
 	b.Reset()
 	flowStateRows(&tabw{w: &b}, fs)
 	for _, want := range []string{"about 4.8 days", "10.1.0.1: 1180.5 records/s; domain 1: 6 templates, 1 in 1000", "3 sequence gaps",
+		"10.1.0.2: 0.0 records/s; domain 0: 0 templates, unsampled", "10.1.0.3: 0.0 records/s; domain 0: 0 templates, 1 in 100",
 		"its clock is 4000000 ms off", "24 h: 40 records more than 1 h ahead of when they arrived (up to 49.7 days); kept at their own times"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("flow status lacks %q:\n%s", want, b.String())
@@ -248,5 +272,17 @@ func TestSNMPAndTLSStatusValidateConfig(t *testing.T) {
 		if code != 1 || out != "" || !strings.Contains(errOut, "woodshed "+x.cmd+": ") || !strings.Contains(errOut, x.key) {
 			t.Errorf("%s status, %s: %d %q %q", x.cmd, x.key, code, out, errOut)
 		}
+	}
+}
+
+// `woodshed flow status` on Windows names every rule that's off.
+func TestFlowStatusWindowsRules(t *testing.T) {
+	defer noService()
+	withFirewall(t, "windows") // both rules disabled
+	cfgPath, _ := testConfig(t, func(c *config.Config) { c.Listeners.Flow.Enabled = true })
+	code, out, errOut := runCLI("flow", "status", "--config", cfgPath)
+	if code != 0 || !strings.Contains(out, fmt.Sprintf("rule %q: disabled", fwrule.FlowPortRuleName)) ||
+		!strings.Contains(out, fmt.Sprintf("rule %q: disabled", fwrule.FlowIPFIXRuleName)) {
+		t.Fatalf("status: %d %q %q", code, out, errOut)
 	}
 }
