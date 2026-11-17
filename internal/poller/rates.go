@@ -3,6 +3,8 @@ package poller
 import (
 	"math"
 	"time"
+
+	"github.com/gmccollu/woodshed/internal/pollrec"
 )
 
 // Rates and their rules (SPEC §12.2.1, §12.2.2). Everything here is a pure
@@ -80,38 +82,8 @@ func octetBound(speedMbps uint64, secs float64) uint64 {
 	return uint64(math.Ceil(b))
 }
 
-// The sysUpTime 497-day wrap (SPEC §12.2.2): from within an hour of 2^32
-// ticks to a small value, about an interval after the last one.
-const uptimeWrapWindow = 360000 // ticks (1 h)
-
-// uptimeSlack is how far an uptime may fall behind the time between two
-// samples without counting as a restart: agents update it coarsely, and the
-// two receive times stand for the agent's own reading times only to within a
-// round trip.
-func uptimeSlack(el uint64) uint64 { return max(500, el/50) } // 5 s, or 2 % of the interval
-
-// uptimeDropped reports whether sysUpTime (or hrSystemUptime) restarted
-// between two samples elapsed apart: it went down (but not by its 497-day
-// wrap), or it went up by clearly less than the time between them. The second
-// is a restart soon after the previous one (an agent up 6 s, restarted, and
-// polled again 7 s later reads 6.5 s: lower than it should be, not lower than
-// before), which a "went down" rule alone misses. An uptime that didn't move
-// at all is a stuck counter (macOS's snmpd reports hrSystemUptime as 0), not
-// a restart.
+// uptimeDropped is pollrec.UptimeDropped (SPEC §12.2.2): the bundle reads
+// traps against the polls with the same rule.
 func uptimeDropped(prev, cur uint64, elapsed time.Duration) bool {
-	el := uint64(max(elapsed, 0) / (10 * time.Millisecond))
-	if cur < prev && prev >= wrap32-uptimeWrapWindow {
-		// Where it could have got to: twice the elapsed time plus a minute
-		// (agents update uptime coarsely).
-		if reach := prev + 2*el + 6000; reach >= wrap32 && cur <= reach-wrap32 {
-			return false // the wrap
-		}
-	}
-	switch {
-	case cur < prev:
-		return true
-	case cur == prev:
-		return false // a value that doesn't move is a stuck counter, not a restart
-	}
-	return cur+uptimeSlack(el) < prev+el
+	return pollrec.UptimeDropped(prev, cur, elapsed)
 }
