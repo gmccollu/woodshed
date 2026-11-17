@@ -702,11 +702,12 @@ func humanUnits(n int64, units []string) string {
 	return strconv.FormatFloat(v, 'f', 1, 64) + units[i]
 }
 
-// pct is a share as the README and the UI's Top panel show it (shareText in
-// web/src/lib/flows.ts): whole percents from 10 %, one decimal under that
-// ("4.2 %", "0.3 %"), and "<0.1 %" for a non-zero share under 0.1 %, so a
-// small share never reads as "0 %" (SPEC §13.10 decision 81).
-func pct(share float64) string {
+// ShareText is a share as the README and the UI's Top panel show it
+// (shareText in web/src/lib/flows.ts): whole percents from 10 %, one decimal
+// under that ("4.2 %", "0.3 %"), and "<0.1 %" for a non-zero share under
+// 0.1 %, so a small share never reads as "0 %" (SPEC §13.10 decision 81).
+// Exported for the end-to-end tests, which check the README with it.
+func ShareText(share float64) string {
 	p := share * 100
 	switch {
 	case p > 0 && p < 0.1:
@@ -729,7 +730,7 @@ func zeroNote(n int64, metric string, approx bool) string {
 func joinShares(ks []KeyShare) string {
 	var p []string
 	for _, k := range ks {
-		p = append(p, k.Key+" "+pct(k.Share))
+		p = append(p, k.Key+" "+ShareText(k.Share))
 	}
 	return strings.Join(p, ", ")
 }

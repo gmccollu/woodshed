@@ -630,7 +630,7 @@ func TestFlowHumanUnits(t *testing.T) {
 func TestFlowShareText(t *testing.T) {
 	for share, want := range map[float64]string{0.31: "31 %", 0.1: "10 %", 0.0999: "10 %", 0.042: "4.2 %", 0.04: "4 %",
 		0.0031: "0.3 %", 0.001: "0.1 %", 0.0009: "<0.1 %", 0.00001: "<0.1 %", 1: "100 %", 0.9996: "100 %", 0: "0 %"} {
-		if got := pct(share); got != want {
+		if got := ShareText(share); got != want {
 			t.Errorf("%v: %q want %q", share, got, want)
 		}
 	}
@@ -732,7 +732,7 @@ func TestFlowTinyShare(t *testing.T) {
 	add("10.0.0.2", 1)
 	add("10.0.0.3", 1)
 	ks, _ := shares(top, "bytes")
-	if len(ks) != 3 || pct(ks[0].Share) != "100 %" || pct(ks[1].Share) != "<0.1 %" || pct(ks[2].Share) != "<0.1 %" {
+	if len(ks) != 3 || ShareText(ks[0].Share) != "100 %" || ShareText(ks[1].Share) != "<0.1 %" || ShareText(ks[2].Share) != "<0.1 %" {
 		t.Fatalf("%+v", ks)
 	}
 }
