@@ -142,6 +142,8 @@ export interface FlowTopResponse {
   total: { flows: number; bytes: number; packets: number; bytes_scaled: number | null; packets_scaled: number | null; scaled_complete: boolean; connections?: number };
   rows: FlowTopRow[];
   other: { flows: number; bytes: number; packets?: number; connections?: number };
+  /** Keys with none of the metric: never rows (SPEC §13.10 decision 80). */
+  zero_omitted?: number;
   approx: boolean;
   /** Past the exact limit, a key not listed has at most this of the metric. */
   error_bound?: number;
@@ -273,9 +275,18 @@ export interface FlowBundleSummary {
   top_denied_ports: { key: string; count: number }[];
   nat_connections: number;
   top_post_nat_sources: { key: string; share: number }[];
-  sequence_gaps: number;
-  /** Records lost before Woodshed, estimated from the gaps (null where unknown, as in the bundle preview). */
+  /** Per list, the keys left out for having 0 of its metric (decision 80). */
+  zero_omitted?: Partial<Record<'top_talkers' | 'top_dst_ports' | 'top_conversations' | 'top_denied_sources' | 'top_denied_ports' | 'top_post_nat_sources', number>>;
+  /** The window's sequence gaps and the records they stand for (decision 82); null when not known. */
+  sequence_gaps: number | null;
   lost_estimate: number | null;
+  /** The span they cover: the window in whole minutes, or whole hours (by_hour) past a day. */
+  sequence_gaps_span?: { from: string; to: string; by_hour: boolean } | null;
+  /** Why they aren't known: "not_kept", "not_counted", or "preview" (the bundle preview, before it's built). */
+  sequence_gaps_unknown?: string;
+  /** The collector's last 24 hours, not limited to the window (null where unknown). */
+  sequence_gaps_24h?: number | null;
+  lost_estimate_24h?: number | null;
   no_template: number;
   malformed: number;
   /** The window's own records far from their arrival (null in the preview, which doesn't read records). */
@@ -633,7 +644,36 @@ function samplingPhrase(s: FlowBundleSummary['sampling']): string {
     .join(', ');
 }
 
-const shares = (xs: { key: string; share: number }[]) => xs.map((x) => `${x.key} ${Math.round(x.share * 100)} %`).join(', ');
+const shares = (xs: { key: string; share: number }[]) => xs.map((x) => `${x.key} ${shareText(x.share)}`).join(', ');
+
+/** What a top list left out for having 0 of its metric: "4 with 0 bytes not shown" ("" for none), as the server says it. */
+export function zeroOmittedText(n: number | undefined, metric: FlowMetric | string): string {
+  if (!n || n <= 0) return '';
+  return `${enUS.format(n)} with 0 ${metric === 'flows' ? 'flow records' : metric} not shown`;
+}
+const zeroNote = (n: number | undefined) => (zeroOmittedText(n, 'bytes') ? ` (${zeroOmittedText(n, 'bytes')})` : '');
+
+const hm = (iso: string) => iso.slice(11, 16);
+const ymdhm = (iso: string) => `${iso.slice(0, 10)} ${hm(iso)}`;
+
+/** The README's sequence gaps for the window (internal/export seqGapWords). */
+function seqGapWords(s: FlowBundleSummary): string {
+  if (s.sequence_gaps === null || s.sequence_gaps === undefined) {
+    if (s.sequence_gaps_unknown === 'preview') return 'sequence gaps in this window are counted when the bundle is built';
+    const why = s.sequence_gaps_unknown === 'not_counted' ? "part of it was stored by a Woodshed that didn't count them" : 'Woodshed keeps them 7 days, by datagram arrival';
+    return `sequence gaps in this window not known (${why})`;
+  }
+  let w = `sequence gaps ${enUS.format(s.sequence_gaps)}`;
+  if (s.sequence_gaps > 0 && s.lost_estimate !== null) w += ` (≈ ${enUS.format(s.lost_estimate)} records lost before Woodshed)`;
+  const sp = s.sequence_gaps_span;
+  if (sp?.by_hour) {
+    const from = new Date(sp.from).toISOString();
+    const to = new Date(sp.to).toISOString();
+    const toText = new Date(Date.parse(to) - 1).toISOString().slice(0, 10) !== from.slice(0, 10) ? ymdhm(to) : hm(to);
+    return `${w} in the whole hours ${ymdhm(from)}–${toText} UTC (counts older than a day are kept by the hour)`;
+  }
+  return `${w} in this window`;
+}
 const counts = (xs: { key: string; count: number }[]) => xs.map((x) => `${x.key} ${enUS.format(x.count)}`).join(', ');
 
 /**
@@ -647,9 +687,15 @@ export function flowReadme(s: FlowBundleSummary): string {
   lines.push(`    Flows        ${enUS.format(s.records)} records from ${doms}${samp ? `; ${samp}` : ''}`);
   const sc = (v: number | null, f: (n: number) => string) => (v !== null && v !== undefined ? ` (≈ ${f(v)} scaled)` : '');
   lines.push(`${pad}bytes ${dbytes(s.bytes)} exported${sc(s.bytes_scaled, dbytes)}, packets ${short(s.packets)}${sc(s.packets_scaled, short)}`);
-  if (s.top_talkers.length) lines.push(`${pad}top talkers by bytes: ${shares(s.top_talkers)}`);
-  if (s.top_dst_ports.length) lines.push(`${pad}top destination ports: ${shares(s.top_dst_ports)}`);
-  if (s.top_conversations.length) lines.push(`${pad}top conversations: ${shares(s.top_conversations)}`);
+  // A share list leaves out keys with 0 bytes and says how many; with only those, "none".
+  const z = s.zero_omitted ?? {};
+  const shareLine = (label: string, xs: { key: string; share: number }[], zero: number | undefined) => {
+    if (xs.length) lines.push(`${pad}${label}${shares(xs)}${zeroNote(zero)}`);
+    else if (zero) lines.push(`${pad}${label}none${zeroNote(zero)}`);
+  };
+  shareLine('top talkers by bytes: ', s.top_talkers, z.top_talkers);
+  shareLine('top destination ports: ', s.top_dst_ports, z.top_dst_ports);
+  shareLine('top conversations: ', s.top_conversations.slice(0, 1), z.top_conversations);
   const fw = s.fw_events;
   if (fw.created || fw.deleted || fw.denied)
     lines.push(`${pad}firewall events: ${enUS.format(fw.created)} created, ${enUS.format(fw.deleted)} deleted, ${enUS.format(fw.denied)} denied`);
@@ -670,8 +716,13 @@ export function flowReadme(s: FlowBundleSummary): string {
     lines.push(
       `${pad}times off arrival: ${off.join('; ')}; kept at their own times, so a window around their arrival misses them (the exporter's clock or uptime is probably wrong)`,
     );
-  const lost = s.sequence_gaps && s.lost_estimate !== null ? ` (≈ ${enUS.format(s.lost_estimate)} records lost before Woodshed)` : '';
-  lines.push(`${pad}sequence gaps ${enUS.format(s.sequence_gaps)}${lost}; waiting for a template ${enUS.format(s.no_template)}; malformed ${enUS.format(s.malformed)}`);
+  lines.push(`${pad}${seqGapWords(s)}; waiting for a template ${enUS.format(s.no_template)}; malformed ${enUS.format(s.malformed)}`);
+  // The collector's last 24 h only when the window's own count isn't known, labelled as not the window's.
+  if ((s.sequence_gaps === null || s.sequence_gaps === undefined) && s.sequence_gaps_24h) {
+    const when = s.sequence_gaps_unknown === 'preview' ? 'in the last 24 h' : 'in the 24 h before this bundle was made';
+    const lost = s.lost_estimate_24h !== null && s.lost_estimate_24h !== undefined ? ` (≈ ${enUS.format(s.lost_estimate_24h)} records lost)` : '';
+    lines.push(`${pad}collector sequence gaps ${when} (not limited to this window): ${enUS.format(s.sequence_gaps_24h)}${lost}`);
+  }
   return lines.join('\n');
 }
 

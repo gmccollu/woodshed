@@ -21,6 +21,7 @@
     type FlowMetric,
     type FlowTopResponse,
     rowFilters,
+    zeroOmittedText,
   } from '../lib/flows';
   import { stamp } from '../lib/format';
 
@@ -148,6 +149,8 @@
           <p class="err" role="alert">{r.error}</p>
         {:else if !r?.res}
           <p class="dim">Counting…</p>
+        {:else if !r.res.rows.length && r.res.zero_omitted}
+          <p class="dim" data-zero-omitted>No {unitOf(m)} in this window: {zeroOmittedText(r.res.zero_omitted, m)}.</p>
         {:else if !r.res.rows.length}
           <p class="dim">{t.filters?.fw_event ? 'No denied events in this window.' : 'Nothing in this window.'}</p>
         {:else}
@@ -166,6 +169,7 @@
           <div class="tot">
             Total {valueText(m, r.res.total, m === 'bytes' ? r.res.total.bytes_scaled : m === 'packets' ? r.res.total.packets_scaled : null, !r.res.total.scaled_complete)}
             {#if r.res.other.flows}· others {short(r.res.other.flows)} flow records{/if}
+            {#if r.res.zero_omitted}<span data-zero-omitted>· {zeroOmittedText(r.res.zero_omitted, m)}</span>{/if}
           </div>
         {/if}
         {#if r?.res && r.status !== 'done'}

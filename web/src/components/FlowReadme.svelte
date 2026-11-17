@@ -2,8 +2,9 @@
   // The bundle preview's look at each flow exporter's README Flows block (SPEC §13.4), built from
   // the same top-N the server's summary uses (GET /api/flows/top over the bundle's window) and
   // the exporters' state (GET /api/flows), so the user sees what the zip's README will say before
-  // building it. The built bundle computes its own; sequence gaps and template counts here are
-  // the last 24 hours'. Nothing shows when the bundle leaves flows out or no exporter is in it.
+  // building it. The built bundle computes its own, and counts the window's sequence gaps; template
+  // counts here, and the gaps line, are the last 24 hours'. Nothing shows when the bundle leaves
+  // flows out or no exporter is in it.
   import { getFlowTop, getFlows } from '../lib/api';
   import { FLOW, flowReadme, type FlowBundleSummary, type FlowExporter, type FlowTopResponse } from '../lib/flows';
   import type { Scope } from '../lib/scope';
@@ -68,7 +69,7 @@
     ]);
     if (!talk.total.flows) return null;
     const ev = (k: string) => fw.rows.find((r) => r.key === k)?.flows ?? 0;
-    const shares = (r: FlowTopResponse) => r.rows.map((x) => ({ key: x.key, share: x.share }));
+    const shares = (r: FlowTopResponse) => r.rows.filter((x) => x.share > 0).map((x) => ({ key: x.key, share: x.share }));
     const counts = (r: FlowTopResponse) => r.rows.map((x) => ({ key: x.key, count: x.flows }));
     const natTotal = nat.rows.reduce((s, x) => s + (x.connections ?? x.flows), 0) + (nat.other.connections ?? nat.other.flows);
     return {
@@ -87,8 +88,14 @@
       top_denied_ports: counts(dport),
       nat_connections: natTotal,
       top_post_nat_sources: nat.rows.map((x) => ({ key: x.key, share: natTotal ? (x.connections ?? x.flows) / natTotal : 0 })),
-      sequence_gaps: e.counts_24h.sequence_gaps,
+      zero_omitted: { top_talkers: talk.zero_omitted ?? 0, top_dst_ports: ports.zero_omitted ?? 0, top_conversations: conv.zero_omitted ?? 0 },
+      // The window's gaps are counted when the bundle is built (decision 82); the collector's last 24 h stand in,
+      // labelled as not the window's.
+      sequence_gaps: null,
       lost_estimate: null,
+      sequence_gaps_unknown: 'preview',
+      sequence_gaps_24h: e.counts_24h.sequence_gaps,
+      lost_estimate_24h: null,
       no_template: e.counts_24h.no_template,
       malformed: e.counts_24h.malformed,
       time_offsets: null,
@@ -102,7 +109,7 @@
     <h2 id="frd-title" class="m-0 text-[16px] font-bold">Flows in the bundle's README</h2>
     <p class="mt-1 mb-2 text-[13px] text-muted">
       What each exporter's <span class="font-mono">README.txt</span> will say about its flows in this window. The bundle counts them again when it's
-      built; sequence gaps, template counts and times off arrival here are the last 24 hours'.
+      built, sequence gaps in the window included; template counts and times off arrival here are the last 24 hours'.
     </p>
     {#each blocks as b (b.device)}
       <div class="dev">{deviceName(b.device)} <span class="font-mono text-muted">{b.device}</span></div>
