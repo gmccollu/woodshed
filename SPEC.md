@@ -2597,7 +2597,10 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
 - **Flow v9** (RFC 3954): template, options template and data FlowSets, per (exporter address, source ID).
 - **IPFIX** (RFC 7011): template, options template and data sets, per (exporter address, observation domain ID),
   with variable-length fields, enterprise-specific IEs, and the RFC 7011 time IEs (seconds, milliseconds,
-  microseconds, nanoseconds, deltas, and `systemInitTimeMilliseconds` from options data).
+  microseconds, nanoseconds, deltas, and `systemInitTimeMilliseconds` from options data). Uptime-relative times
+  (v9's and IPFIX's `flowStartSysUpTime`/`flowEndSysUpTime`, unsigned 32-bit milliseconds) are resolved modulo 2^32
+  to the time nearest the export time, so a 49.7-day wrap, or a flow older than the exporter's init time (a clock
+  stepped back, a capture file replayed), lands at its real time.
 - The template key includes the exporter's source port as well, because exporters that restart pick a new port and
   may reuse template IDs with new definitions.
 

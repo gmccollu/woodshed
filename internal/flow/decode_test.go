@@ -642,3 +642,98 @@ func TestStatsConcurrent(t *testing.T) {
 		t.Errorf("records %d", st.Counts.Records)
 	}
 }
+
+// softflowdIPFIX is one message laid out byte for byte as softflowd 1.1
+// writes IPFIX by default (ipfix.c): each template in its own set (IPv4,
+// template 1024: addresses, flowStartSysUpTime/flowEndSysUpTime, counters,
+// interfaces, direction, end reason, ports, protocol, TCP flags, IP version,
+// class of service), an options template 256 scoped by meteringProcessId with
+// systemInitTimeMilliseconds, its 82-byte options data set, then one data set
+// padded to 4 bytes. start and end are sysUpTime values, as softflowd
+// computes them: (u_int32_t)(flow time - init time).
+func softflowdIPFIX(export, sysInit time.Time, start, end uint32) []byte {
+	be := binary.BigEndian
+	p := be.AppendUint16(nil, IPFIX)
+	p = be.AppendUint16(p, 0) // length, below
+	p = be.AppendUint32(p, uint32(export.Unix()))
+	p = be.AppendUint32(p, 0) // sequence
+	p = be.AppendUint32(p, 0) // observation domain
+	tmpl := [][2]uint16{{ieSrcV4, 4}, {ieDstV4, 4}, {ieStartUptime, 4}, {ieEndUptime, 4}, {1, 4}, {2, 4}, {10, 4}, {14, 4},
+		{61, 1}, {136, 1}, {7, 2}, {11, 2}, {4, 1}, {6, 1}, {60, 1}, {5, 1}}
+	p = be.AppendUint16(p, 2)
+	p = be.AppendUint16(p, uint16(8+4*len(tmpl)))
+	p = be.AppendUint16(p, 1024)
+	p = be.AppendUint16(p, uint16(len(tmpl)))
+	for _, f := range tmpl {
+		p = be.AppendUint16(be.AppendUint16(p, f[0]), f[1])
+	}
+	opt := [][2]uint16{{143, 4}, {ieSysInitMs, 8}, {305, 4}, {306, 4}, {304, 2}, {ieIfName, 16}, {130, 4}, {131, 16}, {403, 4}, {404, 16}}
+	p = be.AppendUint16(p, 3)
+	p = be.AppendUint16(p, uint16(10+4*len(opt)))
+	p = be.AppendUint16(p, 256)
+	p = be.AppendUint16(p, uint16(len(opt)))
+	p = be.AppendUint16(p, 1) // scope count
+	for _, f := range opt {
+		p = be.AppendUint16(be.AppendUint16(p, f[0]), f[1])
+	}
+	p = be.AppendUint16(p, 256)
+	p = be.AppendUint16(p, 82)
+	p = be.AppendUint32(p, 4242) // meteringProcessId
+	p = be.AppendUint64(p, uint64(sysInit.UnixMilli()))
+	p = be.AppendUint32(p, 1) // samplingPacketInterval
+	p = be.AppendUint32(p, 0) // samplingPacketSpace
+	p = be.AppendUint16(p, 3) // selectorAlgorithm
+	p = append(p, []byte("synthetic.pcap\x00\x00")...)
+	p = append(p, make([]byte, 4+16+4+16)...)
+	p = be.AppendUint16(p, 1024)
+	p = be.AppendUint16(p, 4+42+2)
+	p = append(p, 10, 10, 0, 1, 192, 0, 2, 1)
+	p = be.AppendUint32(p, start)
+	p = be.AppendUint32(p, end)
+	p = be.AppendUint32(p, 420) // octets
+	p = be.AppendUint32(p, 3)   // packets
+	p = be.AppendUint32(p, 0)
+	p = be.AppendUint32(p, 0)
+	p = append(p, 0, 1) // direction, end reason
+	p = be.AppendUint16(p, 40000)
+	p = be.AppendUint16(p, 443)
+	p = append(p, 6, 0x18, 4, 0, 0, 0) // protocol, TCP flags, IP version, class of service; padding
+	be.PutUint16(p[2:], uint16(len(p)))
+	return p
+}
+
+// IPFIX sysUpTime times are resolved modulo 2^32 ms against the export time,
+// as v9's are: a flow that predates the exporter's init time (softflowd
+// reading a capture file sends (u_int32_t)(flow time - init time), just
+// below 2^32), and one after the 49.7-day wrap, land at their real times,
+// not 49.7 days away.
+func TestIPFIXUptimeModulo(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		sysInit    time.Time
+		start, end time.Time
+	}{
+		{"before init", t0, t0.Add(-10 * time.Minute), t0.Add(-10*time.Minute + 20*time.Millisecond)},
+		{"after the wrap", t0.Add(-60 * 24 * time.Hour), t0.Add(-2 * time.Minute), t0.Add(-time.Minute)},
+		{"no wrap", t0.Add(-30 * 24 * time.Hour), t0.Add(-2 * time.Minute), t0.Add(-time.Minute)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			up := func(at time.Time) uint32 { return uint32(at.Sub(tc.sysInit).Milliseconds()) }
+			c := NewCollector(Options{})
+			var s sink
+			s.decode(c, softflowdIPFIX(t0, tc.sysInit, up(tc.start), up(tc.end)), exp1, t0.Add(time.Second))
+			if len(s.recs) != 1 || len(s.raws) != 0 {
+				t.Fatalf("%d records, %d raw sets: %+v", len(s.recs), len(s.raws), stats(t, c, exp1.Addr()).Counts)
+			}
+			r := s.recs[0]
+			if r.Start != tc.start.UnixMilli() || r.End != tc.end.UnixMilli() || r.TimeSource != TimeExporter {
+				t.Errorf("start %v end %v (%v), want %v %v", time.UnixMilli(r.Start).UTC(), time.UnixMilli(r.End).UTC(), r.TimeSource,
+					tc.start, tc.end)
+			}
+			if r.Src != ip("10.10.0.1") || r.Dst != ip("192.0.2.1") || r.SrcPort != 40000 || r.DstPort != 443 || r.Proto != 6 ||
+				r.Packets != 3 || r.Bytes != 420 {
+				t.Errorf("record %+v", r)
+			}
+		})
+	}
+}
