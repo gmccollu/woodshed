@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
+	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/loadgen"
 )
 
@@ -384,5 +386,54 @@ func TestFlowTemplatesBannerPendingAge(t *testing.T) {
 	}
 	if !has(time.Now().Add(11 * time.Minute)) {
 		t.Fatal("no banner for data waiting over 10 minutes")
+	}
+}
+
+// The flow_firewall banner names every rule that's off (lab, 2.0.0-rc1: with
+// both disabled it named only the flow port's).
+func TestFlowFirewallBanner(t *testing.T) {
+	r, _, _ := flowServer(t, nil)
+	fs := r.srv.be.flows
+	var rules []fwrule.FlowRuleState
+	set := func(rs ...fwrule.FlowRuleState) {
+		fs.fwMu.Lock()
+		rules = rs
+		fs.fwCheck = func(nf, ix int) []fwrule.FlowRuleState { return rules }
+		fs.fwAt = time.Time{}
+		fs.fwMu.Unlock()
+	}
+	banner := func(goos string) string {
+		for _, b := range r.srv.be.flowBanners(context.Background(), r.srv.be.config(), time.Now(), goos) {
+			if b.Kind == "flow_firewall" {
+				return b.Text
+			}
+		}
+		return ""
+	}
+	nf, ix := fwrule.FlowPortRuleName, fwrule.FlowIPFIXRuleName
+	for _, x := range []struct {
+		rules []fwrule.FlowRuleState
+		want  string // "" for no banner
+	}{
+		{nil, ""},
+		{[]fwrule.FlowRuleState{{Rule: nf, State: fwrule.StateUnknown}}, ""},
+		{[]fwrule.FlowRuleState{{Rule: ix, State: fwrule.StateWrongPort}}, `The Windows firewall rule "` + ix + `" is wrong port, so`},
+		{[]fwrule.FlowRuleState{{Rule: nf, State: fwrule.StateDisabled}, {Rule: ix, State: fwrule.StateDisabled}},
+			`The Windows firewall rules "` + nf + `" and "` + ix + `" are disabled, so exporters can't reach the flow listener. ` +
+				"Run `woodshed flow on` as an administrator."},
+		{[]fwrule.FlowRuleState{{Rule: nf, State: fwrule.StateMissing}, {Rule: ix, State: fwrule.StateDisabled}},
+			`The Windows firewall rules "` + nf + `" (missing) and "` + ix + `" (disabled) are off or wrong, so`},
+		{[]fwrule.FlowRuleState{{Rule: nf, State: fwrule.StateUnknown}, {Rule: ix, State: fwrule.StateDisabled}},
+			`The Windows firewall rule "` + ix + `" is disabled, so`},
+	} {
+		set(x.rules...)
+		got := banner("windows")
+		if x.want == "" && got != "" || x.want != "" && !strings.HasPrefix(got, x.want) {
+			t.Errorf("%v: banner %q, want %q", x.rules, got, x.want)
+		}
+	}
+	set(fwrule.FlowRuleState{Rule: nf, State: fwrule.StateDisabled})
+	if got := banner("linux"); got != "" {
+		t.Errorf("linux: %q", got)
 	}
 }

@@ -40,19 +40,25 @@ func flowSpecs(flowPort, ipfixPort int) []struct {
 	}{{flowPortSpec, flowPort}, {flowIPFIXSpec, ipfixPort}}
 }
 
-// FlowWindowsState reads the flow rules' states for the two ports (a port of
-// 0 is off and not checked): the first rule that isn't StateOK decides, with
-// its name, or StateOK and "".
-func FlowWindowsState(run Runner, flowPort, ipfixPort int) (state, rule string) {
+// FlowRuleState is one flow rule's name and state.
+type FlowRuleState struct {
+	Rule, State string
+}
+
+// FlowWindowsStates reads the flow rules' states for the two ports (a port of
+// 0 is off and not checked): every rule that isn't StateOK, in order (the
+// flow port's, then IPFIX's); none when all are.
+func FlowWindowsStates(run Runner, flowPort, ipfixPort int) []FlowRuleState {
+	var out []FlowRuleState
 	for _, s := range flowSpecs(flowPort, ipfixPort) {
 		if s.port == 0 {
 			continue
 		}
 		if st := s.sp.windowsState(run, s.port); st != StateOK {
-			return st, s.sp.name
+			out = append(out, FlowRuleState{Rule: s.sp.name, State: st})
 		}
 	}
-	return StateOK, ""
+	return out
 }
 
 // FlowWindowsEnsure creates each flow rule, disabled on its default port,

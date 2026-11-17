@@ -228,11 +228,15 @@ func flowStatus(stdout io.Writer, cfg config.Config) {
 		}
 	}
 	if fwOS == "windows" {
-		st, rule := fwrule.FlowWindowsState(fwRun, l.FlowPort, l.IPFIXPort)
-		if rule == "" {
-			rule = fwrule.FlowPortRuleName + " and " + fwrule.FlowIPFIXRuleName
+		bad := fwrule.FlowWindowsStates(fwRun, l.FlowPort, l.IPFIXPort)
+		if len(bad) == 0 {
+			w.row("Firewall", fmt.Sprintf("rules %q and %q: %s", fwrule.FlowPortRuleName, fwrule.FlowIPFIXRuleName, fwrule.StateOK))
 		}
-		w.row("Firewall", fmt.Sprintf("rules %q: %s", rule, st))
+		label := "Firewall"
+		for _, r := range bad {
+			w.row(label, fmt.Sprintf("rule %q: %s", r.Rule, r.State))
+			label = ""
+		}
 	}
 }
 

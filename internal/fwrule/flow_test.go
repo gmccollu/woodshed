@@ -3,6 +3,7 @@ package fwrule
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -10,8 +11,9 @@ import (
 func TestFlowWindowsRules(t *testing.T) {
 	f := &fakeWinRules{rules: map[string]*fakeWin{}}
 	exe := `C:\Program Files\Woodshed\woodshed.exe`
-	if st, rule := FlowWindowsState(f.run, 2055, 4739); st != StateMissing || rule != FlowPortRuleName {
-		t.Errorf("no rules: %s %s", st, rule)
+	if st := FlowWindowsStates(f.run, 2055, 4739); !slices.Equal(st, []FlowRuleState{{FlowPortRuleName, StateMissing},
+		{FlowIPFIXRuleName, StateMissing}}) {
+		t.Errorf("no rules: %v", st)
 	}
 	created, err := FlowWindowsEnsure(f.run, exe)
 	if err != nil || len(created) != 2 {
@@ -22,18 +24,23 @@ func TestFlowWindowsRules(t *testing.T) {
 		!strings.Contains(strings.Join(nf.calls, " "), "protocol=UDP") {
 		t.Fatalf("after install: %+v %+v", nf, ix)
 	}
-	if st, _ := FlowWindowsState(f.run, 2055, 4739); st != StateDisabled {
-		t.Errorf("after install: %s", st)
+	// Both disabled: both named (lab, 2.0.0-rc1: only the first was).
+	if st := FlowWindowsStates(f.run, 2055, 4739); !slices.Equal(st, []FlowRuleState{{FlowPortRuleName, StateDisabled},
+		{FlowIPFIXRuleName, StateDisabled}}) {
+		t.Errorf("after install: %v", st)
 	}
 	// on with IPFIX off: the flow port enabled on its port, IPFIX disabled and not checked.
 	if err := FlowWindowsEnable(f.run, exe, 12055, 0); err != nil || !nf.enabled || nf.port != "12055" || ix.enabled {
 		t.Fatalf("enable: %v %+v %+v", err, nf, ix)
 	}
-	if st, _ := FlowWindowsState(f.run, 12055, 0); st != StateOK {
-		t.Errorf("on: %s", st)
+	if st := FlowWindowsStates(f.run, 12055, 0); len(st) != 0 {
+		t.Errorf("on: %v", st)
 	}
-	if st, rule := FlowWindowsState(f.run, 12055, 4739); st != StateDisabled || rule != FlowIPFIXRuleName {
-		t.Errorf("ipfix off: %s %s", st, rule)
+	if st := FlowWindowsStates(f.run, 12055, 4739); !slices.Equal(st, []FlowRuleState{{FlowIPFIXRuleName, StateDisabled}}) {
+		t.Errorf("ipfix off: %v", st)
+	}
+	if st := FlowWindowsStates(f.run, 2055, 0); !slices.Equal(st, []FlowRuleState{{FlowPortRuleName, StateWrongPort}}) {
+		t.Errorf("wrong port: %v", st)
 	}
 	if created, err := FlowWindowsEnsure(f.run, exe); err != nil || len(created) != 0 || !nf.enabled {
 		t.Errorf("re-ensure changed the rules: %v %v", created, err)

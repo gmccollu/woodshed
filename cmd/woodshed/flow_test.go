@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -252,5 +253,17 @@ func TestSNMPAndTLSStatusValidateConfig(t *testing.T) {
 		if code != 1 || out != "" || !strings.Contains(errOut, "woodshed "+x.cmd+": ") || !strings.Contains(errOut, x.key) {
 			t.Errorf("%s status, %s: %d %q %q", x.cmd, x.key, code, out, errOut)
 		}
+	}
+}
+
+// `woodshed flow status` on Windows names every rule that's off.
+func TestFlowStatusWindowsRules(t *testing.T) {
+	defer noService()
+	withFirewall(t, "windows") // both rules disabled
+	cfgPath, _ := testConfig(t, func(c *config.Config) { c.Listeners.Flow.Enabled = true })
+	code, out, errOut := runCLI("flow", "status", "--config", cfgPath)
+	if code != 0 || !strings.Contains(out, fmt.Sprintf("rule %q: disabled", fwrule.FlowPortRuleName)) ||
+		!strings.Contains(out, fmt.Sprintf("rule %q: disabled", fwrule.FlowIPFIXRuleName)) {
+		t.Fatalf("status: %d %q %q", code, out, errOut)
 	}
 }
