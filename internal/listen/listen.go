@@ -176,6 +176,11 @@ type Status struct {
 	TCPConnsEvicted          int64 // closed to make room for a newcomer (idle longest, the oldest of the biggest source, or its own source's idle longest at the per-source limit)
 	TCPConnsPerSourceRefused int64 // refused at the per-address or per-/64 limit, none of that source's connections being idle enough to evict
 	TCPFrameTimeouts         int64 // closed because a message didn't complete within tcp_frame_timeout
+	TCPIncompleteFrames      int64 // messages whose frame ended before all of it arrived (TCP and TLS; Frames splits them)
+
+	// Frames has one entry per enabled TCP and TLS listener, running or not:
+	// its frame counters since Start.
+	Frames []FrameStatus
 
 	// TLS handshakes (they're outside TCPConns until they complete).
 	TLSHandshakes      int   // in progress
@@ -185,6 +190,18 @@ type Status struct {
 	// UDPQueues has one entry per enabled UDP listener (SPEC §11.5), running or
 	// not, so its history shows while it's down.
 	UDPQueues []QueueStatus
+}
+
+// FrameStatus is one stream listener's frame counters since Start (SPEC §3.1).
+type FrameStatus struct {
+	Listener string // "tcp" or "tls"
+	Port     int    // the bound port, or the configured one while it's down
+	// Incomplete counts messages whose frame ended before all of it arrived: an
+	// octet-counted frame shorter than its count (whoever closed the
+	// connection), or a line Woodshed cut by closing the connection. They're
+	// stored, marked incomplete, except a frame of which only the header came.
+	Incomplete    int64
+	FrameTimeouts int64 // connections closed on tcp_frame_timeout (their message is among Incomplete)
 }
 
 // Server owns the listeners. Its methods are safe for concurrent use.
@@ -224,10 +241,11 @@ type Server struct {
 	frameTimeout atomic.Int64 // time.Duration a TCP frame may take
 	idleTimeout  atomic.Int64 // time.Duration a TCP connection may go without a complete message
 
-	received, truncated, connsRefused    atomic.Int64
-	inline                               atomic.Int64
-	evicted, perSourceRefused, frameCuts atomic.Int64
-	conns                                atomic.Int64
+	received, truncated, connsRefused atomic.Int64
+	inline                            atomic.Int64
+	evicted, perSourceRefused         atomic.Int64
+	tcpFrames, tlsFrames              frameCounts // incomplete frames and frame timeouts, per protocol
+	conns                             atomic.Int64
 
 	rejects *rejects
 	kdrops  *kernelDrops
@@ -443,7 +461,8 @@ func (s *Server) Status() Status {
 		TCPConnsRefused:          s.connsRefused.Load(),
 		TCPConnsEvicted:          s.evicted.Load(),
 		TCPConnsPerSourceRefused: s.perSourceRefused.Load(),
-		TCPFrameTimeouts:         s.frameCuts.Load(),
+		TCPFrameTimeouts:         s.tcpFrames.timeouts.Load() + s.tlsFrames.timeouts.Load(),
+		TCPIncompleteFrames:      s.tcpFrames.incomplete.Load() + s.tlsFrames.incomplete.Load(),
 		KernelDropsVisible:       kernelDropsSupported,
 		TLSHandshakesBusy:        s.tlsBusy.Load(),
 		TLSHandshakeFailed:       s.tlsFailed.Load(),
@@ -464,6 +483,7 @@ func (s *Server) Status() Status {
 		case s.tcpErr != nil:
 			st.Listeners = append(st.Listeners, *s.tcpErr)
 		}
+		st.Frames = append(st.Frames, s.frameStatus("tcp", s.tcp, s.cfg.TCP.Port, &s.tcpFrames))
 	}
 	if s.cfg.TLS.Enabled {
 		switch {
@@ -473,6 +493,7 @@ func (s *Server) Status() Status {
 		case s.tlsErr != nil:
 			st.Listeners = append(st.Listeners, *s.tlsErr)
 		}
+		st.Frames = append(st.Frames, s.frameStatus("tls", s.tls, s.cfg.TLS.Port, &s.tlsFrames))
 	}
 	if s.cfg.SNMP.Enabled {
 		switch {
@@ -589,10 +610,19 @@ func (s *Server) KernelDropped24h() (int64, bool) {
 	return s.kdrops.sum24h(s.opts.Clock()), true
 }
 
+// frameStatus is a stream listener's FrameStatus (s.mu held).
+func (s *Server) frameStatus(proto string, t *tcpListener, port int, c *frameCounts) FrameStatus {
+	if t != nil {
+		port = int(t.bound.Port())
+	}
+	return FrameStatus{Listener: proto, Port: port, Incomplete: c.incomplete.Load(), FrameTimeouts: c.timeouts.Load()}
+}
+
 // deliver applies the blocklist and the allowlist (before anything else), truncation
 // and parsing to one framed TCP or TLS message and
-// hands it to the sink. raw is only read; the message gets its own copy.
-func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool) (refused string) {
+// hands it to the sink. raw is only read; the message gets its own copy. end
+// says whether its frame ended before all of it arrived.
+func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool, end frameEnd) (refused string) {
 	now := s.opts.Clock().UTC()
 	from = from.Unmap()
 	if r := s.allow.Load().refusal(from); r != "" {
@@ -600,7 +630,8 @@ func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool) (refused s
 		return r
 	}
 	raw, truncated = s.cut(raw, truncated)
-	s.handoff(model.Message{Received: now, Sender: from, Raw: append(make([]byte, 0, len(raw)), raw...), Truncated: truncated})
+	s.handoff(model.Message{Received: now, Sender: from, Raw: append(make([]byte, 0, len(raw)), raw...), Truncated: truncated,
+		Incomplete: end.incomplete, FrameArrived: end.arrived, FrameLength: end.length})
 	return ""
 }
 

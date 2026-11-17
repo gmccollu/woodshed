@@ -149,10 +149,14 @@ func TestFrameDeadlineCutsTrickler(t *testing.T) {
 		t.Errorf("cut after %v, want about 300 ms after the first byte", d)
 	}
 	got := c.wait(t, 1)
-	if !got[0].Truncated || len(got[0].Raw) == 0 || !strings.HasPrefix(msg, string(got[0].Raw)) || len(got[0].Raw) == len(msg) {
-		t.Errorf("partial: %q truncated=%v", got[0].Raw, got[0].Truncated)
+	// A line we cut is incomplete (its length isn't known), not truncated: that
+	// is the max message size's.
+	if !got[0].Incomplete || got[0].Truncated || got[0].FrameLength != 0 || len(got[0].Raw) == 0 ||
+		!strings.HasPrefix(msg, string(got[0].Raw)) || len(got[0].Raw) == len(msg) {
+		t.Errorf("partial: %q incomplete=%v truncated=%v", got[0].Raw, got[0].Incomplete, got[0].Truncated)
 	}
-	if st := s.Status(); st.TCPFrameTimeouts != 1 || st.Truncated != 1 {
+	if st := s.Status(); st.TCPFrameTimeouts != 1 || st.Truncated != 0 || st.TCPIncompleteFrames != 1 ||
+		len(st.Frames) != 1 || st.Frames[0].Incomplete != 1 || st.Frames[0].FrameTimeouts != 1 {
 		t.Errorf("status %+v", st)
 	}
 }
@@ -222,8 +226,8 @@ func TestIdleRenewedOnlyByFrames(t *testing.T) {
 		t.Errorf("closed after %v, want about the 400 ms idle timeout", d)
 	}
 	got := c.wait(t, 2)
-	if !got[1].Truncated || !strings.HasPrefix(string(got[1].Raw), "x") {
-		t.Errorf("partial %q truncated=%v", got[1].Raw, got[1].Truncated)
+	if !got[1].Incomplete || got[1].Truncated || !strings.HasPrefix(string(got[1].Raw), "x") {
+		t.Errorf("partial %q incomplete=%v truncated=%v", got[1].Raw, got[1].Incomplete, got[1].Truncated)
 	}
 }
 
@@ -264,13 +268,13 @@ func TestEvictLongestIdle(t *testing.T) {
 	for _, m := range got {
 		switch string(m.Raw) {
 		case "<13>half a mess":
-			partial = m.Truncated
+			partial = m.Incomplete && !m.Truncated
 		case "<13>d":
 			fromD = true
 		}
 	}
 	if !partial || !fromD {
-		t.Errorf("evicted partial truncated=%v, D delivered=%v: %v", partial, fromD, got)
+		t.Errorf("evicted partial incomplete=%v, D delivered=%v: %v", partial, fromD, got)
 	}
 	st := s.Status()
 	if st.TCPConnsEvicted != 1 || st.TCPConns != 3 || st.TCPConnsRefused != 0 {
@@ -319,8 +323,8 @@ func TestFrameClockStartsOnBufferedNext(t *testing.T) {
 		t.Errorf("cut after %v, want about the 300 ms frame timeout", d)
 	}
 	got := c.wait(t, 2)
-	if string(got[0].Raw) != "<13>whole" || got[0].Truncated || string(got[1].Raw) != "<13>then a trickle" || !got[1].Truncated {
-		t.Errorf("got %q (%v), %q (%v)", got[0].Raw, got[0].Truncated, got[1].Raw, got[1].Truncated)
+	if string(got[0].Raw) != "<13>whole" || got[0].Incomplete || string(got[1].Raw) != "<13>then a trickle" || !got[1].Incomplete {
+		t.Errorf("got %q (%v), %q (%v)", got[0].Raw, got[0].Incomplete, got[1].Raw, got[1].Incomplete)
 	}
 	if st := s.Status(); st.TCPFrameTimeouts != 1 {
 		t.Errorf("frame timeouts %d", st.TCPFrameTimeouts)
