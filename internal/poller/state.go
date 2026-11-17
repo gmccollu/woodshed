@@ -47,11 +47,25 @@ type tstate struct {
 	hrCPUs     []uint32  // hrProcessorLoad indexes
 	hrRAM      []uint32  // hrStorage rows of type hrStorageRam
 	ifAt       time.Time // the last interface table refresh
-	ifRefresh  bool      // refresh at the next cycle (a discontinuity)
+	ifRefresh  bool      // refresh at the next cycle (a discontinuity, a restart follow-up)
+	ifChanged  bool      // ifNumber or ifTableLastChange moved: refresh (at most every changeGap)
+	ifChgAt    time.Time // the last refresh made only for such a change
+	rewalking  bool      // restart follow-up walks are left (restartRewalks)
+	sinceStart int       // answered cycles since the last restart, while rewalking
 	hc         bool      // ifXTable HC counters answer
 	ifx        bool      // ifXTable answers at all
 	ifTotal    int
 	ifs        []*ifState // the polled interfaces, by index
+
+	// The interface table's change signals, read with sysUpTime each cycle.
+	// One the agent lacks is left out until the next hourly try.
+	ifSigAt   time.Time // when they were last tried (zero: never)
+	ifNumOff  bool      // ifNumber.0 doesn't answer
+	ifLastOff bool      // ifTableLastChange.0 doesn't answer
+	ifNum     int64
+	haveIfNum bool
+	ifLast    uint64
+	haveLast  bool
 
 	// Previous samples.
 	prevUp     uint64
@@ -172,4 +186,31 @@ func (st *tstate) state(now time.Time) State {
 	}
 	_ = now
 	return s
+}
+
+// noteIfNum takes this cycle's ifNumber.0 and reports whether it answered; a
+// change from the last one marks the interface table changed (st.mu held).
+func (st *tstate) noteIfNum(v snmp.Value) bool {
+	if v.Kind != snmp.KindInteger {
+		st.haveIfNum = false
+		return false
+	}
+	if st.haveIfNum && v.Int != st.ifNum {
+		st.ifChanged = true
+	}
+	st.ifNum, st.haveIfNum = v.Int, true
+	return true
+}
+
+// noteIfLast is noteIfNum for ifTableLastChange.0.
+func (st *tstate) noteIfLast(v snmp.Value) bool {
+	if v.Kind != snmp.KindTimeTicks {
+		st.haveLast = false
+		return false
+	}
+	if st.haveLast && v.Uint != st.ifLast {
+		st.ifChanged = true
+	}
+	st.ifLast, st.haveLast = v.Uint, true
+	return true
 }

@@ -109,6 +109,13 @@ func defaultSettings() Settings {
 
 func newHarness(t *testing.T, ao agenttest.Options, s Settings, users ...snmp.User) *harness {
 	t.Helper()
+	return newHarnessWith(t, ao, s, nil, users...)
+}
+
+// newHarnessWith is newHarness with a hook that can change the poller's
+// Options (an Event or a Logger) before it starts.
+func newHarnessWith(t *testing.T, ao agenttest.Options, s Settings, opt func(*Options), users ...snmp.User) *harness {
+	t.Helper()
 	fc := &fakeClock{t: t0}
 	ao.Clock = fc.Now
 	if ao.Community == "" {
@@ -125,7 +132,11 @@ func newHarness(t *testing.T, ao agenttest.Options, s Settings, users ...snmp.Us
 	for _, u := range users {
 		creds.users[u.Name] = u
 	}
-	p := New(Options{Sink: sink, Creds: creds, Now: fc.Now})
+	po := Options{Sink: sink, Creds: creds, Now: fc.Now}
+	if opt != nil {
+		opt(&po)
+	}
+	p := New(po)
 	t.Cleanup(p.Close)
 	s.Port = int(a.Addr().Port())
 	p.SetTargets([]Target{{ID: "pt_1", Settings: s}})
