@@ -346,7 +346,13 @@ func (b *backend) FlowTemplates(ctx context.Context, id string) (api.FlowTemplat
 			}
 			ft := api.FlowTemplate{ID: t.ID, Options: t.Options, Received: t.Received.UTC()}
 			for _, f := range t.Fields {
-				ft.Fields = append(ft.Fields, api.FlowTemplateField{PEN: f.PEN, ID: f.ID, Name: f.Name, Length: f.Length})
+				// "" for an IE Woodshed has no name for (docs/api.md; the UI shows those
+				// as pen:id and offers them as rule ID fields), not IEName's "pen:id".
+				name := f.Name
+				if name == (flow.IEKey{PEN: f.PEN, ID: f.ID}).String() {
+					name = ""
+				}
+				ft.Fields = append(ft.Fields, api.FlowTemplateField{PEN: f.PEN, ID: f.ID, Name: name, Length: f.Length})
 			}
 			out.Domains[i].Templates = append(out.Domains[i].Templates, ft)
 		}
