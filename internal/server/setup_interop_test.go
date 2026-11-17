@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -854,6 +855,15 @@ func runSoftflowd(t *testing.T, c setupCase) string {
 	time.Sleep(3 * time.Second)
 	got, n, versions = check()
 	if n != total || versions != 1 || len(got) != len(want) {
+		flowDiag(t, r, netip.MustParseAddr(addr), func(dst string) *exec.Cmd {
+			a := slices.Clone(args[1:])
+			for i := range a {
+				if a[i] == "-n" && i+1 < len(a) {
+					a[i+1] = dst
+				}
+			}
+			return exec.Command(bin, append(a, "-d")...)
+		})
 		t.Fatalf("%s: %d packets in %d flows (%d versions) stored, the pcap has %d packets in %d flows", transport, n, len(got), versions, total, len(want))
 	}
 	for _, f := range want {
