@@ -3,6 +3,7 @@ package datatype
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,16 +44,31 @@ type OperChange struct {
 	Up   *time.Time `json:"up"`
 }
 
+// PollSample is one answered poll (a sys line): what the bundle reads a
+// coldStart or warmStart trap against (SPEC §12.6).
+type PollSample struct {
+	Time   time.Time
+	Hr     uint64 // hrSystemUptime in ticks, when HaveHr
+	HaveHr bool
+	// RestartAt is the time of the cycle's restart line (the Reboot with
+	// source "poll" at that time), when HasRestart.
+	RestartAt  time.Time
+	HasRestart bool
+	cycle      uint64
+}
+
 // PollSummary counts one device's poll records in a bundle.
 type PollSummary struct {
-	kinds    map[string]int64
-	cycles   map[uint64]bool // every cycle seen
-	answered map[uint64]bool // cycles with an answer
-	stats    PollStats
-	reboots  []Reboot
-	perIf    map[string]*ifTotals
-	ifOrder  []string
-	open     map[string]int // interface -> index of its open (down) change
+	kinds     map[string]int64
+	cycles    map[uint64]bool // every cycle seen
+	answered  map[uint64]bool // cycles with an answer
+	stats     PollStats
+	reboots   []Reboot
+	samples   []PollSample
+	restartAt map[uint64]time.Time // cycle -> its restart line's time
+	perIf     map[string]*ifTotals
+	ifOrder   []string
+	open      map[string]int // interface -> index of its open (down) change
 }
 
 type ifTotals struct{ inErr, outErr, inDisc, outDisc int64 }
@@ -92,6 +108,7 @@ func (s *PollSummary) Add(rec []byte, t time.Time) {
 	if s.kinds == nil {
 		s.kinds, s.cycles, s.answered = map[string]int64{}, map[uint64]bool{}, map[uint64]bool{}
 		s.perIf, s.open = map[string]*ifTotals{}, map[string]int{}
+		s.restartAt = map[uint64]time.Time{}
 	}
 	s.kinds[r.Kind]++
 	if r.Kind != pollrec.KindInfo && r.Kind != pollrec.KindRestart {
@@ -106,8 +123,12 @@ func (s *PollSummary) Add(rec []byte, t time.Time) {
 	case pollrec.KindStatus:
 	case pollrec.KindRestart:
 		s.reboots = append(s.reboots, Reboot{Time: t, Source: "poll", Detail: RestartDetail(&r), Reboot: r.Value("reboot")})
+		s.restartAt[r.Cycle] = t
 	case pollrec.KindSys:
 		s.answered[r.Cycle] = true
+		smp := PollSample{Time: t, cycle: r.Cycle}
+		smp.Hr, smp.HaveHr = r.Uint("hr_uptime")
+		s.samples = append(s.samples, smp)
 		if v, ok := r.Uint("uptime"); ok {
 			n := int64(v / 100)
 			st.UptimeEndS = &n
@@ -177,6 +198,20 @@ func (s *PollSummary) Counts() Counts {
 }
 
 func (s *PollSummary) Reboots() []Reboot { return s.reboots }
+
+// Samples is the answered polls, oldest first, each with its cycle's restart
+// line if it wrote one.
+func (s *PollSummary) Samples() []PollSample {
+	out := make([]PollSample, len(s.samples))
+	for i, smp := range s.samples {
+		if at, ok := s.restartAt[smp.cycle]; ok {
+			smp.RestartAt, smp.HasRestart = at, true
+		}
+		out[i] = smp
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
+	return out
+}
 
 // FormatBps is a rate as README.txt shows it: "812 Mb/s", "1.2 Gb/s", "95 b/s".
 func FormatBps(v float64) string {

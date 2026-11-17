@@ -2192,7 +2192,8 @@ custom OIDs.
   "engineBoots went up"; `hrSystemUptime` the same way (1.3 lab).
 - Either one writes a marker (`kind=restart` with `reboot=1|0|?`, §12.3), shows on the Events timeline and the device
   page, and goes into the bundle's README. A coldStart or warmStart trap within 2 min of a poll restart is the same
-  event: the README shows one line naming both sources.
+  event: the README shows one line naming both sources. With `hrSystemUptime`, the bundle reads the trap against the
+  poll that closes its interval instead (§12.6).
 
 ### 12.3 Storage
 
@@ -2326,6 +2327,24 @@ Simple and fast: every view reads the headline rollups or one device's poll file
   `reboot=0` (the agent's alone) the line is `Restarts     3 (0 reboots): …`, still listing every restart (§12.10
   #14), and the device's one-line summary says `restarts 3, reboots 0`; with none it's `Reboots      none (…)`. (1.3
   lab: three agent restarts read "Reboots 3".)
+- **A coldStart or warmStart trap is read against the polls** (§12.10 build #19) when the device is polled with
+  `hrSystemUptime`. The poll that closes the trap's interval (the first answered poll at or after it) decides:
+  - it wrote a restart with `reboot=1` or `0`: the trap is that restart. The interval's earliest trap joins it (one
+    entry, `poll, coldStart trap`); a later trap in the same interval is a restart of its own, the agent's alone
+    after a `reboot=0` (`coldStart trap; the polls show the device kept running`), a reboot after a `reboot=1`;
+  - no restart, and `hrSystemUptime` rose normally since the poll before (§12.2.2's rule): the device kept running,
+    so the trap is the agent's alone, with the same words. One received just after a poll restart that has no trap
+    yet (within 2 min) joins it instead;
+  - anything else (not polled, no HOST-RESOURCES, `reboot=?`, `hrSystemUptime` stuck, no answered poll after the
+    trap in the window): the 2 min rule above, and a trap left alone counts as a reboot. One after the device's last
+    answered poll says `no poll after it in the window to tell`.
+
+  The trap's entry carries `reboot=0` and that `detail` in the manifest, so the title, the count and the one-line
+  summary follow from it. `system.csv` holds only the poll's own restart rows. (1.3 lab: two agent restarts 15 s
+  apart in one 60 s interval, one poll restart with `reboot=0` and `engineBoots` +2, and two coldStart traps read
+  `Restarts 3 (1 reboot)`, the first trap left alone as a reboot. It now reads
+  `Restarts     2 (0 reboots): 04:11:26.211 (poll: …; coldStart trap), 04:11:41.207 (coldStart trap; the polls show
+  the device kept running)`: two traps are two restarts, and the poll's restart is the first one seen, not a third.)
 - Plain exports take `types: ["poll"]` the same way, with the `poll` filters.
 
 ### 12.7 CLI
@@ -2501,6 +2520,13 @@ Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
    that time (agents update it coarsely; the receive times stand for the agent's reading times only to within a
    round trip). A value that didn't move (macOS's snmpd keeps `hrSystemUptime` at 0) is neither a restart nor, for
    `hrSystemUptime`, evidence either way (`reboot=?`).
+19. **Restart traps read against the polls** (build, 2026-11-16, from the 1.3 lab): the bundle paired a poll
+   restart with the nearest trap within 2 min and counted every other trap as a reboot, so two agent restarts in
+   one poll interval read `Restarts 3 (1 reboot)` although the polls showed the device never stopped. A trap is now
+   classified by the poll that closes its interval when that poll knows `hrSystemUptime` (§12.6): its restart takes
+   the interval's earliest trap, and a trap with no poll restart but `hrSystemUptime` rising normally is the agent's
+   alone. Without that evidence the 2 min rule stands, so an unpolled device's trap is still a reboot. Two traps in
+   one interval stay two entries: each is a restart the agent announced, and `engineBoots` agrees in the lab.
 
 ### 12.11 Questions settled (1.3), decided (coordinator, 2026-11-15, owner-delegated)
 1. The `interfaces` preset also polls the HC packet counters in and out: unicast, multicast and broadcast

@@ -103,11 +103,14 @@ type Reboot struct {
 	Time   time.Time `json:"time"`
 	Source string    `json:"source"` // what showed it: "coldStart trap", "poll", or both: "poll, coldStart trap"
 	// Detail is a poll restart's evidence ("sysUpTime and hrSystemUptime
-	// reset"); absent for a trap's.
+	// reset"), or, for a trap the bundle read against the polls (SPEC §12.6),
+	// what they showed ("the polls show the device kept running"); absent for
+	// other traps.
 	Detail string `json:"detail,omitempty"`
 	// Reboot is a poll restart's reboot value: "1" the device rebooted, "0"
-	// only its SNMP agent restarted, "?" can't tell. Absent for a trap's
-	// (coldStart and warmStart count as reboots).
+	// only its SNMP agent restarted, "?" can't tell. A trap's is "0" when the
+	// polls show the device kept running, and otherwise absent (coldStart and
+	// warmStart count as reboots).
 	Reboot string `json:"reboot,omitempty"`
 }
 

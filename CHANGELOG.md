@@ -48,6 +48,9 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - Incident bundles counted every poll restart as a reboot: three restarts of the SNMP agent alone read "Reboots 3".
   Only restarts that may have been the device's count now; with agent-only ones the README says "Restarts 3
   (0 reboots)", still listing each, and `woodshed bundle`'s summary says "restarts 3, reboots 0".
+- Incident bundles counted a coldStart or warmStart trap as a reboot even when the polls around it showed the device
+  kept running (in the lab, two agent restarts in one poll interval read "Restarts 3 (1 reboot)"); it's now an agent
+  restart, and that README reads "Restarts 2 (0 reboots)".
 - A restart found because the uptime rose by less than the time since the last poll was described as "sysUpTime
   reset". It now says "sysUpTime rose less than the time since the last poll", the same on the charts, in the README
   and in the CSV.
