@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/setuphelper"
@@ -261,6 +262,48 @@ func (e *setupEnv) exactlyOnce(t *testing.T, what, typ string, q url.Values) {
 	}
 }
 
+// matched is how many syslog records contain tok (the summary's exact count,
+// not a page of results).
+func (e *setupEnv) matched(t *testing.T, tok string) int64 {
+	t.Helper()
+	e.r.srv.store.Flush()
+	q := "/api/search/summary?type=syslog&fields=none&histogram=false&budget_ms=10000&q=" + url.QueryEscape(tok)
+	for cursor := ""; ; {
+		var sum api.SummaryPage
+		path := q
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		if code := e.r.do(t, "GET", path, nil, &sum); code != 200 {
+			t.Fatalf("summary %s: %d", path, code)
+		}
+		if cursor = sum.NextCursor; cursor == "" {
+			return sum.Matched
+		}
+	}
+}
+
+// drained waits until records with tok start arriving (within first) and
+// then stop growing for 3 s, and returns how many arrived.
+func (e *setupEnv) drained(t *testing.T, tok string, first time.Duration) int64 {
+	t.Helper()
+	deadline := time.Now().Add(first)
+	var n int64
+	for n = e.matched(t, tok); n == 0 && time.Now().Before(deadline); n = e.matched(t, tok) {
+		time.Sleep(500 * time.Millisecond)
+	}
+	if n == 0 {
+		t.Fatalf("none of the queued messages arrived within %v", first)
+	}
+	for stable, end := time.Now(), time.Now().Add(120*time.Second); time.Since(stable) < 3*time.Second && time.Now().Before(end); {
+		time.Sleep(500 * time.Millisecond)
+		if m := e.matched(t, tok); m != n {
+			n, stable = m, time.Now()
+		}
+	}
+	return n
+}
+
 // proc is a tool the test started; stop ends it by PID.
 type toolProc struct {
 	cmd  *exec.Cmd
@@ -423,7 +466,7 @@ func runRsyslog(t *testing.T, c setupCase) string {
 	inPort := freeUDP(t)
 	local := filepath.Join(e.dir, "local.log")
 	conf := filepath.Join(e.dir, "rsyslog.conf")
-	os.WriteFile(conf, []byte(fmt.Sprintf("global(workDirectory=%q)\nmodule(load=\"imudp\")\ninput(type=\"imudp\" address=\"127.0.0.1\" port=\"%d\")\n"+
+	os.WriteFile(conf, []byte(fmt.Sprintf("global(workDirectory=%q action.reportSuspension=\"on\")\nmodule(load=\"imudp\")\ninput(type=\"imudp\" address=\"127.0.0.1\" port=\"%d\")\n"+
 		"*.* action(type=\"omfile\" file=%q)\ninclude(file=%q)\n", work, inPort, local, snippetFile)), 0o644)
 	env := append(os.Environ(), "HOME="+e.dir)
 	// The snippet's own check first: rsyslogd -N1.
@@ -473,9 +516,10 @@ func runRsyslog(t *testing.T, c setupCase) string {
 		// the overflow is dropped for Woodshed at once; without it each one
 		// would hold every action for 2 s and local logging would stall.
 		const n = 15000
+		fillTok := token("fill")
 		lines := make([]string, n)
 		for i := range lines {
-			lines[i] = fmt.Sprintf("fill %d", i)
+			lines[i] = fmt.Sprintf("fill %s %d", fillTok, i)
 		}
 		pushed := time.Now()
 		if lg, err := exec.LookPath("logger"); err == nil {
@@ -522,15 +566,22 @@ func runRsyslog(t *testing.T, c setupCase) string {
 			t.Fatalf("only %d of %d messages reached the local file", m, n)
 		}
 		t.Logf("%d messages pushed and written locally in %v with Woodshed down", n, time.Since(pushed).Round(time.Millisecond))
-		// Woodshed back: later messages arrive (rsyslog retries every 30 s).
+		// Woodshed back. Until rsyslog's next retry the queue is still full,
+		// so a message sent now would be dropped (queue.timeoutEnqueue="0"):
+		// first the queued messages arrive, within the snippet's resume
+		// interval (10 s, at most 60 s however long Woodshed was down) plus
+		// the flush, then a later message arrives once.
 		e.r = start(t, e.cfgPath)
+		back := time.Now()
+		queued := e.drained(t, fillTok, 90*time.Second)
+		if queued < 9000 || queued > 10100 {
+			t.Fatalf("%d of the messages queued while Woodshed was down arrived (%v after it came back), want about 10,000 (queue.size)",
+				queued, time.Since(back).Round(time.Second))
+		}
+		t.Logf("%d queued messages arrived within %v of Woodshed coming back", queued, time.Since(back).Round(time.Second))
 		after := token("after")
 		send(14, "Test message for Woodshed "+after)
-		deadline = time.Now().Add(150 * time.Second)
-		for e.count(t, "syslog", url.Values{"q": {after}}) == 0 && time.Now().Before(deadline) {
-			time.Sleep(500 * time.Millisecond)
-		}
-		e.exactlyOnce(t, "rsyslog after Woodshed came back", "syslog", url.Values{"q": {after}})
+		e.exactlyOnce(t, "rsyslog after Woodshed came back and the queue drained", "syslog", url.Values{"q": {after}})
 	default:
 		tok := token("msg")
 		send(14, "Test message for Woodshed "+tok) // user.info, as the snippet's logger test sends

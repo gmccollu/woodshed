@@ -3364,6 +3364,9 @@ Made while building it, each **decided (build, 2026-11-16)**:
     `x509/name` and the action-level `StreamDriver.CAFile` (rsyslog 8.2108 or later), so it never touches the main
     config's `global()`. The queue has `queue.timeoutEnqueue="0"`: once it's full, new messages for Woodshed are
     dropped at once, because by default each enqueue to a full queue waits 2 s and holds up all of rsyslog's logging.
+    Retries start every 10 s and back off to once a minute at most (`action.resumeInterval="10"`,
+    `action.resumeIntervalMax="60"`): rsyslog's default backs off to 30 minutes, and until a retry drains the full
+    queue, new messages are dropped even with Woodshed back.
     No disk-assisted queue, to keep the snippet one file with nothing to clean up. **net-snmp:**
     `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start); for v3 a `createUser` line beside
     `trapsess -u … -l authPriv`, because snmpd sends traps as its own engine and, from 5.7, doesn't create that

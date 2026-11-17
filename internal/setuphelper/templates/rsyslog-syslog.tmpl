@@ -2,7 +2,7 @@
 family: rsyslog
 what: syslog
 transports: udp, tcp, tls
-reference: rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425
+reference: rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425
 verification: tested
 ci: CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.
 */}}
@@ -19,7 +19,8 @@ ci: CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own C
        StreamDriverAuthMode="x509/name" StreamDriverPermittedPeers="{{.TLSName}}"{{end}}
        template="RSYSLOG_SyslogProtocol23Format"
 {{- if ne .Transport "udp"}}
-       queue.type="LinkedList" queue.size="10000" queue.timeoutEnqueue="0" action.resumeRetryCount="-1"{{end}})
+       queue.type="LinkedList" queue.size="10000" queue.timeoutEnqueue="0"
+       action.resumeRetryCount="-1" action.resumeInterval="10" action.resumeIntervalMax="60"{{end}})
 @@part command - Check the file and send a test message
 sudo rsyslogd -N1
 logger -p user.{{if eq .Severity.Name "debug"}}debug{{else}}{{.Severity.Name}}{{end}} "Test message for Woodshed from $(hostname)"
@@ -34,7 +35,7 @@ logger -p user.{{if eq .Severity.Name "debug"}}debug{{else}}{{.Severity.Name}}{{
 {{if .TLSNameKnown}}rsyslog checks that Woodshed's certificate holds the name {{.TLSName}}{{if not .IsName}} (it doesn't check IP addresses){{end}}.{{else if eq .TLSName "<WOODSHED-TLS-NAME>"}}<WOODSHED-TLS-NAME> is a DNS name on Woodshed's TLS certificate (Settings → TLS); rsyslog checks names, not IP addresses. Turn TLS on first to see them.{{else}}rsyslog checks that Woodshed's certificate holds the name {{.TLSName}}. This Woodshed has no certificate names to compare yet: once TLS is on, check that Settings → TLS lists {{.TLSName}}.{{end}}
 TLS needs rsyslog 8.2108 or later and its gtls network stream driver, which some distributions package separately.
 {{- end}}
-{{if ne .Transport "udp"}}While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue="0") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting.
+{{if ne .Transport "udp"}}While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can: every 10 seconds, backing off to once a minute at most (action.resumeInterval, action.resumeIntervalMax; rsyslog's own defaults back off to 30 minutes, so after a long outage the queue could wait that long once Woodshed is back). Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue="0") rather than holding up the rest of the system's logging, until the next retry drains it; local log files carry on, and a restart of rsyslog loses what's waiting.
 {{end}}
 {{- if eq .Transport "udp"}}UDP has no delivery check: a message lost on the way is gone. Use TCP or TLS where that matters.
 {{end}}

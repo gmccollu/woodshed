@@ -1644,15 +1644,15 @@
     "address": "10.1.0.50",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TCP.",
-    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/rsyslog.d/60-woodshed.conf",
       "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
-      "text": "# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n"
+      "text": "# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n"
      },
      {
       "kind": "command",
@@ -1662,7 +1662,7 @@
      }
     ],
     "notes": [
-     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting."
+     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can: every 10 seconds, backing off to once a minute at most (action.resumeInterval, action.resumeIntervalMax; rsyslog's own defaults back off to 30 minutes, so after a long outage the queue could wait that long once Woodshed is back). Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging, until the next retry drains it; local log files carry on, and a restart of rsyslog loses what's waiting."
     ],
     "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.",
     "placeholders": [],
@@ -1681,15 +1681,15 @@
     "address": "fd00::50",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TCP.",
-    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/rsyslog.d/60-woodshed.conf",
       "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
-      "text": "# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n"
+      "text": "# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n"
      },
      {
       "kind": "command",
@@ -1699,7 +1699,7 @@
      }
     ],
     "notes": [
-     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting."
+     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can: every 10 seconds, backing off to once a minute at most (action.resumeInterval, action.resumeIntervalMax; rsyslog's own defaults back off to 30 minutes, so after a long outage the queue could wait that long once Woodshed is back). Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging, until the next retry drains it; local log files carry on, and a restart of rsyslog loses what's waiting."
     ],
     "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.",
     "placeholders": [],
@@ -1718,15 +1718,15 @@
     "address": "logs-01.example.net",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TCP.",
-    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/rsyslog.d/60-woodshed.conf",
       "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
-      "text": "# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n"
+      "text": "# Woodshed: forward syslog over TCP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n"
      },
      {
       "kind": "command",
@@ -1736,7 +1736,7 @@
      }
     ],
     "notes": [
-     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting."
+     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can: every 10 seconds, backing off to once a minute at most (action.resumeInterval, action.resumeIntervalMax; rsyslog's own defaults back off to 30 minutes, so after a long outage the queue could wait that long once Woodshed is back). Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging, until the next retry drains it; local log files carry on, and a restart of rsyslog loses what's waiting."
     ],
     "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.",
     "placeholders": [],
@@ -1757,15 +1757,15 @@
     "address": "10.1.0.50",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TLS.",
-    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/rsyslog.d/60-woodshed.conf",
       "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
-      "text": "# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n"
+      "text": "# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n"
      },
      {
       "kind": "command",
@@ -1778,7 +1778,7 @@
      "\u003cCA-FILE\u003e is Woodshed's CA certificate as a PEM file on this machine: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem (some distributions confine rsyslogd to reading its own configuration folders, so keep it there), and check its SHA-256 fingerprint is 3F:9A:1C:07:5B:E2:44:D0:8C:61:2F:A9:73:0E:B5:16:C8:4D:92:E7:01:6B:3A:F5:58:C3:9E:20:7D:B4:4A:11.",
      "rsyslog checks that Woodshed's certificate holds the name logs-01 (it doesn't check IP addresses).",
      "TLS needs rsyslog 8.2108 or later and its gtls network stream driver, which some distributions package separately.",
-     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting."
+     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can: every 10 seconds, backing off to once a minute at most (action.resumeInterval, action.resumeIntervalMax; rsyslog's own defaults back off to 30 minutes, so after a long outage the queue could wait that long once Woodshed is back). Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging, until the next retry drains it; local log files carry on, and a restart of rsyslog loses what's waiting."
     ],
     "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.",
     "placeholders": [
@@ -1799,15 +1799,15 @@
     "address": "fd00::50",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TLS.",
-    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/rsyslog.d/60-woodshed.conf",
       "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
-      "text": "# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n"
+      "text": "# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n"
      },
      {
       "kind": "command",
@@ -1820,7 +1820,7 @@
      "\u003cCA-FILE\u003e is Woodshed's CA certificate as a PEM file on this machine: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem (some distributions confine rsyslogd to reading its own configuration folders, so keep it there), and check its SHA-256 fingerprint is 3F:9A:1C:07:5B:E2:44:D0:8C:61:2F:A9:73:0E:B5:16:C8:4D:92:E7:01:6B:3A:F5:58:C3:9E:20:7D:B4:4A:11.",
      "rsyslog checks that Woodshed's certificate holds the name logs-01 (it doesn't check IP addresses).",
      "TLS needs rsyslog 8.2108 or later and its gtls network stream driver, which some distributions package separately.",
-     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting."
+     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can: every 10 seconds, backing off to once a minute at most (action.resumeInterval, action.resumeIntervalMax; rsyslog's own defaults back off to 30 minutes, so after a long outage the queue could wait that long once Woodshed is back). Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging, until the next retry drains it; local log files carry on, and a restart of rsyslog loses what's waiting."
     ],
     "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.",
     "placeholders": [
@@ -1841,15 +1841,15 @@
     "address": "logs-01.example.net",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TLS.",
-    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01.example.net\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01.example.net\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/rsyslog.d/60-woodshed.conf",
       "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
-      "text": "# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01.example.net\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\" action.resumeRetryCount=\"-1\")\n"
+      "text": "# Woodshed: forward syslog over TLS (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"6514\" protocol=\"tcp\" TCP_Framing=\"octet-counted\"\n       StreamDriver=\"gtls\" StreamDriverMode=\"1\" StreamDriver.CAFile=\"\u003cCA-FILE\u003e\"\n       StreamDriverAuthMode=\"x509/name\" StreamDriverPermittedPeers=\"logs-01.example.net\"\n       template=\"RSYSLOG_SyslogProtocol23Format\"\n       queue.type=\"LinkedList\" queue.size=\"10000\" queue.timeoutEnqueue=\"0\"\n       action.resumeRetryCount=\"-1\" action.resumeInterval=\"10\" action.resumeIntervalMax=\"60\")\n"
      },
      {
       "kind": "command",
@@ -1862,7 +1862,7 @@
      "\u003cCA-FILE\u003e is Woodshed's CA certificate as a PEM file on this machine: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem (some distributions confine rsyslogd to reading its own configuration folders, so keep it there), and check its SHA-256 fingerprint is 3F:9A:1C:07:5B:E2:44:D0:8C:61:2F:A9:73:0E:B5:16:C8:4D:92:E7:01:6B:3A:F5:58:C3:9E:20:7D:B4:4A:11.",
      "rsyslog checks that Woodshed's certificate holds the name logs-01.example.net.",
      "TLS needs rsyslog 8.2108 or later and its gtls network stream driver, which some distributions package separately.",
-     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting."
+     "While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can: every 10 seconds, backing off to once a minute at most (action.resumeInterval, action.resumeIntervalMax; rsyslog's own defaults back off to 30 minutes, so after a long outage the queue could wait that long once Woodshed is back). Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue=\"0\") rather than holding up the rest of the system's logging, until the next retry drains it; local log files carry on, and a restart of rsyslog loses what's waiting."
     ],
     "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.",
     "placeholders": [
@@ -1885,7 +1885,7 @@
     "address": "10.1.0.50",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over UDP.",
     "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over UDP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"10.1.0.50\" port=\"514\" protocol=\"udp\"\n       template=\"RSYSLOG_SyslogProtocol23Format\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
@@ -1922,7 +1922,7 @@
     "address": "fd00::50",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over UDP.",
     "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over UDP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"fd00::50\" port=\"514\" protocol=\"udp\"\n       template=\"RSYSLOG_SyslogProtocol23Format\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
@@ -1959,7 +1959,7 @@
     "address": "logs-01.example.net",
     "verification": "tested",
     "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.",
-    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+    "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), action parameters (action.resumeInterval, action.resumeIntervalMax), RFC 5424 and RFC 5425",
     "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over UDP.",
     "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)\n# Woodshed: forward syslog over UDP (RFC 5424 format).\n*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"514\" protocol=\"udp\"\n       template=\"RSYSLOG_SyslogProtocol23Format\")\n\n# Check the file and send a test message\nsudo rsyslogd -N1\nlogger -p user.info \"Test message for Woodshed from $(hostname)\"\n",
     "parts": [
