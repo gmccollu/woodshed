@@ -86,7 +86,7 @@ type Listeners struct {
 	// TCP abuse limits (tcplimits.go).
 	TCPMaxConnsPerSource int      `toml:"tcp_max_conns_per_source" json:"-" comment:"Open TCP connections allowed per sender address."`
 	TCPMaxConnsPerPrefix int      `toml:"tcp_max_conns_per_prefix" json:"-" comment:"Open TCP connections allowed per IPv6 /64 (all its addresses together)."`
-	TCPFrameTimeout      Duration `toml:"tcp_frame_timeout" json:"-" comment:"Once a TCP message starts, all of it must arrive within this (e.g. 60s); then the connection is closed and the part kept, marked truncated."`
+	TCPFrameTimeout      Duration `toml:"tcp_frame_timeout" json:"-" comment:"Once a TCP message starts, all of it must arrive within this (e.g. 60s); then the connection is closed and the part kept, marked incomplete."`
 	TCPIdleTimeout       Duration `toml:"tcp_idle_timeout" json:"-" comment:"Close a TCP connection that sends no complete message for this long (1m to 168h). Keep it long: some senders notice a closed connection only when a later write fails, and lose messages until they reconnect."`
 	// UDP receive queue limits (udpqueue.go), per UDP socket.
 	UDPQueueMessages int   `toml:"udp_queue_messages" json:"-" comment:"Each UDP listener queues at most this many messages (1,000 to 2,000,000) while writing to disk catches up; more are dropped and counted."`

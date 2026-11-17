@@ -68,6 +68,20 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - `woodshed snmp status` and `woodshed tls status` check the config first, as `woodshed run`, `reindex` and `flow
   status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
 
+### Fixed
+- An octet-counted TCP or TLS message whose sender closed or reset the connection before its advertised length arrived
+  was stored as if it were complete (`50 <13>short` then EOF looked exactly like `9 <13>short`); present since 1.0.
+  What arrived is still kept, and now marked incomplete with both lengths: on its stored line
+  (`<13>short \#incomplete=9/50`), in search results, the live tail and `woodshed search --json` (`incomplete`,
+  `frame_arrived`, `frame_length`), and in Events, so exports and bundles carry it too. The same goes for a message
+  Woodshed cut by closing the connection (the frame timeout, an eviction, shutdown), which was counted as truncated
+  instead. A frame of which only the count arrived is counted. A last line without its LF stays a complete message:
+  newline framing can't tell it from a cut one.
+- `truncated` (the dashboard, the per-device stats, the bundle's losses) now counts only messages cut at the max
+  message size, and such a line is marked `\#truncated`. Each TCP and TLS listener counts incomplete frames and frame
+  timeouts in `/api/stats` (`tcp_frames`) and on **About**. Older Woodshed versions show a marker as text at the end of
+  the message; lines stored before 2.0 have none.
+
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The
   sender allowlist, blocklist and new-sender limits apply to exporters as to any sender.
