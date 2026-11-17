@@ -222,10 +222,7 @@ func flowStatus(stdout io.Writer, cfg config.Config) {
 		flowStateRows(w, fs)
 	}
 	if fwOS == "linux" && l.Enabled {
-		w.row("Firewall", "if exporters' flows don't arrive, open the ports:")
-		for _, line := range strings.Split(strings.TrimRight(fwrule.FlowLinuxCommands(l.FlowPort, l.IPFIXPort), "\n"), "\n") {
-			w.row("", strings.TrimSpace(line))
-		}
+		flowLinuxFirewallRows(w, fwrule.FlowLinuxState(fwRun, cfg.Storage.DataDir, l.FlowPort, l.IPFIXPort), l)
 	}
 	if fwOS == "windows" {
 		bad := fwrule.FlowWindowsStates(fwRun, l.FlowPort, l.IPFIXPort)
@@ -236,6 +233,44 @@ func flowStatus(stdout io.Writer, cfg config.Config) {
 		for _, r := range bad {
 			w.row(label, fmt.Sprintf("rule %q: %s", r.Rule, r.State))
 			label = ""
+		}
+	}
+}
+
+// flowLinuxFirewallRows is the Linux firewall advice of `flow status`: the
+// ports `flow on` opened, the ones ufw or firewalld already allows, and the
+// commands for the rest only (lab, 2.0.0-rc1: it said to open the ports
+// after `flow on` had).
+func flowLinuxFirewallRows(w *tabw, ports []fwrule.FlowLinuxPort, l config.FlowListener) {
+	var opened, allowed, open []string
+	nf, ix := 0, 0 // the ports still to open
+	for _, p := range ports {
+		switch {
+		case p.Opened != "":
+			opened = append(opened, p.Opened+" "+p.Proto())
+		case p.Allowed != "":
+			allowed = append(allowed, p.Allowed+" "+p.Proto())
+		default:
+			open = append(open, p.Proto())
+			if p.Port == l.FlowPort {
+				nf = p.Port
+			} else {
+				ix = p.Port
+			}
+		}
+	}
+	label := "Firewall"
+	row := func(s string) { w.row(label, s); label = "" }
+	if len(opened) > 0 {
+		row("opened by woodshed flow on: " + strings.Join(opened, ", "))
+	}
+	if len(allowed) > 0 {
+		row("already allowed: " + strings.Join(allowed, ", "))
+	}
+	if len(open) > 0 {
+		row("if exporters' flows don't arrive, open " + strings.Join(open, " and ") + ":")
+		for _, line := range strings.Split(strings.TrimRight(fwrule.FlowLinuxCommands(nf, ix), "\n"), "\n") {
+			w.row("", strings.TrimSpace(line))
 		}
 	}
 }

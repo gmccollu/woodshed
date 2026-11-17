@@ -149,11 +149,30 @@ func TestFlowCommandLinux(t *testing.T) {
 			t.Errorf("record %s: %v", rf, err)
 		}
 	}
+	// status names what flow on opened, not "open the ports" (lab, 2.0.0-rc1).
+	if _, out, _ := runCLI("flow", "status", "--config", cfgPath); !strings.Contains(out, "opened by woodshed flow on: ufw 2055/udp, ufw 4739/udp") ||
+		strings.Contains(out, "open the ports") || strings.Contains(out, "don't arrive") {
+		t.Errorf("status after on: %q", out)
+	}
 	if code, out, _ := runCLI("flow", "on", "--ipfix-port", "0", "--config", cfgPath); code != 0 || !strings.Contains(out, "(flow UDP 2055)") {
 		t.Fatalf("ipfix off: %d %q", code, out)
 	}
-	if code, out, _ := runCLI("flow", "status", "--config", cfgPath); code != 0 || !strings.Contains(out, "on, flow UDP 2055; template timeout 30m") {
+	if code, out, _ := runCLI("flow", "status", "--config", cfgPath); code != 0 || !strings.Contains(out, "on, flow UDP 2055; template timeout 30m") ||
+		!strings.Contains(out, "opened by woodshed flow on: ufw 2055/udp\n") || strings.Contains(out, "4739") {
 		t.Fatalf("status: %d %q", code, out)
+	}
+	// Without a record (the firewall wasn't active at flow on): the commands, for the ports on only.
+	rec := filepath.Join(dataDir, fwrule.FlowPortRecordFile)
+	saved, err := os.ReadFile(rec)
+	if err != nil || os.Remove(rec) != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := runCLI("flow", "status", "--config", cfgPath); !strings.Contains(out, "if exporters' flows don't arrive, open 2055/udp:") ||
+		!strings.Contains(out, "sudo ufw allow 2055/udp") || strings.Contains(out, "opened by") || strings.Contains(out, "4739") {
+		t.Errorf("status without a record: %q", out)
+	}
+	if err := os.WriteFile(rec, saved, 0o640); err != nil {
+		t.Fatal(err)
 	}
 	code, out, _ = runCLI("flow", "off", "--config", cfgPath)
 	if code != 0 || !strings.Contains(out, "Turned the flow listener off") || !strings.Contains(strings.Join(fw.calls, "\n"), "ufw delete allow 2055/udp") {

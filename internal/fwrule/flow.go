@@ -1,6 +1,10 @@
 package fwrule
 
-import "strings"
+import (
+	"slices"
+	"strconv"
+	"strings"
+)
 
 // The flow listener's firewall rules (SPEC §13.1), the trap receiver's pattern
 // (snmp.go) with one rule per port: the MSI and `woodshed install` create both
@@ -164,4 +168,69 @@ func FlowLinuxClose(run Runner, dataDir string) (string, error) {
 		}
 	}
 	return strings.Join(msgs, "\n"), nil
+}
+
+// FlowLinuxPort is one flow port's Linux firewall state, for `woodshed flow
+// status`.
+type FlowLinuxPort struct {
+	Port int
+	// Opened is the firewall `flow on` recorded opening the port in ("ufw",
+	// "firewalld"); "" when it didn't.
+	Opened string
+	// Allowed is, when it isn't Opened, the firewall that allows the port now
+	// (opened some other way, or before `flow on`); "" when none does or
+	// the firewall can't be read (ufw needs root to show its rules).
+	Allowed string
+}
+
+// Proto is the port as the firewalls write it ("2055/udp").
+func (p FlowLinuxPort) Proto() string { return strconv.Itoa(p.Port) + "/udp" }
+
+// FlowLinuxState reads, for each flow port that's on, what `flow on`
+// recorded opening and, failing that, whether ufw or firewalld allows it now.
+// It changes nothing.
+func FlowLinuxState(run Runner, dataDir string, flowPort, ipfixPort int) []FlowLinuxPort {
+	var out []FlowLinuxPort
+	for _, s := range flowSpecs(flowPort, ipfixPort) {
+		if s.port == 0 {
+			continue
+		}
+		fp := FlowLinuxPort{Port: s.port}
+		p := fp.Proto()
+		if rec, err := readRecord(dataDir, s.sp.record); err == nil {
+			switch {
+			case slices.Contains(rec.Ufw, p):
+				fp.Opened = "ufw"
+			case slices.Contains(rec.Firewalld, p):
+				fp.Opened = "firewalld"
+			}
+		}
+		if fp.Opened == "" {
+			fp.Allowed = linuxAllows(run, s.port, p)
+		}
+		out = append(out, fp)
+	}
+	return out
+}
+
+// linuxAllows is the firewall that allows p ("2055/udp") now: "ufw" when it's
+// active and lists an ALLOW rule for p (or the bare port), "firewalld" when
+// it's running and its permanent config has p; else "".
+func linuxAllows(run Runner, port int, p string) string {
+	if out, err := run(linuxTool("ufw"), "status"); err == nil && strings.Contains(out, "Status: active") {
+		bare := strconv.Itoa(port)
+		for _, line := range strings.Split(out, "\n") {
+			f := strings.Fields(line)
+			if len(f) >= 2 && (f[0] == p || f[0] == bare) && f[1] == "ALLOW" {
+				return "ufw"
+			}
+		}
+		return ""
+	}
+	if firewalldRunning(run) {
+		if _, err := run(linuxTool("firewall-cmd"), "--permanent", "--query-port="+p); err == nil {
+			return "firewalld"
+		}
+	}
+	return ""
 }

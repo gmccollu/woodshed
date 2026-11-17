@@ -93,3 +93,57 @@ func TestFlowLinuxFirewalld(t *testing.T) {
 		t.Fatalf("close: %v %v", err, f.fwdPorts)
 	}
 }
+
+// FlowLinuxState: what `flow on` recorded, else what the firewall allows now,
+// else nothing (lab, 2.0.0-rc1: flow status said to open the ports after
+// flow on had).
+func TestFlowLinuxState(t *testing.T) {
+	dir := t.TempDir()
+	f := &fakeLinux{ufw: true, ufwRules: map[string]bool{"22/tcp": true}}
+	if st := FlowLinuxState(f.run, dir, 2055, 4739); !slices.Equal(st, []FlowLinuxPort{{Port: 2055}, {Port: 4739}}) {
+		t.Errorf("nothing open: %+v", st)
+	}
+	f.ufwRules["4739/udp"] = true // allowed before flow on: not recorded, left alone
+	if _, err := FlowLinuxOpen(f.run, dir, 2055, 4739); err != nil {
+		t.Fatal(err)
+	}
+	if st := FlowLinuxState(f.run, dir, 2055, 4739); !slices.Equal(st, []FlowLinuxPort{{Port: 2055, Opened: "ufw"}, {Port: 4739, Allowed: "ufw"}}) {
+		t.Errorf("after on: %+v", st)
+	}
+	if st := FlowLinuxState(f.run, dir, 2055, 0); !slices.Equal(st, []FlowLinuxPort{{Port: 2055, Opened: "ufw"}}) {
+		t.Errorf("ipfix off: %+v", st)
+	}
+	// A bare port rule ("ufw allow 12055") covers UDP too; another port doesn't.
+	f.ufwRules["12055"] = true
+	if st := FlowLinuxState(f.run, dir, 12055, 14739); !slices.Equal(st, []FlowLinuxPort{{Port: 12055, Allowed: "ufw"}, {Port: 14739}}) {
+		t.Errorf("other ports: %+v", st)
+	}
+	// ufw it can't read (not root): unknown, so nothing is claimed.
+	f.ufw = false
+	if st := FlowLinuxState(f.run, t.TempDir(), 2055, 0); !slices.Equal(st, []FlowLinuxPort{{Port: 2055}}) {
+		t.Errorf("ufw inactive: %+v", st)
+	}
+
+	dir = t.TempDir()
+	g := &fakeLinux{firewalld: true, fwdPorts: map[string]bool{"4739/udp": true}}
+	if _, err := FlowLinuxOpen(g.run, dir, 2055, 4739); err != nil {
+		t.Fatal(err)
+	}
+	if st := FlowLinuxState(g.run, dir, 2055, 4739); !slices.Equal(st, []FlowLinuxPort{{Port: 2055, Opened: "firewalld"}, {Port: 4739, Allowed: "firewalld"}}) {
+		t.Errorf("firewalld: %+v", st)
+	}
+	if _, err := FlowLinuxClose(g.run, dir); err != nil {
+		t.Fatal(err)
+	}
+	if st := FlowLinuxState(g.run, dir, 2055, 4739); !slices.Equal(st, []FlowLinuxPort{{Port: 2055}, {Port: 4739, Allowed: "firewalld"}}) {
+		t.Errorf("firewalld after off: %+v", st)
+	}
+	// It only reads.
+	n := len(g.calls)
+	FlowLinuxState(g.run, dir, 2055, 4739)
+	for _, c := range g.calls[n:] {
+		if c != "ufw status" && c != "firewall-cmd --state" && !strings.HasPrefix(c, "firewall-cmd --permanent --query-port=") {
+			t.Errorf("state ran %q", c)
+		}
+	}
+}
