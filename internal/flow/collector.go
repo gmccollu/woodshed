@@ -818,7 +818,10 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 	out := make([]ExporterStats, 0, len(c.exporters))
 	for _, e := range c.exporters {
 		st := ExporterStats{Addr: e.addr, PendingBytes: e.pending.Load(), ClockSkewMs: e.skewMs.Load(),
-			TimeSource: TimeExporter.String(), LastHeard: time.UnixMilli(e.lastHeard.Load()).UTC()}
+			TimeSource: TimeExporter.String()}
+		if lh := e.lastHeard.Load(); lh != 0 { // 0: restored with no stored datagram time
+			st.LastHeard = time.UnixMilli(lh).UTC()
+		}
 		if e.skewed.Load() {
 			st.TimeSource = TimeReceived.String()
 		}

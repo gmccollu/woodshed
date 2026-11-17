@@ -7,8 +7,12 @@ import (
 )
 
 // The collector at start (SPEC §13.10 decision 83): what an exporter's stored
-// data says about it, so a restart doesn't zero its last 24 hours or make its
-// next records wait for a template the exporter sent before the restart.
+// data says about it, so a restart doesn't zero its last 24 hours or forget
+// its sampling and interface names. Templates are never restored: one the
+// exporter changed while Woodshed was down would decode its data with the old
+// layout, stored for good and unnoticed, so data after a restart waits for
+// the exporter's own template, as it always did (pending, then raw, with
+// decode-on-read later).
 
 // RestoreBucket is one stored bucket of an exporter's counts: At is its start
 // (unix ms), an hour or 5 minutes long.
@@ -26,22 +30,16 @@ type Restored struct {
 	// times off arrival by 5 minutes (the flow_time banner's window).
 	Hours []RestoreBucket
 	Fives []RestoreBucket
-	// Templates and Meta are the newest segment's template table and
-	// metadata blob (Metadata's format). TemplatesAt is when that segment
-	// last stored something: the templates were in use then, and time out
-	// from it as if refreshed then.
-	Templates   []*Template
-	TemplatesAt int64
-	Meta        []byte
+	// Meta is the newest segment's metadata blob (Metadata's format).
+	Meta []byte
 }
 
 // Restore loads exporters' stored state into a collector that hasn't
 // decoded anything yet (call it before the first Decode, from Decode's
 // goroutine). Counts land in the 24-hour rings (not in the since-start
-// counts); templates and metadata only fill what's empty, so anything the
-// exporter has already sent wins, and a template it sends again replaces
-// the restored one as usual. Exporters are restored least recently heard
-// first, so the exporter cap keeps the most recent.
+// counts); metadata only fills what's empty, so anything the exporter has
+// already sent wins. Exporters are restored least recently heard first, so
+// the exporter cap keeps the most recent.
 func (c *Collector) Restore(rs []Restored) {
 	rs = slices.Clone(rs)
 	slices.SortStableFunc(rs, func(a, b Restored) int {
@@ -60,7 +58,6 @@ func (c *Collector) Restore(rs []Restored) {
 		}
 		e := c.exporterFor(r.Addr.Unmap(), r.LastHeard)
 		c.restoreCounts(e, r)
-		c.restoreTemplates(e, r)
 		c.restoreMeta(e, r.Meta)
 	}
 }
@@ -103,39 +100,6 @@ func (c *Collector) restoreCounts(e *exporter, r *Restored) {
 			sl.o.merge(b.Off)
 		} else if sl.at < f {
 			*sl = offSlot{at: f, o: b.Off}
-		}
-	}
-}
-
-func (c *Collector) restoreTemplates(e *exporter, r *Restored) {
-	ts := slices.Clone(r.Templates)
-	// The table can hold several definitions of one ID: the newest wins.
-	slices.SortStableFunc(ts, func(a, b *Template) int {
-		switch {
-		case a.Received < b.Received:
-			return -1
-		case a.Received > b.Received:
-			return 1
-		}
-		return 0
-	})
-	for _, t := range ts {
-		if t == nil || (t.Version != V9 && t.Version != IPFIX) {
-			continue
-		}
-		d := c.domainFor(e, tkey{port: t.ExporterPort, domain: t.Domain, version: t.Version})
-		if te := d.templates[t.ID]; te != nil && te.refreshed > r.TemplatesAt {
-			continue // already sent again since
-		}
-		cp := *t
-		cp.Fields = slices.Clone(t.Fields)
-		c.addTemplate(e, d, &cp, r.TemplatesAt)
-		if t.Received > 0 {
-			// "Last template" is when a definition last arrived, not the
-			// restore's refresh time (the newest comes last).
-			c.mu.Lock()
-			d.lastTemplate = t.Received
-			c.mu.Unlock()
 		}
 	}
 }

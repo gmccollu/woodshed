@@ -112,10 +112,10 @@ func TestNewestFlowSegment(t *testing.T) {
 	if err := d.Apply(ctx, Batch{Files: ops}); err != nil {
 		t.Fatal(err)
 	}
-	if p, err := d.NewestFlowSegment(ctx, "10.1.0.1"); err != nil || p != "logs/10.1.0.1/flows/2026-11-17T10.wsf" {
-		t.Fatalf("%q %v", p, err)
+	if p, last, err := d.NewestFlowSegment(ctx, "10.1.0.1"); err != nil || p != "logs/10.1.0.1/flows/2026-11-17T10.wsf" || !last.Equal(h.Add(time.Hour)) {
+		t.Fatalf("%q %v %v", p, last, err)
 	}
-	if p, err := d.NewestFlowSegment(ctx, "10.1.0.9"); err != nil || p != "" {
+	if p, _, err := d.NewestFlowSegment(ctx, "10.1.0.9"); err != nil || p != "" {
 		t.Fatalf("none: %q %v", p, err)
 	}
 }

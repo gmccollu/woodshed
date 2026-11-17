@@ -190,15 +190,17 @@ func (d *DB) FlowCountBuckets(ctx context.Context, from, to time.Time, bucket ti
 	return out, nil
 }
 
-// NewestFlowSegment is the path (the files row's, relative to the data
-// folder) of deviceID's flow segment that started receiving last; "" when it
-// has none.
-func (d *DB) NewestFlowSegment(ctx context.Context, deviceID string) (string, error) {
+// NewestFlowSegment is deviceID's flow segment that started receiving last:
+// its path (the files row's, relative to the data folder; "" when it has
+// none) and when it last received something (the exporter's last flow
+// datagram stored, unlike the device's last_heard, which every type moves).
+func (d *DB) NewestFlowSegment(ctx context.Context, deviceID string) (string, time.Time, error) {
 	var p string
-	err := d.db.QueryRowContext(ctx, `SELECT path FROM files WHERE type = ? AND device_id = ? ORDER BY first_received DESC, id DESC LIMIT 1`,
-		TypeFlow, deviceID).Scan(&p)
+	var last int64
+	err := d.db.QueryRowContext(ctx, `SELECT path, last_received FROM files WHERE type = ? AND device_id = ?
+		ORDER BY first_received DESC, id DESC LIMIT 1`, TypeFlow, deviceID).Scan(&p, &last)
 	if err == sql.ErrNoRows {
-		return "", nil
+		return "", time.Time{}, nil
 	}
-	return p, err
+	return p, tm(last), err
 }
