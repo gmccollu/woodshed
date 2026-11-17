@@ -20,7 +20,6 @@ import (
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/export"
-	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -231,7 +230,7 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 	// Flows are read from the closed segments (a segment the service is still
 	// writing has no footer yet, so the current hour of a running service's
 	// exporters isn't in the zip; the API's bundle has it).
-	flows := flowquery.New(flowquery.Options{DataDir: dataDir, Index: idx, Logger: logger})
+	flows := flowEngine(dataDir, idx, logger, searchRuleIEs(&sf, dataDir))
 	opts := export.Options{Index: idx, Search: eng, Flows: flows, Version: version, Now: searchNow, Location: searchLocation(), Logger: logger}
 	plan, err := export.Prepare(ctx, opts, req)
 	var re *export.RequestError

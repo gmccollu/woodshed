@@ -57,6 +57,26 @@ func TestFlowV9VendorRuleIDEndToEnd(t *testing.T) {
 	}
 	waitFlows(t, r, "", 2*n)
 
+	// The templates name the IEs Woodshed knows and leave the rest "" (shown as
+	// pen:id): the v9 vendor-range types as {0, 40003}, the enterprise IEs too.
+	var tpl api.FlowTemplates
+	if code := r.do(t, "GET", "/api/flows/templates?device=127.0.0.1", nil, &tpl); code != 200 {
+		t.Fatalf("templates: %d", code)
+	}
+	names := map[flow.IEKey]string{}
+	for _, d := range tpl.Domains {
+		for _, tp := range d.Templates {
+			for _, f := range tp.Fields {
+				names[flow.IEKey{PEN: f.PEN, ID: f.ID}] = f.Name
+			}
+		}
+	}
+	for k, want := range map[flow.IEKey]string{v9Rule: "", ixRule: "", {ID: 40001}: "", {ID: 8}: "sourceIPv4Address"} {
+		if got, ok := names[k]; !ok || got != want {
+			t.Errorf("template field %s: name %q (present %v), want %q", k, got, ok, want)
+		}
+	}
+
 	// Decode and store: every v9 record has the rule ID it was sent with.
 	stored := map[string]map[uint64]flow.Record{v9Run: {}, ixRun: {}}
 	byRule := map[string]int64{}

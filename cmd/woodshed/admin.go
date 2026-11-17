@@ -18,7 +18,6 @@ import (
 
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
-	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/peer"
 	"github.com/gmccollu/woodshed/internal/server"
@@ -485,13 +484,7 @@ hadn't arrived, where the segment holds that template now (SPEC §13.1.3).`, std
 	t0 := time.Now()
 	ctx := context.Background()
 	if *redecode {
-		var rules []flow.IEKey
-		for _, r := range cfg.Listeners.Flow.RuleIDIEs {
-			if pen, id, ok := config.ParseRuleIDIE(r); ok {
-				rules = append(rules, flow.IEKey{PEN: pen, ID: id})
-			}
-		}
-		rr, err := index.RedecodeFlows(dataDir, version, rules)
+		rr, err := index.RedecodeFlows(dataDir, version, ruleIEsOf(cfg))
 		if err != nil {
 			return fail(stderr, "reindex", err)
 		}

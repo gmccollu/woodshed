@@ -221,3 +221,32 @@ func TestFlowStatusValidatesConfig(t *testing.T) {
 		}
 	}
 }
+
+// `woodshed snmp status` and `tls status` validate the config as flow status,
+// run and reindex do: their own key's error first, exit 1, nothing printed.
+func TestSNMPAndTLSStatusValidateConfig(t *testing.T) {
+	defer noService()
+	withFirewall(t, "linux")
+	for _, cmd := range []string{"snmp", "tls"} {
+		cfgPath, _ := testConfig(t, nil)
+		if code, out, errOut := runCLI(cmd, "status", "--config", cfgPath); code != 0 || out == "" {
+			t.Fatalf("%s status, valid: %d %q %q", cmd, code, out, errOut)
+		}
+	}
+	for _, x := range []struct {
+		cmd  string
+		edit func(*config.Config)
+		key  string
+	}{
+		{"snmp", func(c *config.Config) { c.Listeners.SNMP.Port = 70000 }, "listeners.snmp.port"},
+		{"snmp", func(c *config.Config) { c.Listeners.Flow.RuleIDIEs = []string{"x"} }, "listeners.flow.rule_id_ies[0]"},
+		{"tls", func(c *config.Config) { c.Listeners.TLS.Port = 70000 }, "listeners.tls.port"},
+		{"tls", func(c *config.Config) { c.Listeners.Flow.TemplateTimeout = config.FlowDuration(time.Second) }, "listeners.flow.template_timeout"},
+	} {
+		cfgPath, _ := testConfig(t, x.edit)
+		code, out, errOut := runCLI(x.cmd, "status", "--config", cfgPath)
+		if code != 1 || out != "" || !strings.Contains(errOut, "woodshed "+x.cmd+": ") || !strings.Contains(errOut, x.key) {
+			t.Errorf("%s status, %s: %d %q %q", x.cmd, x.key, code, out, errOut)
+		}
+	}
+}

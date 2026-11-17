@@ -346,7 +346,13 @@ func (b *backend) FlowTemplates(ctx context.Context, id string) (api.FlowTemplat
 			}
 			ft := api.FlowTemplate{ID: t.ID, Options: t.Options, Received: t.Received.UTC()}
 			for _, f := range t.Fields {
-				ft.Fields = append(ft.Fields, api.FlowTemplateField{PEN: f.PEN, ID: f.ID, Name: f.Name, Length: f.Length})
+				// "" for an IE Woodshed has no name for (docs/api.md; the UI shows those
+				// as pen:id and offers them as rule ID fields), not IEName's "pen:id".
+				name := f.Name
+				if name == (flow.IEKey{PEN: f.PEN, ID: f.ID}).String() {
+					name = ""
+				}
+				ft.Fields = append(ft.Fields, api.FlowTemplateField{PEN: f.PEN, ID: f.ID, Name: name, Length: f.Length})
 			}
 			out.Domains[i].Templates = append(out.Domains[i].Templates, ft)
 		}
@@ -496,7 +502,10 @@ func (b *backend) flowSummary(ctx context.Context, r api.SummaryRequest) (api.Su
 	indexHist := r.Histogram && q.Filter.Empty() && bucket >= time.Minute
 	scanHist := r.Histogram && !indexHist
 	page := api.SummaryPage{Type: datatype.Flow, From: q.From, To: q.To}
-	if len(fields) > 0 || scanHist {
+	// matched is always the window's count: from the index histogram when that's
+	// what was asked for with no fields, otherwise from a scan (fields=none with
+	// histogram=false, or with a filter, still counts; it used to return 0).
+	if len(fields) > 0 || !indexHist {
 		res, err := b.flows.eng.Summary(ctx, q, flowquery.SummaryQuery{Fields: fields, Top: r.Top, Histogram: scanHist,
 			Bucket: bucket, Origin: origin}, time.Duration(r.BudgetMS)*time.Millisecond, r.Cursor)
 		if err != nil {

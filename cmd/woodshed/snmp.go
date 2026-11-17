@@ -73,6 +73,11 @@ is restarted to use it.`, stderr)
 	abs, _ := filepath.Abs(*cfgPath)
 	dataDir := cfg.Storage.DataDir
 	if mode == "status" {
+		// As run, reindex and flow status do: a config the server would refuse
+		// to start with is an error, not a status.
+		if errs := cfg.Validate(nil); len(errs) > 0 {
+			return configErr(stderr, "snmp", abs, errs, snmpConfigKeys...)
+		}
 		snmpStatus(stdout, cfg)
 		return 0
 	}
@@ -86,12 +91,7 @@ is restarted to use it.`, stderr)
 		next.Listeners.SNMP.Port = *port
 	}
 	if errs := next.Validate(&cfg); len(errs) > 0 {
-		for _, k := range []string{"listeners.snmp.port", "listeners.snmp.addr", "listeners.snmp.mib_dir", "listeners.snmp.engine_id"} {
-			if msg, ok := errs[k]; ok {
-				return fail(stderr, "snmp", fmt.Errorf("%s %s", k, msg))
-			}
-		}
-		return fail(stderr, "snmp", fmt.Errorf("%s: %w", abs, errs))
+		return configErr(stderr, "snmp", abs, errs, snmpConfigKeys...)
 	}
 	was, now := cfg.Listeners.SNMP, next.Listeners.SNMP
 	changed := was.Enabled != now.Enabled || was.Port != now.Port
@@ -190,6 +190,10 @@ func snmpFromFiles(l config.SNMPListener, dataDir string) *server.RunStateSNMP {
 	}
 	return rs
 }
+
+// snmpConfigKeys are the trap listener's keys, reported first when a config
+// doesn't validate.
+var snmpConfigKeys = []string{"listeners.snmp.port", "listeners.snmp.addr", "listeners.snmp.mib_dir", "listeners.snmp.engine_id"}
 
 // snmpStatus is `woodshed snmp status`.
 func snmpStatus(stdout io.Writer, cfg config.Config) {

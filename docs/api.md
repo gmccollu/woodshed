@@ -1339,7 +1339,9 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
 **Summary:** `/api/search/summary?type=flow` uses the flow fields (`proto`, `dst_port`, `src_port`, `src`, `dst`,
 `in_if`, `out_if`, `fw_event`, `nat_event`, `rule_id`, `domain`, `sampled`, `status`); each value's `count` is flows, plus `bytes` and `bytes_scaled`. The
 histogram's `source` is `index` (from `flow_minute`) when unfiltered, with a `metric` parameter (`flows`, `bytes`,
-`packets`; default `flows`). Instead of `counted_from`, a partial flow summary carries `progress`.
+`packets`; default `flows`). Instead of `counted_from`, a partial flow summary carries `progress`. `matched` is the
+window's count in every case: the index histogram's sum for `fields=none` with that histogram, otherwise the scan's,
+so `fields=none&histogram=false` (with or without a filter) scans to count.
 
 ### Top-N
 

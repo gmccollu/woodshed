@@ -60,6 +60,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   guard deletes flows first too. With no flows nothing changes.
 - The index migrates once (schema 8: `flow_segments`, `flow_minute`). Downgrading to 1.x keeps every syslog, trap and
   poll file and loses access to flows.
+- `woodshed snmp status` and `woodshed tls status` check the config first, as `woodshed run`, `reindex` and `flow
+  status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
 
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The

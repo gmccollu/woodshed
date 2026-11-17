@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/export"
+	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -23,9 +27,54 @@ import (
 // is read up to its last complete block (about a second behind).
 
 // flowEngine is the flow query engine over a data folder, without a store
-// (no open segments).
-func flowEngine(dataDir string, idx *index.DB, log *slog.Logger) *flowquery.Engine {
-	return flowquery.New(flowquery.Options{DataDir: dataDir, Index: idx, Logger: log})
+// (no open segments). rules are the config's listeners.flow.rule_id_ies, so
+// raw sets decoded on read fill rule_id as the service does.
+func flowEngine(dataDir string, idx *index.DB, log *slog.Logger, rules []flow.IEKey) *flowquery.Engine {
+	return flowquery.New(flowquery.Options{DataDir: dataDir, Index: idx, Logger: log, RuleIDIEs: rules})
+}
+
+// ruleIEsOf is a config's listeners.flow.rule_id_ies as IE keys (entries that
+// don't parse are left out; validation reports them).
+func ruleIEsOf(c config.Config) []flow.IEKey {
+	var out []flow.IEKey
+	for _, s := range c.Listeners.Flow.RuleIDIEs {
+		if pen, id, ok := config.ParseRuleIDIE(s); ok {
+			out = append(out, flow.IEKey{PEN: pen, ID: id})
+		}
+	}
+	return out
+}
+
+// searchRuleIEs is the rule_id_ies of the config behind a data folder, best
+// effort and read-only: --config when given, else the folder's own
+// woodshed.toml (a portable copy), else the installed config unless --data
+// named another folder. Nil when none can be read.
+func searchRuleIEs(f *searchFlags, dataDir string) []flow.IEKey {
+	var path string
+	switch own := filepath.Join(dataDir, config.FileName); {
+	case f.set["config"]:
+		path = f.config
+	case fileExists(own):
+		path = own
+	case !f.set["data"]:
+		path = f.config
+	default:
+		return nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil
+	}
+	c, err := config.Read(abs) // never creates it
+	if err != nil {
+		return nil
+	}
+	return ruleIEsOf(c)
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // flowRange applies search's defaults to a request's range.
@@ -70,7 +119,7 @@ func flowSearch(stdout, stderr io.Writer, f *searchFlags, req api.SearchRequest,
 	}
 	from, to := flowRange(req)
 	q := flowquery.Query{DeviceIDs: devs, From: from, To: to, Filter: filter}
-	fe := flowEngine(dataDir, idx, logger)
+	fe := flowEngine(dataDir, idx, logger, searchRuleIEs(f, dataDir))
 	w := bufio.NewWriterSize(stdout, 64<<10)
 	start := time.Now()
 	var n int64
