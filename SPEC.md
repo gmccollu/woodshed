@@ -3365,7 +3365,9 @@ Made while building it, each **decided (build, 2026-11-16)**:
     config's `global()`. The queue has `queue.timeoutEnqueue="0"`: once it's full, new messages for Woodshed are
     dropped at once, because by default each enqueue to a full queue waits 2 s and holds up all of rsyslog's logging.
     No disk-assisted queue, to keep the snippet one file with nothing to clean up. **net-snmp:**
-    `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start), the test trap's secrets in
+    `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start); for v3 a `createUser` line beside
+    `trapsess -u … -l authPriv`, because snmpd sends traps as its own engine and, from 5.7, doesn't create that
+    user from the `trapsess` passphrases ("USM unknown security name"); the test trap's secrets in
     `~/.snmp/snmp.conf` (mode 600) rather than the command line, and `rocommunity` (`rocommunity6` for IPv6) limited
     to Woodshed's address for polling. The poll snippet replaces the distribution's `agentaddress` line rather than
     adding one: snmpd joins every `agentaddress` line it reads.

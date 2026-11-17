@@ -624,8 +624,16 @@ func runSnmpTrap(t *testing.T, c setupCase) string {
 	os.WriteFile(filepath.Join(confDir, "snmpd.conf"), []byte(conf), 0o600)
 	os.WriteFile(filepath.Join(home, ".snmp", "snmp.conf"), []byte(fill(t, part(t, s, setuphelper.PartFile, "snmp.conf").Text, snmpSecrets)), 0o600)
 
-	// snmpd sends coldStart when it starts.
-	p := startProc(t, filepath.Join(e.dir, "snmpd.log"), env, snmpd, "-f", "-Lf", filepath.Join(e.dir, "snmpd.log"), "-p", filepath.Join(e.dir, "snmpd.pid"))
+	// snmpd sends coldStart when it starts. It reads only its own snmpd.conf
+	// (and its persistent folder), not the snmp.conf the test trap's
+	// passphrases are in, as the system's snmpd doesn't read a user's.
+	snmpdEnv := slices.Clone(env)
+	for i, v := range snmpdEnv {
+		if strings.HasPrefix(v, "SNMPCONFPATH=") {
+			snmpdEnv[i] = "SNMPCONFPATH=" + confDir + string(os.PathListSeparator) + filepath.Join(e.dir, "persist")
+		}
+	}
+	p := startProc(t, filepath.Join(e.dir, "snmpd.log"), snmpdEnv, snmpd, "-f", "-Lf", filepath.Join(e.dir, "snmpd.log"), "-p", filepath.Join(e.dir, "snmpd.pid"))
 	udpHeld(t, agentPort, p)
 	e.exactlyOnce(t, "snmpd's coldStart ("+c.transport+")", "trap", url.Values{"trap_oid": {"1.3.6.1.6.3.1.1.5.1"}})
 

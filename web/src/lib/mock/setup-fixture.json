@@ -1347,7 +1347,7 @@
     "address": "10.1.0.50",
     "verification": "tested",
     "verification_detail": "CI starts real snmpd with these lines (its coldStart trap) and runs the snmptrap test as written, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.",
-    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
+    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess, createUser), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
     "does": "Makes snmpd send its traps to Woodshed (SNMPv2c), and gives a test trap to send with snmptrap.",
     "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv2c).\ntrap2sink udp:10.1.0.50:162 \u003cCOMMUNITY\u003e\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its community from this file, not the command line\ndefCommunity \u003cCOMMUNITY\u003e\n\n# Send a test trap\nsnmptrap -v 2c udp:10.1.0.50:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
     "parts": [
@@ -1394,7 +1394,7 @@
     "address": "fd00::50",
     "verification": "tested",
     "verification_detail": "CI starts real snmpd with these lines (its coldStart trap) and runs the snmptrap test as written, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.",
-    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
+    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess, createUser), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
     "does": "Makes snmpd send its traps to Woodshed (SNMPv2c), and gives a test trap to send with snmptrap.",
     "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv2c).\ntrap2sink udp6:[fd00::50]:162 \u003cCOMMUNITY\u003e\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its community from this file, not the command line\ndefCommunity \u003cCOMMUNITY\u003e\n\n# Send a test trap\nsnmptrap -v 2c udp6:[fd00::50]:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
     "parts": [
@@ -1441,7 +1441,7 @@
     "address": "logs-01.example.net",
     "verification": "tested",
     "verification_detail": "CI starts real snmpd with these lines (its coldStart trap) and runs the snmptrap test as written, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.",
-    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
+    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess, createUser), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
     "does": "Makes snmpd send its traps to Woodshed (SNMPv2c), and gives a test trap to send with snmptrap.",
     "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv2c).\ntrap2sink udp:logs-01.example.net:162 \u003cCOMMUNITY\u003e\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its community from this file, not the command line\ndefCommunity \u003cCOMMUNITY\u003e\n\n# Send a test trap\nsnmptrap -v 2c udp:logs-01.example.net:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
     "parts": [
@@ -1491,15 +1491,15 @@
     "address": "10.1.0.50",
     "verification": "tested",
     "verification_detail": "CI starts real snmpd with these lines (its coldStart trap) and runs the snmptrap test as written, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.",
-    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
+    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess, createUser), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
     "does": "Makes snmpd send its traps to Woodshed (SNMPv3), and gives a test trap to send with snmptrap.",
-    "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv3).\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv -a SHA-256 -A \u003cAUTH-PASSPHRASE\u003e -x AES -X \u003cPRIV-PASSPHRASE\u003e udp:10.1.0.50:162\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its user and passphrases from this file, not the command line\ndefSecurityName \u003cV3-USER\u003e\ndefSecurityLevel authPriv\ndefAuthType SHA-256\ndefAuthPassphrase \u003cAUTH-PASSPHRASE\u003e\ndefPrivType AES\ndefPrivPassphrase \u003cPRIV-PASSPHRASE\u003e\n\n# Send a test trap\nsnmptrap -v 3 udp:10.1.0.50:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv3).\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv udp:10.1.0.50:162\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its user and passphrases from this file, not the command line\ndefSecurityName \u003cV3-USER\u003e\ndefSecurityLevel authPriv\ndefAuthType SHA-256\ndefAuthPassphrase \u003cAUTH-PASSPHRASE\u003e\ndefPrivType AES\ndefPrivPassphrase \u003cPRIV-PASSPHRASE\u003e\n\n# Send a test trap\nsnmptrap -v 3 udp:10.1.0.50:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/snmp/snmpd.conf",
       "title": "Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts",
-      "text": "# Woodshed: send traps (SNMPv3).\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv -a SHA-256 -A \u003cAUTH-PASSPHRASE\u003e -x AES -X \u003cPRIV-PASSPHRASE\u003e udp:10.1.0.50:162\n"
+      "text": "# Woodshed: send traps (SNMPv3).\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv udp:10.1.0.50:162\n"
      },
      {
       "kind": "file",
@@ -1516,6 +1516,7 @@
     ],
     "notes": [
      "Add the same user in Woodshed first: Settings → SNMP → v3 users, name \u003cV3-USER\u003e, SHA-256 and AES-128, with the same passphrases (at least 8 characters each).",
+     "snmpd sends v3 traps as its own engine, with a user of that engine: the createUser line makes it (snmpd 5.7 and later don't make one from the trapsess line's passphrases, and log \"USM unknown security name\"). The user gets no access to the agent's data unless an rouser or rwuser line grants it. If the poll snippet adds the same user, keep one createUser line.",
      "Keep snmpd.conf readable by root only, and ~/.snmp/snmp.conf by you only (chmod 600 ~/.snmp/snmp.conf): they hold the passphrases.",
      "The test trap's OID is under the documentation enterprise number (32473), so it can't be mistaken for a real alarm."
     ],
@@ -1540,15 +1541,15 @@
     "address": "fd00::50",
     "verification": "tested",
     "verification_detail": "CI starts real snmpd with these lines (its coldStart trap) and runs the snmptrap test as written, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.",
-    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
+    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess, createUser), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
     "does": "Makes snmpd send its traps to Woodshed (SNMPv3), and gives a test trap to send with snmptrap.",
-    "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv3).\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv -a SHA-256 -A \u003cAUTH-PASSPHRASE\u003e -x AES -X \u003cPRIV-PASSPHRASE\u003e udp6:[fd00::50]:162\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its user and passphrases from this file, not the command line\ndefSecurityName \u003cV3-USER\u003e\ndefSecurityLevel authPriv\ndefAuthType SHA-256\ndefAuthPassphrase \u003cAUTH-PASSPHRASE\u003e\ndefPrivType AES\ndefPrivPassphrase \u003cPRIV-PASSPHRASE\u003e\n\n# Send a test trap\nsnmptrap -v 3 udp6:[fd00::50]:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv3).\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv udp6:[fd00::50]:162\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its user and passphrases from this file, not the command line\ndefSecurityName \u003cV3-USER\u003e\ndefSecurityLevel authPriv\ndefAuthType SHA-256\ndefAuthPassphrase \u003cAUTH-PASSPHRASE\u003e\ndefPrivType AES\ndefPrivPassphrase \u003cPRIV-PASSPHRASE\u003e\n\n# Send a test trap\nsnmptrap -v 3 udp6:[fd00::50]:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/snmp/snmpd.conf",
       "title": "Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts",
-      "text": "# Woodshed: send traps (SNMPv3).\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv -a SHA-256 -A \u003cAUTH-PASSPHRASE\u003e -x AES -X \u003cPRIV-PASSPHRASE\u003e udp6:[fd00::50]:162\n"
+      "text": "# Woodshed: send traps (SNMPv3).\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv udp6:[fd00::50]:162\n"
      },
      {
       "kind": "file",
@@ -1565,6 +1566,7 @@
     ],
     "notes": [
      "Add the same user in Woodshed first: Settings → SNMP → v3 users, name \u003cV3-USER\u003e, SHA-256 and AES-128, with the same passphrases (at least 8 characters each).",
+     "snmpd sends v3 traps as its own engine, with a user of that engine: the createUser line makes it (snmpd 5.7 and later don't make one from the trapsess line's passphrases, and log \"USM unknown security name\"). The user gets no access to the agent's data unless an rouser or rwuser line grants it. If the poll snippet adds the same user, keep one createUser line.",
      "Keep snmpd.conf readable by root only, and ~/.snmp/snmp.conf by you only (chmod 600 ~/.snmp/snmp.conf): they hold the passphrases.",
      "The test trap's OID is under the documentation enterprise number (32473), so it can't be mistaken for a real alarm."
     ],
@@ -1589,15 +1591,15 @@
     "address": "logs-01.example.net",
     "verification": "tested",
     "verification_detail": "CI starts real snmpd with these lines (its coldStart trap) and runs the snmptrap test as written, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.",
-    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
+    "reference": "net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess, createUser), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)",
     "does": "Makes snmpd send its traps to Woodshed (SNMPv3), and gives a test trap to send with snmptrap.",
-    "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv3).\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv -a SHA-256 -A \u003cAUTH-PASSPHRASE\u003e -x AES -X \u003cPRIV-PASSPHRASE\u003e udp:logs-01.example.net:162\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its user and passphrases from this file, not the command line\ndefSecurityName \u003cV3-USER\u003e\ndefSecurityLevel authPriv\ndefAuthType SHA-256\ndefAuthPassphrase \u003cAUTH-PASSPHRASE\u003e\ndefPrivType AES\ndefPrivPassphrase \u003cPRIV-PASSPHRASE\u003e\n\n# Send a test trap\nsnmptrap -v 3 udp:logs-01.example.net:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
+    "text": "# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts\n# Woodshed: send traps (SNMPv3).\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv udp:logs-01.example.net:162\n\n# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its user and passphrases from this file, not the command line\ndefSecurityName \u003cV3-USER\u003e\ndefSecurityLevel authPriv\ndefAuthType SHA-256\ndefAuthPassphrase \u003cAUTH-PASSPHRASE\u003e\ndefPrivType AES\ndefPrivPassphrase \u003cPRIV-PASSPHRASE\u003e\n\n# Send a test trap\nsnmptrap -v 3 udp:logs-01.example.net:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s \"Test trap for Woodshed from $(hostname)\"\n",
     "parts": [
      {
       "kind": "file",
       "path": "/etc/snmp/snmpd.conf",
       "title": "Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts",
-      "text": "# Woodshed: send traps (SNMPv3).\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv -a SHA-256 -A \u003cAUTH-PASSPHRASE\u003e -x AES -X \u003cPRIV-PASSPHRASE\u003e udp:logs-01.example.net:162\n"
+      "text": "# Woodshed: send traps (SNMPv3).\ncreateUser \u003cV3-USER\u003e SHA-256 \u003cAUTH-PASSPHRASE\u003e AES \u003cPRIV-PASSPHRASE\u003e\ntrapsess -v 3 -u \u003cV3-USER\u003e -l authPriv udp:logs-01.example.net:162\n"
      },
      {
       "kind": "file",
@@ -1614,6 +1616,7 @@
     ],
     "notes": [
      "Add the same user in Woodshed first: Settings → SNMP → v3 users, name \u003cV3-USER\u003e, SHA-256 and AES-128, with the same passphrases (at least 8 characters each).",
+     "snmpd sends v3 traps as its own engine, with a user of that engine: the createUser line makes it (snmpd 5.7 and later don't make one from the trapsess line's passphrases, and log \"USM unknown security name\"). The user gets no access to the agent's data unless an rouser or rwuser line grants it. If the poll snippet adds the same user, keep one createUser line.",
      "net-snmp looks the name up as IPv4; write udp6:[address]:port to send over IPv6.",
      "Keep snmpd.conf readable by root only, and ~/.snmp/snmp.conf by you only (chmod 600 ~/.snmp/snmp.conf): they hold the passphrases.",
      "The test trap's OID is under the documentation enterprise number (32473), so it can't be mistaken for a real alarm."
