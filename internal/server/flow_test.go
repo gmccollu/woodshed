@@ -213,9 +213,21 @@ func TestFlowsEndToEndInProcess(t *testing.T) {
 	if e.DeviceID != "127.0.0.1" || e.Counts24h.Records != 3900 || len(e.Domains) < 2 || st.Budget.Bytes <= 0 || st.Budget.UsedBytes <= 0 {
 		t.Fatalf("exporter %+v budget %+v", e, st.Budget)
 	}
-	sampled := false
+	sampled, rfc := false, false
 	for _, d := range e.Domains {
 		sampled = sampled || d.Sampling == 100
+		// The generator numbers as RFC 7011 says, which the IPFIX domains
+		// learn (decision 78).
+		rfc = rfc || d.SeqMode == "rfc"
+		if d.SeqMode == "after" {
+			t.Errorf("domain %d: seq_mode %q", d.ID, d.SeqMode)
+		}
+	}
+	if !rfc {
+		t.Errorf("no domain learned seq_mode rfc: %+v", e.Domains)
+	}
+	if e.Counts24h.SequenceGaps != 0 {
+		t.Errorf("sequence gaps %d from the generator on loopback", e.Counts24h.SequenceGaps)
 	}
 	if !sampled {
 		t.Fatalf("no sampled domain: %+v", e.Domains)

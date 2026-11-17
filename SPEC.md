@@ -3481,6 +3481,28 @@ couldn't name one, so v9 event runs never filled `rule_id`):
     every record's 5-tuple equals the CSV, no malformed frames). Alongside: `woodshed flow status` validates the config
     as `run` and `reindex` do (exit 1 with the same message), and `woodshed search --help` lists `flow` under `-type`.
 
+**IPFIX sequence conventions, decided (build, 2026-11-17)** (the 2.0.0-rc1 lab: an open-source exporter numbers each
+message after counting its own data records, where RFC 7011 §3.1 counts the records sent before it. Its capture: 21
+data + 1 options records carried 21, then 22, 21 and 20 data records carried 43, 64 and 84. Nothing was lost, but the
+RFC check saw 64 as reordered and 84 as a gap of 19, so every export of more than one message added a false gap to
+`flow status`, `/api/flows` and the bundle README):
+78. **Learned per scope:** each IPFIX (exporter, port, observation domain) learns its convention from its own stream.
+    Timing is `rfc` (`seq[n+1] = seq[n] + records[n]`) or `after` (`seq[n+1] = seq[n] + records[n+1]`), and,
+    separately, whether options data records count (the capture's first message says they don't there: 21 data + 1
+    options gave 21). A message whose counts and predecessor's are known is a vote for a side when only that side
+    explains its number; 3 votes in a row decide it (messages of equal size tell timing nothing, so it may take a
+    while). The same 3 in a row for the other side change a decided one (another exporter on that address).
+    - **Gaps:** while a side is undecided, a jump is a gap only when neither side explains it (the smaller jump is
+      the estimate); once decided, only the decided side explains, so a real loss always counts. A loss that happens
+      to equal the difference between the two sides, before they're decided, is the one case missed.
+    - **Behind the expected number:** a late (reordered) message is ignored, as before (the jump it left counts as a
+      gap). Three messages behind in a row, each following the one before, are an exporter restart, so a restart to
+      low numbers resyncs too (before, only a jump back of over 100,000 did); this applies to v5 and v9 as well.
+    - A message with no records (templates only) shares its number with the next one and isn't a duplicate.
+    - v5 and v9 don't learn: v5 counts records and v9 packets, as decision 23 says.
+    - `/api/flows` shows the decided timing per domain as `seq_mode` (`"rfc"` or `"after"`, absent while undecided);
+      `woodshed flow status` notes an `after` domain.
+
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
    justify a major version even with an additive API (§13.9).

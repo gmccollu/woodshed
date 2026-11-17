@@ -293,7 +293,7 @@ func (b *backend) FlowState(ctx context.Context) (api.FlowState, error) {
 			e.LastSeen = &t
 		}
 		for _, d := range es.Domains {
-			fd := api.FlowDomain{ID: d.ID, Sampling: d.Sampling, Templates: d.Templates}
+			fd := api.FlowDomain{ID: d.ID, Sampling: d.Sampling, Templates: d.Templates, SeqMode: d.SeqMode}
 			if !d.LastTemplate.IsZero() {
 				t := d.LastTemplate.UTC()
 				fd.LastTemplate = &t

@@ -292,6 +292,9 @@ func flowStateRows(w *tabw, fs *api.FlowState) {
 			case d.Sampling > 1:
 				s = fmt.Sprintf("1 in %d", d.Sampling)
 			}
+			if d.SeqMode == "after" {
+				s += ", sequence numbers count each message's own records (not RFC 7011; no loss implied)"
+			}
 			doms = append(doms, fmt.Sprintf("domain %d: %d templates, %s", d.ID, d.Templates, s))
 		}
 		c := e.Counts24h
