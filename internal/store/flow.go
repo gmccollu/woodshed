@@ -229,6 +229,40 @@ type FlowBatch struct {
 	Meta     []byte // the exporter's metadata blob, if it changed (nil: unchanged)
 	// Templates the raw sets might need later (flowseg.Writer.AddTemplate).
 	Templates []*flow.Template
+	// The datagram's sequence counts from the collector (flow.Counts): gaps,
+	// the records they stand for, duplicates. They're counted with the
+	// batch's records in type_stats (index.FlowCounts), even for a batch
+	// with no records (a template-only datagram can show a gap).
+	SeqGaps, SeqLost, Duplicates int64
+}
+
+// flowCounts are a batch's index.FlowCounts: the collector's sequence
+// counts, and what the records and raw sets say (late, no_template,
+// malformed, times off arrival), as the collector counts them.
+func (b *FlowBatch) flowCounts() index.FlowCounts {
+	fc := index.FlowCounts{SeqGaps: b.SeqGaps, SeqLost: b.SeqLost, Duplicates: b.Duplicates}
+	var off flow.TimeOffsets
+	for _, r := range b.Records {
+		if r.Status == flow.StatusLate {
+			fc.Late++
+		}
+		off.Add(flow.TimeOffset(r))
+	}
+	fc.Ahead, fc.Behind, fc.MaxAheadMs, fc.MaxBehindMs = off.Ahead, off.Behind, off.MaxAheadMs, off.MaxBehindMs
+	for _, rs := range b.Raw {
+		switch rs.Status {
+		case flow.StatusNoTemplate:
+			fc.NoTemplate++
+		case flow.StatusMalformed:
+			fc.Malformed++
+		}
+	}
+	return fc
+}
+
+// empty reports whether the batch has nothing to write to a segment.
+func (b *FlowBatch) empty() bool {
+	return len(b.Records) == 0 && len(b.Raw) == 0 && b.Meta == nil && len(b.Templates) == 0
 }
 
 // WriteFlows stores one exporter's batch. It never blocks on the disk beyond
@@ -267,7 +301,17 @@ func (s *Store) WriteFlows(addr netip.Addr, b FlowBatch) error {
 		return ErrClosed
 	}
 	d.heardLocked(rec)
+	fc := b.flowCounts()
+	if b.empty() {
+		// Counts only (a datagram that held no data, say templates after
+		// a gap): nothing to store.
+		d.accFor(&d.act, rec).c.Flow.Add(fc)
+		d.mu.Unlock()
+		return nil
+	}
 	if s.paused.Load() {
+		a := d.accFor(&d.act, rec)
+		a.c.Flow.Add(fc)
 		d.dropLocked(rec, max(n, 1), dropPaused)
 		d.mu.Unlock()
 		return ErrPaused
@@ -281,6 +325,8 @@ func (s *Store) WriteFlows(addr netip.Addr, b FlowBatch) error {
 	st.mu.Unlock()
 
 	d.mu.Lock()
+	// The collector's counts stand whether or not the records were stored.
+	d.accFor(&d.act, rec).c.Flow.Add(fc)
 	if err != nil {
 		d.dropLocked(rec, max(n, 1), dropWriteError)
 	} else {
