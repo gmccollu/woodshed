@@ -102,8 +102,10 @@ frontend install.
   far as it arrived and marked incomplete, with both lengths (`\#incomplete=9/50` on its line, §3.3), whoever ended
   the connection: the sender's close, a reset, a TLS close, the frame timeout, an eviction or shutdown. Each TCP and
   TLS listener counts them (`/api/stats` `tcp_frames`). A frame of which only the count arrived has nothing to keep and
-  is only counted. A newline-framed message is marked incomplete (with no lengths) only when Woodshed closed the
-  connection mid-line; a sender's last line without its LF at close is a complete message, because non-transparent
+  is only counted, and so is one cut inside its count (`50`, `5`) once the connection has used octet counting (a
+  connection's first frame stays ambiguous: `50` then a close is a line). A newline-framed message is marked
+  incomplete (with no lengths) when Woodshed closed the connection mid-line or the sender reset it; a sender's last
+  line without its LF before a clean close (FIN, or a TLS close) is a complete message, because non-transparent
   framing (RFC 6587 §3.4.2) can't tell it from one that was cut. From 1.0 to 1.3 a frame its sender cut short was
   stored with nothing to say so, and one Woodshed cut was counted as truncated.
 - Max message size is 64 KiB. Anything longer is truncated and counted (`truncated` counter), never dropped; from 2.0
@@ -150,15 +152,17 @@ frontend install.
 - Default data dirs: Windows `C:\ProgramData\Woodshed`, macOS `/Library/Application Support/Woodshed`, Linux
   `/var/lib/woodshed`.
 - **Line format:** `<received UTC, RFC 3339 with ms> <sender IP> <raw message>`, one line per message. Embedded
-  CR/LF in a message is escaped as `\r` / `\n` so one message is always one line. Example:
+  CR/LF in a message is escaped as `\r` / `\n`, and a backslash as `\\`, so one message is always one line. Example:
   `2026-11-10T20:41:07.112Z 10.1.0.1 <134>Nov 10 20:41:07 edge-fw-01 conn opened tcp ...`
 - **Marker (2.0, decision 79):** a message that wasn't stored whole ends its line with a blank, `\#` and its flags,
   comma-separated: `truncated` (cut at the max message size), then `incomplete=A/L` (an octet-counted frame that
   ended with A of its advertised L bytes; A counts bytes past the max size too) or `incomplete` (a line Woodshed cut;
   the length isn't known). For example `... <13>short \#incomplete=9/50` or `... \#truncated,incomplete=70000/100000`.
   The escaping writes a backslash after a blank only as `\\`, `\n` or `\r`, so ` \#` can't come from a message; the
-  marker isn't part of the raw message, and readers ignore flags they don't know. A reader before 2.0 shows it as
-  text at the end of the message. A whole message has no marker, so its line is exactly as in 1.x.
+  marker isn't part of the raw message, and readers ignore flags they don't know. Lengths that can't be right (A not
+  below L) are dropped and the flag kept, and a torn flag name (`\#incompl`) still counts. Recovery marks a torn last
+  line it keeps `incomplete`. A reader before 2.0 shows the marker as text at the end of the message. A whole message
+  has no marker, so its line is exactly as in 1.x.
 - Files use the received time in UTC, because device clocks are often wrong or in local time. The device's own
   timestamp stays inside the raw message.
 - Writes are buffered per device and flushed every 1 s or 1 MiB, whichever comes first; fsync every 5 s. If the
@@ -3070,7 +3074,9 @@ the first bench, which records the measured numbers here:
 - **Config:** a 1.3 `woodshed.toml` loads unchanged; `[listeners.flow]` is off and `storage.flow_budget_bytes`
   defaults to 40 % of the cap, which changes nothing while there are no flows.
 - **Data:** syslog, trap and poll files are unchanged, except that a syslog message that wasn't stored whole ends its
-  line with a marker (§3.3, decision 79); a 1.x reader shows it as text. The index migrates once (`flow_segments`, `flow_minute`).
+  line with a marker (§3.3, decision 79); a 1.x reader shows it as text. Two side effects there: a message cut inside
+  its header gets a wrong field in 1.x (an RFC 5424 message cut after its hostname shows the marker as its app), and
+  a 1.x regex anchored with `$` doesn't match a marked line. The index migrates once (`flow_segments`, `flow_minute`).
   Segments appear only under `logs/<device>/flows/`. A 1.x `reindex` ignores them (its listing skips subfolders), so
   the path back is the usual one (§11.7).
 - **API:** additive. `type=flow`, the flow routes and filters, `flow_formats` and the new banner kinds are new; every
@@ -3544,8 +3550,13 @@ the connection; present since 1.0):
       About), not merged with the frame-timeout counter: a timeout is one of several causes. Incomplete messages aren't
       added to the per-device stats buckets (that would mean an index migration); the marked lines are the per-device
       record.
-    - **Newline framing** can't tell a sender's last line without its LF from a cut one, so that line stays complete;
-      only a line Woodshed cut is incomplete (no lengths).
+    - **Newline framing** can't tell a sender's last line without its LF from a clean close's, so that line stays
+      complete; a line Woodshed cut, or one the sender's reset ended, is incomplete (no lengths).
+    - **Cut inside the count** (independent review): on a connection already counting octets, `50` or `5` then the end
+      was stored as a complete message of digits. It's now an incomplete frame with no lengths, counted, not stored.
+      A connection's first frame stays ambiguous (it may be a line starting with digits).
+    - **Torn markers:** a reader drops lengths that can't be right and takes a torn flag name as its flag, so a later
+      flag's name must not be the start of an earlier one's; recovery finishes a torn last line with ` \#incomplete`.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

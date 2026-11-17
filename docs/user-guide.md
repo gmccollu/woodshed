@@ -424,14 +424,15 @@ A syslog message that couldn't be stored whole is still kept, and its line ends 
 - `\#incomplete=55/72`: the message came over TCP or TLS with its length in front (octet counting) and the
   connection ended after 55 of its 72 bytes, because the device closed or reset it, or Woodshed closed it (a message
   that took longer than the frame timeout, a connection evicted to make room, a shutdown). `\#incomplete` without
-  numbers is a newline-framed message Woodshed cut that way.
+  numbers is a newline-framed message Woodshed cut that way, or whose connection the device reset.
 - `\#truncated`: longer than the max message size (64 KiB); the rest was discarded.
 
 Events and the live tail show the same as `[incomplete: 55 of 72 bytes]` or `[truncated]` after the message, and
 **About** counts incomplete messages per TCP and TLS listener. The marker isn't part of the message: searches don't
-match it. A device that frames TCP messages by newline and closes in the middle of one can't be caught, since the
-last part looks like a whole message; use octet counting on devices that offer it. Lines written before 2.0 have no
-marker, and an older Woodshed shows one as text at the end of the message.
+match it. A device that frames TCP messages by newline and closes normally in the middle of one can't be caught,
+since the last part looks like a whole message; use octet counting on devices that offer it. A line torn by a crash
+or power loss is kept and marked `\#incomplete` too. Lines written before 2.0 have no marker, and an older Woodshed
+shows one as text at the end of the message.
 
 | | Installer | Portable |
 |---|---|---|

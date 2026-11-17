@@ -83,10 +83,11 @@ only means more, smaller files. At one block a second per exporter, an hour stay
 (`"tcp"`, `"tls"`), with its bound port (the configured one while it's down), counted since the server started:
 - `incomplete`: messages whose frame ended before all of it arrived. That is an octet-counted frame shorter than the
   count it advertised, whoever ended the connection (the sender's close, a reset, a TLS close, the frame timeout, an
-  eviction, shutdown), or a newline-framed message Woodshed cut by closing the connection itself. They're stored as
-  far as they arrived and marked incomplete (search results, below); a frame of which only the count arrived has
-  nothing to store and is only counted. A sender's last line without its LF is complete: newline framing (RFC 6587
-  non-transparent framing) can't tell it from one that was cut, so it isn't counted.
+  eviction, shutdown), or a newline-framed message Woodshed cut by closing the connection or the sender's reset ended.
+  They're counted when the frame ends, and stored as far as they arrived, marked incomplete (search results, below),
+  unless refused or dropped like any message. A frame of which only the count, or part of it, arrived has nothing to
+  store and is only counted. A sender's last line without its LF before a clean close is complete: newline framing
+  (RFC 6587 non-transparent framing) can't tell it from one that was cut, so it isn't counted.
 - `frame_timeouts`: connections closed because a message didn't complete within `tcp_frame_timeout`; their message is
   among `incomplete`.
 - These aren't in `truncated_24h`, which counts only messages cut at the max message size. Before 2.0 a message cut by

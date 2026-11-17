@@ -75,12 +75,15 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   (`<13>short \#incomplete=9/50`), in search results, the live tail and `woodshed search --json` (`incomplete`,
   `frame_arrived`, `frame_length`), and in Events, so exports and bundles carry it too. The same goes for a message
   Woodshed cut by closing the connection (the frame timeout, an eviction, shutdown), which was counted as truncated
-  instead. A frame of which only the count arrived is counted. A last line without its LF stays a complete message:
-  newline framing can't tell it from a cut one.
+  instead. A frame of which only the count arrived, or only part of its count, is counted (before, `6 <13>ab50` then
+  a close stored "50" as a message). A newline-framed last line the sender's reset ended is incomplete too; one without
+  its LF before a clean close stays a complete message, since newline framing can't tell it from a cut one. A torn
+  last line kept after a crash is marked incomplete.
 - `truncated` (the dashboard, the per-device stats, the bundle's losses) now counts only messages cut at the max
   message size, and such a line is marked `\#truncated`. Each TCP and TLS listener counts incomplete frames and frame
   timeouts in `/api/stats` (`tcp_frames`) and on **About**. Older Woodshed versions show a marker as text at the end of
-  the message; lines stored before 2.0 have none.
+  the message, so there a message cut inside its header can show a wrong app or host, and a regex anchored with `$`
+  doesn't match a marked line; lines stored before 2.0 have none.
 
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The
