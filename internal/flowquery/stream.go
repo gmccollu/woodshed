@@ -243,6 +243,7 @@ func (s *stream) run(ctx context.Context, q Query) error {
 		if !w.more && h.Len() == 0 {
 			break
 		}
+		s.e.gcNudge() // a big pool share: keep the garbage from growing the heap past it
 	}
 	return finish(ctx.Err())
 }
