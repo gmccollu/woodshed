@@ -17,6 +17,7 @@ import (
 	"runtime/metrics"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -296,11 +297,23 @@ func colsFor(f *Filter, extra flowseg.Cols) flowseg.Cols {
 // is w).
 type scanFn func(w int, b *planned, row int, r *flow.Record)
 
+// preFn, when a scan has one, sees each row of a block (not raw sets) in
+// the window, with its effective end, before its record is filled; false
+// skips the row. With an empty filter the record is then filled only for the
+// rows it passes (a search page's, which keeps few of the rows it reads).
+type preFn func(w int, b *planned, row int, end int64) bool
+
 // scan reads blocks [lo, hi) of p with the workers, calling fn for every
 // record that passes f and overlaps the window. It stops early when ctx is
 // done. It returns the number of records read (rows of blocks decoded or
 // ruled out by the index).
 func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, blocks []planned, f *Filter, cols flowseg.Cols, fn scanFn) error {
+	return e.scanPre(ctx, p, rd, blocks, f, cols, nil, fn)
+}
+
+// scanPre is scan with a preFn (nil: none).
+func (e *Engine) scanPre(ctx context.Context, p *plan, rd *readers, blocks []planned, f *Filter, cols flowseg.Cols, pre preFn,
+	fn scanFn) error {
 	if len(blocks) == 0 {
 		return nil
 	}
@@ -338,7 +351,7 @@ more:
 			defer wg.Done()
 			blk, rec := &got[w].blk, &got[w].rec
 			for b := range jobs {
-				e.scanBlock(p, rd, b, w, blk, rec, useIndex, f, cols, fn, &errMu, &firstErr)
+				e.scanBlock(p, rd, b, w, blk, rec, useIndex, f, cols, pre, fn, &errMu, &firstErr)
 				rd.done(b.seg)
 			}
 		}(w)
@@ -359,7 +372,7 @@ more:
 
 // scanBlock reads one planned block for a scan's worker w.
 func (e *Engine) scanBlock(p *plan, rd *readers, b *planned, w int, blk *flowseg.Block, rec *flow.Record, useIndex bool,
-	f *Filter, cols flowseg.Cols, fn scanFn, errMu *sync.Mutex, firstErr *error) {
+	f *Filter, cols flowseg.Cols, pre preFn, fn scanFn, errMu *sync.Mutex, firstErr *error) {
 	fail := func(err error) {
 		errMu.Lock()
 		if *firstErr == nil {
@@ -393,10 +406,21 @@ func (e *Engine) scanBlock(p *plan, rd *readers, b *planned, w int, blk *flowseg
 		fail(fmt.Errorf("flows: %s block %d: %w", p.segs[b.seg].Rel, b.block, err))
 		return
 	}
+	if pre != nil && f.Empty() {
+		for row := 0; row < blk.Rows; row++ {
+			s, en := blk.EffectiveTimes(row)
+			if en < p.from || s >= p.to || !pre(w, b, row, en) {
+				continue
+			}
+			blk.Record(row, rec)
+			fn(w, b, row, rec)
+		}
+		return
+	}
 	for row := 0; row < blk.Rows; row++ {
 		blk.Record(row, rec)
 		s, en := flowseg.EffectiveTimes(rec)
-		if en < p.from || s >= p.to || !f.Match(rec) {
+		if en < p.from || s >= p.to || !f.Match(rec) || (pre != nil && !pre(w, b, row, en)) {
 			continue
 		}
 		fn(w, b, row, rec)
@@ -615,11 +639,24 @@ type Hit struct {
 	Block    int
 	Row      int
 	Record   flow.Record
+
+	// src is the hit's segment while a search page still has to fill its
+	// record (it was read with the page's key and filter columns only).
+	src *segRef
 }
 
 // Ref is a hit's opaque reference.
-func (h *Hit) Ref() string {
-	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%s|%d|%d", h.Rel, h.Block, h.Row)))
+func (h *Hit) Ref() string { return string(h.AppendRef(nil)) }
+
+// AppendRef appends h.Ref() to dst.
+func (h *Hit) AppendRef(dst []byte) []byte {
+	var raw [96]byte
+	b := append(raw[:0], h.Rel...)
+	b = append(b, '|')
+	b = strconv.AppendInt(b, int64(h.Block), 10)
+	b = append(b, '|')
+	b = strconv.AppendInt(b, int64(h.Row), 10)
+	return base64.RawURLEncoding.AppendEncode(dst, b)
 }
 
 // order key: (end, then dev, rel, block, row) — descending end first.
@@ -720,9 +757,15 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		p.skipSeg = func(s *segRef) bool { return !s.open && ((!asc && s.start > after.End) || (asc && s.end < after.End)) }
 	}
 	f := q.filter()
-	cols := colsFor(f, flowseg.ColAll)
+	// Two passes: the page's blocks are read with the columns that order
+	// and filter them (a page reads several times the rows it keeps), and
+	// only the blocks holding the hits it returns are read again in full.
+	cols := colsFor(f, 0)
 	h := &hitHeap{asc: asc}
-	var mu sync.Mutex
+	local := make([]*hitHeap, e.o.Workers)
+	for i := range local {
+		local[i] = &hitHeap{asc: asc}
+	}
 	deadline := time.Now().Add(budget)
 	rd := newReaders(p)
 	defer rd.close()
@@ -762,23 +805,70 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		if len(blocks) == 0 {
 			break
 		}
-		err := e.scan(ctx, p, rd, blocks, f, cols, func(_ int, b *planned, row int, r *flow.Record) {
-			hit := &Hit{DeviceID: p.segs[b.seg].DeviceID, Rel: p.segs[b.seg].Rel, Block: b.block, Row: row, Record: *r}
-			k := keyOfHit(hit)
-			if after != nil && !after.before(k, asc) {
-				return
+		// Each worker keeps its own best limit hits (no lock, and a Hit only
+		// for a row that makes its cut: most rows a page reads don't), merged
+		// after the wave. h isn't written while the wave runs, so the workers
+		// also compare against what's already kept.
+		full := h.Len() >= limit
+		var worst hitKey
+		if full {
+			worst = h.k[0]
+		}
+		// keep reports whether a row with key k makes worker w's cut.
+		keep := func(w int, k *hitKey) bool {
+			if (after != nil && !after.before(*k, asc)) || (full && !k.before(worst, asc)) {
+				return false
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			if h.Len() < limit {
-				heap.Push(h, pair{hit, k})
-			} else if k.before(h.k[0], asc) {
-				h.h[0], h.k[0] = hit, k
-				heap.Fix(h, 0)
+			lh := local[w]
+			return lh.Len() < limit || k.before(lh.k[0], asc)
+		}
+		// The wave's segments, for the second pass (a batch's p.segs are
+		// reused when the next loads).
+		srcs := map[int]*segRef{}
+		for _, b := range blocks {
+			if !b.raw && srcs[b.seg] == nil {
+				ref := p.segs[b.seg]
+				srcs[b.seg] = &ref
+			}
+		}
+		pre := func(w int, b *planned, row int, end int64) bool {
+			seg := &p.segs[b.seg]
+			return keep(w, &hitKey{End: end, Dev: seg.DeviceID, Rel: seg.Rel, Block: b.block, Row: row})
+		}
+		err := e.scanPre(ctx, p, rd, blocks, f, cols, pre, func(w int, b *planned, row int, r *flow.Record) {
+			_, en := flowseg.EffectiveTimes(r)
+			seg := &p.segs[b.seg]
+			k := hitKey{End: en, Dev: seg.DeviceID, Rel: seg.Rel, Block: b.block, Row: row}
+			if !keep(w, &k) {
+				return // a raw set's (pre has seen the rest)
+			}
+			lh := local[w]
+			hit := &Hit{DeviceID: seg.DeviceID, Rel: seg.Rel, Block: b.block, Row: row, Record: *r}
+			if !b.raw {
+				hit.src = srcs[b.seg] // a raw set's record is whole already
+			}
+			if lh.Len() < limit {
+				heap.Push(lh, pair{hit, k})
+			} else {
+				lh.h[0], lh.k[0] = hit, k
+				heap.Fix(lh, 0)
 			}
 		})
 		if err != nil && ctx.Err() != nil {
 			return SearchResult{}, ctx.Err()
+		}
+		for _, lh := range local {
+			for i := range lh.h {
+				hit, k := lh.h[i], lh.k[i]
+				if h.Len() < limit {
+					heap.Push(h, pair{hit, k})
+				} else if k.before(h.k[0], asc) {
+					h.h[0], h.k[0] = hit, k
+					heap.Fix(h, 0)
+				}
+			}
+			clear(lh.h)
+			lh.h, lh.k = lh.h[:0], lh.k[:0]
 		}
 		for _, b := range blocks {
 			recs += int64(b.rows)
@@ -826,7 +916,153 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		}
 		res.Cursor = encodeCursor(k, qk, &q)
 	}
+	if err := e.fill(ctx, &res); err != nil {
+		return SearchResult{}, err
+	}
 	return res, nil
+}
+
+// fill reads the blocks holding a page's hits again with every column and
+// fills their records (the second pass). A block that can no longer be read
+// (retention deleted its segment since) drops its hits, as an unreadable
+// block's are skipped.
+func (e *Engine) fill(ctx context.Context, res *SearchResult) error {
+	type blockKey struct {
+		src   *segRef
+		block int
+	}
+	groups := map[blockKey][]int{}
+	var order []blockKey
+	for i := range res.Hits {
+		h := &res.Hits[i]
+		if h.src == nil {
+			continue
+		}
+		k := blockKey{h.src, h.Block}
+		if groups[k] == nil {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], i)
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	var got []*slot
+	select {
+	case sl := <-e.slots:
+		got = append(got, sl)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+more:
+	for len(got) < min(e.o.Workers, len(order)) {
+		select {
+		case sl := <-e.slots:
+			got = append(got, sl)
+		default:
+			break more
+		}
+	}
+	defer func() {
+		for _, sl := range got {
+			e.slots <- sl
+		}
+	}()
+	// One reader per segment, opened once; each worker takes whole blocks.
+	var mu sync.Mutex
+	rds := map[*segRef]*flowseg.Reader{}
+	failed := map[*segRef]error{}
+	open := func(s *segRef) (*flowseg.Reader, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r := rds[s]; r != nil {
+			return r, nil
+		}
+		if err := failed[s]; err != nil {
+			return nil, err
+		}
+		var r *flowseg.Reader
+		var err error
+		switch {
+		case s.snap != nil:
+			r, err = flowseg.OpenSnapshot(s.Path, s.snap)
+		case s.live:
+			r, err = flowseg.OpenLive(s.Path)
+		default:
+			r, err = openSegForFill(s.Path)
+		}
+		if err != nil {
+			failed[s] = err
+			return nil, err
+		}
+		rds[s] = r
+		return r, nil
+	}
+	defer func() {
+		for _, r := range rds {
+			r.Close()
+		}
+	}()
+	drop := make([]bool, len(res.Hits))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	for w := range got {
+		wg.Add(1)
+		go func(sl *slot) {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(order) || ctx.Err() != nil {
+					return
+				}
+				k := order[i]
+				r, err := open(k.src)
+				if err == nil {
+					err = r.Decode(k.block, flowseg.ColAll, &sl.blk)
+				}
+				for _, j := range groups[k] {
+					h := &res.Hits[j]
+					if err != nil {
+						drop[j] = true
+						continue
+					}
+					sl.blk.Record(h.Row, &h.Record)
+				}
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("flows: %s block %d: %w", k.src.Rel, k.block, err)
+					}
+					errMu.Unlock()
+				}
+			}
+		}(got[w])
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if firstErr != nil {
+		e.o.Logger.Warn("flows: a block couldn't be read again; its hits are left out", "err", firstErr)
+	}
+	out := res.Hits[:0]
+	for i := range res.Hits {
+		res.Hits[i].src = nil
+		if !drop[i] {
+			out = append(out, res.Hits[i])
+		}
+	}
+	res.Hits = out
+	return nil
+}
+
+// openSegForFill opens a closed segment, or one another process has been
+// writing (read up to its last complete block), as the plan's first read did.
+func openSegForFill(path string) (*flowseg.Reader, error) {
+	r, _, err := openSeg(path)
+	return r, err
 }
 
 func encodeCursor(k hitKey, qk string, q *Query) string {
