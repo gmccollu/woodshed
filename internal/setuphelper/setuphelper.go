@@ -146,7 +146,8 @@ var families = []family{
 			WhatPoll: {ChoiceAgentPort, ChoiceV3User, ChoiceAuth, ChoicePriv},
 		}},
 	{id: "softflowd", label: "Linux: softflowd", reference: "softflowd(8) manual page",
-		notes: []string{"softflowd watches a network interface and exports the flows it sees, for machines that have no flow export of their own."},
+		notes: []string{"softflowd watches a network interface and exports the flows it sees, for machines that have no flow export of their own.",
+			"softflowd exports a flow when it ends or times out (its -t timeouts), so Woodshed's counts can trail the traffic until then."},
 		choices: map[string][]string{
 			WhatFlow: {ChoiceInterface},
 		}},
