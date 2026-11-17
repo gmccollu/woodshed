@@ -77,11 +77,12 @@ design), [docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTI
 
 ## Known issues
 
-As of 1.3.0 (details in the [CHANGELOG](CHANGELOG.md)):
+As of 2.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
 
 - The installers aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask once.
 - On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
-- On non-English Windows the "TLS firewall rule is off" banner doesn't appear; `woodshed tls on` still turns the rule on.
+- On non-English Windows the "firewall rule is off" banners for TLS, SNMP traps and flows don't appear; `woodshed tls
+  on`, `snmp on` and `flow on` still turn the rules on.
 - On some Windows machines, especially with endpoint protection, CPU use at moderate syslog rates is much higher than on
   other systems. Nothing is lost; the cause is being traced.
 

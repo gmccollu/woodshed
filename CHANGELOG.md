@@ -75,6 +75,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   --proto ipfix --rate 50000 --duration 10m --syslog-rate 5000` (the sender in a child process) on a 14-core
   laptop; the reference-spec (4 vCPU) runner and the lab's 24-hour run will replace these before release.
 
+### Known issues
+- On Windows in a language other than English, the flow rules' "firewall rule is off" banner doesn't appear, as for
+  TLS (1.1.0) and SNMP traps: netsh's output is read in English only, so the rules' state reads as unknown. `woodshed
+  flow on` still turns the rules on.
+
 ## [1.3.0] - 2026-11-17
 
 ### Added
