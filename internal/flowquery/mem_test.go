@@ -64,6 +64,87 @@ func peakDuring(fn func()) (peak, base uint64) {
 	return top.Load() - base, base
 }
 
+// heapLive is the heap's objects: just after a collection, the live ones.
+func heapLive() uint64 {
+	s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(s)
+	return s[0].Value.Uint64()
+}
+
+func heapAllocs() uint64 {
+	s := []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
+	metrics.Read(s)
+	return s[0].Value.Uint64()
+}
+
+// livePeakDuring runs fn while another goroutine collects again and again,
+// and returns the most live heap any collection found above the live heap
+// before fn, and what fn allocated in all. Unlike peakDuring's sampled
+// in-use heap, neither depends on how far the collector lags the
+// allocations, which varies with the CPU and the OS (the same week's
+// sampled peak grew 9 MiB on one runner and 17 MiB on another).
+func livePeakDuring(fn func()) (live, alloc uint64) {
+	runtime.GC()
+	base := heapLive()
+	var top atomic.Uint64
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			runtime.GC()
+			if h := heapLive(); h > top.Load() {
+				top.Store(h)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}()
+	a0 := heapAllocs()
+	fn()
+	alloc = heapAllocs() - a0
+	close(stop)
+	wg.Wait()
+	if top.Load() < base {
+		return 0, alloc
+	}
+	return top.Load() - base, alloc
+}
+
+// planHighWater walks q's plan batch by batch, as a query does, and returns
+// the most pool bytes, segments and planned blocks one batch held, and the
+// blocks planned in all.
+func planHighWater(t *testing.T, e *Engine, q Query) (charged int64, segs, blocks int, total int) {
+	t.Helper()
+	p, err := e.planFor(bg, &q, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd := newReaders(p)
+	defer rd.close()
+	for p.more(bg) {
+		p.load(bg, rd)
+		if len(p.segs) == 0 {
+			break
+		}
+		charged, segs, blocks = max(charged, p.charged), max(segs, len(p.segs)), max(blocks, len(p.blocks))
+		total += len(p.blocks)
+		p.done = len(p.blocks)
+		for _, b := range p.blocks {
+			rd.done(b.seg)
+		}
+	}
+	if p.err != nil {
+		t.Fatal(p.err)
+	}
+	p.release()
+	return charged, segs, blocks, total
+}
+
 func addrN(i int) netip.Addr {
 	return netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)})
 }
@@ -519,26 +600,41 @@ func writeHours(t *testing.T, start time.Time, hours, exporters, blocks int) *En
 	return New(Options{DataDir: dir, Index: idx})
 }
 
-// A week over 50 exporters (8,400 segments of 60 blocks): the plan streams
-// the window, so a top-N's and a search's peak heap over the week is about
-// its peak over the week's last day, 7 times fewer blocks, and far under the
-// query ceiling (SPEC §13.10 decision 56). The batches are the same shape
-// either way (a batch's size depends on the segments, not the window), so
-// the comparison holds on a starved CPU too. At one block a second a real
-// week is 30 million blocks: the old plan's 64 bytes each would have been
-// 1.9 GB, before the segments' directories.
+// A week over 10 exporters (50 with WOODSHED_LONG_TESTS=1: 8,400 segments
+// of 60 blocks): the plan streams the window, so its largest batch over the
+// week (pool bytes, segments, planned blocks: exact, whatever the CPU) is
+// its largest over the week's last day, 7 times fewer blocks; a top-N's
+// and a search's live heap stays far under the query ceiling (SPEC §13.10
+// decision 56) and about level; and what a top-N allocates grows with the
+// blocks, not faster. The heap is measured after collections, not sampled.
+// At one block a second a real week is 30 million blocks: the old plan's 64
+// bytes each would have been 1.9 GB, before the segments' directories.
 func TestWeekPlanBounded(t *testing.T) {
 	if testing.Short() || raceEnabled {
-		t.Skip("short or race: writes 8,400 segments")
+		t.Skip("short or race: writes 1,680 segments (8,400 long)")
 	}
-	const exporters, blocks = 50, 60
+	exporters, blocks := 10, 60
+	if os.Getenv("WOODSHED_LONG_TESTS") == "1" {
+		exporters = 50
+	}
 	e, week := writeWeek(t, exporters, blocks)
-	var peaks []uint64
+	var lives, perBlock []uint64
+	var batch []int64
 	for _, days := range []int{1, 7} {
 		q := Query{From: week.Add(time.Duration(7-days) * 24 * time.Hour), To: week.Add(7 * 24 * time.Hour)}
+		charged, bsegs, bblocks, planned := planHighWater(t, e, q)
+		t.Logf("%d days: the largest batch charged %d bytes for %d segments, %d blocks (%d planned in all)",
+			days, charged, bsegs, bblocks, planned)
+		if planned != exporters*days*24*blocks {
+			t.Fatalf("%d days: %d blocks planned, want %d", days, planned, exporters*days*24*blocks)
+		}
+		batch = append(batch, charged)
+		if bsegs > planBatchSegs {
+			t.Errorf("%d days: a batch of %d segments, over %d", days, bsegs, planBatchSegs)
+		}
 		var top TopResult
 		var err error
-		peak, _ := peakDuring(func() { top, err = e.Top(bg, q, "src", "flows", 10, time.Hour, "") })
+		live, alloc := livePeakDuring(func() { top, err = e.Top(bg, q, "src", "flows", 10, time.Hour, "") })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -548,7 +644,7 @@ func TestWeekPlanBounded(t *testing.T) {
 		}
 		// A search's pages walk the window newest first; the first and a later one.
 		var sres SearchResult
-		speak, _ := peakDuring(func() { sres, err = e.Search(bg, q, 500, false, "", time.Hour) })
+		slive, salloc := livePeakDuring(func() { sres, err = e.Search(bg, q, 500, false, "", time.Hour) })
 		if err != nil || len(sres.Hits) != 500 || sres.Cursor == "" {
 			t.Fatalf("search: %v hits %d", err, len(sres.Hits))
 		}
@@ -563,18 +659,36 @@ func TestWeekPlanBounded(t *testing.T) {
 		if err != nil || c != want || len(n) != exporters {
 			t.Fatalf("count %d (want %d) devices %d: %v", c, want, len(n), err)
 		}
-		t.Logf("%d exporters, %d days of %d-block segments (%d blocks): top peak %.1f MiB, search peak %.1f MiB",
-			exporters, days, blocks, exporters*days*24*blocks, float64(peak)/(1<<20), float64(speak)/(1<<20))
-		peaks = append(peaks, max(peak, speak))
-		if p := max(peak, speak); p > 192<<20 {
-			t.Fatalf("peak %.1f MiB over the ceiling", float64(p)/(1<<20))
+		nb := uint64(exporters * days * 24 * blocks)
+		t.Logf("%d exporters, %d days of %d-block segments (%d blocks): top live %.1f MiB, %.0f B allocated a block; "+
+			"search live %.1f MiB, %.1f MiB allocated", exporters, days, blocks, nb, float64(live)/(1<<20),
+			float64(alloc)/float64(nb), float64(slive)/(1<<20), float64(salloc)/(1<<20))
+		lives = append(lives, max(live, slive))
+		perBlock = append(perBlock, alloc/nb)
+		if p := max(live, slive); p > 192<<20 {
+			t.Fatalf("live heap %.1f MiB over the ceiling", float64(p)/(1<<20))
 		}
 		if u := e.pool.Used(); u != 0 {
 			t.Fatalf("pool used %d after the queries", u)
 		}
 	}
-	if d := int64(peaks[1]) - int64(peaks[0]); d > 16<<20 {
-		t.Fatalf("7 times the blocks grew the peak by %.1f MiB", float64(d)/(1<<20))
+	// With 10 exporters the day fits one batch (240 segments); the week's are full
+	// (planBatchSegs), so the same size give or take a few segments.
+	if batch[1] > batch[0]*5/4 {
+		t.Errorf("7 times the blocks grew the largest batch from %d to %d pool bytes", batch[0], batch[1])
+	}
+	// Live heap is read after collections that run beside the query, so
+	// what the query allocates during one counts as live: with one CPU a
+	// week read up to 25 MiB against a day's 5 (10-11 MiB both with more).
+	// The batch check above is the exact one; this catches a heap that
+	// grows with the window.
+	if d := int64(lives[1]) - int64(lives[0]); d > 32<<20 {
+		t.Errorf("7 times the blocks grew the live heap by %.1f MiB", float64(d)/(1<<20))
+	}
+	// A week's top-N allocates about what 7 days do one at a time: no
+	// per-block cost that grows with the window.
+	if perBlock[1] > perBlock[0]*3/2+1024 {
+		t.Errorf("a week's top-N allocated %d bytes a block, a day's %d", perBlock[1], perBlock[0])
 	}
 }
 
