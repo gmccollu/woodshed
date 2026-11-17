@@ -4,7 +4,7 @@
   // /api/flows/templates), so a user can find the enterprise IE that carries a rule ID and add it to
   // listeners.flow.rule_id_ies (SPEC §13.2.1: no standard IE carries one).
   import { getFlows, getFlowTemplates } from '../lib/api';
-  import { ieKey, ieLabel, samplingText, short, timeOffNow, timeOffWords, type FlowState, type FlowTemplates } from '../lib/flows';
+  import { ieKey, ieLabel, ruleIeCandidate, samplingText, short, timeOffNow, timeOffWords, type FlowState, type FlowTemplates } from '../lib/flows';
   import { ago, bytes, num } from '../lib/format';
   import { deviceName } from '../lib/status.svelte';
 
@@ -91,7 +91,8 @@
         </label>
         <p class="hint">
           Every field each template carries, as the exporter sent it. No standard field carries a rule or ACL ID; exporters that send one use an
-          enterprise field (shown as enterprise number:element ID). Find it here and press Use as rule ID.
+          enterprise field (shown as enterprise number:element ID), or in flow v9 a field type from the vendor range, 32768 and up (shown as 0:type).
+          Find it here and press Use as rule ID.
         </p>
         {#if tplError}<p class="m-0 text-[13.5px] text-bad-fg" role="alert">{tplError}</p>{/if}
         {#if tpl}
@@ -105,8 +106,8 @@
                   {#each t.fields as f, i (i)}
                     <li>
                       <span class="font-mono">{ieLabel(f)}</span>
-                      <span class="text-muted">{f.name ? `${f.pen}:${f.id}` : 'enterprise'} · {f.length === 65535 ? 'variable' : `${f.length} B`}</span>
-                      {#if f.pen}
+                      <span class="text-muted">{f.name ? `${f.pen}:${f.id}` : f.pen ? 'enterprise' : 'v9 vendor range'} · {f.length === 65535 ? 'variable' : `${f.length} B`}</span>
+                      {#if ruleIeCandidate(f)}
                         {#if ruleIes.includes(ieKey(f))}<span class="used">rule ID</span>
                         {:else}<button type="button" class="ghost-btn sm" onclick={() => onuse(ieKey(f))}>Use as rule ID</button>{/if}
                       {/if}
