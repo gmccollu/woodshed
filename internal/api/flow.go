@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -150,132 +148,10 @@ func FlowListsOf(p FlowParams) (*FlowLists, ValueList) {
 type FlowResult struct{ r *flow.Record }
 
 // MarshalJSON writes every column, null for one the record lacks.
-func (f FlowResult) MarshalJSON() ([]byte, error) {
-	r := f.r
-	type ex struct {
-		PEN uint32 `json:"pen"`
-		ID  uint16 `json:"id"`
-		Hex string `json:"hex"`
-	}
-	t := func(bit uint64, ms int64) any {
-		if !r.Is(bit) {
-			return nil
-		}
-		return time.UnixMilli(ms).UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	}
-	u := func(bit uint64, v uint64) any {
-		if !r.Is(bit) {
-			return nil
-		}
-		return v
-	}
-	str := func(bit uint64, v string) any {
-		if !r.Is(bit) {
-			return nil
-		}
-		return v
-	}
-	var proto, protoName any
-	if r.Is(flow.HasProto) {
-		proto, protoName = r.Proto, flow.ProtoName(r.Proto)
-	}
-	var flags any
-	if r.Is(flow.HasTCPFlags) {
-		flags = flow.TCPFlagLetters(r.TCPFlags)
-	}
-	var fw, nat any
-	if r.Is(flow.HasFwEvent) {
-		fw = flow.FwEventName(r.FwEvent)
-	}
-	if r.Is(flow.HasNatEvent) {
-		nat = flow.NatEventName(r.NatEvent)
-	}
-	var pScaled, bScaled any
-	if r.Sampling > 0 {
-		if r.Is(flow.HasPackets) {
-			pScaled = r.Packets * uint64(r.Sampling)
-		}
-		if r.Is(flow.HasBytes) {
-			bScaled = r.Bytes * uint64(r.Sampling)
-		}
-	}
-	var nextHop any = ""
-	if r.Is(flow.HasNextHop) {
-		nextHop = r.NextHop.String()
-	}
-	extras := make([]ex, 0, len(r.Extras))
-	for _, e := range r.Extras {
-		extras = append(extras, ex{e.PEN, e.ID, hex.EncodeToString(e.Value)})
-	}
-	addr := func(bit uint64, v interface{ String() string }) any { return str(bit, v.String()) }
-	return json.Marshal(struct {
-		Start            any    `json:"start"`
-		End              any    `json:"end"`
-		Src              any    `json:"src"`
-		SrcPort          any    `json:"src_port"`
-		Dst              any    `json:"dst"`
-		DstPort          any    `json:"dst_port"`
-		Proto            any    `json:"proto"`
-		ProtoName        any    `json:"proto_name"`
-		TCPFlags         any    `json:"tcp_flags"`
-		Packets          any    `json:"packets"`
-		Bytes            any    `json:"bytes"`
-		Sampling         uint32 `json:"sampling"`
-		PacketsScaled    any    `json:"packets_scaled"`
-		BytesScaled      any    `json:"bytes_scaled"`
-		InIf             any    `json:"in_if"`
-		InIfName         any    `json:"in_if_name"`
-		OutIf            any    `json:"out_if"`
-		OutIfName        any    `json:"out_if_name"`
-		Domain           uint32 `json:"domain"`
-		FwEvent          any    `json:"fw_event"`
-		NatEvent         any    `json:"nat_event"`
-		EventTime        any    `json:"event_time"`
-		PostNATSrc       any    `json:"post_nat_src"`
-		PostNATSrcPort   any    `json:"post_nat_src_port"`
-		PostNATDst       any    `json:"post_nat_dst"`
-		PostNATDstPort   any    `json:"post_nat_dst_port"`
-		InitiatorBytes   any    `json:"initiator_bytes"`
-		ResponderBytes   any    `json:"responder_bytes"`
-		InitiatorPackets any    `json:"initiator_packets"`
-		ResponderPackets any    `json:"responder_packets"`
-		RevBytes         any    `json:"rev_bytes"`
-		RevPackets       any    `json:"rev_packets"`
-		RuleID           string `json:"rule_id"`
-		ToS              any    `json:"tos"`
-		SrcAS            any    `json:"src_as"`
-		DstAS            any    `json:"dst_as"`
-		NextHop          any    `json:"next_hop"`
-		TimeSource       string `json:"time_source"`
-		Status           string `json:"status"`
-		Late             bool   `json:"late"`
-		Extras           []ex   `json:"extras"`
-	}{
-		t(flow.HasStart, r.Start), t(flow.HasEnd, r.End), addr(flow.HasSrc, r.Src), u(flow.HasSrcPort, uint64(r.SrcPort)),
-		addr(flow.HasDst, r.Dst), u(flow.HasDstPort, uint64(r.DstPort)), proto, protoName, flags,
-		u(flow.HasPackets, r.Packets), u(flow.HasBytes, r.Bytes), r.Sampling, pScaled, bScaled,
-		u(flow.HasInIf, uint64(r.InIf)), str(flow.HasInIfName, r.InIfName), u(flow.HasOutIf, uint64(r.OutIf)),
-		str(flow.HasOutIfName, r.OutIfName), r.Domain, fw, nat, t(flow.HasEventTime, r.EventTime),
-		addr(flow.HasPostNATSrc, r.PostNATSrc), u(flow.HasPostNATSrcPort, uint64(r.PostNATSrcPort)),
-		addr(flow.HasPostNATDst, r.PostNATDst), u(flow.HasPostNATDstPort, uint64(r.PostNATDstPort)),
-		u(flow.HasInitiatorBytes, r.InitiatorBytes), u(flow.HasResponderBytes, r.ResponderBytes),
-		u(flow.HasInitiatorPackets, r.InitiatorPackets), u(flow.HasResponderPackets, r.ResponderPackets),
-		u(flow.HasRevBytes, r.RevBytes), u(flow.HasRevPackets, r.RevPackets), r.RuleID,
-		u(flow.HasToS, uint64(r.ToS)), u(flow.HasSrcAS, uint64(r.SrcAS)), u(flow.HasDstAS, uint64(r.DstAS)), nextHop,
-		r.TimeSource.String(), r.Status.String(), r.Status == flow.StatusLate, extras,
-	})
-}
+func (f FlowResult) MarshalJSON() ([]byte, error) { return appendFlowResultJSON(nil, f.r), nil }
 
 // flowLineJSON is a flow SearchLine's shape.
-func flowLineJSON(l SearchLine) ([]byte, error) {
-	return json.Marshal(struct {
-		Received string     `json:"received"`
-		DeviceID string     `json:"device_id"`
-		Type     string     `json:"type"`
-		Ref      string     `json:"ref"`
-		Fields   FlowResult `json:"fields"`
-	}{l.Received.UTC().Format("2006-01-02T15:04:05.000Z07:00"), l.DeviceID, datatype.Flow, l.Ref, FlowResult{l.Flow}})
-}
+func flowLineJSON(l SearchLine) ([]byte, error) { return AppendFlowLineJSON(nil, &l), nil }
 
 // FlowProgress is a flow answer's progress (SPEC §13.3): blocks and records
 // read of those the window can touch, and the flow time from which every
