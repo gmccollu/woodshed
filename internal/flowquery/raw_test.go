@@ -16,12 +16,42 @@ import (
 // segment holds the template (SPEC §13.1.3): searches, counts, top-N and
 // Each see its records, marked late.
 func TestEngineDecodesRawOnRead(t *testing.T) {
+	eng, h := rawFixture(t)
+	q := Query{From: h, To: h.Add(time.Hour)}
+	c, err := eng.Count(bg, q)
+	if err != nil || c["192.0.2.9"] != 5 {
+		t.Fatalf("count %v %v", c, err)
+	}
+	late := 0
+	eng.Each(bg, q, func(_ string, r *flow.Record) error {
+		if r.Status == flow.StatusLate {
+			late++
+		}
+		return nil
+	})
+	if late != 3 {
+		t.Fatalf("late %d", late)
+	}
+	top, err := eng.Top(bg, q, "src", "flows", 5, time.Minute, "")
+	if err != nil || top.Rows[0].Key != "10.0.0.7" || top.Rows[0].Flows != 3 {
+		t.Fatalf("top %+v %v", top.Rows, err)
+	}
+	res, err := eng.Search(bg, Query{From: h, To: h.Add(time.Hour), Filter: mustFilter(t, "status=late")}, 10, false, "", time.Minute)
+	if err != nil || len(res.Hits) != 3 {
+		t.Fatalf("search %d %v", len(res.Hits), err)
+	}
+}
+
+// rawFixture is a segment of one exporter: 2 records decoded on arrival and
+// a raw set of 3 kept for lack of its template, which the segment holds.
+func rawFixture(t *testing.T) (*Engine, time.Time) {
+	t.Helper()
 	dataDir := t.TempDir()
 	idx, err := index.Open(filepath.Join(dataDir, index.FileName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer idx.Close()
+	t.Cleanup(func() { idx.Close() })
 	h := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
 	from := netip.MustParseAddrPort("192.0.2.9:40000")
 	fields := []flow.TemplateField{{ID: 8, Length: 4}, {ID: 12, Length: 4}, {ID: 1, Length: 8}, {ID: 2, Length: 8}, {ID: 153, Length: 8}}
@@ -67,28 +97,5 @@ func TestEngineDecodesRawOnRead(t *testing.T) {
 	if err := idx.Apply(bg, index.Batch{Files: []index.FileOp{{Kind: index.OpUpsert, File: rows.File, Flow: &rows.Segment}}}); err != nil {
 		t.Fatal(err)
 	}
-	eng := New(Options{DataDir: dataDir, Index: idx})
-	q := Query{From: h, To: h.Add(time.Hour)}
-	c, err := eng.Count(bg, q)
-	if err != nil || c["192.0.2.9"] != 5 {
-		t.Fatalf("count %v %v", c, err)
-	}
-	late := 0
-	eng.Each(bg, q, func(_ string, r *flow.Record) error {
-		if r.Status == flow.StatusLate {
-			late++
-		}
-		return nil
-	})
-	if late != 3 {
-		t.Fatalf("late %d", late)
-	}
-	top, err := eng.Top(bg, q, "src", "flows", 5, time.Minute, "")
-	if err != nil || top.Rows[0].Key != "10.0.0.7" || top.Rows[0].Flows != 3 {
-		t.Fatalf("top %+v %v", top.Rows, err)
-	}
-	res, err := eng.Search(bg, Query{From: h, To: h.Add(time.Hour), Filter: mustFilter(t, "status=late")}, 10, false, "", time.Minute)
-	if err != nil || len(res.Hits) != 3 {
-		t.Fatalf("search %d %v", len(res.Hits), err)
-	}
+	return New(Options{DataDir: dataDir, Index: idx}), h
 }

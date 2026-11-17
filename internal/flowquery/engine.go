@@ -78,6 +78,9 @@ type Engine struct {
 
 	page, batch int // plan sizes, for tests (0: planPage, planBatch)
 
+	// Stream's blocks decoded and its falls back to pages (tests).
+	streamDecodes, streamFallbacks atomic.Int64
+
 	gcMu                  sync.Mutex
 	gcCycles, gcAllocBase uint64
 }
