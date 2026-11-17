@@ -489,7 +489,7 @@ func TestFlowBundle(t *testing.T) {
 	b, _ := json.Marshal(fw)
 	for _, k := range []string{`"records"`, `"domains"`, `"sampling"`, `"bytes"`, `"bytes_scaled"`, `"packets"`, `"packets_scaled"`,
 		`"top_talkers"`, `"top_dst_ports"`, `"top_conversations"`, `"fw_events"`, `"top_denied_sources"`, `"top_denied_ports"`,
-		`"nat_connections"`, `"top_post_nat_sources"`, `"sequence_gaps"`, `"lost_estimate"`, `"no_template"`, `"malformed"`} {
+		`"nat_connections"`, `"top_post_nat_sources"`, `"zero_omitted"`, `"sequence_gaps"`, `"lost_estimate"`, `"no_template"`, `"malformed"`} {
 		if !bytes.Contains(b, []byte(k)) {
 			t.Errorf("summary JSON lacks %s: %s", k, b)
 		}
@@ -610,6 +610,26 @@ func TestFlowHumanUnits(t *testing.T) {
 	if got := string(AppendFlowCSVRow(nil, &flow.Record{Has: flow.HasSrc, Src: netip.MustParseAddr("10.0.0.1"), Sampling: 0})); !strings.HasPrefix(got, ",,,10.0.0.1,") ||
 		!strings.HasSuffix(got, "\r\n") || len(FlowCSVHeader()) != 39 {
 		t.Errorf("row %q", got)
+	}
+}
+
+// A top list leaves out keys with 0 bytes and says how many; with only
+// those it says "none"; with none left out it says nothing more.
+func TestFlowReadmeZeroOmitted(t *testing.T) {
+	s := &FlowSummary{Records: 10, Domains: 1, Sampling: []DomainSampling{{1, []uint32{1}}}, Bytes: 5000,
+		TopTalkers: []KeyShare{{"10.0.0.1", 0.9}, {"10.0.0.2", 0.1}}, TopDstPorts: []KeyShare{{"tcp/443", 1}},
+		ZeroOmitted: TopZeroOmitted{TopTalkers: 3, TopConversations: 2}}
+	text := strings.Join(flowReadme(s), "\n")
+	for _, want := range []string{"top talkers by bytes: 10.0.0.1 90 %, 10.0.0.2 10 % (3 with 0 bytes not shown)\n",
+		"top destination ports: tcp/443 100 %\n", "top conversations: none (2 with 0 bytes not shown)\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("lacks %q:\n%s", want, text)
+		}
+	}
+	b, _ := json.Marshal(s)
+	if !bytes.Contains(b, []byte(`"zero_omitted":{"top_talkers":3,"top_dst_ports":0,"top_conversations":2,"top_denied_sources":0,`+
+		`"top_denied_ports":0,"top_post_nat_sources":0}`)) {
+		t.Errorf("JSON %s", b)
 	}
 }
 

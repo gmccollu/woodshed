@@ -3214,7 +3214,8 @@ Made while building it, each **decided (build, 2026-11-16)**:
 42. The bundle README's sequence gaps are the collector's last-24-hour counts and say so (only the running collector
     keeps them; `woodshed bundle` says they aren't known). The firewall-event, denied and NAT lines appear only with
     something to count; scaled figures only when a rate above 1 is known, with "≥" when some sampling is unknown;
-    top lists hold 3 entries; "translated connections" count NAT create events.
+    top lists hold 3 entries, none with 0 of the list's metric (decision 80); "translated connections" count NAT
+    create events.
 43. `flows.ipfix` writes columns as their IANA IEs at fixed lengths (the received time as
     collectionTimeMilliseconds, 258), extras as they came, interface names as options data before the records that
     use them, and opens each domain with an options record whose observationDomainName says "Written by Woodshed

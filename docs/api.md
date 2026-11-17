@@ -1449,13 +1449,16 @@ v9 vendor-range field type is `{"pen": 0, "id": 40003, …}` (the whole type), t
   "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
   "fw_events": {"created", "deleted", "denied"}, "top_denied_sources": [{"key", "count"}], "top_denied_ports": [...],
   "nat_connections", "top_post_nat_sources": [...],
+  "zero_omitted": {"top_talkers", "top_dst_ports", "top_conversations", "top_denied_sources", "top_denied_ports",
+  "top_post_nat_sources"},
   "sequence_gaps", "lost_estimate", "no_template", "malformed",
   "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps`,
   `lost_estimate` and `time_offsets_24h` are the collector's last 24 hours (`null` from `woodshed bundle`, which has no
   collector); `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
   defines it). `time_offsets_24h` can count records the window doesn't hold: they're at their own times. The README's
   Flows block gets a "times off arrival" line when either is non-zero. Entries whose count is 0 are left out of the top
-  lists, which hold at most 3.
+  lists, which hold at most 3; `zero_omitted` says how many keys each list left out that way (bytes for the share lists,
+  flow records for the denied ones), and the README adds "(4 with 0 bytes not shown)" after the list.
 
 ### Banners
 - `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives

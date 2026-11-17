@@ -420,6 +420,18 @@ type KeyShare struct {
 	Share float64 `json:"share"`
 }
 
+// TopZeroOmitted is FlowSummary.ZeroOmitted: each top list's keys left out
+// for having 0 of its metric (bytes for the share lists, flow records for
+// the denied ones, NAT create events for post-NAT sources).
+type TopZeroOmitted struct {
+	TopTalkers        int64 `json:"top_talkers"`
+	TopDstPorts       int64 `json:"top_dst_ports"`
+	TopConversations  int64 `json:"top_conversations"`
+	TopDeniedSources  int64 `json:"top_denied_sources"`
+	TopDeniedPorts    int64 `json:"top_denied_ports"`
+	TopPostNATSources int64 `json:"top_post_nat_sources"`
+}
+
 // KeyCount is a top-N entry with its count.
 type KeyCount struct {
 	Key   string `json:"key"`
@@ -458,6 +470,9 @@ type FlowSummary struct {
 	TopDeniedPorts    []KeyCount       `json:"top_denied_ports"`
 	NATConnections    int64            `json:"nat_connections"`
 	TopPostNATSources []KeyShare       `json:"top_post_nat_sources"`
+	// ZeroOmitted counts, per list, the keys with none of its metric, which
+	// are never listed (a denied-only source has 0 bytes).
+	ZeroOmitted TopZeroOmitted `json:"zero_omitted"`
 	// SequenceGaps and LostEstimate are the running collector's (the last
 	// 24 h); null when the bundle was built without it (woodshed bundle).
 	SequenceGaps *int64 `json:"sequence_gaps"`
@@ -551,27 +566,29 @@ func (c *flowCount) raw(rs *flow.RawSet) {
 	}
 }
 
-func shares(t *flowquery.Top, metric string) []KeyShare {
+// shares is a top list with each key's share of the metric, and how many
+// keys were left out for having none of it.
+func shares(t *flowquery.Top, metric string) ([]KeyShare, int64) {
 	out := []KeyShare{}
+	rows, zero := t.RowsZero(topN)
 	tot := t.Total.Metric(metric)
 	if tot <= 0 {
-		return out
+		return out, zero
 	}
-	for _, r := range t.Rows(topN) {
-		if r.Metric(metric) <= 0 {
-			break // rows are by the metric: the rest are 0 too
-		}
+	for _, r := range rows {
 		out = append(out, KeyShare{Key: r.Key, Share: math.Round(float64(r.Metric(metric))/float64(tot)*1e4) / 1e4})
 	}
-	return out
+	return out, zero
 }
 
-func counts(t *flowquery.Top) []KeyCount {
+// counts is a top list by flow records, and how many keys had none.
+func counts(t *flowquery.Top) ([]KeyCount, int64) {
 	out := []KeyCount{}
-	for _, r := range t.Rows(topN) {
+	rows, zero := t.RowsZero(topN)
+	for _, r := range rows {
 		out = append(out, KeyCount{Key: r.Key, Count: r.Flows})
 	}
-	return out
+	return out, zero
 }
 
 // summary is the accumulated FlowSummary; stats may be nil (not known).
@@ -579,9 +596,14 @@ func (c *flowCount) summary(stats *FlowStats) *FlowSummary {
 	tot := c.talkers.Total
 	s := &FlowSummary{Records: c.records, Domains: len(c.domains), Sampling: []DomainSampling{}, Bytes: tot.Bytes,
 		BytesScaled: tot.BytesScaled, Packets: tot.Packets, PacketsScaled: tot.PacketsScaled, ScaledComplete: tot.Unknown == 0,
-		TopTalkers: shares(c.talkers, "bytes"), TopDstPorts: shares(c.ports, "bytes"), TopConversations: shares(c.convs, "bytes"),
-		FwEvents: c.fw, TopDeniedSources: counts(c.denSrc), TopDeniedPorts: counts(c.denPort), NATConnections: c.nat.Total.Flows,
-		TopPostNATSources: shares(c.nat, "flows"), NoTemplate: c.noTemplate, Malformed: c.malformed, TimeOffsets: c.off}
+		FwEvents: c.fw, NATConnections: c.nat.Total.Flows, NoTemplate: c.noTemplate, Malformed: c.malformed, TimeOffsets: c.off}
+	z := &s.ZeroOmitted
+	s.TopTalkers, z.TopTalkers = shares(c.talkers, "bytes")
+	s.TopDstPorts, z.TopDstPorts = shares(c.ports, "bytes")
+	s.TopConversations, z.TopConversations = shares(c.convs, "bytes")
+	s.TopDeniedSources, z.TopDeniedSources = counts(c.denSrc)
+	s.TopDeniedPorts, z.TopDeniedPorts = counts(c.denPort)
+	s.TopPostNATSources, z.TopPostNATSources = shares(c.nat, "flows")
 	for d, rates := range c.domains {
 		ds := DomainSampling{Domain: d}
 		for r := range rates {
@@ -631,6 +653,14 @@ func humanUnits(n int64, units []string) string {
 
 func pct(share float64) string {
 	return strconv.FormatInt(int64(math.Round(share*100)), 10) + " %"
+}
+
+// zeroNote is a list's " (4 with 0 bytes not shown)" ("" for none).
+func zeroNote(n int64, metric string) string {
+	if t := flowquery.ZeroOmittedText(n, metric); t != "" {
+		return " (" + t + ")"
+	}
+	return ""
 }
 
 func joinShares(ks []KeyShare) string {
@@ -709,15 +739,21 @@ func flowReadme(s *FlowSummary) []string {
 	}
 	lines = append(lines, fmt.Sprintf("bytes %s exported%s, packets %s%s", humanBytes(s.Bytes), approx(s.BytesScaled, humanBytes),
 		humanCount(s.Packets), approx(s.PacketsScaled, humanCount)))
-	if len(s.TopTalkers) > 0 {
-		lines = append(lines, "top talkers by bytes: "+joinShares(s.TopTalkers))
+	// A share list leaves out keys with 0 bytes and says how many; with
+	// only those, it says "none" (an event-only exporter's records carry no
+	// bytes).
+	z := s.ZeroOmitted
+	shareLine := func(label string, ks []KeyShare, zero int64) {
+		switch {
+		case len(ks) > 0:
+			lines = append(lines, label+joinShares(ks)+zeroNote(zero, "bytes"))
+		case zero > 0:
+			lines = append(lines, label+"none"+zeroNote(zero, "bytes"))
+		}
 	}
-	if len(s.TopDstPorts) > 0 {
-		lines = append(lines, "top destination ports: "+joinShares(s.TopDstPorts))
-	}
-	if len(s.TopConversations) > 0 {
-		lines = append(lines, "top conversations: "+joinShares(s.TopConversations[:1]))
-	}
+	shareLine("top talkers by bytes: ", s.TopTalkers, z.TopTalkers)
+	shareLine("top destination ports: ", s.TopDstPorts, z.TopDstPorts)
+	shareLine("top conversations: ", s.TopConversations[:min(1, len(s.TopConversations))], z.TopConversations)
 	if fw := s.FwEvents; fw.Created+fw.Deleted+fw.Denied > 0 {
 		lines = append(lines, fmt.Sprintf("firewall events: %s created, %s deleted, %s denied", datatype.Thousands(fw.Created),
 			datatype.Thousands(fw.Deleted), datatype.Thousands(fw.Denied)))
