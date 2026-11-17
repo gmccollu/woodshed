@@ -616,3 +616,89 @@ func TestFlowHumanUnits(t *testing.T) {
 func createFile(p string) (*os.File, error) {
 	return os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 }
+
+// Records whose flow time is far from their arrival (SPEC §13.10 decision
+// 70): every one written is stored and kept as sent; the bundle's README gets
+// a line with the window's own count (a record that arrived an hour and more
+// before its times, so it's in the window) and the collector's 24-hour count
+// (which includes one 49.7 days ahead, whose own time is outside the window);
+// the manifest summary has both. Without either, no line (TestFlowBundle's
+// golden).
+func TestFlowBundleTimeOffsets(t *testing.T) {
+	fe := newFlowEnv(t)
+	dev := netip.MustParseAddr("192.0.2.52")
+	id := model.DeviceID(dev)
+	rec := func(received, end time.Time) *flow.Record {
+		return &flow.Record{Has: flow.HasStart | flow.HasEnd | flow.HasSrc | flow.HasDst | flow.HasBytes | flow.HasPackets,
+			Received: received.UnixMilli(), Start: end.Add(-time.Second).UnixMilli(), End: end.UnixMilli(),
+			Src: netip.MustParseAddr("10.30.0.1"), Dst: netip.MustParseAddr("198.51.100.30"), Bytes: 100, Packets: 1, Sampling: 1, Version: flow.IPFIX}
+	}
+	early := time.Date(2026, 11, 13, 22, 30, 0, 0, time.UTC)
+	in := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+	wrap := time.Duration(1<<32) * time.Millisecond
+	batches := []store.FlowBatch{
+		{Received: early, Size: 200, Records: []*flow.Record{rec(early, early.Add(70*time.Minute))}},             // ahead, in the window
+		{Received: in, Size: 200, Records: []*flow.Record{rec(in, in.Add(-time.Second)), rec(in, in.Add(wrap))}}, // normal; 49.7 days ahead
+	}
+	for _, b := range batches {
+		fe.clock.Set(b.Received)
+		if err := fe.st.WriteFlows(dev, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fe.clock.Set(fe.now)
+	fe.st.Maintain()
+	fe.st.Flush()
+	stats := flow.TimeOffsets{Ahead: 2, MaxAheadMs: in.Add(wrap).Sub(in).Milliseconds()}
+	m := fe.manager(func(o *Options) {
+		o.Flows, o.Location = fe.fe, est
+		o.FlowStats = func(d string) *FlowStats {
+			if d == id {
+				return &FlowStats{TimeOffsets: stats}
+			}
+			return &FlowStats{}
+		}
+	})
+	at := fe.at
+	inf, err := m.Create(bg, Request{Devices: []string{id}, Filters: Filters{Kind: KindBundle, At: &at, Before: 30 * time.Minute, After: 10 * time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, m, inf.ID, Ready)
+	files, _ := readZip(t, m, inf.ID)
+	rows := csvRows(t, files["flows/"+id+"/flows.csv"])
+	if len(rows) != 3 { // the header, the early record and the normal one
+		t.Fatalf("CSV rows %d:\n%s", len(rows), files["flows/"+id+"/flows.csv"])
+	}
+	readme := string(files["README.txt"])
+	want := "times off arrival: 1 ahead (up to 1.2 h) in this window; 2 ahead (up to 49.7 days) in the last 24 h; kept at their own times, " +
+		"so a window around their arrival misses them (the exporter's clock or uptime is probably wrong)"
+	if !strings.Contains(readme, want) {
+		t.Errorf("README lacks %q:\n%s", want, readme)
+	}
+	var man Manifest
+	if err := json.Unmarshal(files["manifest.json"], &man); err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Summary) != 1 || man.Summary[0].Flow == nil {
+		t.Fatalf("summary %+v", man.Summary)
+	}
+	s := man.Summary[0].Flow
+	if s.Records != 2 || s.TimeOffsets != (flow.TimeOffsets{Ahead: 1, MaxAheadMs: 70 * 60_000}) || s.TimeOffsets24h == nil || *s.TimeOffsets24h != stats {
+		t.Errorf("summary %d records, offsets %+v, 24h %v", s.Records, s.TimeOffsets, s.TimeOffsets24h)
+	}
+	// The 49.7-day record is stored: a flow-time window at its own time finds it.
+	far, err := fe.fe.Count(bg, flowquery.Query{DeviceIDs: []string{id}, From: in.Add(wrap - time.Minute), To: in.Add(wrap + time.Minute)})
+	if err != nil || far[id] != 1 {
+		t.Errorf("at its own time: %v %v", far, err)
+	}
+	// No offsets anywhere: no line.
+	if l := timeOffLine(&FlowSummary{TimeOffsets24h: &flow.TimeOffsets{}}); l != "" {
+		t.Errorf("line without offsets: %q", l)
+	}
+	if l := timeOffLine(&FlowSummary{TimeOffsets: flow.TimeOffsets{Behind: 3, MaxBehindMs: 30 * 3600_000}}); l !=
+		"times off arrival: 3 behind (up to 30 h) in this window; kept at their own times, so a window around their arrival misses them "+
+			"(the exporter's clock or uptime is probably wrong)" {
+		t.Errorf("behind line %q", l)
+	}
+}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/search"
@@ -243,6 +244,16 @@ func flowStateRows(w *tabw, fs *api.FlowState) {
 			"%d bytes waiting for a template", c.Records, c.Late, c.NoTemplate, c.Malformed, c.SequenceGaps, c.Duplicates, e.PendingBytes))
 		if e.TimeSource == "received" {
 			w.row("", fmt.Sprintf("its clock is %d ms off: its flows use the received time", e.ClockSkewMS))
+		}
+		if o := e.TimeOffsets24h; o.Ahead > 0 || o.Behind > 0 {
+			var ws []string
+			if o.Ahead > 0 {
+				ws = append(ws, fmt.Sprintf("%d records more than 1 h ahead of when they arrived (up to %s)", o.Ahead, flow.OffsetText(o.MaxAheadMS)))
+			}
+			if o.Behind > 0 {
+				ws = append(ws, fmt.Sprintf("%d more than 24 h behind (up to %s)", o.Behind, flow.OffsetText(o.MaxBehindMS)))
+			}
+			w.row("", "24 h: "+strings.Join(ws, ", ")+"; kept at their own times: its clock or uptime is probably wrong")
 		}
 	}
 }

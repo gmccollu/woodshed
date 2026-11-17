@@ -77,6 +77,7 @@ export type BannerKind =
   | 'flow_budget'
   | 'flow_templates'
   | 'flow_clock'
+  | 'flow_time'
   | 'flow_firewall';
 /** update_choice: Turn on / No thanks (PUT /api/updates); update_dismiss: hide this version (POST /api/updates/dismiss).
  *  tls_renew opens Settings → Syslog over TLS; it never renews by itself. */

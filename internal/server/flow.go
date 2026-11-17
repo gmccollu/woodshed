@@ -286,7 +286,8 @@ func (b *backend) FlowState(ctx context.Context) (api.FlowState, error) {
 		e := api.FlowExporter{DeviceID: id, PendingBytes: es.PendingBytes, ClockSkewMS: es.ClockSkewMs, TimeSource: es.TimeSource,
 			RecordsPerSec: b.flows.rates.perSec(id, now),
 			Counts24h: api.FlowCounts{Records: es.Counts24h.Records, Late: es.Counts24h.Late, NoTemplate: es.Counts24h.NoTemplate,
-				Malformed: es.Counts24h.Malformed, SequenceGaps: es.Counts24h.SequenceGaps, Duplicates: es.Counts24h.Duplicates}}
+				Malformed: es.Counts24h.Malformed, SequenceGaps: es.Counts24h.SequenceGaps, Duplicates: es.Counts24h.Duplicates},
+			TimeOffsets24h: apiOffsets(es.TimeOffsets24h), TimeOffsets1h: apiOffsets(es.TimeOffsets1h)}
 		if !es.LastHeard.IsZero() {
 			t := es.LastHeard.UTC()
 			e.LastSeen = &t
@@ -307,6 +308,10 @@ func (b *backend) FlowState(ctx context.Context) (api.FlowState, error) {
 		st.Budget.EstimatedDays = &days
 	}
 	return st, nil
+}
+
+func apiOffsets(o flow.TimeOffsets) api.FlowTimeOffsets {
+	return api.FlowTimeOffsets{Ahead: o.Ahead, Behind: o.Behind, MaxAheadMS: o.MaxAheadMs, MaxBehindMS: o.MaxBehindMs}
 }
 
 // flowDays estimates how many days of flows the budget holds at the current
@@ -667,6 +672,7 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 	var out []api.Banner
 	var rate float64
 	var waiting, clock []string
+	var offTime []flowTimeOff
 	for _, es := range b.flows.coll.Stats(now) {
 		id := model.DeviceID(es.Addr)
 		rate += b.flows.rates.perSec(id, now)
@@ -677,6 +683,9 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 		}
 		if es.TimeSource == flow.TimeReceived.String() {
 			clock = append(clock, id)
+		}
+		if o := es.TimeOffsets1h; o.Ahead >= flow.TimeBannerMin || o.Behind >= flow.TimeBannerMin {
+			offTime = append(offTime, flowTimeOff{id, o})
 		}
 	}
 	if rate > 0 {
@@ -699,6 +708,9 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 			"The clock of %s is more than an hour off: its flows use the time they arrived instead. Set the exporter's clock (NTP).",
 			strings.Join(clock, ", "))})
 	}
+	if len(offTime) > 0 {
+		out = append(out, api.Banner{Kind: "flow_time", Level: "warn", Text: flowTimeText(offTime)})
+	}
 	if goos == "windows" && cfg.Listeners.Flow.Enabled {
 		l := cfg.Listeners.Flow
 		state, rule := b.flowFirewall(l.FlowPort, l.IPFIXPort, now)
@@ -709,6 +721,53 @@ func (b *backend) flowBanners(ctx context.Context, cfg config.Config, now time.T
 		}
 	}
 	return out
+}
+
+// flowTimeOff is an exporter past the flow_time banner's threshold.
+type flowTimeOff struct {
+	id string
+	o  flow.TimeOffsets
+}
+
+// flowTimeText is the flow_time banner: exporters with at least
+// flow.TimeBannerMin records ahead (or behind) in the last hour, each with its
+// largest offset that hour.
+func flowTimeText(offs []flowTimeOff) string {
+	sort.Slice(offs, func(i, j int) bool { return offs[i].id < offs[j].id })
+	ways := func(o flow.TimeOffsets) (ahead, behind string) {
+		if o.Ahead >= flow.TimeBannerMin {
+			ahead = "up to " + flow.OffsetText(o.MaxAheadMs) + " ahead"
+		}
+		if o.Behind >= flow.TimeBannerMin {
+			behind = "up to " + flow.OffsetText(o.MaxBehindMs) + " behind"
+		}
+		return ahead, behind
+	}
+	const tail = " They're kept as sent, at their own times."
+	if len(offs) == 1 {
+		var when string
+		switch a, b := ways(offs[0].o); {
+		case a != "" && b != "":
+			when = a + " of, or " + b + ","
+		case a != "":
+			when = a + " of"
+		default:
+			when = b
+		}
+		return fmt.Sprintf("Flow records from %s have times %s when they arrived: the exporter's clock or uptime is probably wrong.",
+			offs[0].id, when) + tail
+	}
+	const most = 5
+	var parts []string
+	for _, x := range offs[:min(most, len(offs))] {
+		a, b := ways(x.o)
+		parts = append(parts, x.id+" ("+strings.Trim(a+", "+b, ", ")+")")
+	}
+	list := strings.Join(parts, ", ")
+	if len(offs) > most {
+		list += fmt.Sprintf(" and %d more", len(offs)-most)
+	}
+	return "Flow records from " + list + " have times far from when they arrived: the exporters' clocks or uptimes are probably wrong." + tail
 }
 
 // flowFirewall reads the Windows rules' state, at most once a minute.
@@ -729,7 +788,8 @@ func (b *backend) flowFirewall(nf, ix int, now time.Time) (string, string) {
 func (b *backend) flowStats(deviceID string) *export.FlowStats {
 	for _, es := range b.flows.coll.Stats(b.now()) {
 		if model.DeviceID(es.Addr) == deviceID {
-			return &export.FlowStats{SequenceGaps: es.Counts24h.SequenceGaps, LostEstimate: es.Counts24h.LostEstimate}
+			return &export.FlowStats{SequenceGaps: es.Counts24h.SequenceGaps, LostEstimate: es.Counts24h.LostEstimate,
+				TimeOffsets: es.TimeOffsets24h}
 		}
 	}
 	return nil

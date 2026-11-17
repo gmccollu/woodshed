@@ -13,7 +13,7 @@
 // URL parameters: mock_flows=0 (no flows and the listener off), mock_flow_partial=1 (each top-N and
 // summary answers half the window first, then the rest with the cursor), mock_flow_huge=1 (the export
 // estimate counts every record as 500, as a busy exporter would: the 4 h / 1 GB rule and the
-// 20-million cap), mock_flow_banners=1 (the flow_budget, flow_templates and flow_clock banners).
+// 20-million cap), mock_flow_banners=1 (the flow_budget, flow_templates, flow_clock and flow_time banners, and 10.1.0.10's times off arrival).
 
 import type { FieldDescriptor } from '../api';
 import type { FlowFields, FlowResult, FlowState, FlowTemplates, FlowTopRow } from '../flows';
@@ -609,6 +609,11 @@ export function flowState(now: number, budget: number, retention: number, enable
   const b = budget || Math.round(retention * 0.4);
   const used = Math.round(b * 0.62);
   const ago = (ms: number) => iso(now - ms);
+  const none = { ahead: 0, behind: 0, max_ahead_ms: 0, max_behind_ms: 0 };
+  // With mock_flow_banners=1, 10.1.0.10's records come 49.7 days ahead (an uptime wrap) and a few a day behind (the flow_time banner).
+  const wrap = 4_294_967_296;
+  const off24 = flowMock.banners ? { ahead: 3_412, behind: 14, max_ahead_ms: wrap + 1_800, max_behind_ms: 30 * 3_600_000 } : none;
+  const off1 = flowMock.banners ? { ahead: 288, behind: 0, max_ahead_ms: wrap + 1_200, max_behind_ms: 0 } : none;
   return {
     enabled,
     budget: { bytes: b, used_bytes: ON ? used : 0, estimated_days: ON ? Math.round((b / (1.05 * 1024 ** 3)) * 10) / 10 : null },
@@ -618,17 +623,20 @@ export function flowState(now: number, budget: number, retention: number, enable
             device_id: '10.1.0.1', domains: [{ id: 1, sampling: 1, templates: 3, last_template: ago(2.2 * MIN) }],
             records_per_sec: 1180.5, pending_bytes: 0,
             counts_24h: { records: 101_000_000, late: 120, no_template: 0, malformed: 0, sequence_gaps: 3, duplicates: 0 }, clock_skew_ms: 210, time_source: 'exporter',
+            time_offsets_24h: none, time_offsets_1h: none,
           },
           {
             device_id: '10.1.0.10', domains: [{ id: 256, sampling: 1000, templates: 2, last_template: ago(40_000) }],
             records_per_sec: 310.2, pending_bytes: 0,
             counts_24h: { records: 26_800_000, late: 0, no_template: 0, malformed: 2, sequence_gaps: 0, duplicates: 0 }, clock_skew_ms: -40, time_source: 'exporter',
+            time_offsets_24h: off24, time_offsets_1h: off1,
           },
           {
             device_id: '10.8.0.1', domains: [{ id: 1, sampling: 1, templates: 1, last_template: ago(4 * MIN) }, { id: 2, sampling: 0, templates: 1, last_template: ago(4 * MIN) }],
             records_per_sec: 205.9, pending_bytes: flowMock.banners ? 48_000 : 0,
             counts_24h: { records: 17_800_000, late: 4, no_template: flowMock.banners ? 312 : 0, malformed: 0, sequence_gaps: 0, duplicates: 12 },
             clock_skew_ms: flowMock.banners ? 4_020_000 : 900, time_source: flowMock.banners ? 'received' : 'exporter',
+            time_offsets_24h: none, time_offsets_1h: none,
           },
         ]
       : [],
@@ -725,6 +733,7 @@ export function flowBanners(enabled: boolean, os: string): { kind: string; level
     out.push({ kind: 'flow_budget', level: 'info', action: '', text: 'Flows arrive at about 26 GB a day; their 8 GiB budget holds about 8 hours of them. Raise storage.flow_budget_bytes in Settings → Flows, or sample on the exporter.' });
     out.push({ kind: 'flow_templates', level: 'warn', action: '', text: "branch-fw-08 (10.8.0.1) has sent data for template 400 on domain 2 for 14 min without the template; 312 sets were stored raw. Check the exporter's template refresh (every few minutes is typical)." });
     out.push({ kind: 'flow_clock', level: 'warn', action: '', text: "branch-fw-08 (10.8.0.1)'s clock is 67 min off; its flows use the time Woodshed received them. Fix the exporter's clock (NTP)." });
+    out.push({ kind: 'flow_time', level: 'warn', action: '', text: "Flow records from 10.1.0.10 have times up to 49.7 days ahead of when they arrived: the exporter's clock or uptime is probably wrong. They're kept as sent, at their own times." });
   }
   if (enabled && os.startsWith('windows'))
     out.push({ kind: 'flow_firewall', level: 'warn', action: '', text: 'The Windows Firewall rule "Woodshed flows (UDP 4739)" is disabled, so exporters may be blocked. Run woodshed flow on in an administrator prompt.' });

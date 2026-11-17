@@ -1283,8 +1283,16 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
  "exporters": [{"device_id": "10.1.0.1", "domains": [{"id": 1, "sampling": 1000, "templates": 6, "last_template": "2026-11-16T09:58:01Z"}],
                 "records_per_sec": 1180.5, "pending_bytes": 0,
                 "counts_24h": {"records": 101000000, "late": 120, "no_template": 0, "malformed": 0, "sequence_gaps": 3, "duplicates": 0},
-                "clock_skew_ms": 210, "time_source": "exporter", "last_seen": "2026-11-16T10:00:01Z"}]}
+                "clock_skew_ms": 210, "time_source": "exporter",
+                "time_offsets_24h": {"ahead": 0, "behind": 0, "max_ahead_ms": 0, "max_behind_ms": 0},
+                "time_offsets_1h": {"ahead": 0, "behind": 0, "max_ahead_ms": 0, "max_behind_ms": 0},
+                "last_seen": "2026-11-16T10:00:01Z"}]}
 ```
+- `time_offsets_24h` and `time_offsets_1h` (since 2.0, SPEC §13.10 decision 70): the exporter's records, over the last
+  24 hours (by hour) and the last hour (by 5 minutes), whose flow end was more than 1 h after the datagram arrived
+  (`ahead`) or more than 24 h before it (`behind`), and the largest offset each way in ms (`0` when none). Such records
+  are stored exactly as sent, at their own times: a broken exporter clock or uptime, or a decoder bug. Records on
+  received time (`time_source: "received"`) are never counted.
 
 ### Flow search and top-N
 
@@ -1405,9 +1413,13 @@ start:
   "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
   "fw_events": {"created", "deleted", "denied"}, "top_denied_sources": [{"key", "count"}], "top_denied_ports": [...],
   "nat_connections", "top_post_nat_sources": [...],
-  "sequence_gaps", "lost_estimate", "no_template", "malformed"}`. `sequence_gaps` and `lost_estimate` are the
-  collector's last 24 hours (`null` from `woodshed bundle`, which has no collector); entries whose count is 0 are left
-  out of the top lists, which hold at most 3.
+  "sequence_gaps", "lost_estimate", "no_template", "malformed",
+  "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps`,
+  `lost_estimate` and `time_offsets_24h` are the collector's last 24 hours (`null` from `woodshed bundle`, which has no
+  collector); `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
+  defines it). `time_offsets_24h` can count records the window doesn't hold: they're at their own times. The README's
+  Flows block gets a "times off arrival" line when either is non-zero. Entries whose count is 0 are left out of the top
+  lists, which hold at most 3.
 
 ### Banners
 - `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives
@@ -1415,6 +1427,10 @@ start:
 - `flow_templates` (warn, action `""`): an exporter's data has been waiting for a template for over 10 min, or was
   stored raw for lack of one.
 - `flow_clock` (warn, action `""`): an exporter's clock is more than an hour off; its flows use received time.
+- `flow_time` (warn, action `""`; since 2.0): an exporter sent at least 10 records in the last hour whose times are
+  more than 1 h ahead of, or more than 24 h behind, when they arrived (`time_offsets_1h`): "Flow records from 10.1.0.1
+  have times up to 49.7 days ahead of when they arrived: the exporter's clock or uptime is probably wrong. They're kept
+  as sent, at their own times." Several exporters share one banner (at most 5 named).
 - `flow_firewall` (warn, action `""`): Windows only, while the flow listener is on and a rule is disabled, missing or on
   another port; the text gives `woodshed flow on`.
 

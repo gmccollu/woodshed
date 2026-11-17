@@ -319,6 +319,16 @@ the outage" means when the traffic happened, not when the exporter got round to 
 event time (a denial) is at that moment. An exporter whose clock is more than an hour off has its records stamped
 with the time they arrived (its own times are kept), and a banner names it.
 
+**Times far from when they arrived.** A record whose end is more than an hour after it arrived, or more than a day
+before, is kept exactly as the exporter sent it (nothing is dropped or moved) and counted for its exporter. That
+pattern means the exporter's clock or uptime is wrong (an uptime counter that wrapped puts records 49.7 days away), or
+a decoding bug. The exporter's device page shows the last 24 hours' count and the largest offset each way, as do
+**Settings → Flows** and `woodshed flow status`; with 10 or more in the last hour a banner names the exporter ("Flow
+records from 10.1.0.1 have times up to 49.7 days ahead of when they arrived"). Searches use flow time, so these
+records aren't in a window around when they arrived: search around their own times instead (the offset tells you
+where). A bundle's README says so in its Flows block ("times off arrival"), with the window's count and the last 24
+hours'.
+
 **Waiting and broken data.** Data that arrives before its template waits (up to 32 MiB in all, 1 MiB per exporter,
 for the template timeout, 30 minutes) and is decoded with its original time, marked `late`. If the template never
 comes, the data is kept undecoded (`status=no_template`), and so are malformed packets (`status=malformed`), never

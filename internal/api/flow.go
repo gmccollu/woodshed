@@ -313,8 +313,22 @@ type FlowExporter struct {
 	Counts24h     FlowCounts   `json:"counts_24h"`
 	ClockSkewMS   int64        `json:"clock_skew_ms"`
 	TimeSource    string       `json:"time_source"`
-	LastSeen      *time.Time   `json:"last_seen,omitempty"`
-	Versions      []int        `json:"versions,omitempty"`
+	// TimeOffsets24h and TimeOffsets1h: records whose flow time was far from
+	// when they arrived (SPEC §13.10 decision 70), kept as sent.
+	TimeOffsets24h FlowTimeOffsets `json:"time_offsets_24h"`
+	TimeOffsets1h  FlowTimeOffsets `json:"time_offsets_1h"`
+	LastSeen       *time.Time      `json:"last_seen,omitempty"`
+	Versions       []int           `json:"versions,omitempty"`
+}
+
+// FlowTimeOffsets counts an exporter's records whose end was more than 1 h
+// after they arrived (ahead) or more than 24 h before (behind), with the
+// largest offset each way in ms (0 when none).
+type FlowTimeOffsets struct {
+	Ahead       int64 `json:"ahead"`
+	Behind      int64 `json:"behind"`
+	MaxAheadMS  int64 `json:"max_ahead_ms"`
+	MaxBehindMS int64 `json:"max_behind_ms"`
 }
 
 // FlowDomain is one observation domain (or source ID) of an exporter.

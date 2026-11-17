@@ -199,6 +199,12 @@
       {#if b.kind === 'flow_clock'}
         <div class="detail-text">Its flows can still be searched, by the time they arrived. The exporter's clock offset is on its device page.</div>
       {/if}
+      {#if b.kind === 'flow_time'}
+        <div class="detail-text">
+          Nothing is dropped, but a window around when they arrived doesn't show them: look in Events → Flows at their own times. Each exporter's
+          counts and largest offsets are on its device page.
+        </div>
+      {/if}
       {#if b.kind === 'flow_firewall'}
         <div class="detail-text">
           Open a Command Prompt or PowerShell with <b>Run as administrator</b> and run <code>woodshed flow on</code>. The listener and its ports are in

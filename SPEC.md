@@ -2753,6 +2753,10 @@ templates that use the same field type numbers are read the same way.
 - If an exporter's clock differs from the received time by more than an hour, its records use the received time
   instead and say so (`time_source=received`; the exporter's own times stay in extras), and the device page warns
   about the clock.
+- A record whose own end is more than 1 h after its datagram arrived, or more than 24 h before, from an exporter
+  whose header clock is fine, is kept exactly as decoded and counted per exporter ("times off arrival", §13.10
+  decision 70): the `flow_time` banner, the device page and the bundle README say so. It's found by a window around
+  its own times, not around its arrival.
 
 **Index:**
 - `files.type = 'flow'` rows, one per segment, with first and last received and the record count.
@@ -2882,7 +2886,10 @@ for a plain export stays `["syslog"]` (§13.9). One zip, one manifest, one folde
                  NAT: 41,377 translated connections; top post-NAT sources: 192.0.2.10 88 %
                  sequence gaps 3 (≈ 90 records lost before Woodshed); waiting for a template 0; malformed 0
 ```
-and the manifest's summary gains the same numbers as JSON.
+and the manifest's summary gains the same numbers as JSON. When any record is far from its arrival time (decision
+70), a line before the sequence gaps says so: `times off arrival: 1 ahead (up to 1.2 h) in this window; 3,600 ahead
+(up to 49.7 days) in the last 24 h; kept at their own times, so a window around their arrival misses them (the
+exporter's clock or uptime is probably wrong)`.
 
 ### 13.5 Device setup helper
 **Owner (§9):** generated logging, trap and flow-export configuration per device. A **Setup → Send to Woodshed** page
@@ -3383,6 +3390,57 @@ Made while building it, each **decided (build, 2026-11-16)**:
     flow-protocol name anywhere in the setup helper: it says "flow v9 (RFC 3954)" and "IPFIX (RFC 7011)", the flow
     transports are `v9` and `ipfix`, and the deny list matches the name anywhere in a word, so an enum value built
     from it fails too. softflowd's own `-v 9|10` flags are unchanged.
+
+**Flow times far from their arrival, decided (build, 2026-11-17)** (CI found IPFIX uptime times not wrapped, so
+softflowd's records were stored 49.7 days in the future, where no search looked and nothing warned; the decoder is
+fixed, §13.1.1, and this catches the class: a broken exporter clock or uptime, or a decoder bug of ours. **(owner)**
+count and flag these records, never drop them):
+70. **The check** (`internal/flow/timeoff.go`), at decode, on every record the collector emits (live and late-decoded;
+    not the IPFIX file reader, decode-on-read or `reindex --flows-redecode`, which have no collector state):
+    - **Ahead:** the record's end is more than **1 h** after its datagram arrived (a late-decoded record: its own
+      datagram's arrival). A flow can't end after it was exported, so only a clock explains it, and 1 h is the header
+      clock rule's limit (decision 21): a header up to an hour off is accepted, so records within it are left to that
+      rule. The end is checked because it's never before the start.
+    - **Behind:** the end is more than **24 h** before arrival. An exporter sends a flow within its inactive or active
+      timeout of the last packet (seconds to an hour), so a day can't be a normal export whatever the timeouts, and
+      the uptime faults this is for (a 32-bit wrap, a reset counter) are days off. The start isn't checked behind: a
+      long-lived connection may start days earlier.
+    - Records on received time (`time_source=received`, the header clock rule) are never counted: their end is their
+      arrival.
+    - **The record isn't changed:** stored, indexed and exported with its own times, `status` and `time_source` as
+      decoded. Nothing is dropped.
+71. **Counts per exporter:** ahead and behind, and the largest offset each way, by hour for 24 hours and by 5 minutes
+    for the last hour (the banner's window; "the last hour" is the last 12 five-minute slots, 55 to 60 minutes). The
+    rings are allocated on an exporter's first such record (about 1.4 KiB), so a normal exporter pays a pointer.
+    Exposed as `/api/flows` `exporters[].time_offsets_24h` and `time_offsets_1h` (`ahead`, `behind`, `max_ahead_ms`,
+    `max_behind_ms`), the pattern of `clock_skew_ms` there (syslog has no clock-skew count to follow), and in
+    `woodshed flow status`.
+72. **Surfacing:**
+    - The **`flow_time`** banner (warn) for an exporter with at least **10** ahead or 10 behind in the last hour: "Flow
+      records from 10.1.0.1 have times up to 49.7 days ahead of when they arrived: the exporter's clock or uptime is
+      probably wrong. They're kept as sent, at their own times." Ten keeps one stray record (a cache entry left from a
+      clock step) quiet, while a broken clock or uptime affects every record, so an exporter sending a record a minute
+      still passes it within the hour. Offsets read as hours under two days, else days (`49.7 days` is the uptime
+      wrap's signature). Several exporters share one banner, five named.
+    - The device page's Flows card: a warning while the last hour passes the banner's count, and a "Times off arrival"
+      row for the last 24 h. **Settings → Flows** shows the 24-hour count in the Clock column.
+    - The bundle: the manifest summary's flow entry gains `time_offsets` (the window's own records) and
+      `time_offsets_24h` (the collector's; `null` from `woodshed bundle`), and the README's Flows block a "times off
+      arrival" line when either is non-zero (§13.4). The bundle preview shows the 24-hour part.
+73. **Findability, flagged (not built):** these records are found by a flow-time window around their own times (the
+    plan picks segments by `flow_segments`' flow-time range and blocks by theirs, decision 31; tested 49.7 days ahead
+    and 30 h behind). They **can't** turn up in a search or a bundle for the time they arrived: flow queries and the
+    bundle's flow files match on flow time only (decision 7), and there is no received-time match for flows (only
+    `raw.txt` and a bundle's active devices use received bounds). The README line and the banner say so instead.
+    - The smallest change that would fix it: a `time=received` choice for flow search, summary, top and export, which
+      windows on the received column. The parts exist: segments by their `files` row's first and last received, blocks
+      by their header's min and max received (§13.2), records by `received`, ordered by it; no format or index change.
+      A bundle would then add, in a second pass, the window's records that arrived in it with flow times outside it.
+      The cost is in the plan (decision 56): a second ordering and its own `complete_from` and cursor bound. Left for
+      the owner to call.
+    - A side cost, also left as is: a segment holding normal and far-off records has a flow-time range spanning the
+      offset, so queries anywhere in that span plan it (a footer read; a mixed block is decoded). Bounded by the plan's
+      batches (decision 56); it only happens while an exporter is broken.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

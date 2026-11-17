@@ -13,6 +13,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   they came), data that arrived before its template decoded when it comes (marked late), and malformed or undecodable
   data kept, never dropped silently. Sequence gaps (loss before Woodshed) and duplicates are counted per exporter. See
   [docs/user-guide.md](docs/user-guide.md#collecting-flows).
+- Flow records whose times are far from when they arrived (more than 1 h ahead or 24 h behind: a broken exporter
+  clock or uptime, or a decoding bug) are kept as sent and counted per exporter, with the largest offset each way, in
+  `GET /api/flows` (`time_offsets_24h`, `time_offsets_1h`), the device page, **Settings → Flows** and `woodshed flow
+  status`; a `flow_time` banner names an exporter with 10 or more in the last hour, and the bundle README's Flows
+  block gets a "times off arrival" line.
 - Firewall-event, NAT and bidirectional records are first-class: `fw_event` (created, deleted, denied, …),
   `nat_event`, post-NAT addresses and ports, initiator and responder counters and RFC 5103 reverse counters are
   columns and filters, sums follow a no-double-count rule for event records, and a rule or ACL ID can be read from

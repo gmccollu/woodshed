@@ -136,6 +136,7 @@ type exporter struct {
 	cmu       sync.Mutex // counts and the 24 h ring
 	counts    Counts
 	hours     [24]hourCounts
+	off       *offState // records far from their arrival time; nil until the first (timeoff.go)
 	skewMs    atomic.Int64
 	skewed    atomic.Bool
 	lastHeard atomic.Int64
@@ -619,12 +620,17 @@ type ExporterStats struct {
 	// for its template (zero when none), for the flow_templates banner.
 	PendingOldest time.Time `json:"pending_oldest"`
 	// OptionsRaw counts the options records kept raw (Options).
-	OptionsRaw  int       `json:"options_raw"`
-	Counts      Counts    `json:"counts"`     // since the collector started
-	Counts24h   Counts    `json:"counts_24h"` // the last 24 hours (by hour)
-	ClockSkewMs int64     `json:"clock_skew_ms"`
-	TimeSource  string    `json:"time_source"` // "exporter" or "received"
-	LastHeard   time.Time `json:"-"`
+	OptionsRaw  int    `json:"options_raw"`
+	Counts      Counts `json:"counts"`     // since the collector started
+	Counts24h   Counts `json:"counts_24h"` // the last 24 hours (by hour)
+	ClockSkewMs int64  `json:"clock_skew_ms"`
+	TimeSource  string `json:"time_source"` // "exporter" or "received"
+	// TimeOffsets24h and TimeOffsets1h count the records whose flow time was
+	// far from when they arrived (TimeOffset), and the largest offsets, over
+	// the last 24 hours (by hour) and the last hour (by 5 minutes).
+	TimeOffsets24h TimeOffsets `json:"time_offsets_24h"`
+	TimeOffsets1h  TimeOffsets `json:"time_offsets_1h"`
+	LastHeard      time.Time   `json:"-"`
 }
 
 // Stats returns every exporter's state, by address.
@@ -674,6 +680,9 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 			if h.hour > nowH-24 && h.hour <= nowH {
 				st.Counts24h.add(h.c)
 			}
+		}
+		if e.off != nil {
+			st.TimeOffsets24h, st.TimeOffsets1h = e.off.sums(now.UnixMilli())
 		}
 		e.cmu.Unlock()
 		out = append(out, st)

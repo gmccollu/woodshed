@@ -193,7 +193,41 @@ export interface FlowExporter {
   counts_24h: { records: number; late: number; no_template: number; malformed: number; sequence_gaps: number; duplicates: number };
   clock_skew_ms: number;
   time_source: 'exporter' | 'received' | (string & {});
+  /** Records whose flow time was far from their arrival (SPEC §13.10 decision 70), kept as sent: last 24 h and last hour. */
+  time_offsets_24h: FlowTimeOffsets;
+  time_offsets_1h: FlowTimeOffsets;
 }
+
+/** Records more than 1 h ahead of (ahead) or 24 h behind (behind) their arrival, and the largest offsets in ms. */
+export interface FlowTimeOffsets {
+  ahead: number;
+  behind: number;
+  max_ahead_ms: number;
+  max_behind_ms: number;
+}
+
+/** The flow_time banner's count (the server's flow.TimeBannerMin): this many in the last hour. */
+export const TIME_BANNER_MIN = 10;
+
+/** An offset as the server says it: hours under two days ("1.5 h", "30 h"), else days ("49.7 days"). */
+export function offsetText(ms: number): string {
+  const h = ms / 3_600_000;
+  if (h < 10) return `${h.toFixed(1)} h`;
+  if (h < 48) return `${h.toFixed(0)} h`;
+  return `${(h / 24).toFixed(1)} days`;
+}
+
+/** "3,600 ahead (up to 49.7 days), 2 behind (up to 30 h)"; "" when none. */
+export function timeOffWords(o: FlowTimeOffsets | null | undefined): string {
+  if (!o) return '';
+  const ws: string[] = [];
+  if (o.ahead) ws.push(`${enUS.format(o.ahead)} ahead (up to ${offsetText(o.max_ahead_ms)})`);
+  if (o.behind) ws.push(`${enUS.format(o.behind)} behind (up to ${offsetText(o.max_behind_ms)})`);
+  return ws.join(', ');
+}
+
+/** Whether an exporter is past the flow_time banner's count in the last hour. */
+export const timeOffNow = (e: FlowExporter) => (e.time_offsets_1h?.ahead ?? 0) >= TIME_BANNER_MIN || (e.time_offsets_1h?.behind ?? 0) >= TIME_BANNER_MIN;
 
 export interface FlowState {
   enabled: boolean;
@@ -244,6 +278,10 @@ export interface FlowBundleSummary {
   lost_estimate: number | null;
   no_template: number;
   malformed: number;
+  /** The window's own records far from their arrival (null in the preview, which doesn't read records). */
+  time_offsets?: FlowTimeOffsets | null;
+  /** The collector's last 24 hours (null where unknown). */
+  time_offsets_24h?: FlowTimeOffsets | null;
 }
 
 /** /api/exports/estimate's by_type (2.0). */
@@ -623,6 +661,14 @@ export function flowReadme(s: FlowBundleSummary): string {
   if (s.nat_connections)
     lines.push(
       `${pad}NAT: ${enUS.format(s.nat_connections)} translated connections${s.top_post_nat_sources.length ? `; top post-NAT sources: ${shares(s.top_post_nat_sources)}` : ''}`,
+    );
+  const off = [
+    timeOffWords(s.time_offsets) && `${timeOffWords(s.time_offsets)} in this window`,
+    timeOffWords(s.time_offsets_24h) && `${timeOffWords(s.time_offsets_24h)} in the last 24 h`,
+  ].filter(Boolean);
+  if (off.length)
+    lines.push(
+      `${pad}times off arrival: ${off.join('; ')}; kept at their own times, so a window around their arrival misses them (the exporter's clock or uptime is probably wrong)`,
     );
   const lost = s.sequence_gaps && s.lost_estimate !== null ? ` (≈ ${enUS.format(s.lost_estimate)} records lost before Woodshed)` : '';
   lines.push(`${pad}sequence gaps ${enUS.format(s.sequence_gaps)}${lost}; waiting for a template ${enUS.format(s.no_template)}; malformed ${enUS.format(s.malformed)}`);

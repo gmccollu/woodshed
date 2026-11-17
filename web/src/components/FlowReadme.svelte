@@ -91,6 +91,8 @@
       lost_estimate: null,
       no_template: e.counts_24h.no_template,
       malformed: e.counts_24h.malformed,
+      time_offsets: null,
+      time_offsets_24h: e.time_offsets_24h ?? null,
     };
   }
 </script>
@@ -100,7 +102,7 @@
     <h2 id="frd-title" class="m-0 text-[16px] font-bold">Flows in the bundle's README</h2>
     <p class="mt-1 mb-2 text-[13px] text-muted">
       What each exporter's <span class="font-mono">README.txt</span> will say about its flows in this window. The bundle counts them again when it's
-      built; sequence gaps and template counts here are the last 24 hours'.
+      built; sequence gaps, template counts and times off arrival here are the last 24 hours'.
     </p>
     {#each blocks as b (b.device)}
       <div class="dev">{deviceName(b.device)} <span class="font-mono text-muted">{b.device}</span></div>

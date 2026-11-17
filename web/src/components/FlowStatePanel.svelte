@@ -4,7 +4,7 @@
   // /api/flows/templates), so a user can find the enterprise IE that carries a rule ID and add it to
   // listeners.flow.rule_id_ies (SPEC §13.2.1: no standard IE carries one).
   import { getFlows, getFlowTemplates } from '../lib/api';
-  import { ieKey, ieLabel, samplingText, short, type FlowState, type FlowTemplates } from '../lib/flows';
+  import { ieKey, ieLabel, samplingText, short, timeOffNow, timeOffWords, type FlowState, type FlowTemplates } from '../lib/flows';
   import { ago, bytes, num } from '../lib/format';
   import { deviceName } from '../lib/status.svelte';
 
@@ -72,7 +72,11 @@
                   ? `, ${num(e.counts_24h.no_template)} raw`
                   : ''}{e.counts_24h.malformed ? `, ${num(e.counts_24h.malformed)} malformed` : ''}
               </td>
-              <td class:bad={e.time_source === 'received'}>{e.time_source === 'received' ? `off by ${skew(e.clock_skew_ms)}: received time used` : skew(e.clock_skew_ms)}</td>
+              <td class:bad={e.time_source === 'received' || timeOffNow(e)}>
+                {e.time_source === 'received' ? `off by ${skew(e.clock_skew_ms)}: received time used` : skew(e.clock_skew_ms)}{timeOffWords(e.time_offsets_24h)
+                  ? `; records off arrival, 24 h: ${timeOffWords(e.time_offsets_24h)}`
+                  : ''}
+              </td>
             </tr>
           {/each}
         </tbody>
