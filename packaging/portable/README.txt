@@ -1,5 +1,5 @@
-Woodshed - a simple syslog server with a web UI
-================================================
+Woodshed - a syslog, SNMP and flow collector with a web UI
+==========================================================
 
 Run it without installing (portable)
 ------------------------------------

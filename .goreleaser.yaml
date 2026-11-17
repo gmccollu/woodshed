@@ -124,10 +124,11 @@ nfpms:
     homepage: "{{ .Env.WOODSHED_SERVER }}/{{ .Env.WOODSHED_OWNER }}/{{ .Env.WOODSHED_REPO }}"
     maintainer: "{{ .Env.WOODSHED_OWNER }} <{{ .Env.WOODSHED_OWNER }}@users.noreply.github.com>"
     description: |-
-      Simple, reliable syslog server with a web UI.
-      Receives syslog on UDP and TCP port 514, stores every message as plain files
-      per device per day within a disk budget, and serves a local web UI on
-      http://127.0.0.1:8514/ for live tail, search and export.
+      Syslog, SNMP and flow collector with a web UI.
+      Receives syslog on UDP and TCP port 514 and, once turned on, SNMP traps, SNMP
+      polls and flows (v5, v9, IPFIX). Stores messages as plain files per device per
+      day and flows in compact files, within a disk budget, and serves a local web UI
+      on http://127.0.0.1:8514/ for live tail, search and export.
     license: MIT
     section: net
     priority: optional
@@ -192,7 +193,7 @@ homebrew_casks:
       name: homebrew-tap
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: "{{ .Env.WOODSHED_SERVER }}/{{ .Env.WOODSHED_OWNER }}/{{ .Env.WOODSHED_REPO }}"
-    description: Simple, reliable syslog server with a web UI
+    description: Syslog, SNMP and flow collector with a web UI
     license: MIT
     # Not uploaded until the tap exists and TAP_GITHUB_TOKEN is set.
     skip_upload: '{{ if .Env.TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
@@ -210,7 +211,7 @@ scoops:
       name: scoop-bucket
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: "{{ .Env.WOODSHED_SERVER }}/{{ .Env.WOODSHED_OWNER }}/{{ .Env.WOODSHED_REPO }}"
-    description: Simple, reliable syslog server with a web UI
+    description: Syslog, SNMP and flow collector with a web UI
     license: MIT
     # Not uploaded until the bucket exists and TAP_GITHUB_TOKEN is set.
     skip_upload: '{{ if .Env.TAP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
