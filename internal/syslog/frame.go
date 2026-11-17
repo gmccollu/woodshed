@@ -67,7 +67,9 @@ func NewStreamReader(r io.Reader, maxSize int) *StreamReader {
 // An octet-counted frame the stream ended in, whatever the cause (EOF, a reset,
 // a TLS close, a deadline), is returned with what arrived, and Incomplete
 // reports it. Such a frame is the only message that can be empty: its header
-// arrived and none of its bytes did.
+// arrived and none of its bytes did, or, once the connection has used octet
+// counting, a frame the stream ended in while its count ("50", "50 ") was
+// arriving (Incomplete then gives a length of 0: the count isn't known).
 func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
 	s.short, s.arrived, s.length = false, 0, 0
 	for {
@@ -81,9 +83,19 @@ func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
 			return nil, false, s.err
 		}
 	}
-	if n, hdr, ok := s.octetHeader(); ok {
+	n, hdr, ok, cut := s.octetHeader()
+	if ok {
 		s.octet = true
 		return s.readCounted(n, hdr)
+	}
+	if cut {
+		// On a connection already counting octets, the stream ended inside the
+		// next frame's count: nothing of the message arrived. (A connection's
+		// first frame stays ambiguous: "50" then EOF is a line.)
+		s.start = s.end
+		s.msg = s.msg[:0]
+		s.short = true
+		return s.msg, false, nil
 	}
 	return s.readLine()
 }
@@ -91,9 +103,11 @@ func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
 // Incomplete reports whether the message the last Next returned is an
 // octet-counted frame the stream ended in before its advertised length: arrived
 // of its length bytes came (arrived counts bytes past the max size too, so a
-// frame can be both truncated and incomplete). A newline-framed message is never
-// incomplete here: RFC 6587 non-transparent framing can't tell a last line
-// without its LF from a complete one.
+// frame can be both truncated and incomplete). A length of 0 means the stream
+// ended inside the count itself (the message is then empty). A newline-framed
+// message is never incomplete here: RFC 6587 non-transparent framing can't tell
+// a last line without its LF from a complete one (the caller may know more, such
+// as a reset).
 func (s *StreamReader) Incomplete() (arrived, length int64, ok bool) {
 	return s.arrived, s.length, s.short
 }
@@ -165,28 +179,30 @@ func (s *StreamReader) ensure(n int) bool {
 
 // octetHeader checks for "<digits> " at the start of the unread data, peeking
 // one byte at a time so an idle connection after a short line can't block it.
-func (s *StreamReader) octetHeader() (n int64, hdr int, ok bool) {
+// cut reports that the connection already counts octets and the stream ended
+// while only digits of a count had arrived.
+func (s *StreamReader) octetHeader() (n int64, hdr int, ok, cut bool) {
 	for i := 0; ; i++ {
 		if !s.ensure(i + 1) {
-			return 0, 0, false
+			return 0, 0, false, s.octet && i > 0
 		}
 		c := s.buf[s.start+i]
 		switch {
 		case c >= '0' && c <= '9':
 			if (i == 0 && c == '0') || i == maxCountDigits {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
 			n = n*10 + int64(c-'0')
 		case c == ' ' && i > 0:
 			if s.octet {
-				return n, i + 1, true
+				return n, i + 1, true, false
 			}
 			if s.ensure(i+2) && s.buf[s.start+i+1] == '<' {
-				return n, i + 1, true
+				return n, i + 1, true, false
 			}
-			return 0, 0, false
+			return 0, 0, false, false
 		default:
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 	}
 }
