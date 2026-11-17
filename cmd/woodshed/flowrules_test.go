@@ -110,9 +110,15 @@ func TestCLIFlowsRuleIDIEsOnRead(t *testing.T) {
 	if got := count("--data", dir); got != "2" {
 		t.Fatalf("the folder's config: %s with rule 77, want 2", got)
 	}
-	code, out, errOut := runCLI("flows", "top", "--data", dir, "--by", "rule_id", "--last", "24h")
+	code, out, errOut := runCLI("flows", "top", "--data", dir, "--by", "rule_id", "--metric", "flows", "--last", "24h")
 	if code != 0 || !strings.Contains(out, "77") {
 		t.Fatalf("flows top by rule_id: %d %q %q", code, out, errOut)
+	}
+	// By bytes, the rule's denied events carry none: no row, and the last
+	// line says so (lab, 2.0.0-rc1: it was a row at 0 bytes).
+	code, out, _ = runCLI("flows", "top", "--data", dir, "--by", "rule_id", "--last", "24h")
+	if code != 1 || strings.Contains(out, "77") || !strings.Contains(out, "; 1 with 0 bytes not shown\n") {
+		t.Fatalf("flows top by rule_id, bytes: %d %q", code, out)
 	}
 	zipPath := filepath.Join(t.TempDir(), "b.zip")
 	code, _, errOut = runCLI("bundle", "--data", dir, "--at", at.Format(time.RFC3339), "--before", "10m", "--after", "10m", "--out", zipPath)
