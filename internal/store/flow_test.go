@@ -409,10 +409,14 @@ func TestFlowHourOfBlocksIsOnePart(t *testing.T) {
 // exporters go on in new parts, and every record is still read exactly
 // once (in the parts' blocks, the index, a reindex and a query). The
 // budget here is a third of what the run's directories would take
-// uncapped, so every exporter rolls at least once.
+// uncapped, so every exporter rolls at least once. Under the race detector
+// (where the heap ceiling doesn't apply) it runs at the short size unless
+// WOODSHED_LONG_TESTS=1: the full 180,000 flushes took 222 s of the
+// package's 370 there on a laptop, and CI's -race run of the package
+// passed its 20-minute timeout (run 44038809604).
 func TestFlowDirBudget(t *testing.T) {
 	exporters, seconds := 300, 600
-	if testing.Short() {
+	if testing.Short() || (raceEnabled && os.Getenv("WOODSHED_LONG_TESTS") != "1") {
 		exporters, seconds = 60, 240
 	}
 	budget := int64(exporters) * int64(seconds/3) * flowseg.DirEntryBytes

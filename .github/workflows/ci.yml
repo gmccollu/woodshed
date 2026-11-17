@@ -80,8 +80,10 @@ jobs:
       - name: go test
         run: go test ${{ matrix.race }} -timeout 20m ./...
 
-      # The heavy internal/search variants and the flow writer's full hour of
-      # ingest (TestWriterHourHeapBounded) at full size, once, without -race.
+      # The heavy variants at full size, once, without -race: internal/search's,
+      # the flow writer's full hour of ingest, a week's query plan over 50
+      # exporters, and the store's flow directory budget over 300 (which the
+      # -race run above takes at its short size).
       - name: Long tests without -race
         if: matrix.os == 'ubuntu-latest'
         env:
@@ -89,6 +91,8 @@ jobs:
         run: |
           go test -count=1 -timeout 20m ./internal/search/...
           go test -count=1 -timeout 20m -run '^TestWriterHourHeapBounded$' -v ./internal/flowseg/
+          go test -count=1 -timeout 20m -run '^TestWeekPlanBounded$' -v ./internal/flowquery/
+          go test -count=1 -timeout 20m -run '^TestFlowDirBudget$' -v ./internal/store/
 
       # The 10,000-device timing limits apply without -race only (instrumented
       # SQLite is ~25x slower on these runners); results are checked under -race above.
