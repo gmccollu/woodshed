@@ -88,6 +88,7 @@ func (e *hourExporter) newPart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sparse(t, w.f)
 	off := w.st.off
 	if _, err := w.f.WriteAt(e.sec, off); err != nil {
 		t.Fatal(err)
@@ -110,11 +111,15 @@ func (e *hourExporter) addBlock(t *testing.T, s *hourStats) {
 	hourRows(e.w)
 }
 
-func (e *hourExporter) close(t *testing.T, s *hourStats) {
+// close closes the exporter's part and returns what the close itself
+// allocated (the test's own reads and removal of the file aren't counted).
+func (e *hourExporter) close(t *testing.T, s *hourStats) uint64 {
 	path := e.path()
+	a0 := heapAllocs()
 	if _, err := hourClose(e.w); err != nil {
 		t.Fatal(err)
 	}
+	alloc := heapAllocs() - a0
 	e.w = nil
 	if fi, err := os.Stat(path); err == nil {
 		f, _ := os.Open(path)
@@ -124,6 +129,7 @@ func (e *hourExporter) close(t *testing.T, s *hourStats) {
 		s.footer = max(s.footer, int64(uint32(tr[0])|uint32(tr[1])<<8|uint32(tr[2])<<16|uint32(tr[3])<<24))
 	}
 	os.Remove(path)
+	return alloc
 }
 
 // heapLive is the heap's objects, live ones only just after a collection
@@ -143,10 +149,13 @@ func (s *hourStats) notePeakLive(base uint64) {
 	}
 }
 
+var allocsSample = []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
+
+// heapAllocs is the bytes allocated so far (one goroutine at a time: the
+// sample is shared, so reading it allocates nothing).
 func heapAllocs() uint64 {
-	s := []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
-	metrics.Read(s)
-	return s[0].Value.Uint64()
+	metrics.Read(allocsSample)
+	return allocsSample[0].Value.Uint64()
 }
 
 // runHour runs case c at GOGC gc (a low one makes the peak what's live
@@ -169,6 +178,7 @@ func runHour(t *testing.T, c hourCase, gc int) hourStats {
 		e := &hourExporter{dir: dir}
 		// The hour's first part: a real block, then its section kept.
 		e.w = bigHeaderWriter(t, e.path(), c.rows, c.hosts)
+		sparse(t, e.w.f)
 		bi := e.w.Snapshot().Blocks[0]
 		e.sec = make([]byte, bi.Length)
 		if _, err := e.w.f.ReadAt(e.sec, bi.Offset); err != nil {
@@ -219,11 +229,9 @@ func runHour(t *testing.T, c hourCase, gc int) hourStats {
 	}
 	s.notePeakLive(liveBase)
 	s.closePeak, _ = peakDuring(func() {
-		a0 := heapAllocs()
 		for _, e := range exps {
-			e.close(t, &s)
+			s.closeAlloc += e.close(t, &s)
 		}
-		s.closeAlloc = heapAllocs() - a0
 	})
 	runtime.KeepAlive(exps)
 	return s
@@ -242,14 +250,15 @@ func (s hourStats) log(t *testing.T, c hourCase) {
 // from one exporter (one block a second), 150,000 from one (two full blocks
 // and a remainder a second; every block full here), and 150,000 over 50
 // exporters (3,000 each, one block a second). The header sizes are
-// loadgen's at those block sizes. short scales the hour down.
-func hourCases(short bool) []hourCase {
+// loadgen's at those block sizes. Unless long, the hour is scaled down (each
+// case still rotates parts or closes every exporter at the mark).
+func hourCases(long bool) []hourCase {
 	cs := []hourCase{
 		{"50k/s, 1 exporter", 1, 50_000, 9000, 1, 3600},
 		{"150k/s, 1 exporter", 1, 65_536, 9900, 3, 3600},
 		{"150k/s, 50 exporters", 50, 3000, 1560, 1, 3600},
 	}
-	if short {
+	if !long {
 		cs[0].seconds, cs[1].seconds = 600, 300
 		cs[2].exporters, cs[2].seconds = 10, 900
 	}
@@ -265,12 +274,14 @@ func hourCases(short bool) []hourCase {
 // starved CPU (the sampled peak does: 49 MiB on many cores, 121 MiB on one,
 // for the same hour). The old writer allocated 1.2 GB an hour on one
 // exporter and 147 GB over 50, most of it each flush's copy of the
-// directory and each close's copies of its footer.
+// directory and each close's copies of its footer. The full hour runs with
+// WOODSHED_LONG_TESTS=1 (CI's long-test step); otherwise a scaled-down one.
 func TestWriterHourHeapBounded(t *testing.T) {
 	if raceEnabled {
 		t.Skip("race: the heap ceilings are for the real build")
 	}
-	for _, c := range hourCases(testing.Short()) {
+	long := os.Getenv("WOODSHED_LONG_TESTS") == "1" && !testing.Short()
+	for _, c := range hourCases(long) {
 		s := runHour(t, c, 10)
 		s.log(t, c)
 		dir := uint64(c.exporters) * uint64(min(s.blocks, hourPartBlocks)) * 216
@@ -290,9 +301,12 @@ func TestWriterHourHeapBounded(t *testing.T) {
 			t.Errorf("%s: %.1f MiB of heap at the hour mark", c.name, float64(s.closePeak)/(1<<20))
 		}
 		// A close allocates its summary and table section, not its directory
-		// or footer; the tail buffers come from a pool (refilled after a
-		// collection empties it).
-		if lim := uint64(c.exporters)*(64<<10) + 4*uint64(tailBufSize); s.closeAlloc > lim {
+		// or footer (5-22 MB a part here). Its tail buffer comes from a pool,
+		// but sync.Pool keeps a Put in the putting P's own slot, and after a
+		// close's blocking file calls the goroutine can resume on another P
+		// and miss it (on Windows about one close in four did, CI run
+		// 44032327415), so each close may allocate one.
+		if lim := uint64(c.exporters) * (64<<10 + uint64(tailBufSize)); s.closeAlloc > lim {
 			t.Errorf("%s: the closes at the hour mark allocated %d bytes, ceiling %d", c.name, s.closeAlloc, lim)
 		}
 		if c.exporters > 1 && s.parts != c.exporters {

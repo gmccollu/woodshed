@@ -80,12 +80,15 @@ jobs:
       - name: go test
         run: go test ${{ matrix.race }} -timeout 20m ./...
 
-      # The heavy internal/search variants at full size, once, without -race.
-      - name: Long search tests without -race
+      # The heavy internal/search variants and the flow writer's full hour of
+      # ingest (TestWriterHourHeapBounded) at full size, once, without -race.
+      - name: Long tests without -race
         if: matrix.os == 'ubuntu-latest'
         env:
           WOODSHED_LONG_TESTS: "1"
-        run: go test -count=1 -timeout 20m ./internal/search/...
+        run: |
+          go test -count=1 -timeout 20m ./internal/search/...
+          go test -count=1 -timeout 20m -run '^TestWriterHourHeapBounded$' -v ./internal/flowseg/
 
       # The 10,000-device timing limits apply without -race only (instrumented
       # SQLite is ~25x slower on these runners); results are checked under -race above.
