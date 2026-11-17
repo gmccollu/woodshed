@@ -67,11 +67,15 @@ type decState struct {
 	emit     func(*Record)
 	raw      func(*RawSet)
 	counts   Counts
+	off      TimeOffsets // records whose flow time is far from their arrival (timeoff.go)
 }
 
 func (ds *decState) flush() {
 	if ds.counts != (Counts{}) {
 		ds.e.count(ds.received, ds.counts)
+	}
+	if ds.off.Any() {
+		ds.e.countOff(ds.received, ds.off)
 	}
 }
 
@@ -183,6 +187,7 @@ func (ds *decState) v5(b []byte) {
 		if skewed {
 			skewToReceived(r, ds.received)
 		}
+		ds.checkTime(r)
 		ds.counts.Records++
 		if ds.emit != nil {
 			ds.emit(r)
@@ -534,6 +539,7 @@ func (ds *decState) decodeSet(m *msg, te *tmplEntry, body []byte, status Status,
 		if ds.c.fileMode {
 			fileFixup(r)
 		}
+		ds.checkTime(r)
 		m.records++
 		ds.counts.Records++
 		if status == StatusLate {
