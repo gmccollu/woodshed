@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/csv"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -41,6 +43,17 @@ type tuple struct {
 type pcapFlow struct {
 	tuple
 	packets, bytes uint64
+}
+
+func (k tuple) String() string {
+	return fmt.Sprintf("%s > %s proto %d", netip.AddrPortFrom(k.src, k.sport), netip.AddrPortFrom(k.dst, k.dport), k.proto)
+}
+
+func (f *pcapFlow) String() string {
+	if f == nil {
+		return "nothing"
+	}
+	return fmt.Sprintf("%d packets, %d bytes", f.packets, f.bytes)
 }
 
 // writePcap writes an Ethernet pcap of n one-direction flows, each with a
@@ -187,14 +200,23 @@ func TestFlowInterop(t *testing.T) {
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
+		bad := false
 		for _, f := range want {
 			g := got[f.tuple]
 			if g == nil || g.packets != f.packets || g.bytes != f.bytes {
 				t.Errorf("v%s %v: stored %+v, the pcap has %d packets, %d bytes", v.arg, f.tuple, g, f.packets, f.bytes)
+				bad = true
 			}
 		}
 		if len(got) != len(want) {
 			t.Errorf("v%s: %d flows stored, the pcap has %d", v.arg, len(got), len(want))
+			bad = true
+		}
+		if bad {
+			arg := v.arg
+			flowDiag(t, r, netip.MustParseAddr("127.0.0.1"), func(dst string) *exec.Cmd {
+				return exec.Command(softflowd, "-r", pcap, "-n", dst, "-v", arg, "-d")
+			})
 		}
 	}
 
@@ -230,6 +252,7 @@ func TestFlowInterop(t *testing.T) {
 		}
 		if n != n0+total {
 			t.Errorf("pmacct nfprobe: %d packets stored, want %d more than the %d before", n, total, n0)
+			flowDiag(t, r, netip.MustParseAddr("127.0.0.1"), nil)
 		}
 	} else if strings.Contains(os.Getenv("WOODSHED_FLOW_INTEROP_REQUIRE"), "pmacct") {
 		t.Fatal("pmacctd isn't on PATH")
@@ -360,4 +383,129 @@ func TestSyntheticPcap(t *testing.T) {
 	if got != n || !strings.Contains(string(out), "10.10.0.1.40000 > 192.0.2.1.443") || strings.Contains(string(out), "bad cksum") {
 		t.Fatalf("tcpdump read %d of %d packets:\n%s", got, n, out)
 	}
+}
+
+// flowDiag logs what a flow test needs when an exporter's flows didn't arrive
+// as expected: the collector's counts, domains and templates for the
+// exporter; every record stored for it at any time, by version (a time
+// decoded wrong lands outside the test's window); and, when capture isn't
+// nil, the datagrams of a second run sent to a socket of the test's own
+// (capture gets its host:port), the first in hex with its sets listed.
+func flowDiag(t *testing.T, r *running, exporter netip.Addr, capture func(dst string) *exec.Cmd) {
+	t.Helper()
+	now := time.Now()
+	coll := r.srv.be.flows.coll
+	for _, st := range coll.Stats(now) {
+		if st.Addr == exporter.Unmap() {
+			t.Logf("collector, exporter %v: counts %+v; domains %+v; pending %d bytes; options kept raw %d; time source %s, clock skew %d ms",
+				st.Addr, st.Counts, st.Domains, st.PendingBytes, st.OptionsRaw, st.TimeSource, st.ClockSkewMs)
+		}
+	}
+	for _, ti := range coll.Templates(exporter) {
+		var fs []string
+		for _, f := range ti.Fields {
+			fs = append(fs, fmt.Sprintf("%s(%d)/%d", f.Name, f.ID, f.Length))
+		}
+		t.Logf("template v%d domain %d port %d id %d options=%v: %s", ti.Version, ti.Domain, ti.Port, ti.ID, ti.Options, strings.Join(fs, " "))
+	}
+	r.srv.be.store.Flush()
+	type seen struct {
+		n          int
+		first, max int64
+		min        int64
+	}
+	byVer := map[uint8]*seen{}
+	q := flowquery.Query{From: now.Add(-400 * 24 * time.Hour), To: now.Add(400 * 24 * time.Hour)}
+	err := r.srv.be.flows.eng.Each(context.Background(), q, func(_ string, rec *flow.Record) error {
+		s := byVer[rec.Version]
+		if s == nil {
+			s = &seen{min: rec.Start, max: rec.Start}
+			byVer[rec.Version] = s
+		}
+		s.n++
+		s.min, s.max = min(s.min, rec.Start), max(s.max, rec.Start)
+		return nil
+	})
+	if err != nil {
+		t.Logf("stored records: %v", err)
+	}
+	if len(byVer) == 0 {
+		t.Logf("stored records: none at any time")
+	}
+	for v, s := range byVer {
+		t.Logf("stored records v%d: %d, starts %s to %s (now %s)", v, s.n, time.UnixMilli(s.min).UTC().Format(time.RFC3339),
+			time.UnixMilli(s.max).UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+	}
+	if capture == nil {
+		return
+	}
+	host := "127.0.0.1"
+	if exporter.Is6() && !exporter.Is4In6() {
+		host = "::1"
+	}
+	pc, err := net.ListenPacket("udp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Logf("capture: %v", err)
+		return
+	}
+	defer pc.Close()
+	cmd := capture(pc.LocalAddr().String())
+	out := &bytes.Buffer{}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Start(); err != nil {
+		t.Logf("capture: %v", err)
+		return
+	}
+	defer func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+		if out.Len() > 0 {
+			t.Logf("capture run's output:\n%s", out.Bytes())
+		}
+	}()
+	buf := make([]byte, 65536)
+	var lens []int
+	for len(lens) < 50 {
+		pc.SetReadDeadline(time.Now().Add(10 * time.Second))
+		n, _, err := pc.ReadFrom(buf)
+		if err != nil {
+			break
+		}
+		if len(lens) == 0 {
+			t.Logf("first datagram (%d bytes), sets %s:\n%s", n, flowSets(buf[:n]), hex.Dump(buf[:min(n, 1500)]))
+		}
+		lens = append(lens, n)
+	}
+	t.Logf("capture: %d datagrams, lengths %v", len(lens), lens)
+}
+
+// flowSets lists a v9 or IPFIX message's header and sets, for flowDiag.
+func flowSets(b []byte) string {
+	if len(b) < 4 {
+		return "(short)"
+	}
+	be := binary.BigEndian
+	v, off := be.Uint16(b), 0
+	var hdr string
+	switch {
+	case v == 9 && len(b) >= 20:
+		hdr, off = fmt.Sprintf("v9 count %d uptime %d export %d seq %d source %d", be.Uint16(b[2:]), be.Uint32(b[4:]), be.Uint32(b[8:]),
+			be.Uint32(b[12:]), be.Uint32(b[16:])), 20
+	case v == 10 && len(b) >= 16:
+		hdr, off = fmt.Sprintf("IPFIX length %d export %d seq %d domain %d", be.Uint16(b[2:]), be.Uint32(b[4:]), be.Uint32(b[8:]),
+			be.Uint32(b[12:])), 16
+	default:
+		return fmt.Sprintf("version %d", v)
+	}
+	var sets []string
+	for b = b[off:]; len(b) >= 4; {
+		id, l := be.Uint16(b), int(be.Uint16(b[2:]))
+		sets = append(sets, fmt.Sprintf("%d/%d", id, l))
+		if l < 4 || l > len(b) {
+			sets = append(sets, fmt.Sprintf("(bad length, %d left)", len(b)))
+			break
+		}
+		b = b[l:]
+	}
+	return hdr + "; id/length " + strings.Join(sets, " ")
 }

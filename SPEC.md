@@ -2597,7 +2597,10 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
 - **Flow v9** (RFC 3954): template, options template and data FlowSets, per (exporter address, source ID).
 - **IPFIX** (RFC 7011): template, options template and data sets, per (exporter address, observation domain ID),
   with variable-length fields, enterprise-specific IEs, and the RFC 7011 time IEs (seconds, milliseconds,
-  microseconds, nanoseconds, deltas, and `systemInitTimeMilliseconds` from options data).
+  microseconds, nanoseconds, deltas, and `systemInitTimeMilliseconds` from options data). Uptime-relative times
+  (v9's and IPFIX's `flowStartSysUpTime`/`flowEndSysUpTime`, unsigned 32-bit milliseconds) are resolved modulo 2^32
+  to the time nearest the export time, so a 49.7-day wrap, or a flow older than the exporter's init time (a clock
+  stepped back, a capture file replayed), lands at its real time.
 - The template key includes the exporter's source port as well, because exporters that restart pick a new port and
   may reuse template IDs with new definitions.
 
@@ -3362,7 +3365,9 @@ Made while building it, each **decided (build, 2026-11-16)**:
     config's `global()`. The queue has `queue.timeoutEnqueue="0"`: once it's full, new messages for Woodshed are
     dropped at once, because by default each enqueue to a full queue waits 2 s and holds up all of rsyslog's logging.
     No disk-assisted queue, to keep the snippet one file with nothing to clean up. **net-snmp:**
-    `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start), the test trap's secrets in
+    `trap2sink`/`trapsess` in snmpd.conf (snmpd sends coldStart at start); for v3 a `createUser` line beside
+    `trapsess -u … -l authPriv`, because snmpd sends traps as its own engine and, from 5.7, doesn't create that
+    user from the `trapsess` passphrases ("USM unknown security name"); the test trap's secrets in
     `~/.snmp/snmp.conf` (mode 600) rather than the command line, and `rocommunity` (`rocommunity6` for IPv6) limited
     to Woodshed's address for polling. The poll snippet replaces the distribution's `agentaddress` line rather than
     adding one: snmpd joins every `agentaddress` line it reads.

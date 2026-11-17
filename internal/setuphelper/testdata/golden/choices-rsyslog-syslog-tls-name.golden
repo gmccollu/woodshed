@@ -11,7 +11,7 @@ placeholders: <CA-FILE>
 addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
 notes:
 - The test message uses facility user, which the local4 filter doesn't forward: use `logger -p local4.notice` to test.
-- <CA-FILE> is Woodshed's CA certificate as a PEM file on this machine: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem, and check its SHA-256 fingerprint is AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89.
+- <CA-FILE> is Woodshed's CA certificate as a PEM file on this machine: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem (some distributions confine rsyslogd to reading its own configuration folders, so keep it there), and check its SHA-256 fingerprint is AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89.
 - rsyslog checks that Woodshed's certificate holds the name logs-01.example.net.
 - TLS needs rsyslog 8.2108 or later and its gtls network stream driver, which some distributions package separately.
 - While Woodshed can't be reached, up to 10,000 messages wait in the in-memory queue and rsyslog retries until it can. Once the queue is full, new messages for Woodshed are dropped (queue.timeoutEnqueue="0") rather than holding up the rest of the system's logging; local log files carry on, and a restart of rsyslog loses what's waiting.

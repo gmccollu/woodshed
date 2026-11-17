@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -357,10 +358,42 @@ func udpHeld(t *testing.T, port int, p *toolProc) {
 
 // ---- rsyslog ----
 
+// unconfined returns a copy of a tool's binary in dir, so a mandatory access
+// control profile that attaches to the installed path doesn't apply. The
+// distribution's rsyslogd profile (AppArmor, enforced on the CI runner) lets
+// /usr/sbin/rsyslogd read only /etc/rsyslog.conf and /etc/rsyslog.d/, and
+// write only under /var/log and a few run paths, so every file of the
+// harness's own in the test's folder was "Permission denied" (rsyslog error
+// -2104), even to its owner. Real users save the snippet in /etc/rsyslog.d/,
+// which the profile allows. The copy is the same program; it loads its
+// modules from the same compiled-in folder.
+func unconfined(t *testing.T, bin, dir string) string {
+	t.Helper()
+	if b, err := os.ReadFile("/sys/kernel/security/apparmor/profiles"); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			if strings.Contains(l, filepath.Base(bin)) {
+				t.Logf("access control profile loaded: %s (running a copy of %s)", l, bin)
+			}
+		}
+	}
+	src, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatalf("reading %s to copy it: %v", bin, err)
+	}
+	cp := filepath.Join(dir, "bin", filepath.Base(bin))
+	if err := os.MkdirAll(filepath.Dir(cp), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cp, src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return cp
+}
+
 func runRsyslog(t *testing.T, c setupCase) string {
-	bin := tool(t, "rsyslogd")
 	addr := caseAddr(c)
 	e := newSetupEnv(t, addr)
+	bin := unconfined(t, tool(t, "rsyslogd"), e.dir)
 	req := map[string]any{"family": "rsyslog", "what": "syslog", "transport": c.transport, "address": addr}
 	if c.variant == "choices" {
 		req["severity"], req["facility"] = "warning", "local4"
@@ -394,8 +427,14 @@ func runRsyslog(t *testing.T, c setupCase) string {
 		"*.* action(type=\"omfile\" file=%q)\ninclude(file=%q)\n", work, inPort, local, snippetFile)), 0o644)
 	env := append(os.Environ(), "HOME="+e.dir)
 	// The snippet's own check first: rsyslogd -N1.
-	if out, err := exec.Command(bin, "-N1", "-f", conf).CombinedOutput(); err != nil {
-		t.Fatalf("rsyslogd -N1 refused the snippet: %v\n%s", err, out)
+	check := exec.Command(bin, "-N1", "-f", conf)
+	var stdout, stderr bytes.Buffer
+	check.Stdout, check.Stderr = &stdout, &stderr
+	if err := check.Run(); err != nil {
+		harness, _ := os.ReadFile(conf)
+		saved, _ := os.ReadFile(snippetFile)
+		t.Fatalf("rsyslogd -N1 refused the snippet: %v\nstderr:\n%s\nstdout:\n%s\n%s:\n%s\n%s (the snippet as saved):\n%s",
+			err, stderr.Bytes(), stdout.Bytes(), conf, harness, snippetFile, saved)
 	}
 	if c.variant == "full-queue" {
 		e.r.stop(t) // Woodshed is down from the start
@@ -585,8 +624,16 @@ func runSnmpTrap(t *testing.T, c setupCase) string {
 	os.WriteFile(filepath.Join(confDir, "snmpd.conf"), []byte(conf), 0o600)
 	os.WriteFile(filepath.Join(home, ".snmp", "snmp.conf"), []byte(fill(t, part(t, s, setuphelper.PartFile, "snmp.conf").Text, snmpSecrets)), 0o600)
 
-	// snmpd sends coldStart when it starts.
-	p := startProc(t, filepath.Join(e.dir, "snmpd.log"), env, snmpd, "-f", "-Lf", filepath.Join(e.dir, "snmpd.log"), "-p", filepath.Join(e.dir, "snmpd.pid"))
+	// snmpd sends coldStart when it starts. It reads only its own snmpd.conf
+	// (and its persistent folder), not the snmp.conf the test trap's
+	// passphrases are in, as the system's snmpd doesn't read a user's.
+	snmpdEnv := slices.Clone(env)
+	for i, v := range snmpdEnv {
+		if strings.HasPrefix(v, "SNMPCONFPATH=") {
+			snmpdEnv[i] = "SNMPCONFPATH=" + confDir + string(os.PathListSeparator) + filepath.Join(e.dir, "persist")
+		}
+	}
+	p := startProc(t, filepath.Join(e.dir, "snmpd.log"), snmpdEnv, snmpd, "-f", "-Lf", filepath.Join(e.dir, "snmpd.log"), "-p", filepath.Join(e.dir, "snmpd.pid"))
 	udpHeld(t, agentPort, p)
 	e.exactlyOnce(t, "snmpd's coldStart ("+c.transport+")", "trap", url.Values{"trap_oid": {"1.3.6.1.6.3.1.1.5.1"}})
 
@@ -854,6 +901,15 @@ func runSoftflowd(t *testing.T, c setupCase) string {
 	time.Sleep(3 * time.Second)
 	got, n, versions = check()
 	if n != total || versions != 1 || len(got) != len(want) {
+		flowDiag(t, r, netip.MustParseAddr(addr), func(dst string) *exec.Cmd {
+			a := slices.Clone(args[1:])
+			for i := range a {
+				if a[i] == "-n" && i+1 < len(a) {
+					a[i+1] = dst
+				}
+			}
+			return exec.Command(bin, append(a, "-d")...)
+		})
 		t.Fatalf("%s: %d packets in %d flows (%d versions) stored, the pcap has %d packets in %d flows", transport, n, len(got), versions, total, len(want))
 	}
 	for _, f := range want {

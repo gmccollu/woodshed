@@ -30,7 +30,7 @@ logger -p user.{{if eq .Severity.Name "debug"}}debug{{else}}{{.Severity.Name}}{{
 {{end}}{{if .Facility}}The test message uses facility user, which the {{.Facility}} filter doesn't forward: use `logger -p {{.Facility}}.{{.Severity.Name}}` to test.
 {{end}}
 {{- if eq .Transport "tls"}}
-<CA-FILE> is Woodshed's CA certificate as a PEM file on this machine{{if .TLSOwnCA}}: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem{{if .CASHA256}}, and check its SHA-256 fingerprint is {{.CASHA256}}{{end}}{{else}}: this Woodshed uses your own certificate, so use the CA that issued it{{end}}.
+<CA-FILE> is Woodshed's CA certificate as a PEM file on this machine{{if .TLSOwnCA}}: download it from Settings → TLS → CA certificate (PEM), for example to /etc/rsyslog.d/woodshed-ca.pem (some distributions confine rsyslogd to reading its own configuration folders, so keep it there){{if .CASHA256}}, and check its SHA-256 fingerprint is {{.CASHA256}}{{end}}{{else}}: this Woodshed uses your own certificate, so use the CA that issued it{{end}}.
 {{if .TLSNameKnown}}rsyslog checks that Woodshed's certificate holds the name {{.TLSName}}{{if not .IsName}} (it doesn't check IP addresses){{end}}.{{else if eq .TLSName "<WOODSHED-TLS-NAME>"}}<WOODSHED-TLS-NAME> is a DNS name on Woodshed's TLS certificate (Settings → TLS); rsyslog checks names, not IP addresses. Turn TLS on first to see them.{{else}}rsyslog checks that Woodshed's certificate holds the name {{.TLSName}}. This Woodshed has no certificate names to compare yet: once TLS is on, check that Settings → TLS lists {{.TLSName}}.{{end}}
 TLS needs rsyslog 8.2108 or later and its gtls network stream driver, which some distributions package separately.
 {{- end}}

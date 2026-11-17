@@ -666,24 +666,21 @@ func (p *plan) decodeRecord(b []byte, r *Record, h *hdrCtx) (int, recSampling, e
 
 	// Times.
 	if haveStartUp || haveEndUp {
-		var base int64
-		ok := true
-		switch {
-		case h.uptimeMs >= 0:
-			base = h.exportMs - h.uptimeMs
-		case sysInit > 0:
-			base = sysInit
-		default:
-			ok = false
+		// The exporter's uptime at the export time: v9's header gives it;
+		// for IPFIX it's the export time less the system init time.
+		ref, ok := h.uptimeMs, h.uptimeMs >= 0
+		if !ok && sysInit > 0 {
+			ref, ok = h.exportMs-sysInit, true
 		}
 		if ok {
-			// v9 times are relative to the header's uptime (modulo 2^32 ms);
-			// IPFIX ones to the system init time.
+			// sysUpTime values are unsigned32 milliseconds, so they wrap every
+			// 49.7 days, and an exporter whose packets predate its own init
+			// time (its clock stepped back, or it meters a capture file) sends
+			// values just below 2^32. Each is resolved modulo 2^32 to the time
+			// nearest the export time (within 24.8 days), for v9 and IPFIX
+			// alike.
 			conv := func(up uint64) int64 {
-				if h.uptimeMs >= 0 {
-					return h.exportMs - int64(int32(uint32(h.uptimeMs)-uint32(up)))
-				}
-				return base + int64(uint32(up))
+				return h.exportMs - int64(int32(uint32(ref)-uint32(up)))
 			}
 			if haveStartUp && !haveStart {
 				startAbs, haveStart = conv(startUp), true
