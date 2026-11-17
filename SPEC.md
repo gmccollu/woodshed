@@ -3214,8 +3214,8 @@ Made while building it, each **decided (build, 2026-11-16)**:
 42. The bundle README's sequence gaps are the collector's last-24-hour counts and say so (only the running collector
     keeps them; `woodshed bundle` says they aren't known). The firewall-event, denied and NAT lines appear only with
     something to count; scaled figures only when a rate above 1 is known, with "≥" when some sampling is unknown;
-    top lists hold 3 entries, none with 0 of the list's metric (decision 80); "translated connections" count NAT
-    create events.
+    top lists hold 3 entries, none with 0 of the list's metric (decision 80), with shares as decision 81 writes
+    them; "translated connections" count NAT create events.
 43. `flows.ipfix` writes columns as their IANA IEs at fixed lengths (the received time as
     collectionTimeMilliseconds, 258), extras as they came, interface names as options data before the records that
     use them, and opens each domain with an options record whose observationDomainName says "Written by Woodshed
@@ -3570,6 +3570,12 @@ the connection; present since 1.0):
     the bundle manifest's summary has `zero_omitted` per list, which the README puts after the list ("… (4 with 0
     bytes not shown)", or "none (…)" when every key had 0). Totals and `other` are unchanged. The count covers the
     keys counted exactly or held in the approximate table; a key the approximate table never held isn't known.
+81. **Small shares never read "0 %".** The README rounded every share to a whole percent, so a 0.31 % conversation
+    read "0 %". Options: "<1 %" under 0.5 %, or a decimal under 1 %. Chosen: the rule the UI's Top panel already used,
+    now the README's too (and the bundle preview's): whole percents from 10 %, one decimal under that ("4.2 %",
+    "0.3 %"), and "<0.1 %" for a non-zero share under 0.1 %. It keeps the README and the UI identical and the UI's
+    existing strings unchanged, and a decimal says more than "<1 %" where small shares are the point (a scan's share
+    of a window).
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

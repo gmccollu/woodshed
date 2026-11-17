@@ -651,8 +651,19 @@ func humanUnits(n int64, units []string) string {
 	return strconv.FormatFloat(v, 'f', 1, 64) + units[i]
 }
 
+// pct is a share as the README and the UI's Top panel show it (shareText in
+// web/src/lib/flows.ts): whole percents from 10 %, one decimal under that
+// ("4.2 %", "0.3 %"), and "<0.1 %" for a non-zero share under 0.1 %, so a
+// small share never reads as "0 %" (SPEC §13.10 decision 81).
 func pct(share float64) string {
-	return strconv.FormatInt(int64(math.Round(share*100)), 10) + " %"
+	p := share * 100
+	switch {
+	case p > 0 && p < 0.1:
+		return "<0.1 %"
+	case p < 10:
+		return strings.TrimSuffix(strconv.FormatFloat(math.Round(p*10)/10, 'f', 1, 64), ".0") + " %"
+	}
+	return strconv.FormatInt(int64(math.Round(p)), 10) + " %"
 }
 
 // zeroNote is a list's " (4 with 0 bytes not shown)" ("" for none).

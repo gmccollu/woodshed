@@ -7,7 +7,7 @@ edge-fw-01 (192.0.2.50)
                bytes 340 kB exported, packets 1,944
                top talkers by bytes: 10.20.0.6 25 %, 10.20.0.5 25 %, 10.20.0.8 25 % (2 with 0 bytes not shown)
                top destination ports: tcp/443 100 % (2 with 0 bytes not shown)
-               top conversations: 10.20.0.6 ↔ 198.51.100.8 9 % (6 with 0 bytes not shown)
+               top conversations: 10.20.0.6 ↔ 198.51.100.8 8.6 % (6 with 0 bytes not shown)
                firewall events: 160 created, 162 deleted, 160 denied
                top denied sources: 203.0.113.50 80, 203.0.113.51 80; top denied ports: tcp/23 80, tcp/445 80
                NAT: 213 translated connections; top post-NAT sources: 192.0.2.10 100 %

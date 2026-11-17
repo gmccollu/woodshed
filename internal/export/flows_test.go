@@ -613,6 +613,19 @@ func TestFlowHumanUnits(t *testing.T) {
 	}
 }
 
+// Shares in the README: whole percents from 10 %, one decimal under that,
+// "<0.1 %" for a non-zero share under 0.1 %, never "0 %" for a share that
+// isn't 0 (lab, 2.0.0-rc1: a 0.31 % conversation read "0 %"). The UI's
+// shareText (web/src/lib/flows.ts) gives the same strings.
+func TestFlowShareText(t *testing.T) {
+	for share, want := range map[float64]string{0.31: "31 %", 0.1: "10 %", 0.0999: "10 %", 0.042: "4.2 %", 0.04: "4 %",
+		0.0031: "0.3 %", 0.001: "0.1 %", 0.0009: "<0.1 %", 0.00001: "<0.1 %", 1: "100 %", 0.9996: "100 %", 0: "0 %"} {
+		if got := pct(share); got != want {
+			t.Errorf("%v: %q want %q", share, got, want)
+		}
+	}
+}
+
 // A top list leaves out keys with 0 bytes and says how many; with only
 // those it says "none"; with none left out it says nothing more.
 func TestFlowReadmeZeroOmitted(t *testing.T) {
