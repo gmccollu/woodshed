@@ -418,8 +418,12 @@ The zip is an export's (below), with each type in its folder, and:
   `reboots[].source` is `"coldStart trap"` (or `"warmStart trap"`, `"… inform"`), `"poll"` with a `"detail"`
   (`"sysUpTime and hrSystemUptime reset"`; `"…; the device may have rebooted"` without HOST-RESOURCES), or both in
   one string, `"poll, coldStart trap"`, when a poll restart and a trap are within 2 min (at the earlier time, with the
-  poll's `detail`). A poll restart also has `"reboot"`: `"1"` the device rebooted, `"0"` only its SNMP agent restarted
-  (`"…; the agent restarted, not the device"`), `"?"` can't tell. An uptime that went up, but by too little, is
+  poll's `detail`). For a device polled with `hrSystemUptime`, a trap is read against the poll that closes its
+  interval instead (SPEC §12.6): that poll's restart takes the interval's earliest trap, and a trap the polls show
+  the device ran through has `"reboot": "0"` and `"detail": "the polls show the device kept running"`; one after the
+  last answered poll has `"detail": "no poll after it in the window to tell"`. A poll restart also has `"reboot"`:
+  `"1"` the device rebooted, `"0"` only its SNMP agent restarted (`"…; the agent restarted, not the device"`), `"?"`
+  can't tell. An uptime that went up, but by too little, is
   `"sysUpTime rose less than the time since the last poll"`, not a reset. The README counts as reboots every entry but
   `"reboot": "0"`: with any of those it says `Restarts     3 (0 reboots): …`, still listing each one, and
   `woodshed bundle` prints `restarts 3, reboots 0`.

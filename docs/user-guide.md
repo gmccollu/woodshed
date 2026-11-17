@@ -210,8 +210,10 @@ counter reset, a renamed interface, a changed discontinuity time, an agent resta
 marked `disc=1`. When `sysUpTime` goes down (not its normal wrap after 497 days), or goes up clearly less than the
 time since the last poll (a second restart soon after the first), the agent restarted; it's a **reboot** when
 `hrSystemUptime` went down too. Without HOST-RESOURCES the marker says "the device may have
-rebooted". Restarts show on the device page, on the Events timeline and in incident bundles, where a coldStart trap
-within 2 minutes of a poll restart is the same reboot.
+rebooted". Restarts show on the device page, on the Events timeline and in incident bundles, where a coldStart or
+warmStart trap is read against the polls around it: the poll restart in its interval is the same event, and a trap
+the polls show the device ran through (`hrSystemUptime` kept rising) is an agent restart, not a reboot. Without
+HOST-RESOURCES, a trap within 2 minutes of a poll restart is the same reboot.
 
 **How fresh a rate is.** A rate is the change in a counter between two polls, so it's only as fresh as the agent's
 counters. Some agents refresh their interface counters only every few seconds, so a single 60 s cycle can read a few
