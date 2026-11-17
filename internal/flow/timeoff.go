@@ -1,6 +1,9 @@
 package flow
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // The flow-time check (SPEC §13.10 decision 70): a record whose flow time is
 // far from when its datagram arrived is kept exactly as decoded, and counted
@@ -139,4 +142,17 @@ func (ds *decState) checkTime(r *Record) {
 	if a, b := TimeOffset(r); a > 0 || b > 0 {
 		ds.off.Add(a, b)
 	}
+}
+
+// OffsetText is an offset as the banner, the README and the CLI say it:
+// hours under two days ("1.5 h", "30 h"), else days ("49.7 days").
+func OffsetText(ms int64) string {
+	h := float64(ms) / 3600000
+	switch {
+	case h < 10:
+		return strconv.FormatFloat(h, 'f', 1, 64) + " h"
+	case h < 48:
+		return strconv.FormatFloat(h, 'f', 0, 64) + " h"
+	}
+	return strconv.FormatFloat(h/24, 'f', 1, 64) + " days"
 }

@@ -407,9 +407,11 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 // ---- the bundle's flow summary ----
 
 // FlowStats are what only the running collector knows about an exporter:
-// its sequence gaps and the records they stand for (the last 24 h).
+// its sequence gaps and the records they stand for, and the records whose
+// flow time was far from when they arrived (the last 24 h).
 type FlowStats struct {
 	SequenceGaps, LostEstimate int64
+	TimeOffsets                flow.TimeOffsets
 }
 
 // KeyShare is a top-N entry with its share of the total.
@@ -462,6 +464,13 @@ type FlowSummary struct {
 	LostEstimate *int64 `json:"lost_estimate"`
 	NoTemplate   int64  `json:"no_template"`
 	Malformed    int64  `json:"malformed"`
+	// TimeOffsets counts the window's records whose end was more than 1 h
+	// after they arrived or more than 24 h before (SPEC §13.10 decision 70);
+	// TimeOffsets24h is the running collector's count over the last 24 h,
+	// which includes records the window doesn't hold because their own times
+	// are elsewhere (null without it).
+	TimeOffsets    flow.TimeOffsets  `json:"time_offsets"`
+	TimeOffsets24h *flow.TimeOffsets `json:"time_offsets_24h"`
 }
 
 // topN is how many entries each summary list keeps.
@@ -482,6 +491,7 @@ type flowCount struct {
 	fw          FwEventCounts
 	noTemplate  int64
 	malformed   int64
+	off         flow.TimeOffsets
 }
 
 // summaryPoolBytes bounds a bundle's summary top-N tables, every device's
@@ -505,6 +515,7 @@ func (c *flowCount) add(r *flow.Record) {
 		c.last = r.Received
 	}
 	c.records++
+	c.off.Add(flow.TimeOffset(r))
 	d := c.domains[r.Domain]
 	if d == nil {
 		d = map[uint32]bool{}
@@ -570,7 +581,7 @@ func (c *flowCount) summary(stats *FlowStats) *FlowSummary {
 		BytesScaled: tot.BytesScaled, Packets: tot.Packets, PacketsScaled: tot.PacketsScaled, ScaledComplete: tot.Unknown == 0,
 		TopTalkers: shares(c.talkers, "bytes"), TopDstPorts: shares(c.ports, "bytes"), TopConversations: shares(c.convs, "bytes"),
 		FwEvents: c.fw, TopDeniedSources: counts(c.denSrc), TopDeniedPorts: counts(c.denPort), NATConnections: c.nat.Total.Flows,
-		TopPostNATSources: shares(c.nat, "flows"), NoTemplate: c.noTemplate, Malformed: c.malformed}
+		TopPostNATSources: shares(c.nat, "flows"), NoTemplate: c.noTemplate, Malformed: c.malformed, TimeOffsets: c.off}
 	for d, rates := range c.domains {
 		ds := DomainSampling{Domain: d}
 		for r := range rates {
@@ -583,6 +594,8 @@ func (c *flowCount) summary(stats *FlowStats) *FlowSummary {
 	if stats != nil {
 		g, l := stats.SequenceGaps, stats.LostEstimate
 		s.SequenceGaps, s.LostEstimate = &g, &l
+		o := stats.TimeOffsets
+		s.TimeOffsets24h = &o
 	}
 	return s
 }
@@ -723,6 +736,9 @@ func flowReadme(s *FlowSummary) []string {
 		}
 		lines = append(lines, l)
 	}
+	if l := timeOffLine(s); l != "" {
+		lines = append(lines, l)
+	}
 	gaps := "sequence gaps not known (only the running service counts them)"
 	if s.SequenceGaps != nil {
 		gaps = fmt.Sprintf("sequence gaps %s (≈ %s records lost before Woodshed, last 24 h)", datatype.Thousands(*s.SequenceGaps),
@@ -731,6 +747,34 @@ func flowReadme(s *FlowSummary) []string {
 	lines = append(lines, fmt.Sprintf("%s; waiting for a template %s; malformed %s", gaps, datatype.Thousands(s.NoTemplate),
 		datatype.Thousands(s.Malformed)))
 	return lines
+}
+
+// timeOffLine is the README's line for records whose flow time was far from
+// when they arrived, in the window and (from the running collector) the last
+// 24 h; "" when there are none.
+func timeOffLine(s *FlowSummary) string {
+	words := func(o flow.TimeOffsets) string {
+		var ws []string
+		if o.Ahead > 0 {
+			ws = append(ws, fmt.Sprintf("%s ahead (up to %s)", datatype.Thousands(o.Ahead), flow.OffsetText(o.MaxAheadMs)))
+		}
+		if o.Behind > 0 {
+			ws = append(ws, fmt.Sprintf("%s behind (up to %s)", datatype.Thousands(o.Behind), flow.OffsetText(o.MaxBehindMs)))
+		}
+		return strings.Join(ws, ", ")
+	}
+	var parts []string
+	if s.TimeOffsets.Any() {
+		parts = append(parts, words(s.TimeOffsets)+" in this window")
+	}
+	if o := s.TimeOffsets24h; o != nil && o.Any() {
+		parts = append(parts, words(*o)+" in the last 24 h")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "times off arrival: " + strings.Join(parts, "; ") + "; kept at their own times, so a window around their arrival misses them " +
+		"(the exporter's clock or uptime is probably wrong)"
 }
 
 // flowFilterLines describes a flow export's filter for README.txt.

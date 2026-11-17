@@ -171,7 +171,8 @@ func TestFlowStatusRows(t *testing.T) {
 	days := 4.8
 	fs := &api.FlowState{Enabled: true, Budget: api.FlowBudget{Bytes: 8 << 30, UsedBytes: 2 << 30, EstimatedDays: &days},
 		Exporters: []api.FlowExporter{{DeviceID: "10.1.0.1", RecordsPerSec: 1180.5, Domains: []api.FlowDomain{{ID: 1, Sampling: 1000, Templates: 6}},
-			Counts24h: api.FlowCounts{Records: 100, SequenceGaps: 3}, TimeSource: "received", ClockSkewMS: 4000000}}}
+			Counts24h: api.FlowCounts{Records: 100, SequenceGaps: 3}, TimeSource: "received", ClockSkewMS: 4000000,
+			TimeOffsets24h: api.FlowTimeOffsets{Ahead: 40, MaxAheadMS: 1 << 32}}}}
 	var b strings.Builder
 	statusFlowRows(&tabw{w: &b}, &server.RunState{Flows: fs})
 	if got := b.String(); !strings.Contains(got, "Flows:      on; 1 exporter, 1180 records/s; budget 25 % used (2.0 GiB of 8.0 GiB)") {
@@ -180,7 +181,7 @@ func TestFlowStatusRows(t *testing.T) {
 	b.Reset()
 	flowStateRows(&tabw{w: &b}, fs)
 	for _, want := range []string{"about 4.8 days", "10.1.0.1: 1180.5 records/s; domain 1: 6 templates, 1 in 1000", "3 sequence gaps",
-		"its clock is 4000000 ms off"} {
+		"its clock is 4000000 ms off", "24 h: 40 records more than 1 h ahead of when they arrived (up to 49.7 days); kept at their own times"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("flow status lacks %q:\n%s", want, b.String())
 		}

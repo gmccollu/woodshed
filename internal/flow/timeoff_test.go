@@ -150,3 +150,12 @@ func TestTimeOffsetsLateRecords(t *testing.T) {
 		t.Errorf("late offsets %+v", st.TimeOffsets24h)
 	}
 }
+
+func TestOffsetText(t *testing.T) {
+	for ms, want := range map[int64]string{3600001: "1.0 h", 5400000: "1.5 h", 30 * 3600000: "30 h", 47*3600000 + 1: "47 h",
+		48 * 3600000: "2.0 days", 1 << 32: "49.7 days"} {
+		if got := OffsetText(ms); got != want {
+			t.Errorf("OffsetText(%d) = %q, want %q", ms, got, want)
+		}
+	}
+}
