@@ -1429,8 +1429,8 @@ start:
 - `flow_clock` (warn, action `""`): an exporter's clock is more than an hour off; its flows use received time.
 - `flow_time` (warn, action `""`; since 2.0): an exporter sent at least 10 records in the last hour whose times are
   more than 1 h ahead of, or more than 24 h behind, when they arrived (`time_offsets_1h`): "Flow records from 10.1.0.1
-  have times up to 49.7 days ahead of when they arrived: the exporter's clock or uptime is probably wrong." The text
-  adds that they're kept as sent and found at their own times. Several exporters share one banner (at most 5 named).
+  have times up to 49.7 days ahead of when they arrived: the exporter's clock or uptime is probably wrong. They're kept
+  as sent, at their own times." Several exporters share one banner (at most 5 named).
 - `flow_firewall` (warn, action `""`): Windows only, while the flow listener is on and a rule is disabled, missing or on
   another port; the text gives `woodshed flow on`.
 

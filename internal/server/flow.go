@@ -743,7 +743,7 @@ func flowTimeText(offs []flowTimeOff) string {
 		}
 		return ahead, behind
 	}
-	const tail = " Woodshed keeps them as sent, so a search finds them at their own times, not when they arrived; the counts are on the device page."
+	const tail = " They're kept as sent, at their own times."
 	if len(offs) == 1 {
 		var when string
 		switch a, b := ways(offs[0].o); {

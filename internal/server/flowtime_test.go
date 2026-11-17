@@ -112,7 +112,7 @@ func TestFlowTimeText(t *testing.T) {
 			"10.2.0.1 (up to 3.0 days behind) have times far from when they arrived: the exporters' clocks or uptimes are probably wrong."},
 	} {
 		got := flowTimeText(c.offs)
-		if !strings.HasPrefix(got, c.want) || !strings.Contains(got, "Woodshed keeps them as sent") {
+		if !strings.HasPrefix(got, c.want) || !strings.HasSuffix(got, " They're kept as sent, at their own times.") {
 			t.Errorf("got %q\nwant %q…", got, c.want)
 		}
 	}
