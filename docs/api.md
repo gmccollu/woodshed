@@ -1317,6 +1317,10 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
   its stream: `"rfc"` (RFC 7011 §3.1: the data records sent before the message) or `"after"` (counting the message's
   own records too). Absent while undecided (messages of equal size don't tell them apart) and for v5 and v9.
   `counts_24h.sequence_gaps` counts a jump only when the conventions still in play can't explain it.
+- `counts_24h`, `time_offsets_24h` and `time_offsets_1h` survive a restart (SPEC §13.10 decision 83): at start the
+  collector reloads them, for every exporter with stored counts in the last 24 hours, from the per-minute counts in
+  the index (`counts_24h.records` is then the records stored), with the newest segment's templates and sampling, so
+  such an exporter is listed before it sends again.
 - `time_offsets_24h` and `time_offsets_1h` (since 2.0, SPEC §13.10 decision 70): the exporter's records, over the last
   24 hours (by hour) and the last hour (by 5 minutes), whose flow end was more than 1 h after the datagram arrived
   (`ahead`) or more than 24 h before it (`behind`), and the largest offset each way in ms (`0` when none). Such records
