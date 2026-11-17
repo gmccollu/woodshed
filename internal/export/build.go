@@ -92,6 +92,9 @@ type ManifestFilters struct {
 	ExcludeHost    []string `json:"exclude_host"`
 	// 1.2: a bundle of the devices active in its window.
 	ActiveDevices bool `json:"active_devices,omitempty"`
+	// 2.0: a flow export's filter parameters and the flow formats in the zip.
+	Flow        map[string]string `json:"flow,omitempty"`
+	FlowFormats []string          `json:"flow_formats,omitempty"`
 }
 
 // ManifestFile is one log file in the zip.
@@ -177,6 +180,14 @@ func (b *builder) write(ctx context.Context, f *os.File, info Info, progress fun
 	hint := map[hk]int64{}
 	var total int64
 	for _, t := range types {
+		if t == datatype.Flow {
+			fe, err := b.flowEstimate(ctx, req, info.Devices)
+			if err != nil {
+				return buildResult{}, err
+			}
+			total += fe.Bytes
+			continue
+		}
 		est, err := b.eng.Estimate(ctx, info.Devices, req.typeFilter(t))
 		if err != nil {
 			return buildResult{}, err
@@ -215,6 +226,17 @@ func (b *builder) write(ctx context.Context, f *os.File, info Info, progress fun
 			var ts *typeCount
 			if sums != nil {
 				ts = sums.of(dev, typ)
+			}
+			if typ == datatype.Flow {
+				var fc *flowCount
+				if sums != nil {
+					fc = sums.flows[dev]
+				}
+				if err := b.writeFlows(ctx, zw, dev, req, fc, &res, &files, exportedAt); err != nil {
+					return res, err
+				}
+				progress(0.97 * float64(done) / float64(total))
+				continue
 			}
 			if typ == datatype.Poll {
 				// Polls go into the zip as CSV files (SPEC §12.6); each is
@@ -370,13 +392,16 @@ func (b *builder) write(ctx context.Context, f *os.File, info Info, progress fun
 			App: nonNil(info.Filters.Apps), Host: nonNil(info.Filters.Hosts), Exclude: info.Filters.Exclude,
 			Type: "syslog", Syntax: syntaxName(info.Filters.Terms), Facilities: info.Filters.Facilities.List(),
 			ExcludeDevices: nonNil(info.Filters.ExcludeDevices), ExcludeApp: nonNil(info.Filters.ExcludeApps),
-			ExcludeHost: nonNil(info.Filters.ExcludeHosts), ActiveDevices: info.Filters.ActiveDevices}},
+			ExcludeHost: nonNil(info.Filters.ExcludeHosts), ActiveDevices: info.Filters.ActiveDevices, Flow: info.Filters.Flow}},
 		Files: nonNil(files), Lines: res.lines, Gaps: nonNil(gaps), GapsNote: GapsNote,
 		EventsFile: "woodshed-events.log", Events: len(inRange),
 		Kind: KindExport, Types: nonNil(types), Folders: map[string]string{},
 	}
 	for _, t := range types {
 		man.Folders[FolderOf(t)] = t
+		if t == datatype.Flow {
+			man.Request.Filters.FlowFormats = flowFormats(info.Filters)
+		}
 	}
 	if len(types) == 1 && types[0] != datatype.Syslog {
 		man.Request.Filters.Type = types[0]
@@ -429,7 +454,8 @@ func readme(info Info) string {
 	fmt.Fprintf(&b, "Woodshed export %s\n", info.ID)
 	fmt.Fprintf(&b, "Range: %s to %s (UTC, received time; the end is exclusive)\n",
 		info.From.Format(time.RFC3339), info.To.Format(time.RFC3339))
-	if fl := filterLines(info.Filters); len(fl) > 0 {
+	fl := append(filterLines(info.Filters), flowFilterLines(info.Filters.Flow)...)
+	if len(fl) > 0 {
 		b.WriteString("Filters (only lines that pass every one are included):\n")
 		for _, l := range fl {
 			b.WriteString("    " + l + "\n")
@@ -463,6 +489,7 @@ logs/<device>/<YYYY-MM-DD>.log
 	}
 	b.WriteString(trapReadme(info))
 	b.WriteString(pollReadme(info))
+	b.WriteString(flowReadmeFiles(info))
 	b.WriteString(`manifest.json
     What was exported: the request (devices with their names and groups, the
     range and any filters), each log file's line count and SHA-256, and "gaps":
@@ -486,7 +513,11 @@ woodshed-events.log
 		b.WriteString(`To check a file: sha256sum logs/<device>/<day>.log (or on Windows:
 certutil -hashfile <file> SHA256) and compare with manifest.json.
 `)
-	} else if ts := info.Filters.TypesOrSyslog(); len(ts) == 1 && ts[0] == datatype.Poll {
+	} else if ts := info.Filters.TypesOrSyslog(); len(ts) == 1 && ts[0] == datatype.Flow {
+		b.WriteString(`To check a file: sha256sum flows/<device>/flows.csv (or on Windows:
+certutil -hashfile <file> SHA256) and compare with manifest.json.
+`)
+	} else if len(ts) == 1 && ts[0] == datatype.Poll {
 		b.WriteString(`To check a file: sha256sum poll/<device>/system.csv (or on Windows:
 certutil -hashfile <file> SHA256) and compare with manifest.json.
 `)

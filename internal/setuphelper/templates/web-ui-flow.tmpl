@@ -1,0 +1,27 @@
+{{/*
+family: web-ui
+what: flow
+transports: v9, ipfix
+reference: RFC 3954 (flow v9), RFC 7011 (IPFIX)
+verification: reference
+*/}}
+{{define "does"}}The values to enter in the device's flow export page so it sends flow records to Woodshed as {{if eq .Transport "ipfix"}}IPFIX (RFC 7011){{else}}flow v9 (RFC 3954){{end}}.{{end}}
+
+{{define "parts"}}
+@@part steps - In the device's web page, open its flow export settings and enter
+Flow export: on
+Collector address: {{.Address}}
+Port: {{.Port}} (UDP)
+Version: {{if eq .Transport "ipfix"}}IPFIX (sometimes listed as version 10){{else}}version 9{{end}}
+Interfaces: the ones whose traffic you want to see
+Active timeout: 60 seconds (how often long flows are reported)
+Inactive timeout: 15 seconds (how soon a flow that went quiet is reported), if asked
+Template refresh: 60 seconds, if asked
+{{end}}
+
+{{define "notes"}}
+Field names differ between devices; some call the collector a target or a server.
+If the page offers sampling, note the rate: Woodshed shows counts as exported and scaled by it.
+{{end}}
+
+{{define "check"}}Woodshed's Flows view lists the device as an exporter within a minute or two.{{end}}

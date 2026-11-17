@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getStats, type Stats } from '../lib/api';
-  import { bytes, dateTime, duration, num } from '../lib/format';
+  import { bytes, dateTime, duration, num, protoLabel } from '../lib/format';
   import { live } from '../lib/status.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import QueueChart from '../components/QueueChart.svelte';
@@ -18,7 +18,7 @@
   });
   const reasons = $derived(stats?.dropped_by_reason);
   const anyReason = $derived(!!reasons && reasons.paused + reasons.write_error + reasons.refused + reasons.queue_full > 0);
-  const queueName = (l: string) => (l === 'udp' ? 'Syslog over UDP' : l === 'snmp' ? 'SNMP traps' : l.toUpperCase());
+  const queueName = (l: string) => (l === 'udp' ? 'Syslog over UDP' : l === 'snmp' ? 'SNMP traps' : l === 'flow' ? 'Flows (flow and IPFIX ports)' : l === 'ipfix' ? 'Flows (IPFIX)' : l.toUpperCase());
   const pct = (a: number, b: number) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
 
   const st = $derived(live.status);
@@ -105,8 +105,9 @@
       <section class="card" aria-labelledby="queue-{q.listener}">
         <h2 id="queue-{q.listener}" class="m-0 mb-2 text-[17px] font-bold">UDP receive queue <span class="font-normal text-muted">· {queueName(q.listener)}</span></h2>
         <p class="m-0 text-[14.5px] leading-relaxed">
-          UDP messages wait here while writing to disk catches up, so a slow disk doesn't make the OS drop them. It holds up to
-          <b>{num(q.capacity_messages)}</b> messages or <b>{bytes(q.capacity_bytes)}</b>, whichever fills first.
+          UDP {q.listener === 'flow' ? 'packets' : 'messages'} wait here while writing to disk catches up, so a slow disk doesn't make
+          the OS drop them. It holds up to <b>{num(q.capacity_messages)}</b>
+          {q.listener === 'flow' ? 'packets' : 'messages'} or <b>{bytes(q.capacity_bytes)}</b>, whichever fills first.
         </p>
         <dl class="mt-3 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-[14.5px]">
           <dt>Waiting now</dt>
@@ -122,7 +123,8 @@
         <p class="mt-3 mb-0 text-[13px] leading-relaxed text-muted">
           {#if q.dropped_24h > 0}
             When the queue fills, the disk is falling behind: check its health and what else is using it, or raise
-            <code class="font-mono">listeners.udp_queue_messages</code> in the config file and restart Woodshed.
+            <code class="font-mono">{q.listener === 'flow' ? 'listeners.flow.queue_messages' : 'listeners.udp_queue_messages'}</code> in the config
+            file and restart Woodshed.
           {:else}
             If senders report messages missing while this queue never fills, they were lost before Woodshed read them: in the OS
             socket buffer or on the network.
@@ -137,7 +139,7 @@
         {#each st.listeners as l (l.proto + l.port)}
           <li class="flex items-center gap-2">
             <span class="inline-block size-[9px] rounded-full" style:background={l.ok ? 'var(--ok)' : 'var(--bad)'} aria-hidden="true"></span>
-            <span class="font-mono text-[13.5px]">{l.proto.toUpperCase()} {l.addr}:{l.port}</span>
+            <span class="font-mono text-[13.5px]">{protoLabel(l.proto)} {l.addr}:{l.port}</span>
             <span class:text-ok-fg={l.ok} class:text-bad-fg={!l.ok}>{l.ok ? 'listening' : l.error}</span>
           </li>
         {/each}

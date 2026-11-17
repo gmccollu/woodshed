@@ -26,6 +26,7 @@
     mark = null,
     hint = 'Drag across the bars to zoom in; Back zooms out.',
     pollMarks = [],
+    fmt,
   }: {
     hist: Histogram | null;
     from: string;
@@ -43,6 +44,8 @@
     hint?: string;
     /** 1.3: poll restart and oper-change markers (PollStrips), as lines across the bars; left in % of the span. */
     pollMarks?: { left: number; title: string; kind: string }[];
+    /** A bucket's count in words (default "N lines"; flows: flows or bytes). */
+    fmt?: (n: number) => string;
   } = $props();
 
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -75,7 +78,7 @@
     const e = Math.min(Date.parse(b.start) + size, Date.parse(to));
     const when = `${label(a, multiDay, withSec)}–${label(e, multiDay, withSec)}${utc ? ' UTC' : ''}`;
     if (b.count === null) return `${when}: not counted yet`;
-    return `${when}: ${b.approx ? '≈ ' : ''}${num(b.count)} line${b.count === 1 ? '' : 's'}${b.approx ? ' (estimated from the index)' : ''}`;
+    return `${when}: ${b.approx ? '≈ ' : ''}${fmt ? fmt(b.count) : `${num(b.count)} line${b.count === 1 ? '' : 's'}`}${b.approx ? ' (estimated from the index)' : ''}`;
   }
 
   const ticks = $derived.by(() => {

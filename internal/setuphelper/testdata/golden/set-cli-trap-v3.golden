@@ -1,0 +1,42 @@
+family: set-cli
+what: trap
+transport: v3
+address: 192.0.2.10
+verification: reference
+reference: common set-style SNMP statements (set snmp trap-group …, set snmp v3 …); RFC 3413 (target addresses, target parameters, notify) and RFC 3414 (USM)
+does: Sends the device's SNMP traps to Woodshed (SNMPv3).
+check: Search Events for type Traps after a change on the device; `woodshed snmp status` counts traps per device.
+placeholders: <V3-USER> <AUTH-PASSPHRASE> <PRIV-PASSPHRASE>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- The statements follow the SNMPv3 notification model (RFC 3413): a target address, its parameters, and a notify entry that ties them together by tag. The keywords for each piece differ between devices.
+- Add the same user in Woodshed: Settings → SNMP → v3 users, name <V3-USER>, SHA-256 and AES-128, with the same passphrases.
+- Some devices also need the trap categories chosen (link, chassis, configuration) before they send anything.
+---- part cli "": Enter in configuration mode, then commit
+set snmp v3 usm local-engine user <V3-USER> authentication-sha256 authentication-password <AUTH-PASSPHRASE>
+set snmp v3 usm local-engine user <V3-USER> privacy-aes128 privacy-password <PRIV-PASSPHRASE>
+set snmp v3 target-address woodshed address 192.0.2.10
+set snmp v3 target-address woodshed port 162
+set snmp v3 target-address woodshed tag-list woodshed-traps
+set snmp v3 target-address woodshed target-parameters woodshed-params
+set snmp v3 target-parameters woodshed-params parameters message-processing-model v3
+set snmp v3 target-parameters woodshed-params parameters security-model usm
+set snmp v3 target-parameters woodshed-params parameters security-level privacy
+set snmp v3 target-parameters woodshed-params parameters security-name <V3-USER>
+set snmp v3 notify woodshed-notify type trap tag woodshed-traps
+commit
+==== text
+! Enter in configuration mode, then commit
+set snmp v3 usm local-engine user <V3-USER> authentication-sha256 authentication-password <AUTH-PASSPHRASE>
+set snmp v3 usm local-engine user <V3-USER> privacy-aes128 privacy-password <PRIV-PASSPHRASE>
+set snmp v3 target-address woodshed address 192.0.2.10
+set snmp v3 target-address woodshed port 162
+set snmp v3 target-address woodshed tag-list woodshed-traps
+set snmp v3 target-address woodshed target-parameters woodshed-params
+set snmp v3 target-parameters woodshed-params parameters message-processing-model v3
+set snmp v3 target-parameters woodshed-params parameters security-model usm
+set snmp v3 target-parameters woodshed-params parameters security-level privacy
+set snmp v3 target-parameters woodshed-params parameters security-name <V3-USER>
+set snmp v3 notify woodshed-notify type trap tag woodshed-traps
+commit

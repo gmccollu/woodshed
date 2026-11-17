@@ -3,11 +3,14 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/snmp"
@@ -60,6 +63,16 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 	if len(fx.Steps) < 8 {
 		t.Fatalf("only %d steps", len(fx.Steps))
 	}
+	// 2.0: the Set up a device form's bodies are in it too.
+	setup := 0
+	for _, st := range fx.Steps {
+		if st.Path == "/api/setup/snippet" {
+			setup++
+		}
+	}
+	if setup < 3 {
+		t.Fatalf("only %d Set up a device steps", setup)
+	}
 	// The agents the targets point at, with the fixture's test credentials.
 	u := snmp.User{Name: "monitor", Auth: snmp.AuthSHA256, Priv: snmp.PrivAES128, AuthPass: []byte("fixture-auth-pass"),
 		PrivPass: []byte("fixture-priv-pass"), Level: snmp.AuthPriv}
@@ -74,9 +87,26 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 	}
 	defer a2.Close()
 	dir := t.TempDir()
-	r := startPolling(t, writeConfig(t, dir, freePort(t), 0, func(*config.Config) {}), nil)
+	syslogPort := freePort(t)
+	r := startPolling(t, writeConfig(t, dir, syslogPort, 0, func(*config.Config) {}), nil)
+	// A device 127.0.0.1 for the export and bundle bodies (they name it).
+	sendSyslog(t, syslogPort, "<134>fixture device")
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var devs struct{ Total int }
+		if r.do(t, "GET", "/api/devices?q=127.0.0.1", nil, &devs); devs.Total == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fixture device never showed up")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
-	vars := map[string]string{"{agent_port}": strconv.Itoa(int(a1.Addr().Port())), "{agent_v3_port}": strconv.Itoa(int(a2.Addr().Port()))}
+	vars := map[string]string{"{agent_port}": strconv.Itoa(int(a1.Addr().Port())), "{agent_v3_port}": strconv.Itoa(int(a2.Addr().Port())),
+		"{flow_port}": strconv.Itoa(freeUDP(t)), "{flow_ipfix_port}": strconv.Itoa(freeUDP(t)),
+		// A bundle's moment can't be in the future.
+		"{at}": time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second).Format(time.RFC3339)}
 	subst := func(s string) string {
 		for k, v := range vars {
 			s = strings.ReplaceAll(s, k, v)
@@ -86,7 +116,7 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 	// Ports are numbers: a quoted "{agent_port}" becomes the bare number.
 	substBody := func(b json.RawMessage) []byte {
 		s := string(b)
-		for _, k := range []string{"{agent_port}", "{agent_v3_port}"} {
+		for _, k := range []string{"{agent_port}", "{agent_v3_port}", "{flow_port}", "{flow_ipfix_port}"} {
 			s = strings.ReplaceAll(s, `"`+k+`"`, vars[k])
 		}
 		return []byte(subst(s))
@@ -194,5 +224,18 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 	r.do(t, "GET", "/api/poll/targets/"+id, nil, &after)
 	if after["community_set"] != true {
 		t.Errorf("the round trip lost the community: %v", after)
+	}
+}
+
+// sendSyslog sends one UDP syslog message to 127.0.0.1:port.
+func sendSyslog(t *testing.T, port int, msg string) {
+	t.Helper()
+	c, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Write([]byte(msg)); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { protoLabel } from '../lib/format';
   import { dismissUpdate, getUpdates, putUpdates, retryListeners, type Banner, type Listener } from '../lib/api';
   import { live, refreshStatus } from '../lib/status.svelte';
   import { dismiss, isDismissed, prune } from '../lib/alerts.svelte';
@@ -27,7 +28,7 @@
       return `Another copy of Woodshed is using ${port}: the installed service. This copy can't receive logs; stop it, or use the service's page.`;
     if (l.holder_kind === 'woodshed')
       return `Another copy of Woodshed is using ${port}. This copy can't receive logs; stop the other copy, or use its page.`;
-    return `${l.proto.toUpperCase()} ${l.addr}:${l.port}: ${l.error}${l.holder ? ` (held by ${l.holder})` : ''}`;
+    return `${protoLabel(l.proto)} ${l.addr}:${l.port}: ${l.error}${l.holder ? ` (held by ${l.holder})` : ''}`;
   }
   const isWoodshed = (l: Listener) => l.holder_kind === 'woodshed_service' || l.holder_kind === 'woodshed';
   // The same holder on UDP and TCP gets one sentence, not two.
@@ -115,7 +116,7 @@
   </div>
 {/if}
 {#each shown as b, i (`${i}:${b.kind}`)}
-  <div class="banner {b.level}" role={b.level === 'error' ? 'alert' : 'status'}>
+  <div class="banner {b.level}" role={b.level === 'error' ? 'alert' : 'status'} data-kind={b.kind}>
     <Icon name="alert" />
     <div class="grow">
       <div>{b.text}</div>
@@ -181,6 +182,27 @@
       {#if b.kind === 'poll_overrun'}
         <div class="detail-text">
           The defaults and the last hour's totals are in <a class="text-link underline" href="#/settings?section=polling">Settings → Polling</a>.
+        </div>
+      {/if}
+      {#if b.kind === 'flow_budget'}
+        <div class="detail-text">
+          The budget, what it holds now and the per-exporter rates are in <a class="text-link underline" href="#/settings?section=flows">Settings → Flows</a>.
+          Flows over the budget are deleted first, oldest first; other logs aren't touched.
+        </div>
+      {/if}
+      {#if b.kind === 'flow_templates'}
+        <div class="detail-text">
+          The data is kept undecoded until the template arrives, so nothing is lost. Each exporter's templates are listed in
+          <a class="text-link underline" href="#/settings?section=flows">Settings → Flows</a>.
+        </div>
+      {/if}
+      {#if b.kind === 'flow_clock'}
+        <div class="detail-text">Its flows can still be searched, by the time they arrived. The exporter's clock offset is on its device page.</div>
+      {/if}
+      {#if b.kind === 'flow_firewall'}
+        <div class="detail-text">
+          Open a Command Prompt or PowerShell with <b>Run as administrator</b> and run <code>woodshed flow on</code>. The listener and its ports are in
+          <a class="text-link underline" href="#/settings?section=flows">Settings → Flows</a>.
         </div>
       {/if}
       {#if b.kind === 'listener_bind'}

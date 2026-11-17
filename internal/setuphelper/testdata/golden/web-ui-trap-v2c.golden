@@ -1,0 +1,27 @@
+family: web-ui
+what: trap
+transport: v2c
+address: 192.0.2.10
+verification: reference
+reference: RFC 3416 (SNMPv2 notifications), RFC 3414 (SNMPv3 users)
+does: The values to enter in the device's SNMP trap (notification) page so it sends traps to Woodshed (SNMPv2c).
+check: Search Events for type Traps after saving; pages with a "send test trap" button send one at once.
+placeholders: <COMMUNITY>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- <COMMUNITY> must be one Woodshed accepts: Settings → Listeners → SNMP traps lists the communities (an empty list accepts any).
+- Field names differ between devices. Many pages also ask which events send a trap.
+---- part steps "": In the device's web page, open its SNMP trap or notification settings and add a receiver
+Trap receiver (manager) address: 192.0.2.10
+Port: 162
+SNMP version: v2c
+Community: <COMMUNITY>
+Notification type: trap (not inform), unless the page offers informs and you want them answered
+==== text
+In the device's web page, open its SNMP trap or notification settings and add a receiver
+Trap receiver (manager) address: 192.0.2.10
+Port: 162
+SNMP version: v2c
+Community: <COMMUNITY>
+Notification type: trap (not inform), unless the page offers informs and you want them answered

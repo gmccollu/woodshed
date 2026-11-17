@@ -63,3 +63,6 @@ func hostAddrs() []string {
 	}
 	return out
 }
+
+// HostAddrs is hostAddrs for the CLI (`woodshed setup snippet`), uncached.
+func HostAddrs() []string { return hostAddrs() }

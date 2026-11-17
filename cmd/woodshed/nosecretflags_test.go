@@ -12,8 +12,8 @@ import (
 func TestNoSecretOnTheCommandLine(t *testing.T) {
 	flagRE := regexp.MustCompile(`(?m)^\s+-([a-z0-9-]+)`)
 	for _, cmd := range []string{"run", "install", "status", "reindex", "search", "set-password", "lan-mode", "tls", "snmp",
-		"update-check", "reset-password", "send", "bench", "portable", "poll"} {
-		_, out, errOut := runCLI(cmd, "--help")
+		"update-check", "reset-password", "send", "bench", "portable", "poll", "setup snippet"} {
+		_, out, errOut := runCLI(append(strings.Fields(cmd), "--help")...)
 		ms := flagRE.FindAllStringSubmatch(out+errOut, -1)
 		if cmd == "send" && !strings.Contains(out+errOut, "-auth-pass-file") || len(ms) == 0 && cmd != "portable" {
 			t.Errorf("woodshed %s --help: no flags read (%d)", cmd, len(ms))

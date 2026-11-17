@@ -19,7 +19,7 @@ export const releasesUrl = () => repoUrl('/releases');
 export const RELEASES_FILE = './releases.json';
 
 const ARCH = { amd64: 'x64', x86_64: 'x64', arm64: 'arm64', aarch64: 'arm64', universal: 'universal' };
-const ARCH_LABEL = { x64: 'x64', arm64: 'ARM64', universal: 'Intel and Apple silicon' };
+const ARCH_LABEL = { x64: 'x64', arm64: 'ARM64', universal: 'x64 and ARM64' };
 
 const RULES = [
   { re: /_windows_(amd64|arm64)\.msi$/, os: 'windows', kind: 'installer', label: 'Windows installer' },

@@ -1,0 +1,33 @@
+{{/*
+family: net-snmp
+what: poll
+transports: v2c, v3
+reference: net-snmp manual pages: snmpd.conf(5) (agentaddress, rocommunity, rocommunity6, createUser, rouser)
+verification: tested
+ci: CI starts from a distribution-style snmpd.conf (agentaddress 127.0.0.1,[::1]), replaces that line and adds the rest as the snippet says, then Woodshed polls real snmpd, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.
+*/}}
+{{define "does"}}Lets Woodshed poll this machine's snmpd (SNMP{{.Transport}}, read-only{{if eq .Transport "v2c"}}, from Woodshed's address only{{end}}).{{end}}
+
+{{define "parts"}}
+@@part file /etc/snmp/snmpd.conf Replace the existing agentaddress line with this one (add it if there's none)
+agentaddress udp:{{.AgentPort}},udp6:{{.AgentPort}}
+@@part file /etc/snmp/snmpd.conf Then add these lines to the same file, and restart snmpd (sudo systemctl restart snmpd)
+# Woodshed: answer polls (SNMP{{.Transport}}, read-only).
+{{if eq .Transport "v2c"}}{{if .IsIPv6}}rocommunity6{{else}}rocommunity{{end}} <COMMUNITY> {{.Address}}
+{{- else}}createUser {{.V3User}} {{.Auth.NetSNMP}} <AUTH-PASSPHRASE> {{.Priv.NetSNMP}} <PRIV-PASSPHRASE>
+rouser {{.V3User}} priv{{end}}
+{{end}}
+
+{{define "notes"}}
+Then add this machine in Woodshed: Devices → Add polling, its address, port {{.AgentPort}}, SNMP{{.Transport}}{{if eq .Transport "v2c"}} and the same community{{else}} and the user {{.V3User}}{{end}}; Test poll shows what answers.
+{{if eq .Transport "v3"}}Add the same user in Woodshed first: Settings → SNMP → v3 users, name {{.V3User}}, {{.Auth.Label}} and {{.Priv.Label}}, with the same passphrases (at least 8 characters each).
+Some distributions want createUser in snmpd's persistent file (often /var/lib/snmp/snmpd.conf) instead, written while snmpd is stopped; their net-snmp-create-v3-user tool does that.
+{{else}}The source address limits the community to polls from {{.Address}}{{if .IsName}} (net-snmp looks the name up when it starts){{end}}. If Woodshed reaches this machine through NAT, use the address the polls arrive from.
+{{end}}
+{{- if ne .AgentPort 161}}Port {{.AgentPort}} isn't SNMP's usual 161: give it in Woodshed's polling form too.
+{{end}}
+Edit the agentaddress line rather than adding a second one: snmpd joins every agentaddress line it reads, so the distribution's usual `agentaddress 127.0.0.1,[::1]` would stay, and two entries for port {{.AgentPort}} can stop snmpd from starting. The new line listens on every address, IPv4 and IPv6; to keep loopback-only addresses too, list them on the same line, comma-separated.
+Keep snmpd.conf readable by root only: it holds the {{if eq .Transport "v2c"}}community{{else}}passphrases{{end}}.
+{{end}}
+
+{{define "check"}}Devices → Add polling → Test poll answers with this machine's name and interfaces; after the first cycle the device page shows its graphs.{{end}}

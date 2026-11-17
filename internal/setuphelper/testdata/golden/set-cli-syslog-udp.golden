@@ -1,0 +1,26 @@
+family: set-cli
+what: syslog
+transport: udp
+address: 192.0.2.10
+verification: reference
+reference: common set-style syslog statements (set system syslog host …); RFC 5424 severities and facilities
+does: Sends the device's log messages, informational and more severe, to Woodshed over UDP.
+check: The device appears on Woodshed's Dashboard after the commit, with its first message.
+placeholders: 
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- `any info` sends every facility at info and above; the facility and level keywords differ slightly between devices.
+- `structured-data` asks for RFC 5424 messages where the device offers it; leave the line out if it doesn't.
+- Set the address the messages come from with `set system syslog source-address <address>` if the device has several; Woodshed shows that address as the device.
+---- part cli "": Enter in configuration mode, then commit
+set system syslog host 192.0.2.10 any info
+set system syslog host 192.0.2.10 port 514
+set system syslog host 192.0.2.10 structured-data
+commit
+==== text
+! Enter in configuration mode, then commit
+set system syslog host 192.0.2.10 any info
+set system syslog host 192.0.2.10 port 514
+set system syslog host 192.0.2.10 structured-data
+commit

@@ -185,6 +185,14 @@ func installOS(o InstallOptions) (Result, error) {
 	} else if created {
 		h.say("added the firewall rule %q, disabled (`woodshed snmp on` turns it on)", fwrule.SNMPRuleName)
 	}
+	// The flow rules likewise, one per port (`woodshed flow on` enables them; SPEC §13.1).
+	created, err := fwrule.FlowWindowsEnsure(h.run, exe)
+	if err != nil {
+		res.Notes = append(res.Notes, fmt.Sprintf("couldn't add the flow firewall rules: %v", err))
+	}
+	for _, name := range created {
+		h.say("added the firewall rule %q, disabled (`woodshed flow on` turns it on)", name)
+	}
 	if err := s.Start(); err != nil {
 		return res, fmt.Errorf("the service is installed but didn't start (see Event Viewer > Application): %w", err)
 	}
@@ -234,6 +242,7 @@ func uninstallOS(o UninstallOptions) (Result, error) {
 	}
 	_ = fwrule.WindowsRemove(h.run)
 	_ = fwrule.SNMPWindowsRemove(h.run)
+	_ = fwrule.FlowWindowsRemove(h.run)
 	_ = eventlog.Remove(WindowsName)
 
 	if exe != "" && strings.EqualFold(filepath.Clean(exe), filepath.Clean(windowsExe())) {

@@ -135,7 +135,7 @@ func TestActiveIsExact(t *testing.T) {
 	if got, _ := eng.Active(bg, types, h(23, 0, 0), h(23, 0, 0)); len(got) != 0 {
 		t.Errorf("an empty range: %v", got)
 	}
-	if _, err := eng.Active(bg, []string{"flow"}, h(23, 0, 0), h(23, 1, 0)); err == nil {
+	if _, err := eng.Active(bg, []string{"sflow"}, h(23, 0, 0), h(23, 1, 0)); err == nil {
 		t.Error("an unknown type")
 	}
 }

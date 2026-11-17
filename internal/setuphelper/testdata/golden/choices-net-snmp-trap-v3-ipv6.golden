@@ -1,0 +1,42 @@
+family: net-snmp
+what: trap
+transport: v3
+address: 2001:db8::10
+verification: tested
+verification_detail: CI starts real snmpd with these lines (its coldStart trap) and runs the snmptrap test as written, v2c and v3 (SHA-256 where the tools have it, and SHA-1 with another user name), and v2c over IPv6.
+reference: net-snmp manual pages: snmpd.conf(5) (trap2sink, trapsess), snmp.conf(5) (defCommunity, defSecurityName, defAuthType…), snmptrap(1)
+does: Makes snmpd send its traps to Woodshed (SNMPv3), and gives a test trap to send with snmptrap.
+check: Search Events for type Traps: the trap snmpd sends at start (coldStart) and the test trap each appear once; `woodshed snmp status` counts them.
+placeholders: <AUTH-PASSPHRASE> <PRIV-PASSPHRASE>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Add the same user in Woodshed first: Settings → SNMP → v3 users, name monitor, SHA-1 and AES-128, with the same passphrases (at least 8 characters each).
+- Keep snmpd.conf readable by root only, and ~/.snmp/snmp.conf by you only (chmod 600 ~/.snmp/snmp.conf): they hold the passphrases.
+- The test trap's OID is under the documentation enterprise number (32473), so it can't be mistaken for a real alarm.
+---- part file "/etc/snmp/snmpd.conf": Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts
+# Woodshed: send traps (SNMPv3).
+trapsess -v 3 -u monitor -l authPriv -a SHA -A <AUTH-PASSPHRASE> -x AES -X <PRIV-PASSPHRASE> udp6:[2001:db8::10]:162
+---- part file "~/.snmp/snmp.conf": For the test trap: snmptrap reads its user and passphrases from this file, not the command line
+defSecurityName monitor
+defSecurityLevel authPriv
+defAuthType SHA
+defAuthPassphrase <AUTH-PASSPHRASE>
+defPrivType AES
+defPrivPassphrase <PRIV-PASSPHRASE>
+---- part command "": Send a test trap
+snmptrap -v 3 udp6:[2001:db8::10]:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s "Test trap for Woodshed from $(hostname)"
+==== text
+# /etc/snmp/snmpd.conf: Add to the agent's configuration, then restart snmpd (sudo systemctl restart snmpd); it sends a trap when it starts
+# Woodshed: send traps (SNMPv3).
+trapsess -v 3 -u monitor -l authPriv -a SHA -A <AUTH-PASSPHRASE> -x AES -X <PRIV-PASSPHRASE> udp6:[2001:db8::10]:162
+
+# ~/.snmp/snmp.conf: For the test trap: snmptrap reads its user and passphrases from this file, not the command line
+defSecurityName monitor
+defSecurityLevel authPriv
+defAuthType SHA
+defAuthPassphrase <AUTH-PASSPHRASE>
+defPrivType AES
+defPrivPassphrase <PRIV-PASSPHRASE>
+
+# Send a test trap
+snmptrap -v 3 udp6:[2001:db8::10]:162 '' 1.3.6.1.4.1.32473.1.0.1 1.3.6.1.4.1.32473.1.1.1.0 s "Test trap for Woodshed from $(hostname)"

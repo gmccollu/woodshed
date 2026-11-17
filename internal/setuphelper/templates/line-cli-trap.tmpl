@@ -1,0 +1,34 @@
+{{/*
+family: line-cli
+what: trap
+transports: v2c, v3
+reference: common line-oriented SNMP commands (snmp-server host, snmp-server enable traps, snmp-server group, snmp-server user); RFC 3414 for the v3 user model
+verification: reference
+*/}}
+{{define "does"}}Sends the device's SNMP traps to Woodshed (SNMP{{.Transport}}).{{end}}
+
+{{define "parts"}}
+@@part cli - Enter in global configuration mode, fill in the placeholders, then save the configuration
+{{- if eq .Transport "v3"}}
+snmp-server group woodshed v3 priv
+snmp-server user {{.V3User}} woodshed v3 auth {{.Auth.Placeholder}} <AUTH-PASSPHRASE> priv {{.Priv.Placeholder}} <PRIV-PASSPHRASE>
+snmp-server host {{.Address}} version 3 priv {{.V3User}}{{if ne .Port 162}} <UDP-PORT-OPTION>{{end}}
+{{- else}}
+snmp-server host {{.Address}} version 2c <COMMUNITY>{{if ne .Port 162}} <UDP-PORT-OPTION>{{end}}
+{{- end}}
+snmp-server enable traps
+{{- if .SourceInterface}}
+snmp-server trap-source {{.SourceInterface}}{{end}}
+{{end}}
+
+{{define "notes"}}
+{{if eq .Transport "v2c"}}<COMMUNITY> must be one Woodshed accepts: Settings → Listeners → SNMP traps lists the communities (an empty list accepts any).
+{{else}}{{.Auth.Placeholder}} and {{.Priv.Placeholder}} are the device's keywords for {{.Auth.Label}} and {{.Priv.Label}}; they differ between devices, and some offer only SHA-1. Take them from the device's documentation, and pick protocols Woodshed has too.
+Add the same user in Woodshed: Settings → SNMP → v3 users, name {{.V3User}}, {{.Auth.Label}} and {{.Priv.Label}}, with the same passphrases.
+{{end}}
+{{- if ne .Port 162}}<UDP-PORT-OPTION> is the device's way of naming UDP port {{.Port}} (Woodshed doesn't use the usual 162); some devices can't send traps to another port at all.
+{{end}}
+`snmp-server enable traps` turns on every notification the device has on some devices, and only a default set on others; narrow it to what you need.
+{{end}}
+
+{{define "check"}}Search Events for type Traps after a change on the device (an interface going down and up, a configuration save); `woodshed snmp status` counts traps per device.{{end}}

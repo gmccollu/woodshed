@@ -21,7 +21,7 @@ func TestMigrate12ToPoll(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != 7 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema {
 		t.Fatalf("schema %d", v)
 	}
 	if ts, err := d2.PollTargets(ctx); err != nil || len(ts) != 0 {

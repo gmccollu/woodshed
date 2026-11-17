@@ -51,6 +51,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	checkListener(e, goos, "listeners.tcp", l.TCP)
 	checkTLSListener(e, goos, l)
 	checkSNMPListener(e, goos, l)
+	checkFlowListener(e, goos, l)
 	checkBlocklist(e, l)
 	for i, s := range l.Allowlist {
 		if _, err := parseAllow(s); err != nil {
@@ -82,6 +83,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 	if s.RetentionBytes < MinRetentionBytes {
 		e["storage.retention_bytes"] = "must be at least 1 GiB (1073741824)"
 	}
+	checkFlowBudget(e, s)
 	if s.PartBytes < MinPartBytes || s.PartBytes > MaxPartBytes {
 		e["storage.part_bytes"] = "must be between 1 MiB (1048576) and 1 GiB (1073741824)"
 	}

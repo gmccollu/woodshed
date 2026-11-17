@@ -77,6 +77,7 @@ func (s *Store) syncLoop() {
 			return
 		case <-t.C:
 			s.syncAll()
+			s.syncFlows()
 		}
 	}
 }
@@ -160,6 +161,9 @@ func (s *Store) flushAll(midnight bool) error {
 			s.evictLocked(d)
 		}
 		d.mu.Unlock()
+	}
+	if err := s.flushFlows(now, midnight); err != nil && first == nil {
+		first = err
 	}
 	s.collectRefused(now, false)
 	if midnight && today != s.lastUnparkDay {
@@ -304,11 +308,14 @@ func (s *Store) sortedClosed(keep func(*catEntry) bool) []*catEntry {
 // compressed files while all logs together exceed RetentionBytes. It runs every pass,
 // so the common case (nothing to delete) is one scan without sorting.
 func (s *Store) enforceRetention(now time.Time) {
+	s.enforceFlowRetention(now)
 	cutoff := now.Add(-time.Duration(s.retentionDays.Load()) * 24 * time.Hour)
 	for _, e := range s.sortedClosed(func(e *catEntry) bool { return e.name.Compressed && e.last.Before(cutoff) }) {
 		s.deleteEntry(e, index.ReasonAge, now)
 	}
-	limit := s.retentionBytes.Load()
+	// The other types share the cap less what flows hold (at most their
+	// budget), so flows never count against it beyond the budget.
+	limit := s.retentionBytes.Load() - s.flowHeld()
 	over := func() bool {
 		s.catMu.Lock()
 		total := s.catBytes
@@ -429,6 +436,10 @@ func (s *Store) guardDisk(now time.Time) {
 	// then anyone's open files, largest first. Open files are closed only if that can
 	// reach the reserve: otherwise it would throw away today's logs and pause anyway.
 	short := func() bool { return diskOK && free < thr }
+	// Flows go first: every closed flow segment, oldest first (SPEC §13.2).
+	if short() {
+		s.flowLowDisk(now, enough)
+	}
 	var seen *fairInfo
 	if short() {
 		seen = s.fairInfoAt(now)

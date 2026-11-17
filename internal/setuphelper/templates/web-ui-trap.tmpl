@@ -1,0 +1,33 @@
+{{/*
+family: web-ui
+what: trap
+transports: v2c, v3
+reference: RFC 3416 (SNMPv2 notifications), RFC 3414 (SNMPv3 users)
+verification: reference
+*/}}
+{{define "does"}}The values to enter in the device's SNMP trap (notification) page so it sends traps to Woodshed (SNMP{{.Transport}}).{{end}}
+
+{{define "parts"}}
+@@part steps - In the device's web page, open its SNMP trap or notification settings and add a receiver
+Trap receiver (manager) address: {{.Address}}
+Port: {{.Port}}
+SNMP version: {{if eq .Transport "v2c"}}v2c{{else}}v3{{end}}
+{{- if eq .Transport "v2c"}}
+Community: <COMMUNITY>
+{{- else}}
+User name: {{.V3User}}
+Security level: authentication and privacy (authPriv)
+Authentication: {{.Auth.Label}}, passphrase <AUTH-PASSPHRASE>
+Privacy: {{.Priv.Label}}, passphrase <PRIV-PASSPHRASE>
+{{- end}}
+Notification type: trap (not inform), unless the page offers informs and you want them answered
+{{end}}
+
+{{define "notes"}}
+{{if eq .Transport "v2c"}}<COMMUNITY> must be one Woodshed accepts: Settings → Listeners → SNMP traps lists the communities (an empty list accepts any).
+{{else}}Add the same user in Woodshed: Settings → SNMP → v3 users, with the same name, protocols and passphrases.
+{{end}}
+Field names differ between devices. Many pages also ask which events send a trap.
+{{end}}
+
+{{define "check"}}Search Events for type Traps after saving; pages with a "send test trap" button send one at once.{{end}}

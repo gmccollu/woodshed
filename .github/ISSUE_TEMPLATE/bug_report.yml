@@ -34,7 +34,7 @@ body:
     id: os
     attributes:
       label: OS running Woodshed
-      description: Name, version and CPU, e.g. Windows Server 2022 x64, macOS 15 on Apple silicon, Ubuntu 24.04 arm64.
+      description: Name, version and CPU, e.g. Windows Server 2022 x64, macOS 15 arm64, Ubuntu 24.04 arm64.
     validations:
       required: true
   - type: input

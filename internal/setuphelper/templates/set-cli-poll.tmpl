@@ -1,0 +1,33 @@
+{{/*
+family: set-cli
+what: poll
+transports: v2c, v3
+reference: common set-style SNMP statements (set snmp community …, set snmp v3 …); RFC 3414 (USM) and RFC 3415 (VACM)
+verification: reference
+*/}}
+{{define "does"}}Lets Woodshed poll the device's SNMP agent (SNMP{{.Transport}}, read-only{{if eq .Transport "v2c"}}, from Woodshed's address only{{end}}).{{end}}
+
+{{define "parts"}}
+@@part cli - Enter in configuration mode, then commit
+{{- if eq .Transport "v2c"}}
+set snmp community <COMMUNITY> authorization read-only
+set snmp community <COMMUNITY> clients {{if .IsName}}<WOODSHED-IP>/32{{else}}{{.Address}}/{{if .IsIPv6}}128{{else}}32{{end}}{{end}}
+{{- else}}
+set snmp v3 usm local-engine user {{.V3User}} {{.Auth.Set}} authentication-password <AUTH-PASSPHRASE>
+set snmp v3 usm local-engine user {{.V3User}} {{.Priv.Set}} privacy-password <PRIV-PASSPHRASE>
+set snmp view woodshed-all oid .1 include
+set snmp v3 vacm security-to-group security-model usm security-name {{.V3User}} group woodshed
+set snmp v3 vacm access group woodshed default-context-prefix security-model usm security-level privacy read-view woodshed-all
+{{- end}}
+commit
+{{end}}
+
+{{define "notes"}}
+{{if eq .Transport "v2c"}}{{if .IsName}}A client list takes addresses, not names: <WOODSHED-IP> is the address Woodshed polls from ({{.Address}} resolves to it), /128 for IPv6.
+{{end}}{{else}}The statements follow the SNMPv3 access model (RFC 3415): the user joins a group, and the group may read a view. The keywords for each piece differ between devices.
+Add the same user in Woodshed: Settings → SNMP → v3 users, name {{.V3User}}, {{.Auth.Label}} and {{.Priv.Label}}, with the same passphrases.
+{{end}}
+Then add the device in Woodshed: Devices → Add polling, its address, SNMP{{.Transport}}{{if eq .Transport "v2c"}} and the same community{{else}} and the user {{.V3User}}{{end}}.
+{{end}}
+
+{{define "check"}}Devices → Add polling → Test poll answers with the device's name and interfaces; after the first cycle the device page shows its graphs.{{end}}

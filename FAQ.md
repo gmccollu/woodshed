@@ -81,6 +81,8 @@ shows a red banner saying which program has the port. Stop that program, or move
   **Woodshed SNMP traps (UDP 162)**, turned off; `woodshed tls on` and `woodshed snmp on` turn them on. On Linux those
   commands open the port in ufw or firewalld when one is active. See
   [the install guide](docs/install.md#snmp-traps-firewall).
+- **Flows** (off by default, since 2.0): on Windows the installer adds **Woodshed flows (UDP 2055)** and **Woodshed
+  flows (UDP 4739)**, turned off; `woodshed flow on` turns them on. See [the install guide](docs/install.md#flows-firewall).
 
 ## Does Woodshed receive SNMP traps?
 
@@ -106,6 +108,34 @@ See [Receiving SNMP traps](docs/user-guide.md#receiving-snmp-traps).
   second per sender. The only other packets it sends are the v3 Reports a device asks for to learn Woodshed's engine
 ID, as answers on the same socket; it never starts a connection to a device.
 
+## Does Woodshed collect flows (flow v5, v9, IPFIX)?
+
+Yes, since 2.0, when you turn it on in **Settings → Flows** (flow v5 and v9 on UDP 2055, IPFIX on UDP 4739): flow v5 and
+v9 (RFC 3954) and IPFIX (RFC 7011), firewall-event and NAT records included. See
+[Collecting flows](docs/user-guide.md#collecting-flows).
+
+- **Is it a traffic analytics tool?** No. It keeps the flows around an incident, searchable and exportable beside
+  the syslog: who talked to whom, on which ports, how much, and what was denied, for a window of time. There are no
+  long-term baselines, dashboards of trends or anomaly detection.
+- **Why aren't flows plain text like the logs?** Volume: a small site's firewall sends about 1,000 records a second,
+  86 million a day. As text lines that's about 21 GB a day; Woodshed's columnar segments take about 20 bytes a record
+  (about 1.7 GB a day) and let a top-talkers query read only the columns it needs. Exports and bundles give you
+  `flows.csv` (plain text) and `flows.ipfix` (an RFC 5655 IPFIX file other flow tools read).
+- **Will flows push my syslog out?** No. Flows have their own budget, 40 % of the storage cap by default: past it the
+  oldest flows go first, and the low-disk guard deletes flows before anything else.
+- **Are sampled counts scaled?** Shown both ways: as the exporter reported them and, where the sampling rate is known,
+  scaled by it. Nothing is scaled silently, and a rate the exporter didn't send is shown as unknown.
+- **What about sFlow?** Not in 2.0; it's a candidate for a later release.
+
+## Why no vendor-specific instructions?
+
+Because we couldn't keep them right. Commands differ between makers, models and software versions, change between
+releases, and the project can't test configuration on every device. A wrong logging command on a firewall can stop
+traffic. So **Set up a device** is organised by syntax (a line-oriented CLI, a set-style CLI, a web page, and three
+Linux tools), not by brand. The Linux snippets are tested in CI against the real tools; the others follow common,
+documented syntax and say **Reference only**, with notes where devices are known to differ. Check your device's
+documentation for the exact commands. See [Setting up devices](docs/user-guide.md#setting-up-devices).
+
 ## Why does a polled rate jump around a little?
 
 Because a rate is the change in the device's counters between two polls, and some agents update their interface
@@ -120,7 +150,7 @@ Woodshed's downloads aren't code-signed yet, so the first time you open one:
 
 - **Windows (SmartScreen):** your browser may say the file "isn't commonly downloaded"; choose **Keep**. When you open
   it, "Windows protected your PC" appears: click **More info**, then **Run anyway**.
-- **macOS (Gatekeeper):** it says the file "can't be opened" because Apple can't check it. Click **Done**, open
+- **macOS (Gatekeeper):** it says the file "can't be opened" because macOS can't check it. Click **Done**, open
   **System Settings → Privacy & Security**, scroll down to the message about Woodshed and click **Open Anyway**, then
   confirm. (Control-click → Open no longer skips this on current macOS.)
 
@@ -181,7 +211,8 @@ It prints the zip's name, size and SHA-256, so whoever asked can check they got 
 ## How much disk does it use, and how long does it keep logs?
 
 By default it keeps 30 days or 20 GB of logs, whichever comes first, deleting the oldest days first. Change both
-in **Settings → Storage**. It also never fills the disk: it keeps 5% of the disk free (at least 1 GB, at most 10 GB),
+in **Settings → Storage**. Flows (since 2.0) have their own share of the 20 GB, 40 % by default, and go first when
+they're over it. It also never fills the disk: it keeps 5% of the disk free (at least 1 GB, at most 10 GB),
 deleting the oldest logs if it has to, and if there's nothing left to delete it pauses writing and shows a red
 banner, counting what it couldn't store. Every deletion is listed in **Settings → Storage history**. The dashboard
 shows how much disk the logs use and how many days that covers.

@@ -1,0 +1,20 @@
+family: line-cli
+what: poll
+transport: v2c
+address: 192.0.2.10
+verification: reference
+reference: common line-oriented SNMP commands (snmp-server community, snmp-server group, snmp-server user); RFC 3414 and RFC 3415
+does: Lets Woodshed poll the device's SNMP agent (SNMPv2c, read-only).
+check: Devices → Add polling → Test poll answers with the device's name and interfaces; after the first cycle the device page shows its graphs.
+placeholders: <COMMUNITY>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- Limit the agent to polls from Woodshed's address (192.0.2.10): most devices take an access list or a host list on the community or group line, written differently on each.
+- Some devices also need the agent turned on (`snmp-server enable`, or a per-interface management setting) before they answer.
+- Then add the device in Woodshed: Devices → Add polling, its address, SNMPv2c and the same community.
+---- part cli "": Enter in global configuration mode, fill in the placeholders, then save the configuration
+snmp-server community <COMMUNITY> ro
+==== text
+! Enter in global configuration mode, fill in the placeholders, then save the configuration
+snmp-server community <COMMUNITY> ro

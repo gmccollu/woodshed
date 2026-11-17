@@ -18,6 +18,9 @@
     but disabled; `woodshed tls on` enables it. Upgrades and repairs keep its state.
   - Adds the rule "Woodshed SNMP traps (UDP 162)" (UDP 162 for woodshed.exe, all profiles) present
     but disabled; `woodshed snmp on` enables it. Upgrades and repairs keep its state.
+  - Adds the rules "Woodshed flows (UDP 2055)" and "Woodshed flows (UDP 4739)" (flow v5/v9 and IPFIX
+    for woodshed.exe, all profiles) present but disabled; `woodshed flow on` enables them. Upgrades
+    and repairs keep their state.
   - Registers the "Woodshed" event source in the Application log, and a Start menu shortcut to the UI.
   - Upgrades in place (MajorUpgrade). Uninstall keeps C:\ProgramData\Woodshed unless DELETE_LOGS=1:
       msiexec /x woodshed.msi DELETE_LOGS=1
@@ -202,6 +205,13 @@
     <CustomAction Id="WoodshedSnmpFirewallRemove" BinaryRef="WoodshedAclFix"
                   ExeCommand="--snmp-firewall remove"
                   Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- The flow rules (SPEC §13.1): the same, one per port, UDP 2055 (flow v5, v9) and 4739 (IPFIX). -->
+    <CustomAction Id="WoodshedFlowFirewallEnsure" BinaryRef="WoodshedAclFix"
+                  ExeCommand="--flow-firewall ensure &quot;[INSTALLFOLDER]woodshed.exe&quot;"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="WoodshedFlowFirewallRemove" BinaryRef="WoodshedAclFix"
+                  ExeCommand="--flow-firewall remove"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
     <!-- WOODSHED_UPDATE_CHECK: woodshed.exe update-check, as SYSTEM, after the files and the data
          folder are in place and before StartServices. WixQuietExec puts its output in the install log
          (msiexec /l*v), so an invalid value shows there as a warning; Return="ignore" means it never
@@ -219,6 +229,9 @@
               Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="WoodshedSnmpFirewallEnsure" After="WoodshedTlsFirewallEnsure" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="WoodshedSnmpFirewallRemove" Before="RemoveFiles"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="WoodshedFlowFirewallEnsure" After="WoodshedSnmpFirewallEnsure" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="WoodshedFlowFirewallRemove" Before="RemoveFiles"
               Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="WoodshedUpdateCheck" Before="StartServices" Condition="WOODSHED_UPDATE_CHECK AND NOT (REMOVE~=&quot;ALL&quot;)" />
     </InstallExecuteSequence>

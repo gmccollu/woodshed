@@ -30,6 +30,7 @@
     shrink: 'M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5',
     clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 2',
     download: 'M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14',
+    plug: 'M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4',
     flask: 'M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4A2 2 0 0 0 19 18l-5-9V3',
   } as const;
   export type IconName = keyof typeof PATHS;

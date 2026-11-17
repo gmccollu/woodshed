@@ -62,7 +62,8 @@ because this copy holds the UI port.
                  "depth": 12, "high_water_24h": 3210, "dropped_24h": 0,
                  "high_water_by_hour": [120, 3210, 88]},   // oldest first, the last 24 hours
                 {"listener": "snmp", "port": 162, "capacity_messages": 100000, "capacity_bytes": 67108864,
-                 "depth": 0, "high_water_24h": 40, "dropped_24h": 0, "high_water_by_hour": [12, 40]}]   // while listeners.snmp.enabled
+                 "depth": 0, "high_water_24h": 40, "dropped_24h": 0, "high_water_by_hour": [12, 40]}],  // while listeners.snmp.enabled
+  "flow_parts_early": 0                       // flow segments started early to keep flow memory bounded (2.0, below)
 }
 ```
 **Drops by reason** (since 1.2): `dropped_by_reason` splits `dropped_24h`: `paused` (the low-disk guard had paused
@@ -70,6 +71,12 @@ writing, UDP messages still in the queue included), `write_error` (a log file wr
 over the device limits, see `device_limit`) and `queue_full` (a UDP listener's queue was full, below). `dropped_24h`
 still counts every drop, `queue_full` included. The reasons are counted since the server started, so for a day after a
 restart they can sum to less than `dropped_24h`, which comes from the index.
+
+**Early flow parts** (since 2.0): `flow_parts_early` counts the flow segments closed before their hour ended, since
+the server started, because every exporter's open segment together had reached the writers' memory budget. The
+exporter's next records go on in the hour's next part (`…T09.001.wsf`), so nothing is lost and searches read both; it
+only means more, smaller files. At one block a second per exporter, an hour stays one part up to about 43 exporters;
+300 exporters make about 4 parts an exporter-hour.
 
 **UDP receive queue** (since 1.2, SPEC §11.5): each UDP socket's reader only reads, stamps, applies the blocklist and
 allowlist and queues; one drainer parses and stores in arrival order, so a slow disk fills the queue instead of the OS
@@ -206,8 +213,8 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
 - `q`: substring by default (case-insensitive unless `case=true`). With `regex=true` it's an RE2 regular expression;
   an invalid one is a `400` with the parse error. With `syntax=terms` it's boolean terms (below). `case` applies to
   all of them. Empty `q` matches every line, so it's a filtered browse.
-- `type`: the data type: `syslog` (the default), `trap` (SNMP traps, below) or, since 1.3, `poll` (SNMP poll
-  records, below). Any other value is a
+- `type`: the data type: `syslog` (the default), `trap` (SNMP traps, below), since 1.3 `poll` (SNMP poll
+  records, below) or, since 2.0, `flow` (flow records: see "Flows"). Any other value is a
   `400 {"error": "type: unknown data type \"x\"."}`. Without `type`, everything means what it meant in 1.1.
 - `syntax`: `text` (the default: `q` and `exclude` mean exactly what they meant in 1.0) or `terms` (below). Anything
   else is a `400`.
@@ -997,6 +1004,90 @@ text suggests a longer interval or a higher `poll.concurrency`.
 **CLI** (not HTTP): `woodshed poll test <address> …`, `woodshed search --type poll`, and the `woodshed status`
 Polling row, as in SPEC §12.7.
 
+## Device setup helper
+
+SPEC §13.5 (since 2.0). The **Set up a device** page: the configuration a device needs to send this Woodshed its syslog,
+traps or flows, or to let Woodshed poll it, filled in from this server's settings. The families are named by syntax,
+never by vendor or product. Nothing here changes anything on the server, and no stored secret is ever put into a
+snippet: communities, passphrases and the CA file are placeholders (`<COMMUNITY>`, `<AUTH-PASSPHRASE>`, `<CA-FILE>`).
+
+`GET /api/setup/families`
+```json
+[{"id": "rsyslog", "label": "Linux: rsyslog", "what": ["syslog"], "verification": "tested",
+  "reference": "rsyslog documentation: the omfwd action and the gtls network stream driver",
+  "transports": {"syslog": ["udp", "tcp", "tls"], "trap": [], "poll": [], "flow": []},
+  "choices": {"syslog": ["severity", "facility"], "trap": [], "poll": [], "flow": []},
+  "notes": ["For Linux and other Unix-like machines that run rsyslog, the usual system logger on many distributions."]}]
+```
+- The families, in the page's order: `line-cli` ("Line-oriented CLI (global configuration mode)"), `set-cli`
+  ("Hierarchical set-style CLI"), `rsyslog`, `net-snmp` ("Linux: net-snmp `snmpd` and `snmptrap`"), `softflowd` and
+  `web-ui` ("Web UI checklist").
+- `what`: the data types the family has a template for: `syslog`, `trap`, `poll` (the SNMP agent settings Woodshed needs
+  to poll the device) and `flow`. `transports` lists each one's transports, the default first: syslog `udp`, `tcp`,
+  `tls`; trap and poll `v2c`, `v3`; flow `v9`, `ipfix`. Every data type is a key of `transports` and `choices`,
+  `[]` for the ones the family doesn't cover.
+- `choices`: per data type, the snippet body's fields that change its snippet. `v3_user`, `auth` and `priv` apply to
+  the `v3` transport only.
+- `verification` is the lowest level of the family's templates: `tested` (CI applies the snippet to the real
+  open-source tool against a running Woodshed and checks the data arrives), `lab_checked` (applied by hand on lab gear;
+  then `"checked_on": "YYYY-MM-DD"` is present) or `reference` (common syntax, not tested on a device).
+
+`POST /api/setup/snippet` body `{"family": "rsyslog", "what": "syslog", "transport": "tls", "address":
+"logs-01.example.net"}` →
+```json
+{"family": "rsyslog", "what": "syslog", "transport": "tls", "address": "logs-01.example.net", "verification": "tested",
+ "verification_detail": "CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), …",
+ "reference": "rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425",
+ "does": "Forwards this machine's syslog, informational and more severe, to Woodshed over TLS.",
+ "text": "# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog …\n…",
+ "parts": [{"kind": "file", "path": "/etc/rsyslog.d/60-woodshed.conf", "title": "Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)",
+            "text": "*.info action(type=\"omfwd\" target=\"logs-01.example.net\" port=\"6514\" …)\n"},
+           {"kind": "command", "path": "", "title": "Check the file and send a test message", "text": "sudo rsyslogd -N1\n…"}],
+ "notes": ["<CA-FILE> is Woodshed's CA certificate as a PEM file on this machine: …"],
+ "check": "On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; …",
+ "placeholders": ["<CA-FILE>"],
+ "addresses": ["10.1.0.50", "fd00::50", "logs-01", "logs-01.example.net"]}
+```
+- Body fields (all but `family` and `what` optional; unknown fields are a `400`):
+  - `transport`: default the first whose listener is on.
+  - `address`: Woodshed's address as the device should use it, an IP address or a DNS name. Default: the first of
+    `addresses`, which lists the listener's own address when it's bound to one, else this machine's addresses (IPv4
+    first), then the TLS certificate's DNS names and `ui.extra_hostnames`; loopback only when there's nothing else.
+    Addresses are unmapped (`::ffff:192.0.2.10` is `192.0.2.10`), and names that can't go in a device's configuration
+    (a wildcard, or one with a quote, space or newline) are left out of the list and never reach a snippet.
+  - `source_interface` (line-oriented CLI: the interface the device's packets leave from; left out when empty),
+    `interface` (softflowd: the interface it watches), `severity` (syslog: the lowest to send, an RFC 5424 keyword
+    `emerg` … `debug`, default `info`), `facility` (syslog: `local0`–`local7`, default the device's own, for rsyslog
+    every facility), `v3_user` (default a `<V3-USER>` placeholder), `auth` (`sha-256` default, or `sha`), `priv`
+    (`aes-128`), `agent_port` (poll: the device's SNMP agent port, 1–65535; absent is 161, and `0` is a `400`, as
+    in the query form).
+- A choice that doesn't apply to the family, data type and transport, or a value it can't take, is
+  `400 {"error": "<field>: …", "errors": {"<field>": "…"}}`.
+- Filled from the live settings: each listener's port, whether it's on (a listener that's off gets a note saying how
+  to turn it on, first), and for TLS the name a client should check and the CA's SHA-256 fingerprint. The name is the
+  address when it's a name on the certificate, else the certificate's first DNS name that isn't `localhost`. Before
+  the certificate exists, a host name is used but the notes don't call it a name on the certificate, and an IP
+  address gets the `<WOODSHED-TLS-NAME>` placeholder.
+- `parts`: `kind` `file` (a file to create or add to, at its usual `path`; a part's title says when it replaces a
+  line, as net-snmp's `agentaddress` does), `command` (shell commands), `cli` (lines for a device's configuration
+  mode) or `steps` (fields to fill in on a web page). `text` is every part, for one Copy.
+- `verification_detail` (Tested snippets): what CI applies, and what it can't (softflowd's interface: CI replays a
+  capture with `-r`).
+- The line-oriented CLI's snippets give as text only lines most such devices share; keywords that differ are
+  placeholders (`<TCP-OPTION>`, `<TLS-OPTION>`, `<UDP-PORT-OPTION>`, `<SHA-256-KEYWORD>`, `<AES-128-KEYWORD>`). Neither
+  CLI family has a flow snippet; the web UI checklist lists the values to set.
+- `notes` start with anything to do first, then, for `reference` snippets, "Reference only: not tested on a device;
+  check your device's documentation.", and on every TCP and TLS syslog snippet for a network device the warning about
+  firewalls that block traffic while the log host is down. `placeholders` are the values to fill in, in order.
+
+**Snippet, as a query:** `GET /api/setup/snippet?family=…&what=…&…` takes the same fields as query parameters (`type` is
+accepted for `what`), for scripts and `curl`.
+
+**CLI** (not HTTP): `woodshed setup families [--json]` and `woodshed setup snippet --family F --what W [--transport T]
+[--address A] [--source-interface I] [--interface I] [--severity S] [--facility F] [--v3-user U] [--auth A] [--priv P]
+[--agent-port N] [--json]` (`--type` is `--what`). The snippet goes to stdout and its notes to stderr; it's filled from the
+config file and, when the account can read it, the TLS certificate.
+
 ## Update check
 
 The opt-in update check (SPEC §10.2): off until someone agrees, it asks once, and when it's on it fetches one public file
@@ -1161,3 +1252,178 @@ SNMP poll target is configured (since 1.3), a `poll` object gives `targets`, `an
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.
+
+## Flows
+
+Since 2.0 (SPEC §13): the flow listener (flow v5/v9, IPFIX), `type=flow` in search, the summary, saved searches and
+exports, and the flow routes. Everything is additive (SPEC §13.9).
+
+### Flow listener and state
+
+**Settings:** `/api/settings` gains `listeners.flow` and `storage.flow_budget_bytes`:
+```json
+{"listeners": {"flow": {"enabled": false, "addr": "0.0.0.0", "flow_port": 2055, "ipfix_port": 4739,
+                        "template_timeout": "30m", "rule_id_ies": []}},
+ "storage": {"flow_budget_bytes": 0}}
+```
+- Shown here as fragments of the settings object. `flow_port` / `ipfix_port`: 0 (off) or 1–65535, not shared with
+  another UDP listener on an overlapping address; at least one non-zero while enabled. `template_timeout` 1 min to
+  24 h. `rule_id_ies`: up to 8 `"<enterprise number>:<element ID>"` strings naming the IEs that carry a rule or ACL
+  identifier (there's no standard one; SPEC §13.2.1); the first one a record has fills `rule_id`.
+- `flow_budget_bytes`: 0 means 40 % of `storage.retention_bytes`; otherwise at least 1 GiB and at most 90 % of it
+  (a `400` on the key otherwise). File-only: `listeners.flow.pending_bytes`, `queue_messages`, `queue_bytes`.
+- `/api/status.listeners` gains `{"proto": "flow", …}` and `{"proto": "ipfix", …}` entries while enabled.
+
+**Flow state:**
+
+`GET /api/flows` →
+```json
+{"enabled": true,
+ "budget": {"bytes": 8589934592, "used_bytes": 5100000000, "estimated_days": 4.8},
+ "exporters": [{"device_id": "10.1.0.1", "domains": [{"id": 1, "sampling": 1000, "templates": 6, "last_template": "2026-11-16T09:58:01Z"}],
+                "records_per_sec": 1180.5, "pending_bytes": 0,
+                "counts_24h": {"records": 101000000, "late": 120, "no_template": 0, "malformed": 0, "sequence_gaps": 3, "duplicates": 0},
+                "clock_skew_ms": 210, "time_source": "exporter", "last_seen": "2026-11-16T10:00:01Z"}]}
+```
+
+### Flow search and top-N
+
+`type=flow` is accepted by `/api/search`, `/api/search/summary`, saved searches, exports and `woodshed search`.
+
+**Filters** (with `type=flow` only; the other types' filters are a `400` with it, and `q` is
+`400 {"error": "q: flows have no text; use src, dst, ip, port or proto."}`):
+- `src`, `dst`, `ip` and `exclude_src`, `exclude_dst`, `exclude_ip`: comma-separated addresses or CIDR prefixes.
+- `src_port`, `dst_port`, `port` and their `exclude_` forms: comma-separated ports or ranges (`8000-8100`).
+- `proto`, `exclude_proto`: names (`tcp`, `udp`, `icmp`, `icmpv6`, `gre`, `esp`, `sctp`) or numbers 0–255.
+- `in_if`, `out_if` and excludes: interface indexes or names (from the exporter's options data).
+- `domain`: observation domain or source IDs. `tcp_flags`: any of `fin,syn,rst,psh,ack,urg,ece,cwr`.
+  `sampled`: `yes`, `no`, `unknown`. `status`: `ok`, `late`, `no_template`, `malformed`.
+- Firewall events and NAT (SPEC §13.2.1): `fw_event` (`created`, `deleted`, `denied`, `alert`, `update`, or 0–255),
+  `nat_event` (registry names or numbers), `post_nat_src`, `post_nat_dst`, `post_nat_ip` and their `exclude_` forms
+  (addresses or prefixes), `post_nat_src_port`, `post_nat_dst_port`, `rule_id` and `exclude_rule_id`. `ip_any`
+  matches pre- or post-NAT addresses on either side.
+- `from` / `to` are flow time: a record matches when its start-to-end overlaps the range.
+
+**Results** (`/api/search?type=flow`):
+```json
+{"received": "2026-11-16T09:31:02.004Z", "device_id": "10.1.0.1", "type": "flow", "ref": "opaque",
+ "fields": {"start": "2026-11-16T09:30:11.200Z", "end": "2026-11-16T09:31:01.950Z",
+            "src": "10.20.0.5", "src_port": 51544, "dst": "198.51.100.7", "dst_port": 443, "proto": 6, "proto_name": "tcp",
+            "tcp_flags": "SAPF", "packets": 1840, "bytes": 2210444, "sampling": 1000,
+            "packets_scaled": 1840000, "bytes_scaled": 2210444000,
+            "in_if": 3, "in_if_name": "eth3", "out_if": 1, "out_if_name": "eth1", "domain": 1,
+            "fw_event": "deleted", "nat_event": "nat44_session_delete", "event_time": null,
+            "post_nat_src": "192.0.2.10", "post_nat_src_port": 40112, "post_nat_dst": "198.51.100.7", "post_nat_dst_port": 443,
+            "initiator_bytes": null, "responder_bytes": null, "initiator_packets": null, "responder_packets": null,
+            "rev_bytes": null, "rev_packets": null, "rule_id": "",
+            "tos": 0, "src_as": 0, "dst_as": 0, "next_hop": "", "time_source": "exporter", "status": "ok", "late": false,
+            "extras": [{"pen": 32473, "id": 1, "hex": "0a0b"}]}}
+```
+- Columns a record doesn't have are `null` (`rule_id` is `""`). An event with only an event time has `start` and
+  `end` equal to `event_time`.
+- `sampling` is `1` (unsampled), N (1 in N) or `0` (unknown); `packets_scaled` and `bytes_scaled` are `null` when it's
+  `0`. There's no `raw`. `/api/context` isn't available for flows (`400`).
+- The order is by flow end, newest first (`order=asc` for oldest first). Paging, the budget and the cursor work as for
+  search; `partial` responses also carry `progress` (below).
+
+**Summary:** `/api/search/summary?type=flow` uses the flow fields (`proto`, `dst_port`, `src_port`, `src`, `dst`,
+`in_if`, `out_if`, `fw_event`, `nat_event`, `rule_id`, `domain`, `sampled`, `status`); each value's `count` is flows, plus `bytes` and `bytes_scaled`. The
+histogram's `source` is `index` (from `flow_minute`) when unfiltered, with a `metric` parameter (`flows`, `bytes`,
+`packets`; default `flows`). Instead of `counted_from`, a partial flow summary carries `progress`.
+
+### Top-N
+
+`GET /api/flows/top?by=src&metric=bytes&top=10&from=…&to=…` (and the flow filters) →
+
+Parameters: the flow filters, the range, the device selection, plus `by` (`src`, `dst`, `conversation`, `dst_port`,
+`src_port`, `proto`, `in_if`, `out_if`, `post_nat_src`, `post_nat_dst`, `fw_event`, `rule_id`), `metric` (`bytes`
+default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), `top` (10, at most 100),
+`budget_ms` (2,000, at most 10,000) and `cursor`.
+```json
+{"by": "src", "metric": "bytes", "from": "2026-11-16T09:00:00Z", "to": "2026-11-16T10:00:00Z",
+ "total": {"flows": 1204332, "bytes": 18200000000, "packets": 21400000,
+           "bytes_scaled": 1900000000000, "packets_scaled": 2100000000, "scaled_complete": false, "connections": 51112},
+ "rows": [{"key": "10.20.0.5", "label": "10.20.0.5", "flows": 40211, "bytes": 5642000000, "packets": 4100000,
+           "bytes_scaled": 564200000000, "packets_scaled": 410000000, "scaled_lower_bound": false, "connections": 40000,
+           "share": 0.31, "first": "2026-11-16T09:00:02Z", "last": "2026-11-16T09:59:58Z", "approx": false, "max_error": 0}],
+ "other": {"flows": 1000000, "bytes": 9000000000},
+ "approx": false, "error_bound": 0,
+ "progress": {"blocks_done": 1800, "blocks_total": 1800, "records_done": 1204332, "records_total": 1204332,
+              "complete_from": "2026-11-16T09:00:00Z"},
+ "partial": false, "next_cursor": "", "elapsed_ms": 2140}
+```
+- `key` for `conversation` is `"a ↔ b"` with the lower address first (both directions summed); for ports
+  `"tcp/443"`; for interfaces the index, with the name as `label`.
+- `share` is of the metric's exported total. `scaled_complete` is false when some records had unknown sampling; a row
+  whose records include any is a lower bound (`scaled_lower_bound: true`, shown with "≥").
+- "Top denied sources" is `by=src&fw_event=denied`. Totals follow SPEC §13.2.1's no-double-count rule for event
+  records; `connections` counts `deleted` and `denied` events for event-style exporters.
+- Memory is bounded whatever the window (SPEC §13.6): keys are counted exactly up to 1,000,000 across the request's
+  workers and the server's shared query budget (`approx: false`, `error_bound: 0`). Past that, the keys already counted
+  stay exact and new ones go to a fixed-size space-saving table with a count-min check. `approx` is then true, and:
+  - a row from that table has `approx: true` and `max_error`. Its ranked metric is at most `max_error` over the true
+    value, and its other counts cover only the records since the key entered the table;
+  - a key in neither table has at most `error_bound` of the metric, and any key not in `rows` has at most the larger
+    of `error_bound` and the last row's value.
+
+  The totals stay exact.
+- A saved continuation holds its counts in the shared budget. When a new request needs room, the least recently used
+  continuation is dropped, and its `cursor` then gets `400 {"error": "This flow query expired; start it again."}`.
+- `progress.complete_from`: every block whose flows end after it has been read. A continuation with `next_cursor`
+  returns running totals, not deltas.
+
+### Timeline strip
+
+`GET /api/flows/timeline?devices=a,b&from=…&to=…&bucket=…&metric=bytes` → per exporting device (at most 4, the busiest
+by bytes, then `more`), from `flow_minute`, on the histogram's bucket edges (`bucket` in seconds, 60 to 604800, at
+most 1,000 buckets; picked from the range when absent):
+```json
+{"devices": [{"device_id": "10.1.0.1", "points": [{"start": "2026-11-16T09:00:00Z", "bytes": 5100000, "bytes_scaled": 5100000000,
+  "flows": 812, "packets": 7300}]}], "more": 0}
+```
+
+### Templates
+
+`GET /api/flows/templates?device=10.1.0.1` → the exporter's cached template definitions, per observation domain, so a
+user can find the IE that carries a rule ID (Settings → Flows); `404` for a device that hasn't sent flows since the
+start:
+```json
+{"device_id": "10.1.0.1", "domains": [{"id": 1, "templates": [{"id": 256, "options": false, "received": "2026-11-16T09:58:01Z",
+  "fields": [{"pen": 0, "id": 8, "name": "sourceIPv4Address", "length": 4}, {"pen": 32473, "id": 7, "name": "", "length": 4}]}]}]}
+```
+`name` is `""` for IEs Woodshed doesn't know (enterprise-specific ones among them); `length` 65535 is variable.
+
+### Exports and bundles
+- `types` may include `"flow"`; `kind: "bundle"` includes it by default when there are flows in the window.
+- `flow_formats`: `["csv", "ipfix"]` (default), `["csv"]` or `["ipfix"]`.
+- The zip gets `flows/<device-id>/flows.csv` (the columns in SPEC §13.4, the event, NAT and biflow ones included), `flows.ipfix` (RFC 5655) and `raw.txt` when
+  there are raw sets; `"folders"` gains `"flows": "flow"`.
+- `/api/exports/estimate` gains `"by_type": {"syslog": {"lines", "bytes"}, "flow": {"records", "bytes"}, …}`. More than
+  20,000,000 flow records for one device is a `400` at estimate and at build: "Too many flow records for one zip
+  (24,113,002 for 10.1.0.1); narrow the window or add a flow filter."
+- A bundle's manifest `summary` entries gain `"flow": {"records", "domains", "sampling": [{"domain", "sampling": [rates seen]}], "scaled_complete", "bytes", "bytes_scaled",
+  "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
+  "fw_events": {"created", "deleted", "denied"}, "top_denied_sources": [{"key", "count"}], "top_denied_ports": [...],
+  "nat_connections", "top_post_nat_sources": [...],
+  "sequence_gaps", "lost_estimate", "no_template", "malformed"}`. `sequence_gaps` and `lost_estimate` are the
+  collector's last 24 hours (`null` from `woodshed bundle`, which has no collector); entries whose count is 0 are left
+  out of the top lists, which hold at most 3.
+
+### Banners
+- `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives
+  the rate and the budget.
+- `flow_templates` (warn, action `""`): an exporter's data has been waiting for a template for over 10 min, or was
+  stored raw for lack of one.
+- `flow_clock` (warn, action `""`): an exporter's clock is more than an hour off; its flows use received time.
+- `flow_firewall` (warn, action `""`): Windows only, while the flow listener is on and a rule is disabled, missing or on
+  another port; the text gives `woodshed flow on`.
+
+
+**CLI** (not HTTP): `woodshed search --type flow`, `woodshed flows top`, `woodshed flow on|off|status`, `woodshed send
+--proto flow-v5|flow-v9|ipfix`, `woodshed bench --proto ipfix` and `woodshed reindex --flows-redecode`, as in SPEC
+§13.7 and §13.8.
+
+## 2.0 (planned)
+
+Everything in the 2.0 contract (SPEC §13) is now served: see "Flows" and "Device setup helper" above. Everything is
+additive (SPEC §13.9).

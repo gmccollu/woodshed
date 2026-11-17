@@ -1,0 +1,35 @@
+{{/*
+family: set-cli
+what: syslog
+transports: udp, tcp, tls
+reference: common set-style syslog statements (set system syslog host …); RFC 5424 severities and facilities
+verification: reference
+*/}}
+{{define "does"}}Sends the device's log messages, {{.Severity.Word}} and more severe, to Woodshed over {{if eq .Transport "udp"}}UDP{{else if eq .Transport "tcp"}}TCP{{else}}TLS{{end}}.{{end}}
+
+{{define "parts"}}
+@@part cli - Enter in configuration mode, then commit
+set system syslog host {{.Address}} any {{.Severity.Set}}
+set system syslog host {{.Address}} port {{.Port}}
+{{- if ne .Transport "udp"}}
+set system syslog host {{.Address}} transport {{.Transport}}{{end}}
+{{- if .Facility}}
+set system syslog host {{.Address}} facility-override {{.Facility}}{{end}}
+set system syslog host {{.Address}} structured-data
+commit
+{{end}}
+
+{{define "notes"}}
+{{if eq .Severity.Name "debug"}}`any any` sends every facility at every level{{else}}`any {{.Severity.Set}}` sends every facility at {{.Severity.Set}} and above{{end}}; the facility and level keywords differ slightly between devices.
+`structured-data` asks for RFC 5424 messages where the device offers it; leave the line out if it doesn't.
+{{- if ne .Transport "udp"}}
+Not every set-style device can send syslog over {{if eq .Transport "tcp"}}TCP{{else}}TLS{{end}}, and those that can don't all use a `transport` statement: check the documentation before you rely on it.
+{{- end}}
+{{- if eq .Transport "tls"}}
+Load Woodshed's CA certificate as a trusted CA first (Settings → TLS → CA certificate){{if .CASHA256}}, and compare the fingerprint with {{.CASHA256}}{{end}}; how differs by device.
+If the device checks the server's name, give it {{.TLSName}}{{if .TLSNameKnown}}, a name on Woodshed's certificate{{else}} (it must be a DNS name on Woodshed's certificate; Settings → TLS lists them once TLS is on){{end}}.
+{{- end}}
+Set the address the messages come from with `set system syslog source-address <address>` if the device has several; Woodshed shows that address as the device.
+{{end}}
+
+{{define "check"}}The device appears on Woodshed's Dashboard after the commit, with its first message.{{end}}

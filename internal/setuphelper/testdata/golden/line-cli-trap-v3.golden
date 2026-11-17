@@ -1,0 +1,26 @@
+family: line-cli
+what: trap
+transport: v3
+address: 192.0.2.10
+verification: reference
+reference: common line-oriented SNMP commands (snmp-server host, snmp-server enable traps, snmp-server group, snmp-server user); RFC 3414 for the v3 user model
+does: Sends the device's SNMP traps to Woodshed (SNMPv3).
+check: Search Events for type Traps after a change on the device (an interface going down and up, a configuration save); `woodshed snmp status` counts traps per device.
+placeholders: <V3-USER> <SHA-256-KEYWORD> <AUTH-PASSPHRASE> <AES-128-KEYWORD> <PRIV-PASSPHRASE>
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- Reference only: not tested on a device; check your device's documentation.
+- <SHA-256-KEYWORD> and <AES-128-KEYWORD> are the device's keywords for SHA-256 and AES-128; they differ between devices, and some offer only SHA-1. Take them from the device's documentation, and pick protocols Woodshed has too.
+- Add the same user in Woodshed: Settings → SNMP → v3 users, name <V3-USER>, SHA-256 and AES-128, with the same passphrases.
+- `snmp-server enable traps` turns on every notification the device has on some devices, and only a default set on others; narrow it to what you need.
+---- part cli "": Enter in global configuration mode, fill in the placeholders, then save the configuration
+snmp-server group woodshed v3 priv
+snmp-server user <V3-USER> woodshed v3 auth <SHA-256-KEYWORD> <AUTH-PASSPHRASE> priv <AES-128-KEYWORD> <PRIV-PASSPHRASE>
+snmp-server host 192.0.2.10 version 3 priv <V3-USER>
+snmp-server enable traps
+==== text
+! Enter in global configuration mode, fill in the placeholders, then save the configuration
+snmp-server group woodshed v3 priv
+snmp-server user <V3-USER> woodshed v3 auth <SHA-256-KEYWORD> <AUTH-PASSPHRASE> priv <AES-128-KEYWORD> <PRIV-PASSPHRASE>
+snmp-server host 192.0.2.10 version 3 priv <V3-USER>
+snmp-server enable traps

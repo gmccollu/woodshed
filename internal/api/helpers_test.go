@@ -35,6 +35,7 @@ func ts(s string) time.Time {
 
 type fakeBackend struct {
 	mu        sync.Mutex
+	flowTops  []FlowTopRequest
 	status    Status
 	stats     Stats
 	rejected  []RejectedSender

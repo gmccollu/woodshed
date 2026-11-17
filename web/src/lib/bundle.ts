@@ -158,6 +158,10 @@ export interface BundleForm {
   scope: Scope;
   /** [] = every type with data in the window. */
   types: string[];
+  /** 2.0: Leave flows out (SPEC §13.11 #6); not in the page URL. */
+  noFlows?: boolean;
+  /** 2.0: which flow files the zip holds; undefined = both (the default). */
+  flowFormats?: ('csv' | 'ipfix')[];
 }
 
 export const newBundle = (at: string, scope: Scope = { mode: 'all', group: '', devices: [] }): BundleForm => ({
@@ -168,8 +172,12 @@ export const newBundle = (at: string, scope: Scope = { mode: 'all', group: '', d
   types: [],
 });
 
-/** POST /api/exports (and /estimate) with kind "bundle": exactly one device choice, canonical durations. */
-export function bundleBody(f: BundleForm): BundleRequest {
+/**
+ * POST /api/exports (and /estimate) with kind "bundle": exactly one device choice, canonical durations.
+ * Leave flows out sends the other types by name (every type the server has but flows, or the chosen
+ * one); flow_formats goes only with flows in and only when it isn't both.
+ */
+export function bundleBody(f: BundleForm, allTypes: string[] = []): BundleRequest {
   const who =
     f.scope.mode === 'devices'
       ? { devices: [...f.scope.devices] }
@@ -185,7 +193,8 @@ export function bundleBody(f: BundleForm): BundleRequest {
     before: formatDuration(parseDuration(f.before)),
     after: formatDuration(parseDuration(f.after)),
     ...who,
-    types: [...f.types],
+    types: f.noFlows ? (f.types.length ? f.types : allTypes).filter((t) => t !== 'flow') : [...f.types],
+    ...(!f.noFlows && f.flowFormats && f.flowFormats.length === 1 && (!f.types.length || f.types.includes('flow')) ? { flow_formats: [...f.flowFormats] } : {}),
   };
 }
 
@@ -296,7 +305,7 @@ export function bundleTitle(at: string, before: string, after: string, utc: bool
   return `Bundle around ${momentText(at, utc, now)}, ${sidesText(before, after)}`;
 }
 
-const TYPE_WORDS: Record<string, string> = { syslog: 'syslog', trap: 'SNMP traps' };
+const TYPE_WORDS: Record<string, string> = { syslog: 'syslog', trap: 'SNMP traps', poll: 'SNMP polls', flow: 'flows' };
 
 /** "every type with data", "syslog", "SNMP traps", "syslog and SNMP traps". */
 export function typesText(types: string[] | undefined): string {

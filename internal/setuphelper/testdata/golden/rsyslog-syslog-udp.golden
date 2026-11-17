@@ -1,0 +1,29 @@
+family: rsyslog
+what: syslog
+transport: udp
+address: 192.0.2.10
+verification: tested
+verification_detail: CI saves this file for real rsyslog, over UDP, TCP and TLS (Woodshed's own CA), over IPv4 and over IPv6 (TCP), with a chosen severity and facility (UDP), and with Woodshed down until the queue overflows (TCP and TLS). The test messages go to rsyslog's own UDP input rather than through the logger line.
+reference: rsyslog documentation: the omfwd action (target, port, protocol, TCP_Framing, StreamDriver*), RFC 5424 and RFC 5425
+does: Forwards this machine's syslog, informational and more severe, to Woodshed over UDP.
+check: On Woodshed's Dashboard this machine appears as a device within a few seconds of the test message; `woodshed status` counts the messages too.
+placeholders: 
+addresses: 192.0.2.10 2001:db8::10 logs-01.example.net logs-01
+notes:
+- UDP has no delivery check: a message lost on the way is gone. Use TCP or TLS where that matters.
+---- part file "/etc/rsyslog.d/60-woodshed.conf": Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)
+# Woodshed: forward syslog over UDP (RFC 5424 format).
+*.info action(type="omfwd" target="192.0.2.10" port="514" protocol="udp"
+       template="RSYSLOG_SyslogProtocol23Format")
+---- part command "": Check the file and send a test message
+sudo rsyslogd -N1
+logger -p user.info "Test message for Woodshed from $(hostname)"
+==== text
+# /etc/rsyslog.d/60-woodshed.conf: Save as this file, then restart rsyslog (sudo systemctl restart rsyslog)
+# Woodshed: forward syslog over UDP (RFC 5424 format).
+*.info action(type="omfwd" target="192.0.2.10" port="514" protocol="udp"
+       template="RSYSLOG_SyslogProtocol23Format")
+
+# Check the file and send a test message
+sudo rsyslogd -N1
+logger -p user.info "Test message for Woodshed from $(hostname)"

@@ -68,6 +68,8 @@ type Listeners struct {
 	TLS TLSListener `toml:"tls" json:"tls" comment:"Syslog over TLS (RFC 5425), TCP 6514 by default. Off until you turn it on."`
 	// SNMP is the SNMP trap receiver (snmp.go), off by default.
 	SNMP SNMPListener `toml:"snmp" json:"snmp" comment:"SNMP traps and informs (v1, v2c, v3), UDP 162 by default. Off until you turn it on. v3 users and communities are set in Settings and kept in the data folder, not here."`
+	// Flow is the flow collector (v5, v9, IPFIX) (flow.go, SPEC §13.1), off by default.
+	Flow FlowListener `toml:"flow" json:"flow" comment:"Flows: flow v5/v9 and IPFIX over UDP, 2055 and 4739 by default. Off until you turn it on."`
 	// Allowlist holds IPs or CIDRs; empty accepts every sender.
 	Allowlist []string `toml:"allowlist" json:"allowlist" comment:"Accept messages only from these IPs or CIDRs, e.g. [\"192.0.2.0/24\", \"2001:db8::1\"]. Empty accepts everyone."`
 	// Blocklist holds IPs or CIDRs whose messages are refused; it wins over the
@@ -105,6 +107,9 @@ type Storage struct {
 	RetentionDays  int    `toml:"retention_days" json:"retention_days" comment:"Delete rotated logs older than this many days."`
 	RetentionBytes int64  `toml:"retention_bytes" json:"retention_bytes" comment:"Delete the oldest rotated logs while all logs take more than this (bytes, at least 1 GiB)."`
 	PartBytes      int64  `toml:"part_bytes" json:"part_bytes" comment:"Close a device's active file at this size (bytes, 1 MiB to 1 GiB)."`
+	// FlowBudgetBytes is the flows' share of RetentionBytes (SPEC §13.2); 0
+	// means 40 %.
+	FlowBudgetBytes int64 `toml:"flow_budget_bytes" json:"flow_budget_bytes" comment:"Flows may take at most this many bytes of retention_bytes; the oldest flows go first past it. 0 means 40 % of retention_bytes; otherwise at least 1 GiB and at most 90 %."`
 }
 
 // UI configures the web UI.
@@ -155,6 +160,7 @@ func Default() Config {
 			TCP:             Listener{Enabled: true, Addr: DefaultListenAddr, Port: DefaultSyslogPort},
 			TLS:             TLSListener{Addr: DefaultListenAddr, Port: DefaultTLSPort},
 			SNMP:            DefaultSNMP(),
+			Flow:            DefaultFlow(),
 			Allowlist:       []string{},
 			Blocklist:       []string{},
 			UDPRcvbufBytes:  DefaultUDPRcvbufBytes,
@@ -190,6 +196,7 @@ func (c Config) Clone() Config {
 	c.Listeners.Allowlist = append([]string{}, c.Listeners.Allowlist...)
 	c.Listeners.Blocklist = append([]string{}, c.Listeners.Blocklist...)
 	c.Listeners.SNMP.Communities = append([]string{}, c.Listeners.SNMP.Communities...)
+	c.Listeners.Flow.RuleIDIEs = append([]string{}, c.Listeners.Flow.RuleIDIEs...)
 	c.UI.ExtraHostnames = append([]string{}, c.UI.ExtraHostnames...)
 	c.UI.TrustedHosts = append([]string{}, c.UI.TrustedHosts...)
 	c.Poll.Presets = append([]string{}, c.Poll.Presets...)
@@ -221,6 +228,7 @@ func (c *Config) Normalize() {
 	normalizeTCPLimits(&c.Listeners)
 	normalizeDeviceLimits(&c.Listeners)
 	normalizeUDPQueue(&c.Listeners)
+	normalizeFlow(&c.Listeners.Flow)
 	normalizePoll(&c.Poll)
 }
 

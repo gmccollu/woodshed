@@ -4,6 +4,67 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [2.0.0] - unreleased
+
+### Added
+- A flow collector (flow v5, flow v9 (RFC 3954) and IPFIX (RFC 7011)), off until you turn it on in **Settings → Flows** or with `woodshed flow on`
+  (flow v5 and v9 on UDP 2055, IPFIX on UDP 4739; each port reads every version). Templates and options data per exporter
+  and observation domain, interface names from options data, variable-length and enterprise-specific fields (kept as
+  they came), data that arrived before its template decoded when it comes (marked late), and malformed or undecodable
+  data kept, never dropped silently. Sequence gaps (loss before Woodshed) and duplicates are counted per exporter. See
+  [docs/user-guide.md](docs/user-guide.md#collecting-flows).
+- Firewall-event, NAT and bidirectional records are first-class: `fw_event` (created, deleted, denied, …),
+  `nat_event`, post-NAT addresses and ports, initiator and responder counters and RFC 5103 reverse counters are
+  columns and filters, sums follow a no-double-count rule for event records, and a rule or ACL ID can be read from
+  the enterprise field an exporter uses (`listeners.flow.rule_id_ies`).
+- Sampling is kept per record and shown: counts exported and, where the rate is known, scaled, never scaled
+  silently.
+- **Events → Flows**: the results, the field panel, the histogram, and a **Top** panel (talkers, destination ports,
+  conversations, and **Denied**: top denied sources, destinations, ports and rules), each value a filter. Searches
+  use flow time (a record matches when its start-to-end overlaps the window). The other tabs get a flow strip under
+  the histogram for the selected exporters. Device pages show their flow counts.
+- `woodshed search --type flow` (with `--src`, `--dst-port`, `--proto`, `--fw-event` and the other flow filters),
+  `woodshed flows top`, `woodshed flow on|off|status`, a Flows row in `woodshed status`, `woodshed send --proto
+  flow-v5|flow-v9|ipfix` (with `--events` and `--biflow`) and `woodshed bench --proto ipfix`.
+- Exports and incident bundles cover every data type: the UI's Export now defaults to all types (the API's default
+  stays syslog), and bundles include flows when there are any in the window, as `flows/<device>/flows.csv`,
+  `flows.ipfix` (an RFC 5655 IPFIX file) and, when there are undecoded sets, `raw.txt`. The bundle README gains a
+  Flows block per device (top talkers, ports, conversations, firewall events, top denied sources and ports, NAT,
+  sequence gaps). **Leave flows out** is offered before building, pre-selected for a long window with large flows; a
+  zip holds at most 20 million flow records per device.
+- **Set up a device** (**Connect** in the menu): the configuration a device needs to send Woodshed its syslog (UDP,
+  TCP or TLS), SNMP traps (v2c or v3) or flows, or to let Woodshed poll it, filled in with this server's addresses,
+  ports and TLS certificate name. Six families, named by syntax rather than brand: a line-oriented CLI, a set-style
+  CLI, Linux rsyslog, Linux net-snmp (`snmpd` and `snmptrap`), Linux softflowd and a web UI checklist. Secrets are
+  always placeholders, and each snippet says what it does, how to check it worked, and how it's verified: the rsyslog,
+  net-snmp and softflowd snippets are **Tested** (CI applies them to the real tools against a running Woodshed), the
+  others are **Reference only**. See [docs/user-guide.md](docs/user-guide.md#setting-up-devices).
+- `woodshed setup families` and `woodshed setup snippet --family … --what …` print the same from a terminal.
+- API: `GET /api/setup/families` and `POST /api/setup/snippet` (or `GET` with query parameters); see docs/api.md
+  "Device setup helper".
+
+### Changed
+- Woodshed now has a second, binary on-disk format beside its plain text files: flows are stored as compact columnar
+  segments (`logs/<device>/flows/*.wsf`, about 20 bytes a record), read through Events, `woodshed search`, or the
+  CSV and IPFIX exports. Syslog, trap and poll files are unchanged.
+- Retention: flows have their own budget, `storage.flow_budget_bytes`, 40 % of the storage cap by default. While they
+  exceed it the oldest flows are deleted first, fair-shared between exporters, before any other data; the low-disk
+  guard deletes flows first too. With no flows nothing changes.
+- The index migrates once (schema 8: `flow_segments`, `flow_minute`). Downgrading to 1.x keeps every syslog, trap and
+  poll file and loses access to flows.
+
+### Security
+- The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The
+  sender allowlist, blocklist and new-sender limits apply to exporters as to any sender.
+
+### Performance
+- IPFIX at 50,000 records a second for 10 minutes (30 records a packet, 2 domains) with UDP syslog at 5,000 msg/s
+  beside it: all 30 million records and 3 million messages stored, 0.43 of a core and 153 MiB peak RSS for the whole
+  pipeline, 20.4 bytes per stored record; a 150,000 records/s burst for 10 s lost nothing. Top talkers over 18 million
+  records took under 0.8 s, and a one-address search's first page 0.1 s. Measured in-process with `woodshed bench
+  --proto ipfix --rate 50000 --duration 10m --syslog-rate 5000` (the sender in a child process) on a 14-core
+  laptop; the reference-spec (4 vCPU) runner and the lab's 24-hour run will replace these before release.
+
 ## [1.3.0] - 2026-11-17
 
 ### Added
@@ -69,7 +130,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - Polling 500 devices with 64 interfaces each every 60 s (v2c) took 0.07 of a core and 129 MiB of memory for the
   whole server, every cycle on time; with syslog at 10,000 msg/s beside it, 0.26 of a core, and 600,000 of 600,000
   messages stored. 100 devices every 30 s with v3 authPriv (SHA-256, AES-128): 0.03 of a core (0.24 with the syslog
-  run, again with nothing lost). Measured in-process on a 14-core Apple M4 Pro with the test agents in another
+  run, again with nothing lost). Measured in-process on a 14-core laptop with the test agents in another
   process (`TestPollLoad`); the reference-spec (4 vCPU) runner and lab numbers will replace these before release.
 
 ## [1.2.0] - 2026-11-16

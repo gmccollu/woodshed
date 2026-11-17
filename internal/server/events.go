@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/search"
 )
@@ -31,6 +32,9 @@ func (b *backend) SearchSchema(ctx context.Context) ([]api.SearchType, error) {
 }
 
 func (b *backend) Summary(ctx context.Context, r api.SummaryRequest) (api.SummaryPage, error) {
+	if r.Type == datatype.Flow {
+		return b.flowSummary(ctx, r)
+	}
 	q := search.SummaryQuery{
 		Filter:  searchFilter(r.SearchRequest),
 		Devices: r.Devices, Group: r.Group, Ungrouped: r.Ungrouped, ExcludeDevices: r.ExcludeDevices,

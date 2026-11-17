@@ -1,0 +1,25 @@
+{{/*
+family: softflowd
+what: flow
+transports: v9, ipfix
+reference: softflowd(8) manual page (-i, -n, -v, -t)
+verification: tested
+ci: CI runs real softflowd with these options, flow v9 and IPFIX, and IPFIX over IPv6, replaying a capture file with -r in place of -i <INTERFACE> (a CI runner has no traffic to watch), so the interface choice itself isn't exercised.
+*/}}
+{{define "does"}}Runs softflowd on {{.Interface}} and exports the flows it sees to Woodshed as {{if eq .Transport "ipfix"}}IPFIX (RFC 7011){{else}}flow v9 (RFC 3954){{end}}.{{end}}
+
+{{define "parts"}}
+@@part command - Run softflowd (as root), or put the same options in your distribution's softflowd service settings
+softflowd -i {{.Interface}} -n {{.HostPort}} -v {{if eq .Transport "ipfix"}}10{{else}}9{{end}} -t maxlife=60
+@@part command - See what it's exporting
+softflowctl statistics
+{{end}}
+
+{{define "notes"}}
+{{if eq .Interface "<INTERFACE>"}}<INTERFACE> is the network interface to watch, as `ip link` names it.
+{{end}}
+-t maxlife=60 exports long-running flows every minute, so they show up during an incident rather than when they end.
+softflowd sees only the traffic that passes the interface it watches.
+{{end}}
+
+{{define "check"}}Woodshed's Flows view lists this machine as an exporter within a minute or two; `softflowctl statistics` shows the flows it has sent.{{end}}

@@ -240,6 +240,8 @@ type FileOp struct {
 	// instead of adding to them, after the store re-read a file.
 	ResetCheckpoints bool
 	Deletion         *Deletion
+	// Flow (OpUpsert of a flow segment) sets the segment's flow_segments row.
+	Flow *FlowSegment
 }
 
 // Batch is a set of changes applied in one transaction, file ops in order.
@@ -247,7 +249,12 @@ type Batch struct {
 	Files    []FileOp
 	Activity []Activity
 	Events   []Event
+	// FlowMinutes are deltas added to flow_minute, after Files (so a
+	// segment's rows exist before its minutes).
+	FlowMinutes []FlowMinute
 }
 
 // Empty reports whether the batch has nothing to apply.
-func (b *Batch) Empty() bool { return len(b.Files) == 0 && len(b.Activity) == 0 && len(b.Events) == 0 }
+func (b *Batch) Empty() bool {
+	return len(b.Files) == 0 && len(b.Activity) == 0 && len(b.Events) == 0 && len(b.FlowMinutes) == 0
+}

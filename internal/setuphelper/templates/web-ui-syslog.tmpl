@@ -1,0 +1,32 @@
+{{/*
+family: web-ui
+what: syslog
+transports: udp, tcp, tls
+reference: RFC 5424 (severities, facilities), RFC 5426 (UDP), RFC 6587 (TCP), RFC 5425 (TLS)
+verification: reference
+*/}}
+{{define "does"}}The values to enter in the device's syslog (remote logging) page so it sends {{.Severity.Word}} and more severe messages to Woodshed over {{if eq .Transport "udp"}}UDP{{else if eq .Transport "tcp"}}TCP{{else}}TLS{{end}}.{{end}}
+
+{{define "parts"}}
+@@part steps - In the device's web page, open its syslog or remote logging settings and enter
+Remote logging: on
+Server address: {{.Address}}
+Port: {{.Port}}
+Protocol: {{if eq .Transport "udp"}}UDP{{else if eq .Transport "tcp"}}TCP{{else}}TLS (sometimes called secure or encrypted syslog){{end}}
+{{- if eq .Transport "tls"}}
+CA certificate: Woodshed's, from Settings → TLS → CA certificate (PEM to paste, DER to upload)
+Server name to check: {{.TLSName}}{{end}}
+Lowest severity to send: {{.Severity.Word}} ({{.Severity.Num}})
+Facility: {{if .Facility}}{{.Facility}}{{else}}leave the device's default{{end}}
+Message format: RFC 5424 if offered, otherwise the default
+{{end}}
+
+{{define "notes"}}
+Field names differ between devices; some put the port into the address field as {{.HostPort}}.
+{{- if eq .Transport "tls"}}
+{{if .CASHA256}}Compare the CA fingerprint the device shows with {{.CASHA256}}. {{end}}If the device checks the server's name, use {{.TLSName}}{{if not .TLSNameKnown}} (it must be a DNS name on Woodshed's certificate; Settings → TLS lists them once TLS is on){{end}}; many check names only, not IP addresses.
+{{- end}}
+Pages that offer a "send a test message" button usually send it at once: watch the Dashboard.
+{{end}}
+
+{{define "check"}}The device appears on Woodshed's Dashboard with its first message, often right after you save.{{end}}

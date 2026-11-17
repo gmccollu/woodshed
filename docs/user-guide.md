@@ -55,6 +55,42 @@ woodshed send --message "hello"          # in the portable folder: ./woodshed se
 
 If nothing arrives, see [Devices can't reach it](../FAQ.md#devices-cant-reach-woodshed) in the FAQ.
 
+### Setting up devices
+
+**Connect** in the menu opens **Set up a device**. It writes the configuration a device needs to send Woodshed its
+syslog, SNMP traps or flows, or to let Woodshed poll it, filled in with this Woodshed's addresses, ports, and the name
+on its TLS certificate.
+
+1. Pick how the device is configured: a line-oriented CLI (one command per line in a configuration mode), a
+   hierarchical set-style CLI (`set …` statements and `commit`), Linux with rsyslog, Linux with net-snmp's `snmpd`
+   and `snmptrap`, Linux with softflowd, or a web page (a checklist of fields and values).
+2. Pick what to set up (syslog, SNMP traps, SNMP polling or flows) and how (UDP, TCP or TLS; SNMPv2c or v3; flow v9
+   (RFC 3954) or IPFIX (RFC 7011)).
+3. Pick Woodshed's address as the device reaches it, and fill in the choices the snippet offers: the device's source
+   interface, the lowest severity to send, the facility, an SNMPv3 user name.
+4. Copy each part to the device, put your own values in place of the placeholders (`<COMMUNITY>`,
+   `<AUTH-PASSPHRASE>`, `<CA-FILE>`), and check that it worked as the snippet's last line says.
+
+Each snippet carries a badge:
+- **Tested**: CI applies it to the real tool (rsyslog, net-snmp, softflowd) against a running Woodshed on every change,
+  and checks that the data arrives exactly once. The line under the badge says what CI covers, and what it can't.
+- **Lab-checked**: applied by hand on lab equipment, on the date shown.
+- **Reference only**: not tested on a device; check your device's documentation. The commands follow common,
+  documented syntax, and the notes say where devices are known to differ.
+
+Woodshed never puts a stored community, passphrase or key into a snippet, and making one changes nothing on the
+server. The notes say first when a listener the snippet needs is off. TCP and TLS syslog snippets for network devices
+carry the firewall warning above.
+
+Without a browser, `woodshed setup snippet` prints the same thing; the notes go to stderr, so you can redirect the
+snippet into a file:
+
+```sh
+woodshed setup families
+woodshed setup snippet --family rsyslog --what syslog --transport tls > 60-woodshed.conf
+woodshed setup snippet --family line-cli --what trap --transport v3 --v3-user monitor --source-interface mgmt0
+```
+
 ### Sending syslog over TLS
 
 **Sending syslog over TLS.** Use this when a device should encrypt its logs on the way. It's off until you turn it
@@ -237,6 +273,81 @@ interfaces at 60 s writes about 17 MB a day uncompressed and about 1.4 MB once t
 **Settings → Polling** holds the defaults for new devices, how many devices are polled at once (32), the per-device
 interface limit and the limit on polled devices (500), and the last hour's cycles, failures and skipped cycles. If
 cycles are skipped because polling couldn't keep up, a banner suggests a longer interval or more devices at once.
+
+### Collecting flows
+
+Woodshed can also collect flow records, flow v5 and v9 (RFC 3954) and IPFIX (RFC 7011), so "who talked to whom, on which ports, how
+much, and what the firewall denied" around an outage sits beside the device's syslog, traps and polls. It's an
+evidence collector for a window of time, not long-term traffic analytics. It's off until you turn it on, so an
+upgrade opens no new port.
+
+1. In **Settings → Flows**, turn the listener on: UDP 2055 for flow v5 and v9 and 4739 for IPFIX by default (each port reads
+   every version, so an exporter pointed at the "wrong" one still works; set either to 0 to close it). On Windows,
+   also run `woodshed flow on` once in an administrator prompt so the firewall lets exporters in (the rules
+   "Woodshed flows (UDP 2055)" and "(UDP 4739)" are installed disabled). On a server without a browser,
+   `sudo woodshed flow on` turns it on (see [the install guide](install.md#flows-firewall)).
+2. On each exporter (a router, a switch, a firewall, or `softflowd` on a Linux host), set the flow exporter or
+   collector to this computer and the port, flow v9 or IPFIX if it offers them, v5 otherwise.
+3. Open **Events → Flows**. Exporters usually send templates every few minutes, so the first records of a v9 or IPFIX
+   exporter can take that long to decode (they wait, and are decoded when the template arrives).
+
+**What's kept.** Each record's addresses, ports, protocol, TCP flags, packets and bytes, interfaces (with names when
+the exporter sends them as options data), AS numbers, next hop, VLAN, its flow start and end, and for event-style
+firewall exporters the firewall event (`created`, `deleted`, `denied`, …), the NAT event, the post-NAT addresses and
+ports, the initiator and responder counters and RFC 5103 reverse counters. Fields Woodshed has no column for,
+enterprise-specific ones included, are kept as they came and shown as `pen:id=hex`. The exporter's source address is
+the device; the exporter's own address fields are kept but never used to pick the device.
+
+**Sampling is shown, never hidden.** Every record keeps the sampling rate in force when it arrived (`1` unsampled,
+`N` for 1 in N, `0` when the exporter said nothing). Counts are shown as exported and, where the rate is known,
+scaled: "312 MB exported (≈ 312 GB at 1:1000)". A total that includes records with unknown sampling is a lower bound,
+shown with "≥".
+
+**Firewall events without double counting.** Event-style exporters send a record when a connection is created, one
+when it's torn down (with its totals), and one for each denied connection. Byte and packet sums count totals only on
+the final record (`deleted`), so a connection isn't counted twice; `created`, `update` and `denied` records keep their
+counts but add nothing. **Top → Denied** ranks denied sources, destinations, ports and rules (by flows: denials carry
+no bytes).
+
+**Rule IDs.** No standard IPFIX field carries an ACL or rule ID; exporters that send one use an enterprise-specific
+field. **Settings → Flows** lists each exporter's template fields: find the one that holds the rule (its
+`<enterprise number>:<element ID>`), add it under **Rule ID fields**, and new records fill `rule_id` from it (filter
+with `rule_id=…`, or Top by rule).
+
+**Time.** Searches use flow time: a record matches a window when its start-to-end overlaps it, so "the flows around
+the outage" means when the traffic happened, not when the exporter got round to sending it. A record with only an
+event time (a denial) is at that moment. An exporter whose clock is more than an hour off has its records stamped
+with the time they arrived (its own times are kept), and a banner names it.
+
+**Waiting and broken data.** Data that arrives before its template waits (up to 32 MiB in all, 1 MiB per exporter,
+for the template timeout, 30 minutes) and is decoded with its original time, marked `late`. If the template never
+comes, the data is kept undecoded (`status=no_template`), and so are malformed packets (`status=malformed`), never
+dropped silently. When the template turns up later in the same hour, searches, Top and exports decode the kept data
+on read (marked `late`), and `woodshed reindex --flows-redecode` (with the service stopped) rewrites the segments with
+it decoded. Sequence numbers show loss between the exporter and Woodshed: **Settings → Flows** and
+`woodshed flow status` give each exporter's gaps, duplicates, late and undecoded counts.
+
+**Where it's kept.** Flows are a fourth kind of data, stored as compact columnar segments, one per device per hour
+(`logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf`), at about 20 bytes a record (an exporter sending 1,000 records a second
+writes about 1.7 GB a day). Unlike the other files they aren't plain text: read them through Events, `woodshed
+search --type flow`, or an export, whose `flows.csv` is plain text and whose `flows.ipfix` any IPFIX tool reads.
+Flows have their own **budget**, 40 % of the storage cap by default (`storage.flow_budget_bytes`): past it the oldest
+flows are deleted first, before any other data, and the low-disk guard deletes flows first too, so a busy exporter
+can't push out its own syslog. Settings says how many days the budget holds at the current rate.
+
+**From a terminal:**
+
+```sh
+woodshed search --type flow --src 10.20.0.0/16 --dst-port 443 --last 1h      # one CSV row per record
+woodshed search --type flow --fw-event denied --count --last 24h
+woodshed flows top --by src --last 1h                                         # top talkers, exported and scaled
+woodshed flows top --by dst-port --fw-event denied --last 24h                 # top denied ports
+woodshed flow status                                                          # each exporter's rate, templates, gaps
+```
+
+To test from another computer, `woodshed send --proto ipfix --host 192.0.2.50 --count 1000` (or `flow-v9`,
+`flow-v5`) sends generated records, `--events` sends firewall-event records, and `woodshed bench --proto ipfix`
+measures the whole flow pipeline on this computer, in a temporary folder.
 
 ## 3. Watch
 

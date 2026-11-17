@@ -1,0 +1,40 @@
+{{/*
+family: set-cli
+what: trap
+transports: v2c, v3
+reference: common set-style SNMP statements (set snmp trap-group …, set snmp v3 …); RFC 3413 (target addresses, target parameters, notify) and RFC 3414 (USM)
+verification: reference
+*/}}
+{{define "does"}}Sends the device's SNMP traps to Woodshed (SNMP{{.Transport}}).{{end}}
+
+{{define "parts"}}
+@@part cli - Enter in configuration mode, then commit
+{{- if eq .Transport "v2c"}}
+set snmp trap-group <COMMUNITY> version v2
+set snmp trap-group <COMMUNITY> destination-port {{.Port}}
+set snmp trap-group <COMMUNITY> targets {{.Address}}
+{{- else}}
+set snmp v3 usm local-engine user {{.V3User}} {{.Auth.Set}} authentication-password <AUTH-PASSPHRASE>
+set snmp v3 usm local-engine user {{.V3User}} {{.Priv.Set}} privacy-password <PRIV-PASSPHRASE>
+set snmp v3 target-address woodshed address {{.Address}}
+set snmp v3 target-address woodshed port {{.Port}}
+set snmp v3 target-address woodshed tag-list woodshed-traps
+set snmp v3 target-address woodshed target-parameters woodshed-params
+set snmp v3 target-parameters woodshed-params parameters message-processing-model v3
+set snmp v3 target-parameters woodshed-params parameters security-model usm
+set snmp v3 target-parameters woodshed-params parameters security-level privacy
+set snmp v3 target-parameters woodshed-params parameters security-name {{.V3User}}
+set snmp v3 notify woodshed-notify type trap tag woodshed-traps
+{{- end}}
+commit
+{{end}}
+
+{{define "notes"}}
+{{if eq .Transport "v2c"}}On many set-style devices the trap group's name is sent as the community, so the name is the <COMMUNITY> placeholder here. It must be one Woodshed accepts (Settings → Listeners → SNMP traps; an empty list accepts any).
+{{else}}The statements follow the SNMPv3 notification model (RFC 3413): a target address, its parameters, and a notify entry that ties them together by tag. The keywords for each piece differ between devices.
+Add the same user in Woodshed: Settings → SNMP → v3 users, name {{.V3User}}, {{.Auth.Label}} and {{.Priv.Label}}, with the same passphrases.
+{{end}}
+Some devices also need the trap categories chosen (link, chassis, configuration) before they send anything.
+{{end}}
+
+{{define "check"}}Search Events for type Traps after a change on the device; `woodshed snmp status` counts traps per device.{{end}}

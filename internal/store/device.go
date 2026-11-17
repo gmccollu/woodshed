@@ -80,7 +80,12 @@ type device struct {
 
 func newDevice(s *Store, addr netip.Addr, ti uint8) *device {
 	id := model.DeviceID(addr)
-	t := logfile.DataTypes[ti]
+	var t logfile.DataType
+	if ti == flowTI {
+		t = logfile.DataType{Name: logfile.TypeFlow, Dir: logfile.FlowDir}
+	} else {
+		t = logfile.DataTypes[ti]
+	}
 	dir := filepath.Join(s.logsDir, id)
 	if t.Dir != "" {
 		dir = filepath.Join(dir, t.Dir)

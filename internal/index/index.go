@@ -270,6 +270,9 @@ CREATE TABLE poll_hourly (
 ) WITHOUT ROWID;
 CREATE INDEX poll_hourly_hour ON poll_hourly (hour);
 `,
+	// 7 -> 8: flows (SPEC §13.2, §13.9): flow_segments and flow_minute, both
+	// derived from the segments' footers (flow.go).
+	flowMigration,
 }
 
 // CurrentSchema is the schema version this build writes.
