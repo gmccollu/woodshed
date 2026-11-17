@@ -194,6 +194,9 @@ func sendTrapResult(stdout, stderr io.Writer, o loadgen.SendOptions, res loadgen
 			code = 1
 		}
 	}
+	if t := loadgen.RefusedText(res.Refused); t != "" {
+		fmt.Fprintf(stdout, "%s.\n", t)
+	}
 	if res.Sent > 0 {
 		fmt.Fprintf(stdout, "Find them by searching for %q.\n", loadgen.SeqTag(res.RunID))
 	}

@@ -3620,6 +3620,18 @@ the connection; present since 1.0):
     port, so an exporter that restarted on a new port gets nothing restored for it. Sequence state isn't restored:
     the first message after a restart sets the baseline, so the downtime isn't counted as a gap (Woodshed's own
     downtime shows in the bundle's gaps instead). Reading costs one footer per exporter heard in the last day.
+84. **`woodshed send` keeps going through a receiver's restart.** Over UDP a refusal is the OS reporting, on a later
+    send, an ICMP port unreachable for an earlier datagram. The sender treated every one as fatal ("nothing is
+    listening"), so a run stopped whenever the receiver restarted, which a real exporter doesn't do. Options: a
+    `--keep-going` flag (one more thing to know, and the default would still stop at a restart), or telling the two
+    cases apart. Chosen: a refusal before the sender has gone 1 s (`loadgen.RefusedGrace`) without one still stops it
+    at once, since nothing has answered (an ICMP reply on a LAN takes milliseconds, so a closed port is caught well
+    within it); after that the receiver had been listening, so the refusal is counted, the datagram is sent again
+    (the OS returned the error instead of sending it), and sending goes on. The summary line says "N refused (ICMP
+    port unreachable: the receiver stopped listening for a while, so at least that many datagrams were lost)". The
+    same rule covers syslog over UDP, traps (sends and an inform's reply reader; SNMPv3 discovery still needs an
+    answer) and flows (`woodshed send --proto flow-v5|flow-v9|ipfix`). TCP and TLS are unchanged: a refused dial is an
+    error.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

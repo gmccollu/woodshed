@@ -167,6 +167,7 @@ type trapSender struct {
 	pending  map[int64]*pendingInform
 	stats    InformStats
 	readErr  error
+	ref      refusals // shared by the sender and the reply reader
 }
 
 type pendingInform struct {
@@ -213,6 +214,7 @@ func sendTrap(ctx context.Context, o *SendOptions, res *SendResult) error {
 	}
 	stopRead()
 	wg.Wait()
+	res.Refused = s.ref.count()
 	if t.Inform {
 		s.mu.Lock()
 		st := s.stats
@@ -335,8 +337,14 @@ func (s *trapSender) sendAll(ctx context.Context, res *SendResult) error {
 					}
 					continue
 				}
+				// A refusal after the receiver had been listening (a restart):
+				// counted, and this one sent again (RefusedGrace).
+				if isConnRefused(err) && !s.ref.refused() {
+					continue
+				}
 				return s.writeErr(err)
 			}
+			s.ref.wrote(time.Now())
 			res.Sent++
 		}
 		if err := p.wait(ctx, res.Sent); err != nil {
@@ -452,9 +460,9 @@ func (s *trapSender) readReplies(ctx context.Context) {
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
-			if isConnRefused(err) {
+			if isConnRefused(err) && s.ref.refused() {
 				s.mu.Lock()
-				s.readErr = fmt.Errorf("loadgen: %s: nothing is listening (connection refused)", s.o.Addr)
+				s.readErr = notListening(s.o.Addr)
 				s.mu.Unlock()
 				return
 			}

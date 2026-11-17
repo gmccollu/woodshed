@@ -35,6 +35,11 @@ varbind. Communities and passphrases are read from files or the environment
 ($WOODSHED_SNMP_COMMUNITY, $WOODSHED_SNMP_AUTH_PASS, $WOODSHED_SNMP_PRIV_PASS),
 never from the command line.
 
+Over UDP (and for traps), a port that refuses (ICMP port unreachable) before a
+second of sending stops the run: nothing is listening. A refusal after that is
+the receiver going away for a while (a restart): it's counted, the message is
+sent again, and sending goes on; the summary says how many.
+
 Examples:
   woodshed send --message "hello from woodshed"          one message to 127.0.0.1:514 over UDP
   woodshed send --host 192.0.2.10 --proto tcp --count 100
@@ -153,6 +158,9 @@ Examples:
 	case res.Sent > 0 || err == nil:
 		fmt.Fprintf(stdout, "Sent %d message%s to %s over %s in %v (%.0f msg/s), run %s.\n",
 			res.Sent, plural, o.Addr, what, res.Elapsed.Round(time.Millisecond), res.Rate, res.RunID)
+	}
+	if t := loadgen.RefusedText(res.Refused); t != "" {
+		fmt.Fprintf(stdout, "%s.\n", t)
 	}
 	if res.Sent > 0 {
 		fmt.Fprintf(stdout, "Find them by searching for %q.\n", loadgen.SeqTag(res.RunID))
