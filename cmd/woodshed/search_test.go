@@ -831,3 +831,12 @@ func TestSearchWarnsWhenAWriterStarts(t *testing.T) {
 		ws2.idx.Close()
 	}
 }
+
+// `woodshed search --help` names every --type, flow included.
+func TestSearchHelpListsTypes(t *testing.T) {
+	code, out, errOut := runCLI("search", "--help")
+	if help := out + errOut; code != 0 || !strings.Contains(help, "-type type") ||
+		!strings.Contains(help, "data type to search: syslog, trap, poll or flow") {
+		t.Fatalf("search --help: %d\n%s", code, help)
+	}
+}
