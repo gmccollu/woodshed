@@ -94,8 +94,9 @@ type FlowWindowCounts struct {
 	ByHour   bool
 	// Known: the span has buckets and every one has flow counts. It's false
 	// for a span older than StatsRetention (pruned), with nothing received
-	// in it, or written before the counts existed (2.0.0-rc1).
-	Known bool
+	// in it, or written before the counts existed (2.0.0-rc1: Uncounted).
+	Known     bool
+	Uncounted bool
 }
 
 // FlowCountsIn sums deviceID's flow counts over [from, to) by received time.
@@ -137,7 +138,7 @@ func (d *DB) FlowCountsIn(ctx context.Context, deviceID string, from, to time.Ti
 			}
 		}
 	}
-	out.Known = rows > 0 && uncounted == 0
+	out.Known, out.Uncounted = rows > 0 && uncounted == 0, uncounted > 0
 	return out, nil
 }
 
@@ -187,4 +188,17 @@ func (d *DB) FlowCountBuckets(ctx context.Context, from, to time.Time, bucket ti
 		}
 	}
 	return out, nil
+}
+
+// NewestFlowSegment is the path (the files row's, relative to the data
+// folder) of deviceID's flow segment that started receiving last; "" when it
+// has none.
+func (d *DB) NewestFlowSegment(ctx context.Context, deviceID string) (string, error) {
+	var p string
+	err := d.db.QueryRowContext(ctx, `SELECT path FROM files WHERE type = ? AND device_id = ? ORDER BY first_received DESC, id DESC LIMIT 1`,
+		TypeFlow, deviceID).Scan(&p)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return p, err
 }

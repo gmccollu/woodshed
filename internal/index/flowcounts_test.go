@@ -97,6 +97,29 @@ func TestFlowCountsWindowAndBuckets(t *testing.T) {
 	}
 }
 
+func TestNewestFlowSegment(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	h := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	var ops []FileOp
+	for i, p := range []string{"logs/10.1.0.1/flows/2026-11-17T09.wsf", "logs/10.1.0.1/flows/2026-11-17T10.wsf", "logs/10.1.0.1/2026-11-17.log"} {
+		typ := TypeFlow
+		if i == 2 {
+			typ = TypeSyslog
+		}
+		at := h.Add(time.Duration(i) * time.Hour)
+		ops = append(ops, FileOp{Kind: OpUpsert, File: File{DeviceID: "10.1.0.1", Type: typ, Path: p, Day: "2026-11-17", FirstReceived: at, LastReceived: at}})
+	}
+	if err := d.Apply(ctx, Batch{Files: ops}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := d.NewestFlowSegment(ctx, "10.1.0.1"); err != nil || p != "logs/10.1.0.1/flows/2026-11-17T10.wsf" {
+		t.Fatalf("%q %v", p, err)
+	}
+	if p, err := d.NewestFlowSegment(ctx, "10.1.0.9"); err != nil || p != "" {
+		t.Fatalf("none: %q %v", p, err)
+	}
+}
+
 // A schema-8 index (2.0.0-rc1) migrates to 9: its type_stats rows stay,
 // marked as not having flow counts.
 func TestMigrateFlowCounts(t *testing.T) {

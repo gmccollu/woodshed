@@ -68,8 +68,8 @@ func (b *backend) flowRestore(dataDir string, timeout time.Duration) []flow.Rest
 			continue
 		}
 		r.Addr, r.LastHeard = addr, dev.LastHeard.UnixMilli()
-		if segs, err := b.idx.FlowSegments(ctx, []string{id}, time.Time{}, time.Time{}); err == nil && len(segs) > 0 {
-			if rd, err := flowseg.Open(filepath.Join(dataDir, filepath.FromSlash(segs[0].Path))); err == nil {
+		if rel, err := b.idx.NewestFlowSegment(ctx, id); err == nil && rel != "" {
+			if rd, err := flowseg.Open(filepath.Join(dataDir, filepath.FromSlash(rel))); err == nil {
 				f := rd.Footer()
 				r.Meta = f.Meta
 				if now.UnixMilli()-f.MaxReceived <= timeout.Milliseconds() {
