@@ -536,7 +536,7 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 				if b.flowStats != nil {
 					st = b.flowStats(d.ID)
 				}
-				win, err := b.idx.FlowCountsIn(ctx, d.ID, info.From, info.To)
+				win, err := b.idx.FlowCountsIn(ctx, d.ID, info.From, info.To, b.now().Add(-index.StatsRetention))
 				if err != nil {
 					return nil, err
 				}

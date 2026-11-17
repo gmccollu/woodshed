@@ -433,13 +433,19 @@ type TopZeroOmitted struct {
 	TopDeniedSources  int64 `json:"top_denied_sources"`
 	TopDeniedPorts    int64 `json:"top_denied_ports"`
 	TopPostNATSources int64 `json:"top_post_nat_sources"`
+	// Approx: some list was counted approximately (too many keys), so its
+	// count is a lower bound ("at least N").
+	Approx bool `json:"approx"`
 }
 
 // GapSpan is the span a bundle's sequence gaps cover (FlowSummary).
 type GapSpan struct {
 	From   time.Time `json:"from"`
 	To     time.Time `json:"to"`
-	ByHour bool      `json:"by_hour"`
+	ByHour bool      `json:"by_hour"` // the start widened to the hour: hourly buckets in it
+	// Partial: the window starts before the 7 days the counts are kept, so
+	// they cover only From onward.
+	Partial bool `json:"partial"`
 }
 
 // KeyCount is a top-N entry with its count.
@@ -486,10 +492,11 @@ type FlowSummary struct {
 	// SequenceGaps and LostEstimate are the window's: the gaps the collector
 	// counted in datagrams received in it, per minute from the index
 	// (SPEC §13.10 decision 82), over SequenceGapsSpan (the window in whole
-	// minutes, or whole hours for a window older than a day). Null when
-	// they aren't known; SequenceGapsUnknown says why: "not_kept" (nothing
-	// counted in the span: older than the 7 days counts are kept, or nothing
-	// received in it) or "not_counted" (part of it stored by 2.0.0-rc1).
+	// minutes, its start widened to the hour past a day, or from the 7-day
+	// retention cutoff for a window that starts earlier). Null when they
+	// aren't known; SequenceGapsUnknown says why: "not_kept" (the window is
+	// older than the 7 days counts are kept), "nothing_received" (no datagram
+	// arrived in it) or "not_counted" (part of it stored by 2.0.0-rc1).
 	SequenceGaps        *int64   `json:"sequence_gaps"`
 	LostEstimate        *int64   `json:"lost_estimate"`
 	SequenceGapsSpan    *GapSpan `json:"sequence_gaps_span"`
@@ -598,7 +605,10 @@ func shares(t *flowquery.Top, metric string) ([]KeyShare, int64) {
 		return out, zero
 	}
 	for _, r := range rows {
-		out = append(out, KeyShare{Key: r.Key, Share: math.Round(float64(r.Metric(metric))/float64(tot)*1e4) / 1e4})
+		// Rounded to 0.01 %, but never to 0: rows have some of the metric,
+		// and a share that reads "0 %" says it has none.
+		sh := max(math.Round(float64(r.Metric(metric))/float64(tot)*1e4)/1e4, 1e-4)
+		out = append(out, KeyShare{Key: r.Key, Share: sh})
 	}
 	return out, zero
 }
@@ -628,6 +638,9 @@ func (c *flowCount) summary(stats *FlowStats, win index.FlowWindowCounts) *FlowS
 	s.TopDeniedSources, z.TopDeniedSources = counts(c.denSrc)
 	s.TopDeniedPorts, z.TopDeniedPorts = counts(c.denPort)
 	s.TopPostNATSources, z.TopPostNATSources = shares(c.nat, "flows")
+	for _, t := range []*flowquery.Top{c.talkers, c.ports, c.convs, c.denSrc, c.denPort, c.nat} {
+		z.Approx = z.Approx || t.Approx()
+	}
 	for d, rates := range c.domains {
 		ds := DomainSampling{Domain: d}
 		for r := range rates {
@@ -637,15 +650,12 @@ func (c *flowCount) summary(stats *FlowStats, win index.FlowWindowCounts) *FlowS
 		s.Sampling = append(s.Sampling, ds)
 	}
 	sort.Slice(s.Sampling, func(i, j int) bool { return s.Sampling[i].Domain < s.Sampling[j].Domain })
-	switch {
-	case win.Known:
+	if win.Known {
 		g, l := win.SeqGaps, win.SeqLost
 		s.SequenceGaps, s.LostEstimate = &g, &l
-		s.SequenceGapsSpan = &GapSpan{From: win.From.UTC(), To: win.To.UTC(), ByHour: win.ByHour}
-	case win.Uncounted:
-		s.SequenceGapsUnknown = "not_counted"
-	default:
-		s.SequenceGapsUnknown = "not_kept"
+		s.SequenceGapsSpan = &GapSpan{From: win.From.UTC(), To: win.To.UTC(), ByHour: win.ByHour, Partial: win.Partial}
+	} else {
+		s.SequenceGapsUnknown = win.Reason
 	}
 	if stats != nil {
 		g, l := stats.SequenceGaps, stats.LostEstimate
@@ -700,9 +710,10 @@ func pct(share float64) string {
 	return strconv.FormatInt(int64(math.Round(p)), 10) + " %"
 }
 
-// zeroNote is a list's " (4 with 0 bytes not shown)" ("" for none).
-func zeroNote(n int64, metric string) string {
-	if t := flowquery.ZeroOmittedText(n, metric); t != "" {
+// zeroNote is a list's " (4 with 0 bytes not shown)" ("" for none; "at
+// least" when counted approximately).
+func zeroNote(n int64, metric string, approx bool) string {
+	if t := flowquery.ZeroOmittedText(n, metric, approx); t != "" {
 		return " (" + t + ")"
 	}
 	return ""
@@ -791,9 +802,9 @@ func flowReadme(s *FlowSummary) []string {
 	shareLine := func(label string, ks []KeyShare, zero int64) {
 		switch {
 		case len(ks) > 0:
-			lines = append(lines, label+joinShares(ks)+zeroNote(zero, "bytes"))
+			lines = append(lines, label+joinShares(ks)+zeroNote(zero, "bytes", z.Approx))
 		case zero > 0:
-			lines = append(lines, label+"none"+zeroNote(zero, "bytes"))
+			lines = append(lines, label+"none"+zeroNote(zero, "bytes", z.Approx))
 		}
 	}
 	shareLine("top talkers by bytes: ", s.TopTalkers, z.TopTalkers)
@@ -832,13 +843,17 @@ func flowReadme(s *FlowSummary) []string {
 }
 
 // seqGapWords is the README's sequence gaps for the window: "sequence gaps 3
-// (≈ 90 records lost before Woodshed) in this window", over whole hours for
-// a window older than a day, or why they aren't known.
+// (≈ 90 records lost before Woodshed) in this window", over a span widened
+// to the hour past a day, from the retention cutoff for a window that starts
+// before it, or why they aren't known.
 func seqGapWords(s *FlowSummary) string {
 	if s.SequenceGaps == nil {
-		why := "Woodshed keeps them 7 days, by datagram arrival"
-		if s.SequenceGapsUnknown == "not_counted" {
+		why := "Woodshed keeps them 7 days"
+		switch s.SequenceGapsUnknown {
+		case index.FlowGapsNotCounted:
 			why = "part of it was stored by a Woodshed that didn't count them"
+		case index.FlowGapsNothingReceived:
+			why = "no flow datagram arrived in it: gaps are counted by arrival, and its records are here by their own times"
 		}
 		return "sequence gaps in this window not known (" + why + ")"
 	}
@@ -846,15 +861,20 @@ func seqGapWords(s *FlowSummary) string {
 	if *s.SequenceGaps > 0 && s.LostEstimate != nil {
 		w += " (≈ " + datatype.Thousands(*s.LostEstimate) + " records lost before Woodshed)"
 	}
-	if sp := s.SequenceGapsSpan; sp != nil && sp.ByHour {
-		from, to := sp.From.UTC(), sp.To.UTC()
-		toText := to.Format("15:04")
-		if to.Add(-time.Nanosecond).Format(time.DateOnly) != from.Format(time.DateOnly) {
-			toText = to.Format("2006-01-02 15:04")
-		}
-		return w + " in the whole hours " + from.Format("2006-01-02 15:04") + "–" + toText + " UTC (counts older than a day are kept by the hour)"
+	sp := s.SequenceGapsSpan
+	if sp == nil || (!sp.ByHour && !sp.Partial) {
+		return w + " in this window"
 	}
-	return w + " in this window"
+	from, to := sp.From.UTC(), sp.To.UTC()
+	toText := to.Format("15:04")
+	if to.Add(-time.Nanosecond).Format(time.DateOnly) != from.Format(time.DateOnly) {
+		toText = to.Format("2006-01-02 15:04")
+	}
+	span := from.Format("2006-01-02 15:04") + "–" + toText + " UTC"
+	if sp.Partial {
+		return w + " in " + span + " only (Woodshed keeps the counts 7 days, and this window starts earlier)"
+	}
+	return w + " in " + span + " (from the hour: counts older than a day are kept by the hour)"
 }
 
 // timeOffLine is the README's line for records whose flow time was far from

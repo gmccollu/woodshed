@@ -662,11 +662,24 @@ func TestFlowReadmeSequenceGaps(t *testing.T) {
 		{"by hour", func(s *FlowSummary) {
 			s.SequenceGaps, s.LostEstimate = n(1234), n(5000)
 			s.SequenceGapsSpan = &GapSpan{From: from.Truncate(time.Hour), To: from.Truncate(time.Hour).Add(2 * time.Hour), ByHour: true}
-		}, []string{"sequence gaps 1,234 (≈ 5,000 records lost before Woodshed) in the whole hours 2026-11-15 14:00–16:00 UTC " +
-			"(counts older than a day are kept by the hour); waiting for a template 0; malformed 0"}},
+		}, []string{"sequence gaps 1,234 (≈ 5,000 records lost before Woodshed) in 2026-11-15 14:00–16:00 UTC " +
+			"(from the hour: counts older than a day are kept by the hour); waiting for a template 0; malformed 0"}},
+		{"by hour, then minutes", func(s *FlowSummary) {
+			s.SequenceGaps, s.LostEstimate = n(3), n(90)
+			s.SequenceGapsSpan = &GapSpan{From: from.Truncate(time.Hour), To: from.Add(26*time.Hour + 13*time.Minute), ByHour: true}
+		}, []string{"sequence gaps 3 (≈ 90 records lost before Woodshed) in 2026-11-15 14:00–2026-11-16 16:33 UTC " +
+			"(from the hour: counts older than a day are kept by the hour); waiting for a template 0; malformed 0"}},
+		{"across the retention", func(s *FlowSummary) {
+			s.SequenceGaps, s.LostEstimate = n(1), n(30)
+			s.SequenceGapsSpan = &GapSpan{From: from.Truncate(time.Hour), To: from.Add(7 * 24 * time.Hour), Partial: true}
+		}, []string{"sequence gaps 1 (≈ 30 records lost before Woodshed) in 2026-11-15 14:00–2026-11-22 14:20 UTC only " +
+			"(Woodshed keeps the counts 7 days, and this window starts earlier); waiting for a template 0; malformed 0"}},
+		{"nothing received", func(s *FlowSummary) { s.SequenceGapsUnknown = "nothing_received" },
+			[]string{"sequence gaps in this window not known (no flow datagram arrived in it: gaps are counted by arrival, and its " +
+				"records are here by their own times); waiting for a template 0; malformed 0"}},
 		{"not kept, with the collector's", func(s *FlowSummary) {
 			s.SequenceGapsUnknown, s.SequenceGaps24h, s.LostEstimate24h = "not_kept", n(849), n(37498)
-		}, []string{"sequence gaps in this window not known (Woodshed keeps them 7 days, by datagram arrival); waiting for a template 0; malformed 0",
+		}, []string{"sequence gaps in this window not known (Woodshed keeps them 7 days); waiting for a template 0; malformed 0",
 			"collector sequence gaps in the 24 h before this bundle was made (not limited to this window): 849 (≈ 37,498 records lost)"}},
 		{"not counted", func(s *FlowSummary) { s.SequenceGapsUnknown = "not_counted" },
 			[]string{"sequence gaps in this window not known (part of it was stored by a Woodshed that didn't count them); waiting for a template 0; malformed 0"}},
@@ -696,10 +709,31 @@ func TestFlowReadmeZeroOmitted(t *testing.T) {
 			t.Errorf("lacks %q:\n%s", want, text)
 		}
 	}
+	s.ZeroOmitted.Approx = true
+	if text := strings.Join(flowReadme(s), "\n"); !strings.Contains(text, "(at least 3 with 0 bytes not shown)") {
+		t.Errorf("approx:\n%s", text)
+	}
+	s.ZeroOmitted.Approx = false
 	b, _ := json.Marshal(s)
 	if !bytes.Contains(b, []byte(`"zero_omitted":{"top_talkers":3,"top_dst_ports":0,"top_conversations":2,"top_denied_sources":0,`+
-		`"top_denied_ports":0,"top_post_nat_sources":0}`)) {
+		`"top_denied_ports":0,"top_post_nat_sources":0,"approx":false}`)) {
 		t.Errorf("JSON %s", b)
+	}
+}
+
+// A share through shares() never reads "0 %": rounded to 0.01 % it would be
+// 0 for 1 byte in a million (review, 2026-11-17).
+func TestFlowTinyShare(t *testing.T) {
+	top, _ := flowquery.NewTop("src", "bytes")
+	add := func(src string, b uint64) {
+		top.Add(&flow.Record{Has: flow.HasSrc | flow.HasBytes, Src: netip.MustParseAddr(src), Bytes: b, Sampling: 1})
+	}
+	add("10.0.0.1", 999_998)
+	add("10.0.0.2", 1)
+	add("10.0.0.3", 1)
+	ks, _ := shares(top, "bytes")
+	if len(ks) != 3 || pct(ks[0].Share) != "100 %" || pct(ks[1].Share) != "<0.1 %" || pct(ks[2].Share) != "<0.1 %" {
+		t.Fatalf("%+v", ks)
 	}
 }
 

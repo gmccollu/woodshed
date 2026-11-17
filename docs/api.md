@@ -1399,7 +1399,8 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
   `"tcp/443"`; for interfaces the index, with the name as `label`.
 - A key with none of the metric is never a row: a top by bytes doesn't list denied-only sources, rule IDs or ports at
   0 bytes after the others. `zero_omitted` counts those keys (the CLI, the Top panel and the bundle README say "4 with 0
-  bytes not shown"); `total` and `other` still count their records. Decided (build, 2026-11-17).
+  bytes not shown"); with `approx: true` it's a lower bound ("at least 4"). `total` is unchanged; `other` now holds the
+  left-out keys too, which adds to its `flows` but nothing to the ranked metric. Decided (build, 2026-11-17).
 - `share` is of the metric's exported total. `scaled_complete` is false when some records had unknown sampling; a row
   whose records include any is a lower bound (`scaled_lower_bound: true`, shown with "≥").
 - "Top denied sources" is `by=src&fw_event=denied`. Totals follow SPEC §13.2.1's no-double-count rule for event
@@ -1455,21 +1456,23 @@ v9 vendor-range field type is `{"pen": 0, "id": 40003, …}` (the whole type), t
   "nat_connections", "top_post_nat_sources": [...],
   "zero_omitted": {"top_talkers", "top_dst_ports", "top_conversations", "top_denied_sources", "top_denied_ports",
   "top_post_nat_sources"},
-  "sequence_gaps", "lost_estimate", "sequence_gaps_span": {"from", "to", "by_hour"}, "sequence_gaps_unknown",
+  "sequence_gaps", "lost_estimate", "sequence_gaps_span": {"from", "to", "by_hour", "partial"}, "sequence_gaps_unknown",
   "sequence_gaps_24h", "lost_estimate_24h", "no_template", "malformed",
   "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps` and
   `lost_estimate` are the window's: the gaps counted in datagrams that arrived in it, from the per-minute counts
-  (SPEC §13.10 decision 82), over `sequence_gaps_span` (the window in whole minutes, or whole hours with `by_hour`
-  for a window older than a day). They're `null` when not known, with `sequence_gaps_unknown` `"not_kept"` (nothing
-  counted in the span: older than the 7 days the counts are kept, or nothing arrived in it) or `"not_counted"` (part
-  of it was stored by 2.0.0-rc1). `woodshed bundle` gives them too. `sequence_gaps_24h`, `lost_estimate_24h` and
+  (SPEC §13.10 decision 82), over `sequence_gaps_span`: the window in whole minutes, its start widened to the hour
+  (`by_hour`) when part of it is older than a day, and with `partial` from the 7-day retention cutoff when the window
+  starts before it. They're `null` when not known, with `sequence_gaps_unknown` `"not_kept"` (the window ends before
+  the 7 days the counts are kept), `"nothing_received"` (no flow datagram arrived in it) or `"not_counted"` (part of
+  it was stored by 2.0.0-rc1). `woodshed bundle` gives them too. `sequence_gaps_24h`, `lost_estimate_24h` and
   `time_offsets_24h` are the running collector's last 24 hours before the bundle was made, not limited to the window
   (`null` from `woodshed bundle`); the README shows the 24-hour gaps only when the window's aren't known, labelled as
   such. `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
   defines it). `time_offsets_24h` can count records the window doesn't hold: they're at their own times. The README's
   Flows block gets a "times off arrival" line when either is non-zero. Entries whose count is 0 are left out of the top
   lists, which hold at most 3; `zero_omitted` says how many keys each list left out that way (bytes for the share lists,
-  flow records for the denied ones), and the README adds "(4 with 0 bytes not shown)" after the list.
+  flow records for the denied ones; `approx`: some list was counted approximately, so the counts are lower bounds), and
+  the README adds "(4 with 0 bytes not shown)" (or "at least 4") after the list.
 
 ### Banners
 - `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives

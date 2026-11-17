@@ -159,10 +159,13 @@ func TestTopLeavesOutZeroMetric(t *testing.T) {
 	if rows, zero := none.RowsZero(10); rows != nil || zero != 1 {
 		t.Fatalf("only zero: %+v %d", rows, zero)
 	}
-	if got := ZeroOmittedText(1234, "bytes"); got != "1,234 with 0 bytes not shown" {
+	if got := ZeroOmittedText(1234, "bytes", false); got != "1,234 with 0 bytes not shown" {
 		t.Fatalf("text %q", got)
 	}
-	if ZeroOmittedText(0, "bytes") != "" || ZeroOmittedText(2, "flows") != "2 with 0 flow records not shown" {
+	if ZeroOmittedText(3, "bytes", true) != "at least 3 with 0 bytes not shown" {
+		t.Fatal("approx text")
+	}
+	if ZeroOmittedText(0, "bytes", false) != "" || ZeroOmittedText(2, "flows", false) != "2 with 0 flow records not shown" {
 		t.Fatal("text")
 	}
 }

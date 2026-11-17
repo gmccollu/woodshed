@@ -142,7 +142,13 @@ func TestPrintTopZeroOmitted(t *testing.T) {
 		t.Fatalf("%q", out)
 	}
 	b.Reset()
-	p.ZeroOmitted = 0
+	p.Approx = true
+	printTop(&b, p)
+	if !strings.Contains(b.String(), "; at least 1,234 with 0 bytes not shown") {
+		t.Fatalf("approx: %q", b.String())
+	}
+	b.Reset()
+	p.ZeroOmitted, p.Approx = 0, false
 	printTop(&b, p)
 	if strings.Contains(b.String(), "not shown") {
 		t.Fatalf("%q", b.String())

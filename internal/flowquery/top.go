@@ -349,8 +349,10 @@ func (t *Top) RowsZero(n int) ([]Row, int64) {
 }
 
 // ZeroOmittedText is how lists say what ZeroOmitted left out: "4 with 0
-// bytes not shown" ("" for none).
-func ZeroOmittedText(n int64, metric string) string {
+// bytes not shown" ("" for none). With approximate counting the count is a
+// lower bound (a key the approximate table never held isn't known): "at
+// least 4 …".
+func ZeroOmittedText(n int64, metric string, approx bool) string {
 	if n <= 0 {
 		return ""
 	}
@@ -358,5 +360,9 @@ func ZeroOmittedText(n int64, metric string) string {
 	if metric == "flows" {
 		unit = "flow records"
 	}
-	return datatype.Thousands(n) + " with 0 " + unit + " not shown"
+	at := ""
+	if approx {
+		at = "at least "
+	}
+	return at + datatype.Thousands(n) + " with 0 " + unit + " not shown"
 }

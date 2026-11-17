@@ -88,30 +88,58 @@ type FlowWindowCounts struct {
 	FlowCounts
 	Records int64 // records stored (msgs)
 	// From and To are the span the counts cover: the window widened to whole
-	// minutes, or to whole hours where only hourly buckets are left (minutes
-	// older than MinuteRetention); ByHour says when that happened.
+	// minutes, its start widened to the hour when hourly buckets (minutes
+	// older than MinuteRetention) are in it (ByHour), and its start moved up
+	// to the retention cutoff when the window starts before it (Partial).
 	From, To time.Time
 	ByHour   bool
-	// Known: the span has buckets and every one has flow counts. It's false
-	// for a span older than StatsRetention (pruned), with nothing received
-	// in it, or written before the counts existed (2.0.0-rc1: Uncounted).
-	Known     bool
-	Uncounted bool
+	Partial  bool
+	// Known: the span has buckets and every one has flow counts. Otherwise
+	// Reason is FlowGapsNotKept (the whole window is older than
+	// StatsRetention), FlowGapsNothingReceived (no datagram arrived in it)
+	// or FlowGapsNotCounted (part of it written by 2.0.0-rc1).
+	Known  bool
+	Reason string
 }
+
+// FlowWindowCounts reasons.
+const (
+	FlowGapsNotKept         = "not_kept"
+	FlowGapsNothingReceived = "nothing_received"
+	FlowGapsNotCounted      = "not_counted"
+)
 
 // FlowCountsIn sums deviceID's flow counts over [from, to) by received time.
 // A bucket counts when it starts in the span: minutes from from's minute,
 // hours from from's hour (a minute lives in only one of the two tables).
-func (d *DB) FlowCountsIn(ctx context.Context, deviceID string, from, to time.Time) (FlowWindowCounts, error) {
+// kept is the stats retention cutoff (now - StatsRetention; zero: none):
+// buckets before its hour may be pruned, so a window that starts earlier is
+// counted from there only (Partial), and one that ends by then isn't known.
+func (d *DB) FlowCountsIn(ctx context.Context, deviceID string, from, to, kept time.Time) (FlowWindowCounts, error) {
 	out := FlowWindowCounts{From: from.UTC().Truncate(time.Minute), To: to.UTC()}
 	if t := out.To.Truncate(time.Minute); t.Before(out.To) {
 		out.To = t.Add(time.Minute)
+	}
+	hourLo := from.UTC().Truncate(time.Hour)
+	if !kept.IsZero() {
+		k := kept.UTC().Truncate(time.Hour) // the prune keeps every hour from this one
+		if !out.To.After(k) {
+			out.Reason = FlowGapsNotKept
+			return out, nil
+		}
+		if hourLo.Before(k) {
+			out.Partial = true
+			hourLo = k
+			if out.From.Before(k) {
+				out.From = k
+			}
+		}
 	}
 	var rows, uncounted int64
 	for _, q := range []struct {
 		table, col string
 		lo         time.Time
-	}{{"type_stats", "minute", out.From}, {"type_stats_hourly", "hour", from.UTC().Truncate(time.Hour)}} {
+	}{{"type_stats", "minute", out.From}, {"type_stats_hourly", "hour", hourLo}} {
 		var c FlowCounts
 		var msgs, n, un int64
 		var lo, hi sql.NullInt64
@@ -129,16 +157,25 @@ func (d *DB) FlowCountsIn(ctx context.Context, deviceID string, from, to time.Ti
 		rows += n
 		uncounted += un
 		if q.table == "type_stats_hourly" && lo.Valid {
+			// An hourly bucket covers its whole hour: the span starts at the
+			// window's hour, and ends at the last bucket's end if later.
 			out.ByHour = true
-			if t := tm(lo.Int64); t.Before(out.From) {
-				out.From = t
-			}
+			out.From = hourLo
 			if t := tm(hi.Int64).Add(time.Hour); t.After(out.To) {
 				out.To = t
 			}
 		}
 	}
-	out.Known, out.Uncounted = rows > 0 && uncounted == 0, uncounted > 0
+	switch {
+	case uncounted > 0:
+		out.Reason = FlowGapsNotCounted
+	case rows == 0 && out.Partial:
+		out.Reason = FlowGapsNotKept
+	case rows == 0:
+		out.Reason = FlowGapsNothingReceived
+	default:
+		out.Known = true
+	}
 	return out, nil
 }
 

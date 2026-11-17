@@ -32,7 +32,7 @@ func TestFlowCountsWindowAndBuckets(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The last 30 minutes: the burst 3 h earlier isn't in it.
-	w, err := d.FlowCountsIn(ctx, "10.1.0.1", now.Add(-30*time.Minute).Add(15*time.Second), now)
+	w, err := d.FlowCountsIn(ctx, "10.1.0.1", now.Add(-30*time.Minute).Add(15*time.Second), now, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,14 +41,14 @@ func TestFlowCountsWindowAndBuckets(t *testing.T) {
 		t.Fatalf("window %+v", w)
 	}
 	// None in it.
-	if w, _ := d.FlowCountsIn(ctx, "10.1.0.1", now.Add(-2*time.Hour), now.Add(-time.Hour)); w.Known || w.SeqGaps != 0 {
+	if w, _ := d.FlowCountsIn(ctx, "10.1.0.1", now.Add(-2*time.Hour), now.Add(-time.Hour), time.Time{}); w.Known || w.SeqGaps != 0 {
 		t.Fatalf("empty window %+v", w)
 	}
-	if w, _ := d.FlowCountsIn(ctx, "10.1.0.2", now.Add(-time.Hour), now); !w.Known || w.SeqGaps != 0 || w.Records != 7 {
+	if w, _ := d.FlowCountsIn(ctx, "10.1.0.2", now.Add(-time.Hour), now, time.Time{}); !w.Known || w.SeqGaps != 0 || w.Records != 7 {
 		t.Fatalf("no gaps %+v", w)
 	}
 	// Older than the minute buckets: counted by the hour, and the span says so.
-	w, _ = d.FlowCountsIn(ctx, "10.1.0.1", early.Add(5*time.Minute), early.Add(15*time.Minute))
+	w, _ = d.FlowCountsIn(ctx, "10.1.0.1", early.Add(5*time.Minute), early.Add(15*time.Minute), time.Time{})
 	if !w.Known || !w.ByHour || w.SeqGaps != 2 || !w.From.Equal(early.Truncate(time.Hour)) || !w.To.Equal(early.Truncate(time.Hour).Add(time.Hour)) {
 		t.Fatalf("hourly %+v", w)
 	}
@@ -56,14 +56,14 @@ func TestFlowCountsWindowAndBuckets(t *testing.T) {
 	if _, err := d.db.Exec(`UPDATE type_stats SET flow_counted = 0 WHERE device_id = '10.1.0.2'`); err != nil {
 		t.Fatal(err)
 	}
-	if w, _ := d.FlowCountsIn(ctx, "10.1.0.2", now.Add(-time.Hour), now); w.Known {
+	if w, _ := d.FlowCountsIn(ctx, "10.1.0.2", now.Add(-time.Hour), now, time.Time{}); w.Known {
 		t.Fatalf("uncounted %+v", w)
 	}
 	// An upsert into that row keeps it partly counted.
 	if err := d.Apply(ctx, Batch{Activity: []Activity{act("10.1.0.2", now.Add(-10*time.Minute), 1, FlowCounts{SeqGaps: 1})}}); err != nil {
 		t.Fatal(err)
 	}
-	if w, _ := d.FlowCountsIn(ctx, "10.1.0.2", now.Add(-time.Hour), now); w.Known || w.SeqGaps != 1 {
+	if w, _ := d.FlowCountsIn(ctx, "10.1.0.2", now.Add(-time.Hour), now, time.Time{}); w.Known || w.SeqGaps != 1 {
 		t.Fatalf("partly counted %+v", w)
 	}
 	// Hourly buckets for the last 24 h, and 5-minute ones for the last hour.
@@ -136,8 +136,43 @@ func TestMigrateFlowCounts(t *testing.T) {
 	if v, _ := d2.SchemaVersion(ctx); v != 9 {
 		t.Fatalf("schema %d", v)
 	}
-	w, err := d2.FlowCountsIn(ctx, "10.1.0.1", time.UnixMilli(0), time.UnixMilli(120000))
+	w, err := d2.FlowCountsIn(ctx, "10.1.0.1", time.UnixMilli(0), time.UnixMilli(120000), time.Time{})
 	if err != nil || w.Known || w.Records != 5 {
 		t.Fatalf("%+v %v", w, err)
+	}
+}
+
+// A window across the 7-day retention is counted from the cutoff only and
+// says so (review, 2026-11-17: 900 gaps 9 days back, pruned, read as a known
+// "1" for a 10-day window); one wholly before it isn't known; one mixing
+// hourly and minute buckets spans from its hour; and "nothing received" is a
+// reason of its own.
+func TestFlowCountsRetentionAndMixedSpan(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	act := func(at time.Time, fc FlowCounts) Activity {
+		return Activity{DeviceID: "10.1.0.1", Type: TypeFlow, IP: "10.1.0.1", Minute: at, FirstHeard: at, LastHeard: at, Counts: Counts{Msgs: 5, Flow: fc}}
+	}
+	if err := d.Apply(ctx, Batch{Activity: []Activity{act(now.Add(-9*24*time.Hour), FlowCounts{SeqGaps: 900}), act(now.Add(-time.Hour), FlowCounts{SeqGaps: 1}),
+		act(now.Add(-30*time.Hour), FlowCounts{SeqGaps: 2})}}); err != nil {
+		t.Fatal(err)
+	}
+	d.RollupStats(ctx, now.Add(-MinuteRetention))
+	kept := now.Add(-StatsRetention)
+	d.Prune(ctx, kept, time.Time{})
+	w, _ := d.FlowCountsIn(ctx, "10.1.0.1", now.Add(-10*24*time.Hour), now, kept)
+	if !w.Known || !w.Partial || w.SeqGaps != 3 || !w.From.Equal(kept.Truncate(time.Hour)) || !w.To.Equal(now) {
+		t.Fatalf("10-day window %+v", w)
+	}
+	if w, _ := d.FlowCountsIn(ctx, "10.1.0.1", now.Add(-10*24*time.Hour), now.Add(-8*24*time.Hour), kept); w.Known || w.Reason != FlowGapsNotKept {
+		t.Fatalf("pruned window %+v", w)
+	}
+	// Mixed: 30 h 17 m back (hourly buckets) to 23 m back (minute buckets).
+	w, _ = d.FlowCountsIn(ctx, "10.1.0.1", now.Add(-30*time.Hour-17*time.Minute), now.Add(-23*time.Minute), kept)
+	if !w.Known || !w.ByHour || w.Partial || w.SeqGaps != 3 || !w.From.Equal(now.Add(-31*time.Hour)) || !w.To.Equal(now.Add(-23*time.Minute)) {
+		t.Fatalf("mixed window %+v", w)
+	}
+	if w, _ := d.FlowCountsIn(ctx, "10.1.0.1", now.Add(-5*time.Hour), now.Add(-4*time.Hour), kept); w.Known || w.Reason != FlowGapsNothingReceived {
+		t.Fatalf("nothing received %+v", w)
 	}
 }

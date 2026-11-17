@@ -3571,14 +3571,18 @@ the connection; present since 1.0):
     now ranks only keys with some of it; `/api/flows/top` gives `zero_omitted` (how many keys had 0), `woodshed flows
     top` ends its last line with "; 4 with 0 bytes not shown", the Top and Denied views add it to the total line, and
     the bundle manifest's summary has `zero_omitted` per list, which the README puts after the list ("… (4 with 0
-    bytes not shown)", or "none (…)" when every key had 0). Totals and `other` are unchanged. The count covers the
-    keys counted exactly or held in the approximate table; a key the approximate table never held isn't known.
+    bytes not shown)", or "none (…)" when every key had 0). Totals are unchanged; `other` now holds the left-out keys,
+    which adds to its flow count but nothing to the ranked metric. The count covers the keys counted exactly or held in
+    the approximate table; a key the approximate table never held isn't known, so with `approx` it's a lower bound and
+    every surface says "at least N". `woodshed flows top` exits 0 when records matched but every key had 0 of the
+    metric (the note says so), 1 only when nothing matched, since scripts read the exit code as "found anything".
 81. **Small shares never read "0 %".** The README rounded every share to a whole percent, so a 0.31 % conversation
     read "0 %". Options: "<1 %" under 0.5 %, or a decimal under 1 %. Chosen: the rule the UI's Top panel already used,
     now the README's too (and the bundle preview's): whole percents from 10 %, one decimal under that ("4.2 %",
     "0.3 %"), and "<0.1 %" for a non-zero share under 0.1 %. It keeps the README and the UI identical and the UI's
     existing strings unchanged, and a decimal says more than "<1 %" where small shares are the point (a scan's share
-    of a window).
+    of a window). The manifest's shares are rounded to 0.01 % and never below it for a listed key
+    (review, 2026-11-17: 1 byte in a million rounded to 0 and read "0 %").
 82. **Sequence gaps in a bundle are the window's.** The README said "sequence gaps 849 (≈ 37,498 lost, last 24 h)"
     for a window with none: the collector's 24-hour ring counted a burst hours earlier, which in an incident bundle
     reads as loss inside the window. Options weighed: label the 24-hour count unmistakably (honest, but the number
@@ -3590,13 +3594,18 @@ the connection; present since 1.0):
     maxima). They're what the collector saw, written with the minute's records (a datagram with only a gap counts
     too and opens no segment), bounded like the other stats (per minute for 24 h, per hour for 7 days), and kept by
     `reindex`, which can't derive them. A `flow_counted` flag tells "no gaps" from "not counted" (2.0.0-rc1 rows).
-    - The README's line: "sequence gaps 3 (≈ 90 records lost before Woodshed) in this window"; for a window older
-      than a day, "… in the whole hours 2026-11-15 14:00–16:00 UTC (counts older than a day are kept by the hour)";
-      when not known (older than 7 days, nothing arrived in it, or stored by 2.0.0-rc1), it says so and why, and only
-      then adds "collector sequence gaps in the 24 h before this bundle was made (not limited to this window): …".
+    - The README's line: "sequence gaps 3 (≈ 90 records lost before Woodshed) in this window"; for a window partly
+      older than a day, "… in 2026-11-15 14:00–16:23 UTC (from the hour: counts older than a day are kept by the
+      hour)"; for a window that starts before the 7 days the counts are kept, "… in <cutoff hour>–<end> UTC only
+      (Woodshed keeps the counts 7 days, and this window starts earlier)", counted from the cutoff only (review,
+      2026-11-17: a pruned burst left a 10-day window reading as a known 1). When not known it says why, one of
+      three: the window ends before the 7 days ("Woodshed keeps them 7 days"), no flow datagram arrived in it, or
+      part was stored by 2.0.0-rc1. Only then does it add "collector sequence gaps in the 24 h before this bundle was
+      made (not limited to this window): …".
     - The manifest: `sequence_gaps` and `lost_estimate` are the window's (`null` when not known), with
-      `sequence_gaps_span` and `sequence_gaps_unknown`; the collector's are `sequence_gaps_24h` and
-      `lost_estimate_24h`. `woodshed bundle` now has the window's gaps too.
+      `sequence_gaps_span` (`from`, `to`, `by_hour`, `partial`) and `sequence_gaps_unknown` (`not_kept`,
+      `nothing_received`, `not_counted`); the collector's are `sequence_gaps_24h` and `lost_estimate_24h`. `woodshed
+      bundle` now has the window's gaps too.
     - A minute counts when it starts in the window (the dropped and truncated counts' rule): gaps are by when the
       datagram arrived, records by their own flow time, so a record far from its arrival (decision 70) can be in a
       window whose gaps don't cover its datagram.
