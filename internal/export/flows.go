@@ -18,6 +18,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
+	"github.com/gmccollu/woodshed/internal/index"
 )
 
 // Flows in exports and bundles (SPEC §13.4). Per device, under flows/:
@@ -406,9 +407,11 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 
 // ---- the bundle's flow summary ----
 
-// FlowStats are what only the running collector knows about an exporter:
-// its sequence gaps and the records they stand for, and the records whose
-// flow time was far from when they arrived (the last 24 h).
+// FlowStats are the running collector's counts for an exporter over the
+// last 24 h: its sequence gaps and the records they stand for, and the
+// records whose flow time was far from when they arrived. They aren't
+// limited to a bundle's window (its own gaps come from the index:
+// FlowSummary.SequenceGaps).
 type FlowStats struct {
 	SequenceGaps, LostEstimate int64
 	TimeOffsets                flow.TimeOffsets
@@ -430,6 +433,13 @@ type TopZeroOmitted struct {
 	TopDeniedSources  int64 `json:"top_denied_sources"`
 	TopDeniedPorts    int64 `json:"top_denied_ports"`
 	TopPostNATSources int64 `json:"top_post_nat_sources"`
+}
+
+// GapSpan is the span a bundle's sequence gaps cover (FlowSummary).
+type GapSpan struct {
+	From   time.Time `json:"from"`
+	To     time.Time `json:"to"`
+	ByHour bool      `json:"by_hour"`
 }
 
 // KeyCount is a top-N entry with its count.
@@ -473,12 +483,24 @@ type FlowSummary struct {
 	// ZeroOmitted counts, per list, the keys with none of its metric, which
 	// are never listed (a denied-only source has 0 bytes).
 	ZeroOmitted TopZeroOmitted `json:"zero_omitted"`
-	// SequenceGaps and LostEstimate are the running collector's (the last
-	// 24 h); null when the bundle was built without it (woodshed bundle).
-	SequenceGaps *int64 `json:"sequence_gaps"`
-	LostEstimate *int64 `json:"lost_estimate"`
-	NoTemplate   int64  `json:"no_template"`
-	Malformed    int64  `json:"malformed"`
+	// SequenceGaps and LostEstimate are the window's: the gaps the collector
+	// counted in datagrams received in it, per minute from the index
+	// (SPEC §13.10 decision 82), over SequenceGapsSpan (the window in whole
+	// minutes, or whole hours for a window older than a day). Null when
+	// they aren't known; SequenceGapsUnknown says why: "not_kept" (nothing
+	// counted in the span: older than the 7 days counts are kept, or nothing
+	// received in it) or "not_counted" (part of it stored by 2.0.0-rc1).
+	SequenceGaps        *int64   `json:"sequence_gaps"`
+	LostEstimate        *int64   `json:"lost_estimate"`
+	SequenceGapsSpan    *GapSpan `json:"sequence_gaps_span"`
+	SequenceGapsUnknown string   `json:"sequence_gaps_unknown,omitempty"`
+	// SequenceGaps24h and LostEstimate24h are the running collector's over
+	// the 24 h before the bundle was made, not limited to the window; null
+	// when it wasn't running (woodshed bundle).
+	SequenceGaps24h *int64 `json:"sequence_gaps_24h"`
+	LostEstimate24h *int64 `json:"lost_estimate_24h"`
+	NoTemplate      int64  `json:"no_template"`
+	Malformed       int64  `json:"malformed"`
 	// TimeOffsets counts the window's records whose end was more than 1 h
 	// after they arrived or more than 24 h before (SPEC §13.10 decision 70);
 	// TimeOffsets24h is the running collector's count over the last 24 h,
@@ -591,8 +613,10 @@ func counts(t *flowquery.Top) ([]KeyCount, int64) {
 	return out, zero
 }
 
-// summary is the accumulated FlowSummary; stats may be nil (not known).
-func (c *flowCount) summary(stats *FlowStats) *FlowSummary {
+// summary is the accumulated FlowSummary, with the window's sequence gaps
+// from the index (win) and the collector's 24 h counts (stats; nil when not
+// known).
+func (c *flowCount) summary(stats *FlowStats, win index.FlowWindowCounts) *FlowSummary {
 	tot := c.talkers.Total
 	s := &FlowSummary{Records: c.records, Domains: len(c.domains), Sampling: []DomainSampling{}, Bytes: tot.Bytes,
 		BytesScaled: tot.BytesScaled, Packets: tot.Packets, PacketsScaled: tot.PacketsScaled, ScaledComplete: tot.Unknown == 0,
@@ -613,9 +637,19 @@ func (c *flowCount) summary(stats *FlowStats) *FlowSummary {
 		s.Sampling = append(s.Sampling, ds)
 	}
 	sort.Slice(s.Sampling, func(i, j int) bool { return s.Sampling[i].Domain < s.Sampling[j].Domain })
+	switch {
+	case win.Known:
+		g, l := win.SeqGaps, win.SeqLost
+		s.SequenceGaps, s.LostEstimate = &g, &l
+		s.SequenceGapsSpan = &GapSpan{From: win.From.UTC(), To: win.To.UTC(), ByHour: win.ByHour}
+	case win.Uncounted:
+		s.SequenceGapsUnknown = "not_counted"
+	default:
+		s.SequenceGapsUnknown = "not_kept"
+	}
 	if stats != nil {
 		g, l := stats.SequenceGaps, stats.LostEstimate
-		s.SequenceGaps, s.LostEstimate = &g, &l
+		s.SequenceGaps24h, s.LostEstimate24h = &g, &l
 		o := stats.TimeOffsets
 		s.TimeOffsets24h = &o
 	}
@@ -786,14 +820,41 @@ func flowReadme(s *FlowSummary) []string {
 	if l := timeOffLine(s); l != "" {
 		lines = append(lines, l)
 	}
-	gaps := "sequence gaps not known (only the running service counts them)"
-	if s.SequenceGaps != nil {
-		gaps = fmt.Sprintf("sequence gaps %s (≈ %s records lost before Woodshed, last 24 h)", datatype.Thousands(*s.SequenceGaps),
-			datatype.Thousands(*s.LostEstimate))
-	}
-	lines = append(lines, fmt.Sprintf("%s; waiting for a template %s; malformed %s", gaps, datatype.Thousands(s.NoTemplate),
+	lines = append(lines, fmt.Sprintf("%s; waiting for a template %s; malformed %s", seqGapWords(s), datatype.Thousands(s.NoTemplate),
 		datatype.Thousands(s.Malformed)))
+	// The collector's last 24 h only stands in when the window's own count
+	// isn't known, and says it's not the window's (SPEC §13.10 decision 82).
+	if s.SequenceGaps == nil && s.SequenceGaps24h != nil && *s.SequenceGaps24h > 0 {
+		lines = append(lines, fmt.Sprintf("collector sequence gaps in the 24 h before this bundle was made (not limited to this window): %s "+
+			"(≈ %s records lost)", datatype.Thousands(*s.SequenceGaps24h), datatype.Thousands(*s.LostEstimate24h)))
+	}
 	return lines
+}
+
+// seqGapWords is the README's sequence gaps for the window: "sequence gaps 3
+// (≈ 90 records lost before Woodshed) in this window", over whole hours for
+// a window older than a day, or why they aren't known.
+func seqGapWords(s *FlowSummary) string {
+	if s.SequenceGaps == nil {
+		why := "Woodshed keeps them 7 days, by datagram arrival"
+		if s.SequenceGapsUnknown == "not_counted" {
+			why = "part of it was stored by a Woodshed that didn't count them"
+		}
+		return "sequence gaps in this window not known (" + why + ")"
+	}
+	w := "sequence gaps " + datatype.Thousands(*s.SequenceGaps)
+	if *s.SequenceGaps > 0 && s.LostEstimate != nil {
+		w += " (≈ " + datatype.Thousands(*s.LostEstimate) + " records lost before Woodshed)"
+	}
+	if sp := s.SequenceGapsSpan; sp != nil && sp.ByHour {
+		from, to := sp.From.UTC(), sp.To.UTC()
+		toText := to.Format("15:04")
+		if to.Add(-time.Nanosecond).Format(time.DateOnly) != from.Format(time.DateOnly) {
+			toText = to.Format("2006-01-02 15:04")
+		}
+		return w + " in the whole hours " + from.Format("2006-01-02 15:04") + "–" + toText + " UTC (counts older than a day are kept by the hour)"
+	}
+	return w + " in this window"
 }
 
 // timeOffLine is the README's line for records whose flow time was far from

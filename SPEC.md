@@ -2789,7 +2789,9 @@ templates that use the same field type numbers are read the same way.
 - A new `flow_minute` table (device, minute, records, bytes, packets, and scaled bytes and packets where sampling is
   known): each record's bytes and packets spread evenly over the minutes its `[start, end]` covers. It serves the
   unfiltered flow histogram and the timeline strip without reading segments, and lives as long as its segments.
-- `type_stats` counts flow records by received minute like any type (rates, totals, fair-share weights).
+- `type_stats` counts flow records by received minute like any type (rates, totals, fair-share weights), and keeps
+  the collector's counts per exporter beside them: sequence gaps, lost records, duplicates, late, `no_template`,
+  `malformed` and times off arrival (§13.10 decisions 82 and 83).
 - **Reindex** reads each segment's footer (or recovers it, as above) and rebuilds `files`, `flow_segments` and
   `flow_minute` from it. `--flows-redecode` also re-reads raw sections with the segment's templates.
 
@@ -2912,7 +2914,7 @@ for a plain export stays `["syslog"]` (§13.9). One zip, one manifest, one folde
                  firewall events: 48,210 created, 47,902 deleted, 3,114 denied
                  top denied sources: 203.0.113.50 1,920, 198.51.100.23 411; top denied ports: tcp/23 1,204, tcp/445 870
                  NAT: 41,377 translated connections; top post-NAT sources: 192.0.2.10 88 %
-                 sequence gaps 3 (≈ 90 records lost before Woodshed); waiting for a template 0; malformed 0
+                 sequence gaps 3 (≈ 90 records lost before Woodshed) in this window; waiting for a template 0; malformed 0
 ```
 and the manifest's summary gains the same numbers as JSON. When any record is far from its arrival time (decision
 70), a line before the sequence gaps says so: `times off arrival: 1 ahead (up to 1.2 h) in this window; 3,600 ahead
@@ -3211,8 +3213,9 @@ Made while building it, each **decided (build, 2026-11-16)**:
 40. `raw.txt` lines: `<received, RFC 3339 UTC ms> <status> v<version> domain=<id> template=<id> <base64 of the set>`.
 41. The estimate's bytes are 225 B a record for the CSV and 95 B for the IPFIX file, uncompressed (measured 205–242
     and 92–95 on the fixtures). The 20,000,000 cap is checked at create, when a bundle resolves, and while writing.
-42. The bundle README's sequence gaps are the collector's last-24-hour counts and say so (only the running collector
-    keeps them; `woodshed bundle` says they aren't known). The firewall-event, denied and NAT lines appear only with
+42. The bundle README's sequence gaps are the window's own, from the per-minute counts in the index, and say so
+    ("… in this window"); **decided (build, 2026-11-17)**, replacing "the collector's last-24-hour counts" (decision
+    82). The firewall-event, denied and NAT lines appear only with
     something to count; scaled figures only when a rate above 1 is known, with "≥" when some sampling is unknown;
     top lists hold 3 entries, none with 0 of the list's metric (decision 80), with shares as decision 81 writes
     them; "translated connections" count NAT create events.
@@ -3576,6 +3579,27 @@ the connection; present since 1.0):
     "0.3 %"), and "<0.1 %" for a non-zero share under 0.1 %. It keeps the README and the UI identical and the UI's
     existing strings unchanged, and a decimal says more than "<1 %" where small shares are the point (a scan's share
     of a window).
+82. **Sequence gaps in a bundle are the window's.** The README said "sequence gaps 849 (≈ 37,498 lost, last 24 h)"
+    for a window with none: the collector's 24-hour ring counted a burst hours earlier, which in an incident bundle
+    reads as loss inside the window. Options weighed: label the 24-hour count unmistakably (honest, but the number
+    stays the wrong one for the question a bundle answers); add gap counts to the segment footer (a format change,
+    and a crash's recovered footer would lose them); a `flow_minute` column (that table is rebuilt from the footers
+    at every start, so the counts would vanish); **the per-minute stats rows**. Chosen: `type_stats` (and its hourly
+    rollup) gain the collector's counts per exporter and minute by arrival (index migration 8 -> 9): sequence gaps,
+    the records they stand for, duplicates, late records, raw sets by status, and times off arrival (counts and
+    maxima). They're what the collector saw, written with the minute's records (a datagram with only a gap counts
+    too and opens no segment), bounded like the other stats (per minute for 24 h, per hour for 7 days), and kept by
+    `reindex`, which can't derive them. A `flow_counted` flag tells "no gaps" from "not counted" (2.0.0-rc1 rows).
+    - The README's line: "sequence gaps 3 (≈ 90 records lost before Woodshed) in this window"; for a window older
+      than a day, "… in the whole hours 2026-11-15 14:00–16:00 UTC (counts older than a day are kept by the hour)";
+      when not known (older than 7 days, nothing arrived in it, or stored by 2.0.0-rc1), it says so and why, and only
+      then adds "collector sequence gaps in the 24 h before this bundle was made (not limited to this window): …".
+    - The manifest: `sequence_gaps` and `lost_estimate` are the window's (`null` when not known), with
+      `sequence_gaps_span` and `sequence_gaps_unknown`; the collector's are `sequence_gaps_24h` and
+      `lost_estimate_24h`. `woodshed bundle` now has the window's gaps too.
+    - A minute counts when it starts in the window (the dropped and truncated counts' rule): gaps are by when the
+      datagram arrived, records by their own flow time, so a record far from its arrival (decision 70) can be in a
+      window whose gaps don't cover its datagram.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

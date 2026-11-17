@@ -11,7 +11,7 @@ edge-fw-01 (192.0.2.50)
                firewall events: 160 created, 162 deleted, 160 denied
                top denied sources: 203.0.113.50 80, 203.0.113.51 80; top denied ports: tcp/23 80, tcp/445 80
                NAT: 213 translated connections; top post-NAT sources: 192.0.2.10 100 %
-               sequence gaps 3 (≈ 90 records lost before Woodshed, last 24 h); waiting for a template 1; malformed 1
+               sequence gaps 3 (≈ 90 records lost before Woodshed) in this window; waiting for a template 1; malformed 1
   Reboots      not known (no SNMP traps or polls in this bundle)
   Gaps         none of 1 s or more (Woodshed and its listeners were up the whole window)
   Losses       dropped 0, truncated 0 (<loss note>)
@@ -22,7 +22,7 @@ edge-fw-01 (192.0.2.50)
                top talkers by bytes: 10.20.0.6 25 %, 10.20.0.5 25 %, 10.20.0.8 25 %
                top destination ports: udp/53 34 %, tcp/443 33 %, tcp/22 33 %
                top conversations: 10.20.0.5 ↔ 198.51.100.7 12 %
-               sequence gaps 0 (≈ 0 records lost before Woodshed, last 24 h); waiting for a template 0; malformed 0
+               sequence gaps 0 in this window; waiting for a template 0; malformed 0
   Reboots      not known (no SNMP traps or polls in this bundle)
   Gaps         none of 1 s or more (Woodshed and its listeners were up the whole window)
   Losses       dropped 0, truncated 0 (<loss note>)

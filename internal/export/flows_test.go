@@ -154,7 +154,13 @@ func newFlowEnvWith(t *testing.T, mod func(*store.Options)) *flowEnv {
 			for j := range rs {
 				batch.Records = append(batch.Records, &rs[j])
 			}
+			// Sequence gaps (SPEC §13.10 decision 82): a burst before the
+			// bundle window (23:35–00:15 in TestFlowBundle) and a few in it.
+			if dev == fwDev && i == 4 {
+				batch.SeqGaps, batch.SeqLost = 849, 37498
+			}
 			if dev == fwDev && i == 100 {
+				batch.SeqGaps, batch.SeqLost = 3, 90
 				batch.Raw = []*flow.RawSet{
 					{Received: at.UnixMilli(), Domain: 1, Version: flow.IPFIX, TemplateID: 300, Status: flow.StatusNoTemplate, Data: []byte{1, 2, 3, 4}},
 					{Received: at.UnixMilli(), Version: flow.V9, Status: flow.StatusMalformed, Data: []byte{0, 9, 0, 1}},
@@ -190,7 +196,7 @@ func (fe *flowEnv) flowManager(opts ...func(*Options)) *Manager {
 		o.Flows, o.Location = fe.fe, est
 		o.FlowStats = func(id string) *FlowStats {
 			if id == model.DeviceID(fwDev) {
-				return &FlowStats{SequenceGaps: 3, LostEstimate: 90}
+				return &FlowStats{SequenceGaps: 852, LostEstimate: 37588}
 			}
 			return &FlowStats{}
 		}
@@ -482,14 +488,17 @@ func TestFlowBundle(t *testing.T) {
 		}
 	}
 	if fw == nil || fw.Records != int64(len(want)) || fw.FwEvents != (FwEventCounts{created, deleted, denied}) || fw.NATConnections != natc ||
-		fw.NoTemplate != 1 || fw.Malformed != 1 || fw.SequenceGaps == nil || *fw.SequenceGaps != 3 || len(fw.TopDeniedSources) != 2 ||
+		fw.NoTemplate != 1 || fw.Malformed != 1 || fw.SequenceGaps == nil || *fw.SequenceGaps != 3 || *fw.LostEstimate != 90 ||
+		fw.SequenceGapsSpan == nil || !fw.SequenceGapsSpan.From.Equal(from) || !fw.SequenceGapsSpan.To.Equal(to) || fw.SequenceGapsSpan.ByHour ||
+		fw.SequenceGaps24h == nil || *fw.SequenceGaps24h != 852 || len(fw.TopDeniedSources) != 2 ||
 		fw.TopDeniedPorts[0].Key != "tcp/23" && fw.TopDeniedPorts[0].Key != "tcp/445" || fw.TopPostNATSources[0].Key != "192.0.2.10" {
 		t.Fatalf("fw summary %+v", fw)
 	}
 	b, _ := json.Marshal(fw)
 	for _, k := range []string{`"records"`, `"domains"`, `"sampling"`, `"bytes"`, `"bytes_scaled"`, `"packets"`, `"packets_scaled"`,
 		`"top_talkers"`, `"top_dst_ports"`, `"top_conversations"`, `"fw_events"`, `"top_denied_sources"`, `"top_denied_ports"`,
-		`"nat_connections"`, `"top_post_nat_sources"`, `"zero_omitted"`, `"sequence_gaps"`, `"lost_estimate"`, `"no_template"`, `"malformed"`} {
+		`"nat_connections"`, `"top_post_nat_sources"`, `"zero_omitted"`, `"sequence_gaps"`, `"lost_estimate"`, `"sequence_gaps_span"`,
+		`"sequence_gaps_24h"`, `"lost_estimate_24h"`, `"no_template"`, `"malformed"`} {
 		if !bytes.Contains(b, []byte(k)) {
 			t.Errorf("summary JSON lacks %s: %s", k, b)
 		}
@@ -555,8 +564,8 @@ func bundleOverParts(t *testing.T, mod func(o *store.Options), minParts int) {
 	}
 }
 
-// Without the collector's counts (woodshed bundle), the README says the
-// sequence gaps aren't known; the bundle is otherwise the same.
+// Without the collector (woodshed bundle), the window's sequence gaps still
+// come from the index; only the collector's 24-hour counts are missing.
 func TestFlowBundleOffline(t *testing.T) {
 	fe := newFlowEnv(t)
 	at := fe.at
@@ -578,13 +587,14 @@ func TestFlowBundleOffline(t *testing.T) {
 	}
 	files, _ := unzipFile(t, p)
 	readme := string(files["README.txt"])
-	if !strings.Contains(readme, "sequence gaps not known (only the running service counts them)") {
+	if !strings.Contains(readme, "sequence gaps 3 (≈ 90 records lost before Woodshed) in this window; waiting for a template 1") ||
+		strings.Contains(readme, "24 h before") {
 		t.Errorf("README:\n%s", readme)
 	}
 	if _, ok := files["flows/192.0.2.50/flows.ipfix"]; ok {
 		t.Error("ipfix with flow_formats csv")
 	}
-	if len(res.Summary) != 2 || res.Summary[0].Flow == nil || res.Summary[0].Flow.SequenceGaps != nil {
+	if len(res.Summary) != 2 || res.Summary[0].Flow == nil || res.Summary[0].Flow.SequenceGaps == nil || res.Summary[0].Flow.SequenceGaps24h != nil {
 		t.Errorf("summary %+v", res.Summary)
 	}
 	if !strings.Contains(res.Summary[1].Line([]string{"flow"}), "flows ") {
@@ -622,6 +632,51 @@ func TestFlowShareText(t *testing.T) {
 		0.0031: "0.3 %", 0.001: "0.1 %", 0.0009: "<0.1 %", 0.00001: "<0.1 %", 1: "100 %", 0.9996: "100 %", 0: "0 %"} {
 		if got := pct(share); got != want {
 			t.Errorf("%v: %q want %q", share, got, want)
+		}
+	}
+}
+
+// The README's sequence gaps are the window's (SPEC §13.10 decision 82):
+// none, some, by the hour for a window older than a day; when the window's
+// aren't known it says why, and only then adds the collector's 24 hours,
+// labelled as not the window's.
+func TestFlowReadmeSequenceGaps(t *testing.T) {
+	n := func(v int64) *int64 { return &v }
+	base := FlowSummary{Records: 10, Domains: 1, Sampling: []DomainSampling{{1, []uint32{1}}}, Bytes: 5000}
+	last := func(s FlowSummary) []string {
+		l := flowReadme(&s)
+		return l[len(l)-2:]
+	}
+	from := time.Date(2026, 11, 15, 14, 20, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name string
+		mod  func(s *FlowSummary)
+		want []string
+	}{
+		{"none", func(s *FlowSummary) { s.SequenceGaps, s.LostEstimate, s.SequenceGaps24h, s.LostEstimate24h = n(0), n(0), n(849), n(37498) },
+			[]string{"sequence gaps 0 in this window; waiting for a template 0; malformed 0"}},
+		{"some", func(s *FlowSummary) { s.SequenceGaps, s.LostEstimate = n(3), n(90) },
+			[]string{"sequence gaps 3 (≈ 90 records lost before Woodshed) in this window; waiting for a template 0; malformed 0"}},
+		{"by hour", func(s *FlowSummary) {
+			s.SequenceGaps, s.LostEstimate = n(1234), n(5000)
+			s.SequenceGapsSpan = &GapSpan{From: from.Truncate(time.Hour), To: from.Truncate(time.Hour).Add(2 * time.Hour), ByHour: true}
+		}, []string{"sequence gaps 1,234 (≈ 5,000 records lost before Woodshed) in the whole hours 2026-11-15 14:00–16:00 UTC " +
+			"(counts older than a day are kept by the hour); waiting for a template 0; malformed 0"}},
+		{"not kept, with the collector's", func(s *FlowSummary) {
+			s.SequenceGapsUnknown, s.SequenceGaps24h, s.LostEstimate24h = "not_kept", n(849), n(37498)
+		}, []string{"sequence gaps in this window not known (Woodshed keeps them 7 days, by datagram arrival); waiting for a template 0; malformed 0",
+			"collector sequence gaps in the 24 h before this bundle was made (not limited to this window): 849 (≈ 37,498 records lost)"}},
+		{"not counted", func(s *FlowSummary) { s.SequenceGapsUnknown = "not_counted" },
+			[]string{"sequence gaps in this window not known (part of it was stored by a Woodshed that didn't count them); waiting for a template 0; malformed 0"}},
+	} {
+		s := base
+		c.mod(&s)
+		got := last(s)
+		if len(c.want) == 1 {
+			got = got[1:]
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s:\n%q\nwant\n%q", c.name, got, c.want)
 		}
 	}
 }

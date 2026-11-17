@@ -1451,10 +1451,17 @@ v9 vendor-range field type is `{"pen": 0, "id": 40003, …}` (the whole type), t
   "nat_connections", "top_post_nat_sources": [...],
   "zero_omitted": {"top_talkers", "top_dst_ports", "top_conversations", "top_denied_sources", "top_denied_ports",
   "top_post_nat_sources"},
-  "sequence_gaps", "lost_estimate", "no_template", "malformed",
-  "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps`,
-  `lost_estimate` and `time_offsets_24h` are the collector's last 24 hours (`null` from `woodshed bundle`, which has no
-  collector); `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
+  "sequence_gaps", "lost_estimate", "sequence_gaps_span": {"from", "to", "by_hour"}, "sequence_gaps_unknown",
+  "sequence_gaps_24h", "lost_estimate_24h", "no_template", "malformed",
+  "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps` and
+  `lost_estimate` are the window's: the gaps counted in datagrams that arrived in it, from the per-minute counts
+  (SPEC §13.10 decision 82), over `sequence_gaps_span` (the window in whole minutes, or whole hours with `by_hour`
+  for a window older than a day). They're `null` when not known, with `sequence_gaps_unknown` `"not_kept"` (nothing
+  counted in the span: older than the 7 days the counts are kept, or nothing arrived in it) or `"not_counted"` (part
+  of it was stored by 2.0.0-rc1). `woodshed bundle` gives them too. `sequence_gaps_24h`, `lost_estimate_24h` and
+  `time_offsets_24h` are the running collector's last 24 hours before the bundle was made, not limited to the window
+  (`null` from `woodshed bundle`); the README shows the 24-hour gaps only when the window's aren't known, labelled as
+  such. `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
   defines it). `time_offsets_24h` can count records the window doesn't hold: they're at their own times. The README's
   Flows block gets a "times off arrival" line when either is non-zero. Entries whose count is 0 are left out of the top
   lists, which hold at most 3; `zero_omitted` says how many keys each list left out that way (bytes for the share lists,
