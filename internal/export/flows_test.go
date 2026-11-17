@@ -653,7 +653,9 @@ func TestFlowReadmeSequenceGaps(t *testing.T) {
 		mod  func(s *FlowSummary)
 		want []string
 	}{
-		{"none", func(s *FlowSummary) { s.SequenceGaps, s.LostEstimate, s.SequenceGaps24h, s.LostEstimate24h = n(0), n(0), n(849), n(37498) },
+		{"none", func(s *FlowSummary) {
+			s.SequenceGaps, s.LostEstimate, s.SequenceGaps24h, s.LostEstimate24h = n(0), n(0), n(849), n(37498)
+		},
 			[]string{"sequence gaps 0 in this window; waiting for a template 0; malformed 0"}},
 		{"some", func(s *FlowSummary) { s.SequenceGaps, s.LostEstimate = n(3), n(90) },
 			[]string{"sequence gaps 3 (≈ 90 records lost before Woodshed) in this window; waiting for a template 0; malformed 0"}},
