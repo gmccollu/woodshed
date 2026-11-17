@@ -588,15 +588,21 @@ func (b *backend) Stats(ctx context.Context) (api.Stats, error) {
 	r := b.store.DropsByReason24h()
 	st.DroppedByReason = api.DroppedByReason{Paused: r.Paused, WriteError: r.WriteError, Refused: r.Refused, QueueFull: r.QueueFull}
 	st.UDPQueue = []api.UDPQueue{}
+	st.TCPFrames = []api.TCPFrames{}
 	if ln := b.ln.Load(); ln != nil {
 		st.Rejected24h = ln.Rejected24h()
 		if n, ok := ln.KernelDropped24h(); ok {
 			st.KernelDropped24h = &n
 		}
-		for _, q := range ln.Status().UDPQueues {
+		ls := ln.Status()
+		for _, q := range ls.UDPQueues {
 			st.UDPQueue = append(st.UDPQueue, api.UDPQueue{Listener: q.Listener, Port: q.Port,
 				CapacityMessages: q.CapacityMessages, CapacityBytes: q.CapacityBytes, Depth: q.Depth,
 				HighWater24h: q.HighWater24h, Dropped24h: q.Dropped24h, HighWaterByHour: q.HighWaterByHour})
+		}
+		for _, f := range ls.Frames {
+			st.TCPFrames = append(st.TCPFrames, api.TCPFrames{Listener: f.Listener, Port: f.Port,
+				Incomplete: f.Incomplete, FrameTimeouts: f.FrameTimeouts})
 		}
 	}
 	return st, nil

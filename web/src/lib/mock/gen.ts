@@ -126,6 +126,11 @@ export interface GenLine {
   device_id: string;
   severity: number | null;
   raw: string;
+  // 2.0 marks (docs/api.md → Search → Marks).
+  truncated?: boolean;
+  incomplete?: boolean;
+  frame_arrived?: number;
+  frame_length?: number;
 }
 
 /** One message from the given device. ~1% come without a PRI, so severity is unknown. */

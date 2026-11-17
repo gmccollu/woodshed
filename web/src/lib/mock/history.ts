@@ -37,7 +37,12 @@ export function lineAt(i: number): GenLine {
   const rnd = Math.random;
   Math.random = mulberry32(i ^ 0x5bd1e995);
   try {
-    return line(deviceAt(i), new Date(i * STEP));
+    const l = line(deviceAt(i), new Date(i * STEP));
+    // About one in a thousand: an octet-counted frame its sender cut short (2.0 marks).
+    if (i % 997 === 0 && l.raw.length > 40) {
+      return { ...l, raw: l.raw.slice(0, 40), incomplete: true, frame_arrived: 40, frame_length: l.raw.length };
+    }
+    return l;
   } finally {
     Math.random = rnd;
   }

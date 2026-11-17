@@ -449,7 +449,7 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 				queueDropped += q.Dropped
 			}
 			s.log.Info("listeners stopped", "received", st.Received, "truncated", st.Truncated, "rejected", st.Rejected,
-				"udp_queue_dropped", queueDropped)
+				"udp_queue_dropped", queueDropped, "tcp_incomplete_frames", st.TCPIncompleteFrames)
 		}
 		setStep("stopping the SNMP poller")
 		s.be.closePoll()

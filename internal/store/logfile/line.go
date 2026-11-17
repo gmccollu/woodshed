@@ -11,12 +11,18 @@
 // CR, LF and backslash in the raw message are escaped as \r, \n and \\ so one message
 // is always exactly one line. Every other byte (including NUL and invalid UTF-8) is
 // written as received.
+//
+// A message that wasn't stored whole ends with a marker after a blank (2.0, see
+// Flags): "... <13>short \#incomplete=9/50". The escaping above never writes a
+// backslash after a blank followed by anything but \, n or r, so " \#" can't come
+// from a message. A reader from before 2.0 shows the marker as part of the message.
 package logfile
 
 import (
 	"bytes"
 	"errors"
 	"net/netip"
+	"strconv"
 	"time"
 )
 
@@ -153,19 +159,116 @@ func Unescape(dst, esc []byte) []byte {
 // AppendLine appends one complete line (with its trailing '\n') for a message.
 // received is written in UTC with millisecond precision.
 func AppendLine(dst []byte, received time.Time, sender netip.Addr, raw []byte) []byte {
+	return AppendLineFlags(dst, received, sender, raw, Flags{})
+}
+
+// AppendLineFlags is AppendLine for a message with flags: the marker goes after
+// the escaped message (nothing when f is zero).
+func AppendLineFlags(dst []byte, received time.Time, sender netip.Addr, raw []byte, f Flags) []byte {
 	dst = AppendTime(dst, received)
 	dst = append(dst, ' ')
 	dst = sender.Unmap().AppendTo(dst)
 	dst = append(dst, ' ')
 	dst = AppendEscaped(dst, raw)
+	dst = AppendFlags(dst, f)
 	return append(dst, '\n')
+}
+
+// Flags say how a stored message differs from what its sender sent (2.0). They're
+// written as a marker at the end of the line: a blank, "\#" and the set flags,
+// comma-separated, in this order:
+//
+//   - "truncated": cut at the max message size;
+//   - "incomplete=A/L": an octet-counted TCP or TLS frame that ended before its
+//     advertised length L, with A of its bytes arrived (A counts bytes past the
+//     max size too);
+//   - "incomplete": a line Woodshed cut by closing the connection itself (the
+//     frame timeout, an eviction, shutdown), whose length isn't known.
+//
+// A reader ignores flags it doesn't know, so later versions can add some. Lengths
+// that can't be right (A not below L, a torn number) are dropped and the flag
+// kept; a torn flag name ("incompl") still counts as its flag.
+type Flags struct {
+	Truncated  bool
+	Incomplete bool
+	// Arrived and Length are an incomplete octet-counted frame's (0, 0: not known).
+	Arrived, Length int64
+}
+
+// IsZero reports whether no flag is set (the message was stored whole).
+func (f Flags) IsZero() bool { return !f.Truncated && !f.Incomplete }
+
+const flagMark = "\\#"
+
+// AppendFlags appends f's marker, " \#truncated,incomplete=9/50", or nothing
+// when f is zero.
+func AppendFlags(dst []byte, f Flags) []byte {
+	if f.IsZero() {
+		return dst
+	}
+	dst = append(dst, ' ')
+	dst = append(dst, flagMark...)
+	if f.Truncated {
+		dst = append(dst, "truncated"...)
+	}
+	if f.Incomplete {
+		if f.Truncated {
+			dst = append(dst, ',')
+		}
+		dst = append(dst, "incomplete"...)
+		if f.Length > 0 {
+			dst = append(dst, '=')
+			dst = strconv.AppendInt(dst, f.Arrived, 10)
+			dst = append(dst, '/')
+			dst = strconv.AppendInt(dst, f.Length, 10)
+		}
+	}
+	return dst
+}
+
+// SplitFlags splits a line's escaped message into the message and its marker's
+// flags. With no marker it returns esc and zero flags. A whole stored line works
+// too: the marker is always last.
+func SplitFlags(esc []byte) ([]byte, Flags) {
+	sp := bytes.LastIndexByte(esc, ' ')
+	if sp < 0 || !bytes.HasPrefix(esc[sp+1:], []byte(flagMark)) {
+		return esc, Flags{}
+	}
+	var f Flags
+	for item := range bytes.SplitSeq(esc[sp+1+len(flagMark):], []byte{','}) {
+		name, val, _ := bytes.Cut(item, []byte{'='})
+		switch {
+		case flagName(name, "truncated"):
+			f.Truncated = true
+		case flagName(name, "incomplete"):
+			f.Incomplete = true
+			a, l, ok := bytes.Cut(val, []byte{'/'})
+			if !ok || string(name) != "incomplete" {
+				break
+			}
+			arrived, err1 := strconv.ParseInt(string(a), 10, 64)
+			length, err2 := strconv.ParseInt(string(l), 10, 64)
+			if err1 == nil && err2 == nil && arrived >= 0 && arrived < length {
+				f.Arrived, f.Length = arrived, length
+			}
+		}
+	}
+	return esc[:sp], f
+}
+
+// flagName reports whether a marker item's name is flag, or the start of it: a
+// line torn inside its marker (" \#incompl") keeps what the marker said. So a
+// later flag's name must not be the start of an earlier one's.
+func flagName(name []byte, flag string) bool {
+	return len(name) > 0 && len(name) <= len(flag) && string(name) == flag[:len(name)]
 }
 
 // Line is one parsed line. Escaped aliases the input passed to ParseLine.
 type Line struct {
 	Received time.Time
 	Sender   netip.Addr
-	Escaped  []byte // the raw message, still escaped
+	Escaped  []byte // the raw message, still escaped, without the marker
+	Flags    Flags  // the marker's (2.0)
 }
 
 // Raw returns a newly allocated copy of the original raw message.
@@ -199,5 +302,6 @@ func ParseLine(line []byte) (Line, error) {
 	if err != nil {
 		return Line{}, ErrBadLine
 	}
-	return Line{Received: t, Sender: ip, Escaped: esc}, nil
+	esc, f := SplitFlags(esc)
+	return Line{Received: t, Sender: ip, Escaped: esc, Flags: f}, nil
 }

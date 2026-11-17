@@ -171,7 +171,8 @@ As plain text files, one folder per device and one file per day (dates in UTC), 
 
 The installed folders are readable only by the service and administrators: open them as an administrator, or with
 `sudo`. Each line is the time Woodshed received the message, the sender's address and the message exactly as it
-arrived. Any text tool can read them; `.log.gz` files open with any unzip tool. To hand logs to someone, use
+arrived; a message cut short or cut at the size limit ends with a marker such as `\#incomplete=55/72`
+([what it means](docs/user-guide.md#4-find-the-log-files)). Any text tool can read them; `.log.gz` files open with any unzip tool. To hand logs to someone, use
 **Export** in the UI rather than copying files: the zip also says when Woodshed wasn't running.
 
 Woodshed's own log (start-up errors and the like): Windows Event Viewer → Windows Logs → Application, source

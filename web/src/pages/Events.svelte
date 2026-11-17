@@ -90,6 +90,7 @@
   import SeverityChips from '../components/SeverityChips.svelte';
   import TimeRange from '../components/TimeRange.svelte';
   import LogText from '../components/LogText.svelte';
+  import Marks from '../components/Marks.svelte';
   import { openMenu } from '../lib/block.svelte';
   import { tip } from '../lib/logtext';
   import {
@@ -1290,7 +1291,7 @@
               onclick={(e) => narrow(e, 'app', r.app)}
               onkeydown={(e) => e.stopPropagation()}>{r.app}</button
             >{:else}<span class="c ap none">–</span>{/if}<span class="c s {sevClass(r.severity)}">{sevLabel(r.severity)}</span
-          ><span class="m"><LogText text={text(r)} re={hl} raw={showRaw} /></span>
+          ><span class="m"><LogText text={text(r)} re={hl} raw={showRaw} /><Marks line={r} /></span>
         </div>
         {/if}
       {/each}
@@ -1393,7 +1394,7 @@
         <div class="logline" class:hit={i === ctx.hit} title={tip(l.raw)}>
           <span class="c t">{stamp(l.received, prefs.utc)}</span><span class="c h">{deviceName(l.device_id)}</span><span class="c s {sevClass(l.severity)}"
             >{sevLabel(l.severity)}</span
-          ><span class="m"><LogText text={text(l)} re={i === ctx.hit ? hl : null} raw={showRaw} /></span>
+          ><span class="m"><LogText text={text(l)} re={i === ctx.hit ? hl : null} raw={showRaw} /><Marks line={l} /></span>
         </div>
         {/if}
       {/each}

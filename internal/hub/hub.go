@@ -58,6 +58,9 @@ type Entry struct {
 	DeviceID string
 	Severity int // 0-7, or model.Unknown
 	Raw      []byte
+	// The message's marks (2.0), as on its stored line (model.Message).
+	Truncated, Incomplete     bool
+	FrameArrived, FrameLength int64
 }
 
 // Notice is the data of a "sampled" event: the subscriber's matching rate and how
@@ -142,7 +145,8 @@ func New(opts Options) *Hub {
 // m.Raw (the caller must not modify it afterwards) and never blocks on a
 // subscriber. It's the hub's Sink.
 func (h *Hub) Publish(m model.Message) {
-	e := Entry{Received: m.Received.UTC(), DeviceID: model.DeviceID(m.Sender), Severity: m.Severity, Raw: m.Raw}
+	e := Entry{Received: m.Received.UTC(), DeviceID: model.DeviceID(m.Sender), Severity: m.Severity, Raw: m.Raw,
+		Truncated: m.Truncated, Incomplete: m.Incomplete, FrameArrived: m.FrameArrived, FrameLength: m.FrameLength}
 	now := h.opts.Clock()
 	h.mu.Lock()
 	defer h.mu.Unlock()

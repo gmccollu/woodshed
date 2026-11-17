@@ -98,7 +98,18 @@ frontend install.
   message. A frame counts as octet-counted when it starts with up to 10 digits, a space and `<`. After a
   connection's first octet frame, the `<` check is dropped for that connection. This keeps a newline-framed line
   starting with "123 " from being read as a count.
-- Max message size is 64 KiB. Anything longer is truncated and counted (`truncated` counter), never dropped.
+- **Incomplete frames (2.0, decision 79):** an octet-counted frame that ends before its advertised length is kept as
+  far as it arrived and marked incomplete, with both lengths (`\#incomplete=9/50` on its line, §3.3), whoever ended
+  the connection: the sender's close, a reset, a TLS close, the frame timeout, an eviction or shutdown. Each TCP and
+  TLS listener counts them (`/api/stats` `tcp_frames`). A frame of which only the count arrived has nothing to keep and
+  is only counted, and so is one cut inside its count (`50`, `5`) once the connection has used octet counting (a
+  connection's first frame stays ambiguous: `50` then a close is a line). A newline-framed message is marked
+  incomplete (with no lengths) when Woodshed closed the connection mid-line or the sender reset it; a sender's last
+  line without its LF before a clean close (FIN, or a TLS close) is a complete message, because non-transparent
+  framing (RFC 6587 §3.4.2) can't tell it from one that was cut. From 1.0 to 1.3 a frame its sender cut short was
+  stored with nothing to say so, and one Woodshed cut was counted as truncated.
+- Max message size is 64 KiB. Anything longer is truncated and counted (`truncated` counter), never dropped; from 2.0
+  its line is marked `\#truncated` too. `truncated` counts only this: an incomplete frame isn't in it.
 - TCP idle timeout: a connection with no complete message for 24 h is closed (`tcp_idle_timeout`, 1 min to 7 days).
   It was 10 min in 1.0.0, but some senders keep one connection without keepalives, notice it was closed only when a
   later write fails, and lose what they send until they reconnect. Eviction doesn't wait for it: when all connection
@@ -141,8 +152,17 @@ frontend install.
 - Default data dirs: Windows `C:\ProgramData\Woodshed`, macOS `/Library/Application Support/Woodshed`, Linux
   `/var/lib/woodshed`.
 - **Line format:** `<received UTC, RFC 3339 with ms> <sender IP> <raw message>`, one line per message. Embedded
-  CR/LF in a message is escaped as `\r` / `\n` so one message is always one line. Example:
+  CR/LF in a message is escaped as `\r` / `\n`, and a backslash as `\\`, so one message is always one line. Example:
   `2026-11-10T20:41:07.112Z 10.1.0.1 <134>Nov 10 20:41:07 edge-fw-01 conn opened tcp ...`
+- **Marker (2.0, decision 79):** a message that wasn't stored whole ends its line with a blank, `\#` and its flags,
+  comma-separated: `truncated` (cut at the max message size), then `incomplete=A/L` (an octet-counted frame that
+  ended with A of its advertised L bytes; A counts bytes past the max size too) or `incomplete` (a line Woodshed cut;
+  the length isn't known). For example `... <13>short \#incomplete=9/50` or `... \#truncated,incomplete=70000/100000`.
+  The escaping writes a backslash after a blank only as `\\`, `\n` or `\r`, so ` \#` can't come from a message; the
+  marker isn't part of the raw message, and readers ignore flags they don't know. Lengths that can't be right (A not
+  below L) are dropped and the flag kept, and a torn flag name (`\#incompl`) still counts. Recovery marks a torn last
+  line it keeps `incomplete`. A reader before 2.0 shows the marker as text at the end of the message. A whole message
+  has no marker, so its line is exactly as in 1.x.
 - Files use the received time in UTC, because device clocks are often wrong or in local time. The device's own
   timestamp stays inside the raw message.
 - Writes are buffered per device and flushed every 1 s or 1 MiB, whichever comes first; fsync every 5 s. If the
@@ -905,7 +925,8 @@ by it. Devices import the **CA**, so a renewed leaf needs no change on any devic
 
 #### 10.3.5 Framing and connections
 - **Framing** is exactly the TCP listener's: octet counting or LF per message, auto-detected; CRLF and NUL tolerated,
-  and a missing final LF at close kept as a message; `max_message_bytes` and `tcp_frame_timeout` as for TCP.
+  and a missing final LF at close kept as a message; `max_message_bytes` and `tcp_frame_timeout` as for TCP. An
+  octet-counted frame cut short by a TLS close (with or without `close_notify`) is incomplete, as for TCP (§3.1).
 - **Connections** share the TCP listener's pool and limits: `MaxConns`, `tcp_max_conns_per_source` (default 32; at
   least 4 parallel connections per sender are needed) and `tcp_max_conns_per_prefix` count TCP and TLS together, and
   eviction works the same way. Order across a sender's connections isn't assumed.
@@ -3052,7 +3073,10 @@ the first bench, which records the measured numbers here:
 ### 13.9 Compatibility and the major version
 - **Config:** a 1.3 `woodshed.toml` loads unchanged; `[listeners.flow]` is off and `storage.flow_budget_bytes`
   defaults to 40 % of the cap, which changes nothing while there are no flows.
-- **Data:** syslog, trap and poll files are unchanged. The index migrates once (`flow_segments`, `flow_minute`).
+- **Data:** syslog, trap and poll files are unchanged, except that a syslog message that wasn't stored whole ends its
+  line with a marker (§3.3, decision 79); a 1.x reader shows it as text. Two side effects there: a message cut inside
+  its header gets a wrong field in 1.x (an RFC 5424 message cut after its hostname shows the marker as its app), and
+  a 1.x regex anchored with `$` doesn't match a marked line. The index migrates once (`flow_segments`, `flow_minute`).
   Segments appear only under `logs/<device>/flows/`. A 1.x `reindex` ignores them (its listing skips subfolders), so
   the path back is the usual one (§11.7).
 - **API:** additive. `type=flow`, the flow routes and filters, `flow_formats` and the new banner kinds are new; every
@@ -3502,6 +3526,37 @@ RFC check saw 64 as reordered and 84 as a gap of 19, so every export of more tha
     - v5 and v9 don't learn: v5 counts records and v9 packets, as decision 23 says.
     - `/api/flows` shows the decided timing per domain as `seq_mode` (`"rfc"` or `"after"`, absent while undecided);
       `woodshed flow status` notes an `after` domain.
+
+**Incomplete TCP frames, decided (build, 2026-11-17)** (a public report: "`50 <13>short` followed by EOF returned the
+same nine-byte payload and truncated=false as `9 <13>short`". The reader returned what arrived of an octet-counted
+frame as if it were complete, and the listener marked the last message truncated only when Woodshed itself had closed
+the connection; present since 1.0):
+79. **Keep the bytes, flag the frame.** An octet-counted frame that ends before its count is stored as far as it
+    arrived and flagged incomplete with its arrived and advertised lengths, whatever ended it (§3.1). Options weighed:
+    - Reuse `truncated`: it already means "cut at the max message size" in the counters, the stats buckets, the
+      dashboard and the bundle's losses, so a sender's early close would read as our size limit, and a frame can be
+      both (cut at 64 KiB of an advertised 100 KiB, 70 KiB arrived). Rejected: a distinct `incomplete` flag, and our own
+      cuts (frame timeout, eviction, shutdown), which 1.0–1.3 counted as truncated, move to it.
+    - Drop the partial frame: loses evidence, and the project never drops what arrived. Rejected.
+    - **Where a reader sees it.** Before 2.0, `truncated` was only a counter: no stored line said a message was cut.
+      Lines now end with a marker (§3.3). Options weighed: a prefix before the message (a 1.x reader would then parse
+      no PRI, so severity and the fields break on downgrade), a sidecar or index column (the files are the source of
+      truth and `reindex` rebuilds the index from them), and a suffix. The suffix keeps a 1.x reader's PRI, header and
+      search working and only shows the marker as trailing text; ` \#` can't come from the escaping, so 2.0 readers
+      find it exactly. Chosen. Search, context, the live tail, `woodshed search --json` and the UI show the flags
+      (`truncated`, `incomplete`, `frame_arrived`, `frame_length`, absent when unset); text matching never sees the
+      marker; exports and bundles copy lines as stored, so the marker travels with them.
+    - **Counting.** Per stream listener since start (`/api/stats` `tcp_frames`: `incomplete`, `frame_timeouts`, also on
+      About), not merged with the frame-timeout counter: a timeout is one of several causes. Incomplete messages aren't
+      added to the per-device stats buckets (that would mean an index migration); the marked lines are the per-device
+      record.
+    - **Newline framing** can't tell a sender's last line without its LF from a clean close's, so that line stays
+      complete; a line Woodshed cut, or one the sender's reset ended, is incomplete (no lengths).
+    - **Cut inside the count** (independent review): on a connection already counting octets, `50` or `5` then the end
+      was stored as a complete message of digits. It's now an incomplete frame with no lengths, counted, not stored.
+      A connection's first frame stays ambiguous (it may be a line starting with digits).
+    - **Torn markers:** a reader drops lengths that can't be right and takes a torn flag name as its flag, so a later
+      flag's name must not be the start of an earlier one's; recovery finishes a torn last line with ` \#incomplete`.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
