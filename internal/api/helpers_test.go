@@ -91,6 +91,7 @@ func newFakeBackend() *fakeBackend {
 				BytesPerDay: ptr(int64(2361393152)), CompressionRatio: ptr(9.2), EstimatedDays: ptr(9.1), LimitedBy: ptr("cap")},
 			UDPQueue: []UDPQueue{{Listener: "udp", Port: 514, CapacityMessages: 100000, CapacityBytes: 67108864, Depth: 12,
 				HighWater24h: 3210, HighWaterByHour: []int{120, 3210, 88}}},
+			TCPFrames: []TCPFrames{{Listener: "tcp", Port: 514}},
 		},
 		rejected: []RejectedSender{{IP: "198.51.100.7", Count24h: 120, LastSeen: ts("2026-11-10T20:30:00Z"), Reason: "allowlist"}},
 		devices:  map[string]Device{},

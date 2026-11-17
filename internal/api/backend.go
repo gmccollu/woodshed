@@ -271,6 +271,9 @@ type Stats struct {
 	// started, so across a restart it can sum to less than Dropped24h.
 	DroppedByReason DroppedByReason `json:"dropped_by_reason"`
 	UDPQueue        []UDPQueue      `json:"udp_queue"` // one per enabled UDP listener
+	// TCPFrames has one entry per enabled TCP and TLS listener (2.0): frames
+	// that ended before all of them arrived, since the server started.
+	TCPFrames []TCPFrames `json:"tcp_frames"`
 	// FlowPartsEarly counts flow segments closed before their hour or size
 	// limit to keep every writer's memory under its budget, since the server
 	// started (SPEC §13.10 decision 58).
@@ -295,6 +298,19 @@ type UDPQueue struct {
 	HighWater24h     int    `json:"high_water_24h"`
 	Dropped24h       int64  `json:"dropped_24h"`
 	HighWaterByHour  []int  `json:"high_water_by_hour"` // oldest first, the last 24 hours (fewer just after start)
+}
+
+// TCPFrames is one TCP or TLS listener's frame counters (/api/stats tcp_frames),
+// since the server started.
+type TCPFrames struct {
+	Listener string `json:"listener"` // "tcp" or "tls"
+	Port     int    `json:"port"`
+	// Incomplete counts messages whose frame ended before all of it arrived: an
+	// octet-counted frame shorter than its count (whoever closed the
+	// connection), or a line Woodshed cut by closing the connection. They're
+	// stored with an incomplete marker; they aren't in truncated_24h.
+	Incomplete    int64 `json:"incomplete"`
+	FrameTimeouts int64 `json:"frame_timeouts"` // connections closed on tcp_frame_timeout
 }
 
 // DeviceCounts counts non-hidden devices by status.

@@ -63,7 +63,8 @@ because this copy holds the UI port.
                  "high_water_by_hour": [120, 3210, 88]},   // oldest first, the last 24 hours
                 {"listener": "snmp", "port": 162, "capacity_messages": 100000, "capacity_bytes": 67108864,
                  "depth": 0, "high_water_24h": 40, "dropped_24h": 0, "high_water_by_hour": [12, 40]}],  // while listeners.snmp.enabled
-  "flow_parts_early": 0                       // flow segments started early to keep flow memory bounded (2.0, below)
+  "flow_parts_early": 0,                      // flow segments started early to keep flow memory bounded (2.0, below)
+  "tcp_frames": [{"listener": "tcp", "port": 514, "incomplete": 0, "frame_timeouts": 0}]  // per TCP and TLS listener (2.0, below)
 }
 ```
 **Drops by reason** (since 1.2): `dropped_by_reason` splits `dropped_24h`: `paused` (the low-disk guard had paused
@@ -77,6 +78,19 @@ the server started, because every exporter's open segment together had reached t
 exporter's next records go on in the hour's next part (`…T09.001.wsf`), so nothing is lost and searches read both; it
 only means more, smaller files. At one block a second per exporter, an hour stays one part up to about 43 exporters;
 300 exporters make about 4 parts an exporter-hour.
+
+**Incomplete TCP frames** (since 2.0, SPEC §3.1): `tcp_frames` has one entry per enabled TCP and TLS listener
+(`"tcp"`, `"tls"`), with its bound port (the configured one while it's down), counted since the server started:
+- `incomplete`: messages whose frame ended before all of it arrived. That is an octet-counted frame shorter than the
+  count it advertised, whoever ended the connection (the sender's close, a reset, a TLS close, the frame timeout, an
+  eviction, shutdown), or a newline-framed message Woodshed cut by closing the connection itself. They're stored as
+  far as they arrived and marked incomplete (search results, below); a frame of which only the count arrived has
+  nothing to store and is only counted. A sender's last line without its LF is complete: newline framing (RFC 6587
+  non-transparent framing) can't tell it from one that was cut, so it isn't counted.
+- `frame_timeouts`: connections closed because a message didn't complete within `tcp_frame_timeout`; their message is
+  among `incomplete`.
+- These aren't in `truncated_24h`, which counts only messages cut at the max message size. Before 2.0 a message cut by
+  the frame timeout or an eviction was counted there, and a frame the sender cut short wasn't marked at all (since 1.0).
 
 **UDP receive queue** (since 1.2, SPEC §11.5): each UDP socket's reader only reads, stamps, applies the blocklist and
 allowlist and queues; one drainer parses and stores in arrival order, so a slow disk fills the queue instead of the OS
@@ -181,7 +195,8 @@ and export are unaffected; its `status` is `blocked`, and it isn't counted as on
 ## Live tail
 
 `GET /api/live?devices=10.1.0.1,10.1.0.2&group=HQ&ungrouped=true&severities=3,4,unknown&q=text` → `text/event-stream`.
-- `event: message` `data: {"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "<134>..."}`
+- `event: message` `data: {"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "<134>..."}`, plus
+  `truncated`, `incomplete`, `frame_arrived` and `frame_length` when set, as in search results (since 2.0).
 - `event: sampled` `data: {"rate": 1284.2, "shown": 50}`: sent once a second while the server is sampling.
 - `group` and `ungrouped=true` are alternatives; `ungrouped=true` matches devices with no group.
 - Hidden devices are left out of the live tail unless they're named in `devices`, the same rule as search.
@@ -218,7 +233,13 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
   `400 {"error": "type: unknown data type \"x\"."}`. Without `type`, everything means what it meant in 1.1.
 - `syntax`: `text` (the default: `q` and `exclude` mean exactly what they meant in 1.0) or `terms` (below). Anything
   else is a `400`.
-- `q` is matched against the raw message as received (unescaped), not the stored line prefix.
+- `q` is matched against the raw message as received (unescaped), not the stored line prefix or its marker.
+- **Marks** (since 2.0): a syslog result whose message wasn't stored whole has `"truncated": true` (cut at
+  `max_message_bytes`) and/or `"incomplete": true` (its TCP or TLS frame ended before all of it arrived; see
+  `tcp_frames` above). For an incomplete octet-counted frame, `frame_arrived` and `frame_length` are the bytes that
+  arrived and the length it advertised: `"incomplete": true, "frame_arrived": 9, "frame_length": 50`. Without a mark the
+  keys are absent, so a result looks exactly as before 2.0. `raw` never includes the marker. The same keys are on
+  context lines and in `woodshed search --json`. Messages stored before 2.0 have no marks.
 - `exclude`: lines whose raw message matches it are left out. It's matched like `q`: a substring by default, an RE2
   regular expression with `regex=true`, and `case` applies. An invalid one is a `400` (the message starts
   `exclude: `). Empty means nothing is excluded.
