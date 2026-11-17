@@ -1269,7 +1269,9 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
 - Shown here as fragments of the settings object. `flow_port` / `ipfix_port`: 0 (off) or 1–65535, not shared with
   another UDP listener on an overlapping address; at least one non-zero while enabled. `template_timeout` 1 min to
   24 h. `rule_id_ies`: up to 8 `"<enterprise number>:<element ID>"` strings naming the IEs that carry a rule or ACL
-  identifier (there's no standard one; SPEC §13.2.1); the first one a record has fills `rule_id`.
+  identifier (there's no standard one; SPEC §13.2.1); the first one a record has fills `rule_id`. The element ID is
+  0–32767; with enterprise number 0 it's 0–65535, so `"0:40003"` names flow v9 field type 40003 (v9 has no enterprise
+  numbers, and its vendor range is 32768–65535). Anything else is a `400` on `listeners.flow.rule_id_ies[i]`.
 - `flow_budget_bytes`: 0 means 40 % of `storage.retention_bytes`; otherwise at least 1 GiB and at most 90 % of it
   (a `400` on the key otherwise). File-only: `listeners.flow.pending_bytes`, `queue_messages`, `queue_bytes`.
 - `/api/status.listeners` gains `{"proto": "flow", …}` and `{"proto": "ipfix", …}` entries while enabled.
@@ -1399,13 +1401,15 @@ start:
 {"device_id": "10.1.0.1", "domains": [{"id": 1, "templates": [{"id": 256, "options": false, "received": "2026-11-16T09:58:01Z",
   "fields": [{"pen": 0, "id": 8, "name": "sourceIPv4Address", "length": 4}, {"pen": 32473, "id": 7, "name": "", "length": 4}]}]}]}
 ```
-`name` is `""` for IEs Woodshed doesn't know (enterprise-specific ones among them); `length` 65535 is variable.
+`name` is `""` for IEs Woodshed doesn't know (enterprise-specific ones among them); `length` 65535 is variable. A flow
+v9 vendor-range field type is `{"pen": 0, "id": 40003, …}` (the whole type), the form `rule_id_ies` takes.
 
 ### Exports and bundles
 - `types` may include `"flow"`; `kind: "bundle"` includes it by default when there are flows in the window.
 - `flow_formats`: `["csv", "ipfix"]` (default), `["csv"]` or `["ipfix"]`.
 - The zip gets `flows/<device-id>/flows.csv` (the columns in SPEC §13.4, the event, NAT and biflow ones included), `flows.ipfix` (RFC 5655) and `raw.txt` when
-  there are raw sets; `"folders"` gains `"flows": "flow"`.
+  there are raw sets; `"folders"` gains `"flows": "flow"`. In `flows.ipfix` a flow v9 vendor-range field type
+  (32768–65535) is written with the enterprise bit, its low 15 bits and enterprise number 0 (SPEC §13.10, decision 75).
 - `/api/exports/estimate` gains `"by_type": {"syslog": {"lines", "bytes"}, "flow": {"records", "bytes"}, …}`. More than
   20,000,000 flow records for one device is a `400` at estimate and at build: "Too many flow records for one zip
   (24,113,002 for 10.1.0.1); narrow the window or add a flow filter."

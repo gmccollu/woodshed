@@ -69,7 +69,9 @@ collector (Woodshed or any other). Every record carries the run ID and a
 sequence number: in IPFIX as enterprise IEs under 32473 (IANA's documentation
 number), in v9 as field types 40001 and 40002, in v5 in src_as and dst_as
 (the sequence number) and the header's engine fields (the run ID's last 4 hex
-digits). Addresses are from 10/8 and the documentation ranges.
+digits). With --events each record also carries a rule ID: IPFIX IE 32473:3,
+v9 field type 40003 (listeners.flow.rule_id_ies "32473:3" or "0:40003" fills
+rule_id from it). Addresses are from 10/8 and the documentation ranges.
 
 Examples:
   woodshed send --proto ipfix --count 1000                1,000 IPFIX records to 127.0.0.1:4739

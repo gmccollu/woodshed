@@ -94,6 +94,22 @@ const (
 	PENDocumentation = 32473
 )
 
+// Flow v9 vendor-range field types (32768–65535; v9 has no enterprise
+// numbers) are kept as IEKey{PEN: 0, ID: type}, the type whole, so 40003 is
+// "0:40003" everywhere: records, rule_id_ies, the API. In IPFIX (the export
+// file) the high bit is the enterprise bit, which RFC 7011 §3.2 says must be
+// followed by an enterprise number, so such a field is written as enterprise
+// bit + the low 15 bits + enterprise number 0 (VendorRangePEN), and an IPFIX
+// template field with the enterprise bit and number 0 reads back as the v9
+// type (decided (build, 2026-11-17), SPEC §13.4).
+//
+// Number 0 rather than a registered or the documentation enterprise number:
+// no IPFIX exporter sends enterprise IEs under 0 (it's IANA's own reserved
+// entry, not an enterprise), so a reader tells these fields apart from every
+// real enterprise IE, `woodshed send`'s 32473 IEs included, and the file
+// round-trips without a side table.
+const VendorRangePEN = 0
+
 // IEKey names an Information Element: enterprise number (0 for IANA) and ID.
 type IEKey struct {
 	PEN uint32

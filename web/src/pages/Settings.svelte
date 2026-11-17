@@ -1090,8 +1090,8 @@
               aria-invalid={!!err('listeners.flow.rule_id_ies')} aria-describedby="err-listeners.flow.rule_id_ies hint-frid"></textarea>
             {@render fieldError('listeners.flow.rule_id_ies')}
             <span class="hint" id="hint-frid">
-              Up to 8, one per line, as enterprise number:element ID. The first one a record has becomes its rule ID, which you can filter on and rank in
-              Top. There's no standard field for it; find your exporter's below.
+              Up to 8, one per line, as enterprise number:element ID (for flow v9, 0:field type, e.g. 0:40003). The first one a record has becomes its
+              rule ID, which you can filter on and rank in Top. There's no standard field for it; find your exporter's below.
             </span>
           </label>
           <label class="lbl">

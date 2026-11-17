@@ -747,22 +747,27 @@ export function flowFormErrors(f: FlowSettingsForm, retentionBytes: number): Rec
   const ies = ruleIesOf(f.flowRuleIes);
   if (ies.length > 8) e['listeners.flow.rule_id_ies'] = 'At most 8.';
   const bad = ies.find((x) => !ruleIeOk(x));
-  if (bad) e['listeners.flow.rule_id_ies'] = `"${bad}" isn't <enterprise number>:<element ID>, e.g. 32473:7.`;
+  if (bad) e['listeners.flow.rule_id_ies'] = `"${bad}" isn't <enterprise number>:<element ID>, e.g. 32473:7 (or 0:40003 for a flow v9 field type).`;
   const b = flowBudgetBody(f);
   if (b && (b < GIB || b > retentionBytes * 0.9)) e['storage.flow_budget_bytes'] = `Use 0 (40 % of the cap) or 1 GiB to ${Math.floor(((retentionBytes * 0.9) / GIB) * 10) / 10} GiB (90 % of the cap).`;
   return e;
 }
 
-/** "<enterprise number>:<element ID>": a 32-bit enterprise number and a 15-bit element ID. */
+/**
+ * "<enterprise number>:<element ID>": a 32-bit enterprise number and a 15-bit element ID, or with enterprise number 0
+ * a 16-bit one, so "0:40003" names a flow v9 vendor-range field type (32768–65535; v9 has no enterprise numbers).
+ */
 export function ruleIeOk(s: string): boolean {
   const m = /^(\d{1,10}):(\d{1,5})$/.exec(s);
-  return !!m && Number(m[1]) <= 4294967295 && Number(m[2]) <= 32767;
+  return !!m && Number(m[1]) <= 4294967295 && Number(m[2]) <= (Number(m[1]) === 0 ? 65535 : 32767);
 }
 
 /** A template field as the field list shows it: its IANA name, else "pen:id". */
 export const ieLabel = (f: FlowTemplateField) => f.name || `${f.pen}:${f.id}`;
-/** The rule_id_ies entry for a field (enterprise IEs only: no standard IE carries a rule ID). */
+/** The rule_id_ies entry for a field. */
 export const ieKey = (f: FlowTemplateField) => `${f.pen}:${f.id}`;
+/** Whether a field can carry a rule ID: an enterprise IE or a flow v9 vendor-range type (no standard IE carries one). */
+export const ruleIeCandidate = (f: FlowTemplateField) => f.pen !== 0 || f.id >= 32768;
 
 /** The budget's share of the cap ("40 % of the 20 GiB cap"). */
 export function budgetOf(budgetBytes: number, retentionBytes: number): number {

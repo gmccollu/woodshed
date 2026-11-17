@@ -24,7 +24,7 @@ const (
 	MinFlowBudgetBytes        = 1 << 30
 	MinFlowPendingBytes       = 1 << 20
 	MaxFlowPendingBytes       = 1 << 30
-	flowRuleIDHint            = `must be "<enterprise number>:<element ID>", e.g. "32473:7"`
+	flowRuleIDHint            = `must be "<enterprise number>:<element ID>" (element ID 0 to 32767), e.g. "32473:7", or "0:<v9 field type>" (0 to 65535) for flow v9, e.g. "0:40003"`
 	flowPortHint              = "must be 0 (off) or between 1 and 65535"
 	flowPortsOffHint          = "at least one of flow_port and ipfix_port must be on while the flow listener is enabled"
 	flowSamePortHint          = "can't be the same as ipfix_port"
@@ -79,7 +79,7 @@ type FlowListener struct {
 	// RuleIDIEs names the IEs that carry a rule or ACL identifier, as
 	// "<enterprise number>:<element ID>" (SPEC §13.2.1); the first one a
 	// record has fills rule_id.
-	RuleIDIEs []string `toml:"rule_id_ies" json:"rule_id_ies" comment:"IEs that carry a rule or ACL ID, as \"<enterprise number>:<element ID>\"; the first present fills rule_id. Empty by default (no standard IE exists)."`
+	RuleIDIEs []string `toml:"rule_id_ies" json:"rule_id_ies" comment:"IEs that carry a rule or ACL ID, as \"<enterprise number>:<element ID>\" (flow v9 field types as \"0:<type>\", e.g. \"0:40003\"); the first present fills rule_id. Empty by default (no standard IE exists)."`
 
 	// File-only tuning (not in /api/settings). Zero means the default.
 	PendingBytes  int64 `toml:"pending_bytes" json:"-" comment:"Buffer for flow data that arrived before its template, in bytes (at most 1 MiB per exporter)."`
@@ -113,15 +113,20 @@ type FlowSocket struct {
 	Port  int
 }
 
-// ParseRuleIDIE reads a rule_id_ies entry "<pen>:<id>".
+// ParseRuleIDIE reads a rule_id_ies entry "<pen>:<id>": an IPFIX enterprise
+// IE (a 32-bit enterprise number and a 15-bit element ID, 0–32767), or, with
+// enterprise number 0, an IANA IE (0–32767) or a flow v9 field type, whose
+// vendor range is 32768–65535 ("0:40003"; decided (build, 2026-11-17), SPEC
+// §13.2.1). Flow v9 has no enterprise numbers, and an IANA IE never has the
+// high bit, so "0:" with an ID above 32767 can only name a v9 field.
 func ParseRuleIDIE(s string) (pen uint32, id uint16, ok bool) {
 	a, b, found := strings.Cut(strings.TrimSpace(s), ":")
 	if !found {
 		return 0, 0, false
 	}
 	p, err1 := strconv.ParseUint(strings.TrimSpace(a), 10, 32)
-	i, err2 := strconv.ParseUint(strings.TrimSpace(b), 10, 15)
-	if err1 != nil || err2 != nil {
+	i, err2 := strconv.ParseUint(strings.TrimSpace(b), 10, 16)
+	if err1 != nil || err2 != nil || (p != 0 && i > 32767) {
 		return 0, 0, false
 	}
 	return uint32(p), uint16(i), true

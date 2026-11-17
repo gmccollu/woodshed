@@ -76,6 +76,11 @@ service is restarted to use it.`, stderr)
 	abs, _ := filepath.Abs(*cfgPath)
 	dataDir := cfg.Storage.DataDir
 	if mode == "status" {
+		// As reindex and run do (and on and off, for the config they save): a
+		// config the server would refuse to start with is an error, not a status.
+		if errs := cfg.Validate(nil); len(errs) > 0 {
+			return flowConfigErr(stderr, abs, errs)
+		}
 		flowStatus(stdout, cfg)
 		return 0
 	}
@@ -91,12 +96,7 @@ service is restarted to use it.`, stderr)
 		next.Listeners.Flow.IPFIXPort = *ixPort
 	}
 	if errs := next.Validate(&cfg); len(errs) > 0 {
-		for _, k := range []string{"listeners.flow.flow_port", "listeners.flow.ipfix_port", "listeners.flow.addr"} {
-			if msg, ok := errs[k]; ok {
-				return fail(stderr, "flow", fmt.Errorf("%s %s", k, msg))
-			}
-		}
-		return fail(stderr, "flow", fmt.Errorf("%s: %w", abs, errs))
+		return flowConfigErr(stderr, abs, errs)
 	}
 	was, now := cfg.Listeners.Flow, next.Listeners.Flow
 	ports := flowPortsText(now)
@@ -123,6 +123,17 @@ service is restarted to use it.`, stderr)
 		applyHint(stdout, a, "the change applies")
 	}
 	return 0
+}
+
+// flowConfigErr reports a config that doesn't validate: the listener's own
+// ports and address first, else every error.
+func flowConfigErr(stderr io.Writer, abs string, errs config.Errors) int {
+	for _, k := range []string{"listeners.flow.flow_port", "listeners.flow.ipfix_port", "listeners.flow.addr"} {
+		if msg, ok := errs[k]; ok {
+			return fail(stderr, "flow", fmt.Errorf("%s %s", k, msg))
+		}
+	}
+	return fail(stderr, "flow", fmt.Errorf("%s: %w", abs, errs))
 }
 
 func flowPortsText(l config.FlowListener) string {

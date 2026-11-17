@@ -21,7 +21,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - Firewall-event, NAT and bidirectional records are first-class: `fw_event` (created, deleted, denied, …),
   `nat_event`, post-NAT addresses and ports, initiator and responder counters and RFC 5103 reverse counters are
   columns and filters, sums follow a no-double-count rule for event records, and a rule or ACL ID can be read from
-  the enterprise field an exporter uses (`listeners.flow.rule_id_ies`).
+  the enterprise field an exporter uses (`listeners.flow.rule_id_ies`, e.g. `"32473:7"`), or for flow v9 from a
+  vendor-range field type (`"0:40003"`); **Settings → Flows** lists each exporter's fields with **Use as rule ID**.
 - Sampling is kept per record and shown: counts exported and, where the rate is known, scaled, never scaled
   silently.
 - **Events → Flows**: the results, the field panel, the histogram, and a **Top** panel (talkers, destination ports,
@@ -29,12 +30,14 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   use flow time (a record matches when its start-to-end overlaps the window). The other tabs get a flow strip under
   the histogram for the selected exporters. Device pages show their flow counts.
 - `woodshed search --type flow` (with `--src`, `--dst-port`, `--proto`, `--fw-event` and the other flow filters),
-  `woodshed flows top`, `woodshed flow on|off|status`, a Flows row in `woodshed status`, `woodshed send --proto
-  flow-v5|flow-v9|ipfix` (with `--events` and `--biflow`) and `woodshed bench --proto ipfix`.
+  `woodshed flows top`, `woodshed flow on|off|status` (status checks the config as `woodshed run` does), a Flows row
+  in `woodshed status`, `woodshed send --proto flow-v5|flow-v9|ipfix` (with `--events` and `--biflow`) and `woodshed
+  bench --proto ipfix`.
 - Exports and incident bundles cover every data type: the UI's Export now defaults to all types (the API's default
   stays syslog), and bundles include flows when there are any in the window, as `flows/<device>/flows.csv`,
-  `flows.ipfix` (an RFC 5655 IPFIX file) and, when there are undecoded sets, `raw.txt`. The bundle README gains a
-  Flows block per device (top talkers, ports, conversations, firewall events, top denied sources and ports, NAT,
+  `flows.ipfix` (an RFC 5655 IPFIX file; flow v9 vendor-range fields are in it as enterprise fields under enterprise
+  number 0, and it reads back record for record) and, when there are undecoded sets, `raw.txt`. The bundle README
+  gains a Flows block per device (top talkers, ports, conversations, firewall events, top denied sources and ports, NAT,
   sequence gaps). **Leave flows out** is offered before building, pre-selected for a long window with large flows; a
   zip holds at most 20 million flow records per device.
 - **Set up a device** (**Connect** in the menu): the configuration a device needs to send Woodshed its syslog (UDP,

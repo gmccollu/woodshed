@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/index"
@@ -190,5 +191,33 @@ func TestFlowStatusRows(t *testing.T) {
 	statusFlowRows(&tabw{w: &b}, &server.RunState{})
 	if b.Len() != 0 {
 		t.Fatalf("no flows: %q", b.String())
+	}
+}
+
+// `woodshed flow status` refuses a config the server wouldn't start with, as
+// reindex does, and takes a v9 vendor-range rule_id_ies entry.
+func TestFlowStatusValidatesConfig(t *testing.T) {
+	defer noService()
+	withFirewall(t, "linux")
+	cfgPath, _ := testConfig(t, func(c *config.Config) { c.Listeners.Flow.RuleIDIEs = []string{"0:40003", "32473:3"} })
+	if code, out, errOut := runCLI("flow", "status", "--config", cfgPath); code != 0 || !strings.Contains(out, "Flows:") {
+		t.Fatalf("valid: %d %q %q", code, out, errOut)
+	}
+	for _, x := range []struct {
+		edit func(*config.Config)
+		key  string
+	}{
+		{func(c *config.Config) { c.Listeners.Flow.RuleIDIEs = []string{"32473:40003"} }, "listeners.flow.rule_id_ies[0]"},
+		{func(c *config.Config) { c.Listeners.Flow.TemplateTimeout = config.FlowDuration(time.Second) }, "listeners.flow.template_timeout"},
+		{func(c *config.Config) {
+			c.Listeners.Flow.Enabled, c.Listeners.Flow.FlowPort, c.Listeners.Flow.IPFIXPort = true, 0, 0
+		},
+			"listeners.flow.flow_port"},
+	} {
+		cfgPath, _ := testConfig(t, x.edit)
+		code, out, errOut := runCLI("flow", "status", "--config", cfgPath)
+		if code != 1 || out != "" || !strings.Contains(errOut, x.key) {
+			t.Errorf("%s: %d %q %q", x.key, code, out, errOut)
+		}
 	}
 }

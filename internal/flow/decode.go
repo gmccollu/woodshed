@@ -458,6 +458,9 @@ func parseIPFIXTemplate(b []byte, options bool) (*Template, int, error) {
 			}
 			f.PEN = binary.BigEndian.Uint32(b[pos:])
 			pos += 4
+			if f.PEN == VendorRangePEN {
+				f.ID = id // a v9 vendor-range type, as the export file writes them (VendorRangePEN)
+			}
 		}
 		if f.Length == 0 {
 			return nil, 0, errTemplate

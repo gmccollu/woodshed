@@ -145,7 +145,7 @@ func cmdSearch(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&f.regex, "regex", false, "QUERY and --exclude are RE2 regular expressions")
 	fs.BoolVar(&f.caseSens, "case", false, "match case (QUERY and --exclude)")
 	fs.StringVar(&f.exclude, "exclude", "", "drop lines matching this `text` (like QUERY, with --terms, --regex and --case)")
-	fs.StringVar(&f.typ, "type", search.TypeSyslog, "data `type` to search: syslog, trap or poll")
+	fs.StringVar(&f.typ, "type", search.TypeSyslog, "data `type` to search: syslog, trap, poll or flow")
 	fs.StringVar(&f.from, "from", "", "start `time` (default: --to minus 24h)")
 	fs.StringVar(&f.to, "to", "", "end `time`, not included (default: now)")
 	fs.StringVar(&f.last, "last", "", "the last `duration` (15m, 1h, 24h, 7d), instead of --from and --to (default 24h)")

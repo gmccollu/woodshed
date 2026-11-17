@@ -794,7 +794,8 @@ function validate(s: Settings): Record<string, string> {
     else
       fl.rule_id_ies.forEach((x, i) => {
         const m = /^(\d{1,10}):(\d{1,5})$/.exec(x);
-        if (!m || Number(m[1]) > 4294967295 || Number(m[2]) > 32767) e[`listeners.flow.rule_id_ies[${i}]`] = 'Use <enterprise number>:<element ID>, e.g. 32473:7.';
+        if (!m || Number(m[1]) > 4294967295 || Number(m[2]) > (Number(m[1]) === 0 ? 65535 : 32767))
+          e[`listeners.flow.rule_id_ies[${i}]`] = 'Use <enterprise number>:<element ID>, e.g. 32473:7, or 0:<field type> for flow v9, e.g. 0:40003.';
       });
   }
   const fb = st.flow_budget_bytes;

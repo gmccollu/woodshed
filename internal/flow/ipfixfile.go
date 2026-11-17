@@ -23,8 +23,11 @@ import (
 //     the post-NAT IEs, initiator/responder counts, RFC 5103's reverse counters,
 //     samplingInterval (when the rate is known);
 //   - the received time as collectionTimeMilliseconds (258);
-//   - then every extra (enterprise IEs included) as a variable-length IE with
-//     its bytes as stored, in order (the rule_id IE is one of them);
+//   - then every extra in order, with its bytes as stored (the rule_id IE is
+//     one of them): enterprise IEs and v9 vendor-range types at their own
+//     length, IANA and reverse IEs as variable length; a v9 vendor-range type
+//     (32768–65535) as the enterprise bit, its low 15 bits and enterprise
+//     number 0 (VendorRangePEN; decided (build, 2026-11-17));
 //   - interface names as options data (scope ingressInterface, interfaceName)
 //     before the records that use them;
 //   - and, first in each domain, an options record (scope observationDomainId)
@@ -276,12 +279,13 @@ func (fw *FileWriter) fieldsOf(r *Record, maxExtras int) {
 	fw.fields, fw.vals = f, v
 }
 
-// extraFixed says how an extra is written: an enterprise IE at its own
-// length (as exporters send them), an IANA or reverse IE as variable length
-// (so a reader never takes it for a column). The IE behind rule_id is
-// written whichever way reproduces its rendering (RuleIDText depends on it).
+// extraFixed says how an extra is written: an enterprise IE or a v9
+// vendor-range type at its own length (as exporters send them), an IANA or
+// reverse IE as variable length (so a reader never takes it for a column).
+// The IE behind rule_id is written whichever way reproduces its rendering
+// (RuleIDText depends on it).
 func extraFixed(r *Record, e *Extra) bool {
-	fixed := e.PEN != 0 && e.PEN != PENReverse
+	fixed := (e.PEN != 0 && e.PEN != PENReverse) || (e.PEN == 0 && e.ID&0x8000 != 0)
 	if r.Is(HasRuleID) {
 		asFixed, asVar := RuleIDText(e.Value, false), RuleIDText(e.Value, true)
 		if asFixed != asVar {
@@ -309,7 +313,7 @@ func templateBytes(fields []TemplateField) int {
 	n := 4 + 4 // set header + record header
 	for _, f := range fields {
 		n += 4
-		if f.PEN != 0 {
+		if f.enterprise() {
 			n += 4
 		}
 	}
@@ -450,13 +454,13 @@ func (fw *FileWriter) data(d *fileDom, tid uint16, vals []byte) {
 		}
 		for _, f := range fields {
 			id := f.ID
-			if f.PEN != 0 {
+			if f.enterprise() {
 				id |= 0x8000
 			}
 			d.buf = binary.BigEndian.AppendUint16(d.buf, id)
 			d.buf = binary.BigEndian.AppendUint16(d.buf, f.Length)
-			if f.PEN != 0 {
-				d.buf = binary.BigEndian.AppendUint32(d.buf, f.PEN)
+			if f.enterprise() {
+				d.buf = binary.BigEndian.AppendUint32(d.buf, f.PEN) // VendorRangePEN for a v9 vendor-range type
 			}
 		}
 		binary.BigEndian.PutUint16(d.buf[s+2:], uint16(len(d.buf)-s))

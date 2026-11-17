@@ -24,6 +24,7 @@ import {
   offsetText,
   progressText,
   rowFilters,
+  ruleIeCandidate,
   ruleIeOk,
   samplingText,
   shareText,
@@ -164,6 +165,11 @@ test('Settings → Flows round trip and checks', () => {
   const bad = flowFormErrors({ ...g, flowPort: 0, flowIpfixPort: 0, flowTimeout: '10s', flowRuleIes: 'acl', flowBudgetGiB: 19 }, 20 * 1024 ** 3);
   assert.deepEqual(Object.keys(bad).sort(), ['listeners.flow.ipfix_port', 'listeners.flow.rule_id_ies', 'listeners.flow.template_timeout', 'storage.flow_budget_bytes']);
   assert.ok(ruleIeOk('32473:7') && !ruleIeOk('32473:40000') && !ruleIeOk('7'));
+  // Flow v9 field types: enterprise number 0 takes a 16-bit ID (the vendor range 32768–65535).
+  assert.ok(ruleIeOk('0:40003') && ruleIeOk('0:65535') && ruleIeOk('0:7') && !ruleIeOk('0:65536') && !ruleIeOk('1:32768') && !ruleIeOk('v9:40003'));
+  assert.deepEqual(flowFormErrors({ ...g, flowRuleIes: '0:40003\n32473:3' }, 20 * 1024 ** 3), {});
+  assert.ok(ruleIeCandidate({ pen: 0, id: 40003, name: '', length: 4 }) && ruleIeCandidate({ pen: 32473, id: 3, name: '', length: 4 }));
+  assert.ok(!ruleIeCandidate({ pen: 0, id: 8, name: 'sourceIPv4Address', length: 4 }));
   assert.equal(flowSettingsForm({ ...flowListenerBody(g) }, 6 * 1024 ** 3).flowBudgetGiB, 6);
 });
 

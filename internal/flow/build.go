@@ -66,13 +66,13 @@ func (b *Builder) set(id uint16) {
 
 func (b *Builder) field(f TemplateField) {
 	id := f.ID
-	if f.PEN != 0 {
+	if f.enterprise() {
 		id |= 0x8000
 	}
 	b.buf = binary.BigEndian.AppendUint16(b.buf, id)
 	b.buf = binary.BigEndian.AppendUint16(b.buf, f.Length)
-	if f.PEN != 0 && b.version == IPFIX {
-		b.buf = binary.BigEndian.AppendUint32(b.buf, f.PEN)
+	if f.enterprise() && b.version == IPFIX {
+		b.buf = binary.BigEndian.AppendUint32(b.buf, f.PEN) // VendorRangePEN for a v9 vendor-range type
 	}
 }
 
