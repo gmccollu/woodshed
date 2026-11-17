@@ -139,6 +139,11 @@ func TestTrapReadAgainstPolls(t *testing.T) {
 		if l, _ := readmeOf(t, rs, both...); l != "  Reboots      1: 04:09:05.000 (poll: sysUpTime and hrSystemUptime reset; coldStart trap)" {
 			t.Errorf("trap after its poll: %q", l)
 		}
+		// And with another poll between them (polls faster than the trap).
+		rs = mergeReboots(sorted(poll, trapAt(t0.Add(10*time.Minute+5*time.Second))), s)
+		if l, _ := readmeOf(t, rs, both...); l != "  Reboots      1: 04:09:05.000 (poll: sysUpTime and hrSystemUptime reset; coldStart trap)" {
+			t.Errorf("trap two polls after: %q", l)
+		}
 	})
 
 	t.Run("unpolled device: as before", func(t *testing.T) {

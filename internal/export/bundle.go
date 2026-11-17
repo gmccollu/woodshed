@@ -586,9 +586,9 @@ const (
 //     poll said so, otherwise a reboot as before.
 //   - It wrote no restart and hrSystemUptime rose normally since the poll
 //     before: the device kept running, so the trap is the agent's alone
-//     (reboot=0, keptRunning). One received just after the poll restart
-//     before it (within rebootMerge, and that restart has no trap yet) joins
-//     that restart instead.
+//     (reboot=0, keptRunning). One received after a poll restart (the latest
+//     within rebootMerge before it that has no trap yet) joins that restart
+//     instead.
 //
 // Every other trap (an unpolled device, no hrSystemUptime, reboot=?, no
 // answered poll after it in the window) is merged as before: each poll restart
@@ -645,11 +645,19 @@ func mergeReboots(rs []datatype.Reboot, samples []datatype.PollSample) []datatyp
 			continue
 		}
 		settled[i] = true
-		if p.HasRestart {
-			if j := known(p.RestartAt); j >= 0 && partner[j] == 0 && at.Sub(rs[j].Time) <= rebootMerge {
-				join(j, i)
-				continue
+		// Received after the poll that saw its restart (a reboot's trap can
+		// come in a moment after the first poll that answers): the latest
+		// poll restart before it, within rebootMerge, with no trap yet.
+		near := -1
+		for j, r := range rs {
+			if r.Source == "poll" && (r.Reboot == "0" || r.Reboot == "1") && partner[j] == 0 && !r.Time.After(at) &&
+				at.Sub(r.Time) <= rebootMerge {
+				near = j // rs is sorted, so the last is the nearest
 			}
+		}
+		if near >= 0 {
+			join(near, i)
+			continue
 		}
 		rs[i].Reboot, rs[i].Detail = "0", keptRunning
 	}
