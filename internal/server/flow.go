@@ -496,7 +496,10 @@ func (b *backend) flowSummary(ctx context.Context, r api.SummaryRequest) (api.Su
 	indexHist := r.Histogram && q.Filter.Empty() && bucket >= time.Minute
 	scanHist := r.Histogram && !indexHist
 	page := api.SummaryPage{Type: datatype.Flow, From: q.From, To: q.To}
-	if len(fields) > 0 || scanHist {
+	// matched is always the window's count: from the index histogram when that's
+	// what was asked for with no fields, otherwise from a scan (fields=none with
+	// histogram=false, or with a filter, still counts; it used to return 0).
+	if len(fields) > 0 || !indexHist {
 		res, err := b.flows.eng.Summary(ctx, q, flowquery.SummaryQuery{Fields: fields, Top: r.Top, Histogram: scanHist,
 			Bucket: bucket, Origin: origin}, time.Duration(r.BudgetMS)*time.Millisecond, r.Cursor)
 		if err != nil {
