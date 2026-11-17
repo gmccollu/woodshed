@@ -40,6 +40,7 @@ func TestFlowValidation(t *testing.T) {
 		{"timeout long", func(c *Config) { c.Listeners.Flow.TemplateTimeout = FlowDuration(25 * time.Hour) }, "listeners.flow.template_timeout"},
 		{"rule ie", func(c *Config) { c.Listeners.Flow.RuleIDIEs = []string{"32473:7", "x"} }, "listeners.flow.rule_id_ies[1]"},
 		{"rule ie id too big", func(c *Config) { c.Listeners.Flow.RuleIDIEs = []string{"1:40000"} }, "listeners.flow.rule_id_ies[0]"},
+		{"v9 type too big", func(c *Config) { c.Listeners.Flow.RuleIDIEs = []string{"0:40003", "0:65536"} }, "listeners.flow.rule_id_ies[1]"},
 		{"rule ies count", func(c *Config) {
 			c.Listeners.Flow.RuleIDIEs = strings.Split("1:1,1:2,1:3,1:4,1:5,1:6,1:7,1:8,1:9", ",")
 		}, "listeners.flow.rule_id_ies"},
@@ -99,5 +100,34 @@ func TestShortDuration(t *testing.T) {
 		if got := ShortDuration(d); got != want {
 			t.Errorf("%v: %q, want %q", d, got, want)
 		}
+	}
+}
+
+// rule_id_ies entries: IPFIX enterprise IEs (15-bit IDs), and with
+// enterprise number 0 IANA IEs or flow v9 field types (16-bit, the vendor
+// range 32768–65535 included).
+func TestParseRuleIDIE(t *testing.T) {
+	for _, x := range []struct {
+		in  string
+		pen uint32
+		id  uint16
+	}{
+		{"32473:3", 32473, 3}, {" 9:12001 ", 9, 12001}, {"4294967295:32767", 4294967295, 32767}, {"0:40003", 0, 40003},
+		{"0:32768", 0, 32768}, {"0:65535", 0, 65535}, {"0:7", 0, 7}, {"0 : 40001", 0, 40001},
+	} {
+		if pen, id, ok := ParseRuleIDIE(x.in); !ok || pen != x.pen || id != x.id {
+			t.Errorf("%q: %d %d %v", x.in, pen, id, ok)
+		}
+	}
+	for _, in := range []string{"", "x", "40003", ":40003", "0:", "32473:32768", "1:40003", "0:65536", "4294967296:1", "-1:3",
+		"0:-1", "v9:40003", "0x0:40003", "0:40003:1", "+0:40003", "0:4e4"} {
+		if pen, id, ok := ParseRuleIDIE(in); ok {
+			t.Errorf("%q parsed as %d:%d", in, pen, id)
+		}
+	}
+	c := testConfig(t)
+	c.Listeners.Flow.RuleIDIEs = []string{"0:40003", "32473:3"}
+	if errs := c.Validate(nil); len(errs) != 0 {
+		t.Fatalf("v9 and IPFIX entries: %v", errs)
 	}
 }
