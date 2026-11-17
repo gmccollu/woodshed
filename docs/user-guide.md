@@ -360,7 +360,8 @@ woodshed flow status                                                          # 
 ```
 
 `woodshed flow status` checks the config first, as `woodshed run` does, and stops with the error if the server
-wouldn't start with it.
+wouldn't start with it. `woodshed search --type flow`, `flows top` and `bundle` read the config's **Rule ID fields**
+(`--config`, or a portable copy's own `woodshed.toml`) so data decoded late, when they read it, gets its rule ID too.
 
 To test from another computer, `woodshed send --proto ipfix --host 192.0.2.50 --count 1000` (or `flow-v9`,
 `flow-v5`) sends generated records, `--events` sends firewall-event records, and `woodshed bench --proto ipfix`

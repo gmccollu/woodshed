@@ -426,7 +426,7 @@ Examples:
 	}
 	q := flowquery.Query{DeviceIDs: devs, From: req.From, To: req.To, Filter: filter}
 	start := time.Now()
-	res, err := flowEngine(dataDir, idx, logger).Top(ctx, q, req.By, req.Metric, req.Top, 24*time.Hour, "")
+	res, err := flowEngine(dataDir, idx, logger, searchRuleIEs(sf, dataDir)).Top(ctx, q, req.By, req.Metric, req.Top, 24*time.Hour, "")
 	if err != nil {
 		if ctx.Err() != nil {
 			return exitInterrupted
