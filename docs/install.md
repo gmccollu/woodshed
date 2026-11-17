@@ -216,6 +216,10 @@ sudo ufw allow 514                                                  # Ubuntu (uf
 sudo firewall-cmd --permanent --add-port=514/udp --add-port=514/tcp && sudo firewall-cmd --reload  # firewalld
 ```
 
+TLS (TCP 6514), SNMP traps (UDP 162) and flows (UDP 2055 and 4739) are off until you turn them on; `woodshed tls on`,
+`snmp on` and `flow on` open their own ports in ufw or firewalld when one is active (see
+[TLS](#tls-syslog-firewall-and-certificate), [traps](#snmp-traps-firewall) and [flows](#flows-firewall)).
+
 **Upgrade:** install the newer package the same way. The service is restarted (if it was running) and the
 config and logs stay.
 
@@ -374,12 +378,14 @@ Both ports are above 1024, so no privilege is needed for them.
   (UDP 4739)** (inbound UDP for woodshed.exe, every profile), turned off. `woodshed flow on` turns each on, on its
   port (`listeners.flow.flow_port` and `ipfix_port`; a port of 0 keeps its rule off), and `woodshed flow off` turns
   both off. Upgrades and repairs keep their state, and uninstalling removes them. While the listener is on and a rule
-  is off, missing or on another port, a banner gives the command.
+  is off, missing or on another port, a banner gives the command. A portable copy has no rules: if you chose Allow at
+  Windows' first-run prompt, it covers every port.
 - **macOS:** the application firewall allows or blocks the program, not ports: nothing to do.
 - **Linux:** the packages add nothing. `woodshed flow on` runs `ufw allow 2055/udp` and `ufw allow 4739/udp` when
   ufw is active, or `firewall-cmd --permanent --add-port=…/udp` and a reload when firewalld is running, and records
   each in `flow-firewall.json` and `flow-ipfix-firewall.json` in the data folder; `woodshed flow off` removes
-  only those. With neither active it changes nothing and prints the commands.
+  only those. With neither active it changes nothing and prints the commands; allow inbound UDP 2055 and 4739
+  yourself.
 
 Flow exporters often send in bursts. The listener has its own receive queue (50,000 packets or 128 MiB by default,
 `queue_messages` and `queue_bytes` under `[listeners.flow]`), and a full queue's drops are counted per exporter.
@@ -528,7 +534,7 @@ woodshed uninstall [--delete-logs]
 | Service | the package's unit, as `/etc/systemd/system/woodshed.service` | the package's plist, `/Library/LaunchDaemons/com.woodshed.daemon.plist` | `Woodshed`, automatic start, restarted on failure |
 | Account | `woodshed` system user (created if missing) with only `CAP_NET_BIND_SERVICE` | `_woodshed` user and group, created by the package's own script | `NT SERVICE\Woodshed` |
 | Data folder | `/var/lib/woodshed`, owned by `woodshed`, mode 0750 | `/Library/Application Support/Woodshed`, owned by `_woodshed`, mode 0750 | `C:\ProgramData\Woodshed` with the MSI's ACL (below) |
-| Also | `/etc/sysctl.d/60-woodshed.conf` (32 MiB UDP buffer) | `/etc/newsyslog.d/com.woodshed.daemon.conf` | the `Woodshed` event source; firewall rules for UDP and TCP 514 |
+| Also | `/etc/sysctl.d/60-woodshed.conf` (32 MiB UDP buffer) | `/etc/newsyslog.d/com.woodshed.daemon.conf` | the `Woodshed` event source; firewall rules for UDP and TCP 514, plus the TLS, trap and flow rules turned off |
 
 `--config FILE` points the service at another config, and `--data-dir FOLDER` picks the data folder (default: the
 one in the table). The data folder never comes from the config, which the service account can write: an existing
@@ -611,8 +617,9 @@ answering and why. Change `ui.port` in the config and restart the service.
 
 **Devices can't reach it.** Check the host firewall: the MSI and `woodshed install` on Windows open UDP and TCP 514
 only; the Linux packages change no firewall (`sudo ufw allow 514`, or the firewalld command above); on macOS allow
-`/usr/local/bin/woodshed` in the application firewall if it's on. The UI port is never opened: it's localhost-only
-unless you turn on LAN mode (on Windows the UI then shows the admin command that opens it).
+`/usr/local/bin/woodshed` in the application firewall if it's on. TLS, traps and flows have their own ports, opened by
+`woodshed tls on`, `snmp on` and `flow on` (see their firewall sections above). The UI port is never opened: it's
+localhost-only unless you turn on LAN mode (on Windows the UI then shows the admin command that opens it).
 
 **"another Woodshed process is using this data folder".** A server already runs on that folder (`woodshed status`
 says which); stop it first. `woodshed reindex` refuses for the same reason while the service runs.
