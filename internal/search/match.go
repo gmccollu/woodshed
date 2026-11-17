@@ -216,8 +216,9 @@ func isASCII(b []byte) bool {
 }
 
 // splitLine splits a stored line (without its '\n') into its received time in
-// Unix milliseconds and the escaped raw message. ok is false for a line that
-// doesn't start with a received time, a blank, a sender and a blank.
+// Unix milliseconds and the escaped raw message, without the line's marker
+// (logfile.Flags). ok is false for a line that doesn't start with a received
+// time, a blank, a sender and a blank.
 func splitLine(line []byte) (ms int64, esc []byte, ok bool) {
 	if n := len(line); n > 0 && line[n-1] == '\r' {
 		line = line[:n-1] // tolerated, as in logfile.ParseLine
@@ -243,7 +244,8 @@ func splitLine(line []byte) (ms int64, esc []byte, ok bool) {
 	if sp <= 0 {
 		return 0, nil, false
 	}
-	return ms, rest[sp+1:], true
+	esc, _ = logfile.SplitFlags(rest[sp+1:])
+	return ms, esc, true
 }
 
 // parseMillis parses "2006-01-02T15:04:05.000Z" into Unix milliseconds without

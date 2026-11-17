@@ -43,7 +43,7 @@ func TestWriteFormatAndIndex(t *testing.T) {
 	want := "2026-11-10T12:00:00.000Z 192.0.2.1 <134>Nov 10 12:00:00 host app: hello\n" +
 		"2026-11-10T12:00:00.001Z 192.0.2.1 multi\\nline\\r\\nwith \\\\ backslash\n" +
 		"2026-11-10T12:00:00.003Z 192.0.2.1 \n" +
-		"2026-11-10T12:00:00.004Z 192.0.2.1 mapped, zero time\n"
+		"2026-11-10T12:00:00.004Z 192.0.2.1 mapped, zero time \\#truncated\n"
 	if string(data) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", data, want)
 	}
@@ -69,6 +69,45 @@ func TestWriteFormatAndIndex(t *testing.T) {
 	u := e.s.Usage()
 	if u.Written != 5 || u.Files != 2 || u.DaysKept != 1 || u.BytesOnDisk != duLogs(e.dir) {
 		t.Fatalf("usage %+v (du %d)", u, duLogs(e.dir))
+	}
+}
+
+// An incomplete frame's line carries the marker (2.0), its raw comes back
+// without it, and it isn't counted as truncated.
+func TestWriteIncomplete(t *testing.T) {
+	e := newEnv(t, nil)
+	a := ip(1)
+	for _, m := range []model.Message{
+		{Sender: a, Raw: []byte("<13>short"), Incomplete: true, FrameArrived: 9, FrameLength: 50},
+		{Sender: a, Raw: []byte("<13>short")},
+		{Sender: a, Raw: []byte("<13>cut line"), Incomplete: true},
+		{Sender: a, Raw: []byte("<13>abcd"), Truncated: true, Incomplete: true, FrameArrived: 70000, FrameLength: 100000},
+	} {
+		if err := e.s.Write(m); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.Add(time.Millisecond)
+	}
+	if err := e.s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(e.dir, "logs/192.0.2.1/2026-11-10.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "2026-11-10T12:00:00.000Z 192.0.2.1 <13>short \\#incomplete=9/50\n" +
+		"2026-11-10T12:00:00.001Z 192.0.2.1 <13>short\n" +
+		"2026-11-10T12:00:00.002Z 192.0.2.1 <13>cut line \\#incomplete\n" +
+		"2026-11-10T12:00:00.003Z 192.0.2.1 <13>abcd \\#truncated,incomplete=70000/100000\n"
+	if string(data) != want {
+		t.Fatalf("file:\n%s\nwant:\n%s", data, want)
+	}
+	if got := rawStrings(readLines(t, e.dir, "192.0.2.1")); strings.Join(got, "|") != "<13>short|<13>short|<13>cut line|<13>abcd" {
+		t.Fatalf("raws %q", got)
+	}
+	tot, _ := e.idx.TotalCounts(bg, day0.Add(-time.Hour), day0.Add(time.Hour))
+	if tot.Msgs != 4 || tot.Truncated != 1 {
+		t.Fatalf("stats %+v", tot)
 	}
 }
 

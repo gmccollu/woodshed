@@ -140,7 +140,7 @@ func (d *device) appendLocked(rec time.Time, m *model.Message) error {
 		d.buf = d.newBuf()
 	}
 	start := len(d.buf)
-	d.buf = logfile.AppendLine(d.buf, rec, d.addr, m.Raw)
+	d.buf = logfile.AppendLineFlags(d.buf, rec, d.addr, m.Raw, flagsOf(m))
 	n := int64(len(d.buf) - start)
 	if d.sizeRotationDue(n) {
 		line := append([]byte(nil), d.buf[start:]...)
@@ -152,6 +152,15 @@ func (d *device) appendLocked(rec time.Time, m *model.Message) error {
 		d.buf = append(d.buf, line...)
 	}
 	return d.lineAddedLocked(rec, m, n)
+}
+
+// flagsOf is the line marker for m (logfile.Flags): how it differs from what was sent.
+func flagsOf(m *model.Message) logfile.Flags {
+	f := logfile.Flags{Truncated: m.Truncated, Incomplete: m.Incomplete}
+	if m.Incomplete && m.FrameLength > 0 {
+		f.Arrived, f.Length = m.FrameArrived, m.FrameLength
+	}
+	return f
 }
 
 // dayFor is the day file a message received at rec goes to.
@@ -184,7 +193,7 @@ func (d *device) tryAppendLocked(rec time.Time, m *model.Message) bool {
 		d.buf = d.newBuf()
 	}
 	start := len(d.buf)
-	d.buf = logfile.AppendLine(d.buf, rec, d.addr, m.Raw)
+	d.buf = logfile.AppendLineFlags(d.buf, rec, d.addr, m.Raw, flagsOf(m))
 	n := int64(len(d.buf) - start)
 	if d.sizeRotationDue(n) || len(d.buf) >= d.s.opts.FlushBytes {
 		d.buf = d.buf[:start]
