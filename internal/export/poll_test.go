@@ -317,7 +317,7 @@ func TestPollBundle(t *testing.T) {
 		t.Error("no interfaces.csv in the bundle")
 	}
 	// The merge window: a trap more than 2 min away stays its own reboot.
-	rs := mergeReboots([]datatype.Reboot{{Time: at, Source: "coldStart trap"}, {Time: at.Add(3 * time.Minute), Source: "poll", Detail: "x"}})
+	rs := mergeReboots([]datatype.Reboot{{Time: at, Source: "coldStart trap"}, {Time: at.Add(3 * time.Minute), Source: "poll", Detail: "x"}}, nil)
 	if len(rs) != 2 {
 		t.Errorf("merged %+v", rs)
 	}

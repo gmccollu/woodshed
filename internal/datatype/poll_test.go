@@ -177,3 +177,22 @@ func TestPollSummary(t *testing.T) {
 		t.Errorf("empty json %s", b)
 	}
 }
+
+// Samples are the answered polls (sys lines) with hrSystemUptime when they
+// carry it, oldest first, each tied to its cycle's restart line whichever was
+// read first (the bundle reads traps against them, SPEC §12.6).
+func TestPollSummarySamples(t *testing.T) {
+	s := Get(Poll).NewSummary().(*PollSummary)
+	t0 := time.Date(2026, 11, 16, 4, 0, 0, 0, time.UTC)
+	s.Add([]byte(`kind=sys cycle=7 uptime=100 hr_uptime=5000 interval_s=60`), t0)
+	s.Add([]byte(`kind=status cycle=8 status=timeout detail="no answer" interval_s=60`), t0.Add(time.Minute))
+	s.Add([]byte(`kind=restart cycle=9 reboot=0 uptime=10 prev_uptime=100 source="sysUpTime"`), t0.Add(2*time.Minute))
+	s.Add([]byte(`kind=sys cycle=9 uptime=10 hr_uptime=17000 interval_s=60`), t0.Add(2*time.Minute))
+	s.Add([]byte(`kind=sys cycle=10 uptime=6010 interval_s=60`), t0.Add(3*time.Minute))
+	got := s.Samples()
+	if len(got) != 3 || !got[0].HaveHr || got[0].Hr != 5000 || got[0].HasRestart ||
+		!got[1].HasRestart || !got[1].RestartAt.Equal(t0.Add(2*time.Minute)) || got[1].Hr != 17000 ||
+		got[2].HaveHr || got[2].HasRestart {
+		t.Errorf("samples %+v", got)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
+	"github.com/gmccollu/woodshed/internal/pollrec"
 	"github.com/gmccollu/woodshed/internal/search"
 )
 
@@ -477,6 +478,7 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 	out := make([]DeviceSummary, 0, len(devs))
 	ms := func(t time.Time) *time.Time { t = t.UTC(); return &t }
 	for _, d := range devs {
+		var samples []datatype.PollSample
 		ds := DeviceSummary{DeviceID: d.ID, IP: d.IP, Name: d.Name, Group: d.Group, Types: map[string]TypeSummary{},
 			Reboots: []datatype.Reboot{}, Gaps: nonNil(gaps), hidden: d.hidden}
 		for _, t := range types {
@@ -490,13 +492,14 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 			if ps, ok := c.sum.(*datatype.PollSummary); ok {
 				st := ps.Stats()
 				ds.Poll = &st
+				samples = ps.Samples()
 			}
 		}
 		sort.SliceStable(ds.Reboots, func(i, j int) bool { return ds.Reboots[i].Time.Before(ds.Reboots[j].Time) })
 		for i := range ds.Reboots {
 			ds.Reboots[i].Time = ds.Reboots[i].Time.UTC()
 		}
-		ds.Reboots = mergeReboots(ds.Reboots)
+		ds.Reboots = mergeReboots(ds.Reboots, samples)
 		cnt, err := b.idx.Counts(ctx, []string{d.ID}, info.From, info.To)
 		if err != nil {
 			return nil, err
@@ -561,45 +564,128 @@ func lossNote() string {
 }
 
 // rebootMerge is how close a coldStart or warmStart trap and a poll restart
-// must be to be one reboot (SPEC §12.2.2).
+// must be to be one reboot when the polls can't tell (SPEC §12.2.2, §12.6).
 const rebootMerge = 2 * time.Minute
 
-// mergeReboots joins each poll restart with the nearest trap reboot within
-// rebootMerge (each used once): one reboot at the earlier time, source "poll,
-// <trap>", with the poll's detail. rs is sorted by time.
-func mergeReboots(rs []datatype.Reboot) []datatype.Reboot {
-	used := make([]bool, len(rs))
-	out := []datatype.Reboot{}
-	for i, r := range rs {
-		if used[i] || r.Source != "poll" {
+// A trap's detail when the polls around it say what it was (SPEC §12.6).
+const (
+	keptRunning = "the polls show the device kept running"
+	noPollAfter = "no poll after it in the window to tell"
+)
+
+// mergeReboots joins the coldStart and warmStart traps with the poll restarts
+// (SPEC §12.6, §12.10 build #19). rs is sorted by time; samples are the
+// device's answered polls, oldest first.
+//
+// A trap is first read against the poll that closes its interval (the first
+// answered poll at or after it), when that poll knows hrSystemUptime:
+//   - It wrote a restart with reboot=1 or 0: the trap is that restart. The
+//     earliest trap of the interval joins it (one entry, source "poll, <trap>",
+//     the earlier time, the poll's detail and reboot value); a later one is a
+//     restart of its own, the agent's alone (reboot=0, keptRunning) when the
+//     poll said so, otherwise a reboot as before.
+//   - It wrote no restart and hrSystemUptime rose normally since the poll
+//     before: the device kept running, so the trap is the agent's alone
+//     (reboot=0, keptRunning). One received just after the poll restart
+//     before it (within rebootMerge, and that restart has no trap yet) joins
+//     that restart instead.
+//
+// Every other trap (an unpolled device, no hrSystemUptime, reboot=?, no
+// answered poll after it in the window) is merged as before: each poll restart
+// left joins the nearest such trap within rebootMerge (each used once), and a
+// trap left alone counts as a reboot. One after the last answered poll of a
+// device with hrSystemUptime says so (noPollAfter).
+func mergeReboots(rs []datatype.Reboot, samples []datatype.PollSample) []datatype.Reboot {
+	rs = slices.Clone(rs)
+	partner := make([]int, len(rs))  // a poll restart's joined trap, plus 1 (0: none)
+	used := make([]bool, len(rs))    // a trap joined to a poll restart
+	settled := make([]bool, len(rs)) // decided; out of the nearest-trap merge
+	join := func(j, i int) { partner[j], used[i], settled[i], settled[j] = i+1, true, true, true }
+	// known is the poll restart at a sample's restart time, if its reboot
+	// value says which it was (0 or 1).
+	known := func(at time.Time) int {
+		for j, r := range rs {
+			if r.Source == "poll" && r.Time.Equal(at) && (r.Reboot == "0" || r.Reboot == "1") {
+				return j
+			}
+		}
+		return -1
+	}
+	hasHr := slices.ContainsFunc(samples, func(s datatype.PollSample) bool { return s.HaveHr })
+	for i := range rs {
+		if rs[i].Source == "poll" {
+			continue
+		}
+		at := rs[i].Time
+		k := sort.Search(len(samples), func(k int) bool { return !samples[k].Time.Before(at) })
+		if k == len(samples) {
+			if hasHr {
+				rs[i].Detail = noPollAfter
+			}
+			continue
+		}
+		if c := samples[k]; c.HasRestart {
+			j := known(c.RestartAt)
+			if j < 0 {
+				continue
+			}
+			settled[i] = true
+			if partner[j] == 0 {
+				join(j, i)
+			} else if rs[j].Reboot == "0" {
+				rs[i].Reboot, rs[i].Detail = "0", keptRunning
+			}
+			continue
+		}
+		if k == 0 {
+			continue
+		}
+		p, c := samples[k-1], samples[k]
+		if !p.HaveHr || !c.HaveHr || p.Hr == c.Hr || pollrec.UptimeDropped(p.Hr, c.Hr, c.Time.Sub(p.Time)) {
+			continue
+		}
+		settled[i] = true
+		if p.HasRestart {
+			if j := known(p.RestartAt); j >= 0 && partner[j] == 0 && at.Sub(rs[j].Time) <= rebootMerge {
+				join(j, i)
+				continue
+			}
+		}
+		rs[i].Reboot, rs[i].Detail = "0", keptRunning
+	}
+	// The rest as before 1.3.0's fix: each poll restart left joins the
+	// nearest trap left within rebootMerge.
+	for j, r := range rs {
+		if settled[j] || r.Source != "poll" {
 			continue
 		}
 		best := -1
-		for j, o := range rs {
-			if used[j] || j == i || o.Source == "poll" {
+		for i, o := range rs {
+			if settled[i] || o.Source == "poll" {
 				continue
 			}
-			d := o.Time.Sub(r.Time)
-			if d < 0 {
-				d = -d
-			}
-			if d <= rebootMerge && (best < 0 || d < absDur(rs[best].Time.Sub(r.Time))) {
-				best = j
+			if d := absDur(o.Time.Sub(r.Time)); d <= rebootMerge && (best < 0 || d < absDur(rs[best].Time.Sub(r.Time))) {
+				best = i
 			}
 		}
 		if best >= 0 {
-			used[best] = true
-			at := r.Time
-			if rs[best].Time.Before(at) {
-				at = rs[best].Time
-			}
-			rs[i] = datatype.Reboot{Time: at, Source: "poll, " + rs[best].Source, Detail: r.Detail, Reboot: r.Reboot}
+			join(j, best)
 		}
 	}
+	out := []datatype.Reboot{}
 	for i, r := range rs {
-		if !used[i] {
-			out = append(out, r)
+		if used[i] {
+			continue
 		}
+		if partner[i] > 0 {
+			t := rs[partner[i]-1]
+			at := r.Time
+			if t.Time.Before(at) {
+				at = t.Time
+			}
+			r = datatype.Reboot{Time: at, Source: "poll, " + t.Source, Detail: r.Detail, Reboot: r.Reboot}
+		}
+		out = append(out, r)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
 	return out
@@ -613,13 +699,18 @@ func absDur(d time.Duration) time.Duration {
 }
 
 // rebootWords is a reboot in README.txt: "poll: sysUpTime and hrSystemUptime
-// reset; coldStart trap", "coldStart trap".
+// reset; coldStart trap", "coldStart trap", "coldStart trap; the polls show
+// the device kept running".
 func rebootWords(r datatype.Reboot) string {
 	parts := strings.Split(r.Source, ", ")
+	poll := false
 	for i, p := range parts {
 		if p == "poll" && r.Detail != "" {
-			parts[i] = "poll: " + r.Detail
+			parts[i], poll = "poll: "+r.Detail, true
 		}
+	}
+	if !poll && r.Detail != "" {
+		parts = append(parts, r.Detail)
 	}
 	return strings.Join(parts, "; ")
 }
