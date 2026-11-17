@@ -34,10 +34,11 @@
       hex digits). Prints received, missing (as ranges), duplicates and per-device counts. With --truth (the senders'
       `--flow-log` files: a dir or .tgz holding flowlog-*.jsonl), every stored record is compared with what was sent
       (addresses, ports, protocol, packets, bytes, sampling, domain, firewall event) and the sums are checked.
-  labcheck.py flow-top --truth T --top JSON --by KEY [--metric M] [--fw-event E] [--manifest ZIP --device D]
+  labcheck.py flow-top --truth T --top JSON --by KEY [--metric M] [--fw-event E] [--from T --to T] [--manifest ZIP --device D]
       `woodshed flows top --json` (or /api/flows/top) against the top-N computed from the senders' logs: every row's value,
       the ranking (ties aside) and the totals. With --manifest, the bundle summary's top lists and counts for D too.
-      The window and devices of the top must hold exactly the run's records (the totals check says when they don't).
+      The window and devices of the top must hold exactly the run's records (the totals check says when they don't); with
+      --from/--to, only the logged records whose [start, end] overlaps that window count (flow time, as the query's window).
       Packets and conversations need a run without --events or --biflow (the logs carry neither the initiator packets
       nor the responder and reverse counts).
   labcheck.py flow-csv ZIP --lines SRC
@@ -48,7 +49,8 @@
       set lengths, template field specifiers (an enterprise bit must have its PEN), data records ending at their set.
       In a zip, each file's 5-tuples are compared with its flows.csv. --tshark: also compare the output of
       `tshark -r FILE -T fields -E occurrence=a -E aggregator=';' -e cflow.srcaddr -e cflow.dstaddr -e cflow.srcport
-      -e cflow.dstport -e cflow.protocol` (one file) with the CSV, as CI does.
+      -e cflow.dstport -e cflow.protocol` (one file) with the CSV, as CI does. IPv4 only (the generator's addresses); a
+      record missing one of the fields would shift tshark's occurrence lists, so use it on generator data.
   labcheck.py flow-match SRC --src A --dst B [--dst-port P] [--proto N] [--expect-packets N --expect-bytes N]
       The stored flows for one conversation (a real exporter's records of known traffic): records, packets, bytes, by version.
   labcheck.py flow-size DATA [--devices D,..] [--records N]
@@ -680,6 +682,53 @@ def iter_truth(src):
                         yield json.loads(line)
 
 
+def bit_ranges(bits, n, first, limit, want_set):
+    """(count, the first `limit` ranges) of the positions whose bit is set (want_set) or clear, without listing them all.
+    Whole bytes of 0x00/0xFF are skipped at once, so a soak-sized map with nothing (or everything) stored stays cheap."""
+    count, out, start, prev = 0, [], None, None
+    skip = 0x00 if want_set else 0xFF
+    nb = (n + 7) // 8
+    b = 0
+    while b < nb:
+        v = bits[b]
+        if v == skip and (b + 1) * 8 <= n:
+            if start is not None:
+                if len(out) < limit:
+                    out.append(f"{start}-{prev}" if prev != start else str(start))
+                start = None
+            b += 1
+            continue
+        if v == (0xFF ^ skip) and (b + 1) * 8 <= n:     # all 8 count
+            count += 8
+            lo = b * 8 + first
+            if start is None:
+                start = lo
+            elif prev != lo - 1:
+                if len(out) < limit:
+                    out.append(f"{start}-{prev}" if prev != start else str(start))
+                start = lo
+            prev = lo + 7
+            b += 1
+            continue
+        for i in range(b * 8, min(b * 8 + 8, n)):
+            hit = bool(v & (1 << (i & 7))) == want_set
+            x = i + first
+            if hit:
+                count += 1
+                if start is None:
+                    start = prev = x
+                elif x == prev + 1:
+                    prev = x
+                else:
+                    if len(out) < limit:
+                        out.append(f"{start}-{prev}" if prev != start else str(start))
+                    start = prev = x
+        b += 1
+    if start is not None and len(out) < limit:
+        out.append(f"{start}-{prev}" if prev != start else str(start))
+    return count, out
+
+
 def ranges(nums, limit):
     out, start, prev = [], None, None
     for x in nums:
@@ -708,10 +757,10 @@ def flow_seq_check(src, run, n, first=0, truth=None, devices=None, limit=20):
     dup = bytearray((n + 7) // 8)
     want = {}
     if truth:
-        if n > 5_000_000:
-            raise SystemExit("labcheck: --truth holds every record in memory: at most 5,000,000")
-        for t in iter_truth(truth):
-            want[int(t["seq"])] = t
+        if n > 1_000_000:
+            raise SystemExit("labcheck: --truth holds every record in memory: at most 1,000,000")
+        for t in iter_truth(truth):                 # only the compared fields, as a tuple
+            want[int(t["seq"])] = tuple(t.get(tk) for _, tk in TRUTH_FIELDS) + (t.get("sum_bytes"),)
     res = {"run": run, "n": n, "first": first, "received": 0, "duplicates": 0, "out_of_range": 0, "other_runs": 0,
            "untagged": 0, "by_device": {}}
     mism, msample, sums = 0, [], {"bytes": 0, "packets": 0}
@@ -742,8 +791,8 @@ def flow_seq_check(src, run, n, first=0, truth=None, devices=None, limit=20):
                     msample.append({"seq": tag[1], "problem": "not in the senders' logs"})
                 continue
             diff = {}
-            for sk, tk in TRUTH_FIELDS:
-                sv, tv = f.get(sk), t.get(tk)
+            for (sk, tk), tv in zip(TRUTH_FIELDS, t):
+                sv = f.get(sk)
                 if tk in ("src", "dst", "fw_event") and tv in ("", None):
                     tv = None
                 if tk in ("domain", "packets", "bytes") and sv is None:
@@ -754,18 +803,14 @@ def flow_seq_check(src, run, n, first=0, truth=None, devices=None, limit=20):
                 mism += 1
                 if len(msample) < 5:
                     msample.append({"seq": tag[1], "device": dev, "stored_vs_sent": diff})
-    missing = []
-    for i in range(n):
-        if not seen[i >> 3] & (1 << (i & 7)):
-            missing.append(i + first)
-    res["missing"] = len(missing)
-    res["missing_ranges"] = ranges(missing, limit)
-    res["duplicate_seqs"] = ranges([i + first for i in range(n) if dup[i >> 3] & (1 << (i & 7))], limit)
+    res["missing"], res["missing_ranges"] = bit_ranges(seen, n, first, limit, want_set=False)
+    _, res["duplicate_seqs"] = bit_ranges(dup, n, first, limit, want_set=True)
     res["stored_sums"] = sums
     if truth:
-        tb = sum(int(t.get("bytes") or 0) for t in want.values())
-        tp = sum(int(t.get("packets") or 0) for t in want.values())
-        res["truth"] = {"records": len(want), "bytes": tb, "packets": tp, "sum_bytes": sum(int(t.get("sum_bytes") or 0) for t in want.values()),
+        ib, ip = [tk for _, tk in TRUTH_FIELDS].index("bytes"), [tk for _, tk in TRUTH_FIELDS].index("packets")
+        tb = sum(int(t[ib] or 0) for t in want.values())
+        tp = sum(int(t[ip] or 0) for t in want.values())
+        res["truth"] = {"records": len(want), "bytes": tb, "packets": tp, "sum_bytes": sum(int(t[-1] or 0) for t in want.values()),
                         "mismatches": mism, "first_mismatches": msample,
                         "sums_exact": sums["bytes"] == tb and sums["packets"] == tp and len(want) == n}
     res["ok"] = (res["missing"] == 0 and res["duplicates"] == 0 and res["out_of_range"] == 0 and
@@ -787,9 +832,10 @@ def _ipkey(x):
 
 
 def truth_key(t, by):
+    """The top-N key of a logged record, or None when it lacks that column (the product skips such records)."""
     pn = lambda p: PROTO_NAMES.get(int(p or 0), str(p))
     if by in ("src", "dst"):
-        return t.get(by) or ""
+        return t.get(by) or None
     if by == "dst_port":
         return f"{pn(t.get('proto'))}/{t.get('dst_port')}"
     if by == "src_port":
@@ -797,14 +843,12 @@ def truth_key(t, by):
     if by == "proto":
         return str(t.get("proto"))                      # the key is the number (its label is the name)
     if by == "conversation":
-        a, b = sorted([t.get("src") or "", t.get("dst") or ""], key=_ipkey)
+        if not t.get("src") or not t.get("dst"):
+            return None
+        a, b = sorted([t["src"], t["dst"]], key=_ipkey)
         return f"{a} ↔ {b}"
-    if by == "fw_event":
-        return t.get("fw_event") or ""
-    if by == "rule_id":
-        return t.get("rule_id") or ""
-    if by == "post_nat_src":
-        return t.get("post_nat_src") or ""
+    if by in ("fw_event", "rule_id", "post_nat_src"):
+        return t.get(by) or None
     raise SystemExit(f"labcheck: flow-top --by {by} isn't computed from the logs")
 
 
@@ -821,10 +865,18 @@ def truth_value(t, metric, event_style):
     raise SystemExit(f"labcheck: unknown metric {metric}")
 
 
-def flow_top_check(truth, top, by, metric=None, fw_event=None, manifest=None, device=None):
+def in_window(t, t0, t1):
+    """Flow time: the record's [start, end] overlaps [t0, t1)."""
+    s, e = ts(t["start"]), ts(t["end"])
+    return s < t1 and e >= t0
+
+
+def flow_top_check(truth, top, by, metric=None, fw_event=None, manifest=None, device=None, t0=None, t1=None, want_rows=None):
     page = json.load(open(top)) if isinstance(top, str) else top
     metric = metric or page.get("metric") or ("flows" if fw_event == "denied" else "bytes")
     allrecs = list(iter_truth(truth))
+    if t0 is not None or t1 is not None:
+        allrecs = [t for t in allrecs if in_window(t, t0 if t0 is not None else float("-inf"), t1 if t1 is not None else float("inf"))]
     recs = [t for t in allrecs if not fw_event or t.get("fw_event") == fw_event]
     event_style = any(t.get("fw_event") for t in allrecs)
     if (metric == "packets" or by == "conversation") and event_style:
@@ -834,7 +886,8 @@ def flow_top_check(truth, top, by, metric=None, fw_event=None, manifest=None, de
     agg = {}
     for t in recs:
         k = truth_key(t, by)
-        agg[k] = agg.get(k, 0) + truth_value(t, metric, event_style)
+        if k is not None:
+            agg[k] = agg.get(k, 0) + truth_value(t, metric, event_style)
     totals = {"flows": len(recs), "bytes": sum(truth_value(t, "bytes", event_style) for t in recs),
               "connections": sum(truth_value(t, "connections", event_style) for t in recs)}
     if not event_style:
@@ -850,6 +903,9 @@ def flow_top_check(truth, top, by, metric=None, fw_event=None, manifest=None, de
         if want != got:
             res["row_mismatches"].append({"key": k, "stored": got, "truth": want})
     nonzero = [k for k, v in ranked if v]
+    if want_rows is not None and n != min(want_rows, len(nonzero)):   # the top asked for N rows: it must give them
+        res["rank_ok"] = False
+        res["short"] = {"rows": n, "expected": min(want_rows, len(nonzero))}
     if not n and nonzero:                                      # an empty top (all in "other") while the logs have keys
         res["missing_from_top"], res["rank_ok"] = nonzero[:10], False
         res["note"] = ("no rows: the stored records have no value for this key (rule_id needs listeners.flow.rule_id_ies, "
@@ -863,7 +919,8 @@ def flow_top_check(truth, top, by, metric=None, fw_event=None, manifest=None, de
         if len(have & ties) < n - len(must & have) and len(have & ties) < len(ties):
             missing += sorted(ties - have)
         res["missing_from_top"] = missing[:10]
-        res["rank_ok"] = not missing and not (have - must - ties) and [r.get(metric) for r in rows] == [v for _, v in ranked[:n]]
+        res["rank_ok"] = res["rank_ok"] and not missing and not (have - must - ties) and \
+            [r.get(metric) for r in rows] == [v for _, v in ranked[:n]]
     pt = page.get("total") or {}
     res["totals"] = {m: {"stored": pt.get(m), "truth": totals[m]} for m in totals if m in pt}
     tot_ok = all(v["stored"] == v["truth"] for v in res["totals"].values())
@@ -894,7 +951,8 @@ def manifest_flow_check(zpath, device, truth):
             if filt and t.get("fw_event") != filt:
                 continue
             k = truth_key(t, by)
-            agg[k] = agg.get(k, 0) + truth_value(t, metric, ev)
+            if k is not None:
+                agg[k] = agg.get(k, 0) + truth_value(t, metric, ev)
         tot = sum(agg.values()) or 1
         return sorted(agg.items(), key=lambda kv: -kv[1]), tot
 
@@ -910,7 +968,7 @@ def manifest_flow_check(zpath, device, truth):
         ranked, tot = top3(by, "bytes")
         got = fl.get(name) or []
         want = [{"key": k, "share": round(v / tot, 4)} for k, v in ranked[:len(got)]]
-        good = all(g["key"] == w["key"] or dict(ranked).get(g["key"]) == dict(ranked).get(w["key"]) for g, w in zip(got, want)) and \
+        good = len(got) == min(3, sum(1 for _, v in ranked if v)) and all(g["key"] == w["key"] or dict(ranked).get(g["key"]) == dict(ranked).get(w["key"]) for g, w in zip(got, want)) and \
             all(abs(g.get("share", 0) - dict(ranked).get(g["key"], 0) / tot) < 0.00051 for g in got)
         out[name] = {"manifest": got, "truth": want, "ok": good}
         ok &= good
@@ -926,7 +984,7 @@ def manifest_flow_check(zpath, device, truth):
             ranked, _ = top3(by, "flows", "denied")
             got = fl.get(name) or []
             d = dict(ranked)
-            good = all(d.get(g["key"]) == g.get("count") for g in got) and [g.get("count") for g in got] == [v for _, v in ranked[:len(got)]]
+            good = len(got) == min(3, sum(1 for _, v in ranked if v)) and all(d.get(g["key"]) == g.get("count") for g in got) and [g.get("count") for g in got] == [v for _, v in ranked[:len(got)]]
             out[name] = {"manifest": got, "truth": [{"key": k, "count": v} for k, v in ranked[:len(got)]], "ok": good}
             ok &= good
     out["ok"] = bool(ok)
@@ -934,7 +992,7 @@ def manifest_flow_check(zpath, device, truth):
 
 
 def cmd_flow_top(a):
-    print(json.dumps(flow_top_check(a.truth, a.top, a.by, a.metric, a.fw_event, a.manifest, a.device)))
+    print(json.dumps(flow_top_check(a.truth, a.top, a.by, a.metric, a.fw_event, a.manifest, a.device, tsopt(a.from_), tsopt(a.to), a.n)))
 
 
 def csv_cell(v):
@@ -981,6 +1039,9 @@ def flow_csv_check(zpath, lines):
     for dev in sorted(set(stored) - set(res["devices"])):
         res["devices"][dev] = {"ok": False, "problem": "records in the lines but no flows.csv in the zip"}
         res["ok"] = False
+    if not res["devices"] or not any(d.get("rows") for d in res["devices"].values()):
+        res["ok"] = False
+        res["problem"] = "nothing to compare: no flows.csv rows in the zip"
     readme = z.read("README.txt").decode("utf-8", "replace") if "README.txt" in names else ""
     blk, keep = [], False
     for l in readme.splitlines():
@@ -1028,6 +1089,14 @@ def ipfix_read(data):
                     tid, fc = struct.unpack(">HH", body[q:q + 4]); q += 4
                     if tid == 0 and fc == 0:
                         break                                  # padding
+                    if fc == 0:                                # a withdrawal (RFC 7011 §8.1); 2 / 3 withdraw all
+                        if tid in (2, 3):
+                            for k in [k for k in tmpl if k[0] == dom]:
+                                tmpl.pop(k)
+                        else:
+                            tmpl.pop((dom, tid), None)
+                        out["withdrawals"] = out.get("withdrawals", 0) + 1
+                        continue
                     sc = 0
                     if sid == 3:
                         if send - q < 2:
@@ -1061,11 +1130,12 @@ def ipfix_read(data):
                 is_opt, _, fields = t
                 minlen = sum(0 if fl == 0xFFFF else fl for _, _, fl in fields) + sum(1 for _, _, fl in fields if fl == 0xFFFF)
                 while send - q >= max(minlen, 1):
-                    rec = {}
+                    rec, q0 = {}, q
                     for pen, fid, fl in fields:
                         if fl == 0xFFFF:
-                            if q >= send:
-                                break
+                            if q >= send or (body[q] == 255 and q + 3 > send):
+                                out["errors"].append(f"domain {dom} set {sid}: a variable-length field's length runs past its set")
+                                q = send; rec = None; break
                             fl = body[q]; q += 1
                             if fl == 255:
                                 fl = struct.unpack(">H", body[q:q + 2])[0]; q += 2
@@ -1074,6 +1144,8 @@ def ipfix_read(data):
                         rec[(pen, fid)] = body[q:q + fl]; q += fl
                     if rec is None:
                         break
+                    if q == q0:                                # a record of no bytes would never end
+                        out["errors"].append(f"domain {dom} set {sid}: a record of zero length"); q = send; break
                     if is_opt:
                         out["options_records"] += 1; continue
                     out["records"] += 1
@@ -1090,6 +1162,8 @@ def ipfix_read(data):
                 rest = body[q:send]
                 if rest.strip(b"\0"):
                     out["errors"].append(f"domain {dom} set {sid}: {len(rest)} bytes after the last record aren't padding")
+            else:
+                out["errors"].append(f"set ID {sid} at {p} is reserved (RFC 7011 §3.3.2)")
             p += sl
         off = end
     return out
@@ -1138,13 +1212,15 @@ def flow_ipfix_check(path, tshark_out=None):
                 (files if m.group(2) == "ipfix" else csvs)[m.group(1)] = z.read(n)
     else:
         files["file"] = open(path, "rb").read()
-    res = {"files": {}, "ok": True}
+    res = {"files": {}, "ok": bool(files)}
+    if not files:
+        res["problem"] = "no flows/<device>/flows.ipfix in the zip"
     for dev, data in sorted(files.items()):
         r = ipfix_read(data)
         d = {k: r[k] for k in ("messages", "records", "options_records", "templates", "undecodable_sets", "bytes", "packets")}
         d["errors"] = r["errors"][:10]
         d["error_count"] = len(r["errors"])
-        ok = not r["errors"] and not r["undecodable_sets"]
+        ok = not r["errors"] and not r["undecodable_sets"] and r["records"] > 0
         if dev in csvs:
             ct = csv_tuples(csvs[dev])
             oa, ob = tuple_diff(r["tuples"], ct)
@@ -1267,6 +1343,7 @@ def main():
     p.add_argument("--first", type=int, default=0); p.add_argument("--truth"); p.add_argument("--devices"); p.add_argument("--list", type=int, default=20)
     p = sub.add_parser("flow-top"); p.add_argument("--truth", required=True); p.add_argument("--top", required=True)
     p.add_argument("--by", required=True); p.add_argument("--metric"); p.add_argument("--fw-event"); p.add_argument("--manifest"); p.add_argument("--device")
+    p.add_argument("--from", dest="from_"); p.add_argument("--to"); p.add_argument("--n", type=int, help="the --top the query was given")
     p = sub.add_parser("flow-csv"); p.add_argument("zip"); p.add_argument("--lines", required=True)
     p = sub.add_parser("flow-ipfix"); p.add_argument("file"); p.add_argument("--tshark")
     p = sub.add_parser("flow-match"); p.add_argument("src"); p.add_argument("--src", dest="src_addr", required=True); p.add_argument("--dst", required=True)

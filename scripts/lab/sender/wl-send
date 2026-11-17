@@ -102,8 +102,10 @@ if [ -z "$port" ]; then case "$proto" in tls) port=6514 ;; trap) port=162 ;; flo
 [[ "$run" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "wl-send: bad --run" >&2; exit 2; }
 [ -z "$isflow" ] || [[ "$run" =~ ^[0-9a-f]{8}$ ]] || { echo "wl-send: a flow --run is 8 lowercase hex digits" >&2; exit 2; }
 # optional allowlist of target addresses (root-owned, one per line): refuse any other --host
-if [ -f "$LAB/targets.allow" ] && ! grep -qxF -- "$host" "$LAB/targets.allow"; then
-	echo "wl-send: --host $host is not in $LAB/targets.allow" >&2; exit 2
+if [ -f "$LAB/targets.allow" ]; then
+	grep -qxF -- "$host" "$LAB/targets.allow" || { echo "wl-send: --host $host is not in $LAB/targets.allow" >&2; exit 2; }
+elif [ -z "$DRY" ] && [ -z "${WL_TEST_NO_NETNS:-}" ]; then
+	echo "wl-send: $LAB/targets.allow is missing (install-sender.sh writes it): refusing to send anywhere" >&2; exit 2
 fi
 [ -z "$DRY" ] && [ -z "${WL_TEST_NO_NETNS:-}" ] && [ "$(id -u)" != 0 ] && { echo "wl-send: run as root" >&2; exit 2; }
 
@@ -131,7 +133,12 @@ if [ -z "$out" ]; then
 	else out=/var/tmp/woodpile-lab/send-$run-$(date -u +%Y%m%dT%H%M%SZ)-$$; fi
 fi
 # --out only under the lab's own scratch dirs (this runs as root)
-[[ "$out" =~ ^(/var/tmp/woodpile-lab|$LAB/runs)/[A-Za-z0-9._/-]+$ ]] && [[ "$out" != *..* ]] ||
+okout() { [[ "$1" =~ ^(/var/tmp/woodpile-lab|$LAB/runs)/[A-Za-z0-9._/-]+$ ]] && [[ "$1" != *..* ]]; }
+# and the resolved path under the resolved prefixes (mkdir as root follows symlinks)
+inside() { python3 -I -c 'import os, sys
+r = os.path.realpath(sys.argv[1])
+sys.exit(0 if any(r.startswith(os.path.realpath(p) + os.sep) for p in sys.argv[2:]) else 1)' "$@"; }
+okout "$out" && inside "$out" /var/tmp/woodpile-lab "$LAB/runs" ||
 	{ echo "wl-send: --out must be under /var/tmp/woodpile-lab/ or $LAB/runs/: $out" >&2; exit 2; }
 mkdir -p "$out"
 

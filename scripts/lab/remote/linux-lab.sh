@@ -132,7 +132,8 @@ flow-verify-detached)
 		for t in "$from" "$to"; do [[ "$t" =~ ^20[0-9]{2}-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z$ ]] || { echo "bad time $t" >&2; exit 2; }; done
 		rng="--from $from --to $to"
 	fi
-	$S systemd-run --unit="woodpile-lab-flowverify-$r" --collect --quiet --nice=10 /bin/bash -c \
+	$S rm -f "$o" "$o.tmp"                                   # never pick up an earlier result
+	$S systemd-run --unit="woodpile-lab-flowverify-$r-$(date -u +%Y%m%dT%H%M%SZ)" --collect --quiet --nice=10 /bin/bash -c \
 		"woodshed search --type flow --json $rng 2>/dev/null | python3 -I $L/labcheck.py flow-seq - --run $r --n $n >$o.tmp && mv $o.tmp $o"
 	echo "flow verify of $r started -> $o"
 	;;
