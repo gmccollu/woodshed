@@ -79,6 +79,12 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   records took under 0.8 s, and a one-address search's first page 0.1 s. Measured in-process with `woodshed bench
   --proto ipfix --rate 50000 --duration 10m --syslog-rate 5000` (the sender in a child process) on a 14-core
   laptop; the reference-spec (4 vCPU) runner and the lab's 24-hour run will replace these before release.
+- Listing flow records is many times faster, with the same output byte for byte: `woodshed search --type flow`
+  reads each block of the window once instead of once per page of 5,000 that overlapped it (5,000,000 records:
+  `--json` 85 s → 4 s, CSV rows 65 s → 3 s, `--count` 60 s → 2.3 s, and a lower peak RSS), flow results' JSON and
+  `flows.csv` rows are written without reflection (the bundle's flows.csv 10.2 s → 7.9 s), and `/api/search` flow
+  pages read only the ordering and filter columns until they know their hits (57 k → 130 k records/s at 5,000 a
+  page). SPEC §13.6 has the numbers.
 
 ## [1.3.0] - 2026-11-17
 

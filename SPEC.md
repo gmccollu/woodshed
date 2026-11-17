@@ -2988,6 +2988,44 @@ the first bench, which records the measured numbers here:
     source ports weigh more in smaller blocks).
   - The format alone: encoding about 440 ns a record (2.2 % of a core at 50,000/s); decoding the source and bytes
     columns 38–40 M records/s on one core, every column about 5.4 M/s.
+  - **Listing every record (build, 2026-11-17;** the lab's `woodshed search --type flow --json` ran at about 14,000
+    records/s on the 4-vCPU box, 32,000,000 records in 37 min, against 62,000/s for a syslog `--count`): measured on
+    the build machine (14 cores, also with GOMAXPROCS 4) over a `woodshed bench` store of 5,000,000 IPFIX records
+    (100,000/s for 50 s, one exporter, blocks of up to 65,536 records with about 2.5 s of flow-end spread each), output
+    to /dev/null, before → after, with byte-identical output (SHA-256 of every listing and of the bundle's flows.csv):
+
+    | Path (5,000,000 records) | Before (GOMAXPROCS 14 / 4) | After (14 / 4) | Peak RSS, MiB (14 / 4) |
+    |---|---|---|---|
+    | `search --type flow --json` | 84.9 / 89.6 s (59 k / 56 k a second) | 4.0 / 4.0 s (1.25 M / 1.25 M) | 256 / 278 → 237 / 227 |
+    | `search --type flow` (CSV rows) | 65.4 / 74.3 s (76 k / 67 k) | 2.9 / 2.9 s (1.71 M / 1.75 M) | 252 / 268 → 218 / 221 |
+    | `search --type flow --count` | 60.4 / 63.5 s (83 k / 79 k) | 2.3 / 2.3 s (2.14 M / 2.18 M) | 247 / 286 → 243 / 230 |
+    | `/api/search` pages of 5,000 (the newest 500,000, the server's encoding) | 57 k a second | 130 k | |
+    | `/api/search` pages of 500 (the same) | 8.8 k a second | 22 k | |
+    | bundle `flows.csv` (5,000,000 rows, zipped) | 10.2 s (491 k a second) | 7.9 s (633 k) | 211 → 202 |
+
+    Over a 20,000,000-record store (the same rate for 200 s, GOMAXPROCS 4): `--json` 375 s → 16.4 s (53 k → 1.22 M a
+    second; peak RSS 287 → 229 MiB), CSV rows 11.3 s, `--count` 8.5 s (221 and 223 MiB), the same SHA-256 before and
+    after. The lab's 32,000,000 records would take about 26 s here; the reference box has slower cores.
+    - Where the time went (CPU and allocation profiles): the CLI listed the window with Search's pages of 5,000, and
+      each page planned the window again and decoded every block overlapping its span of flow ends, so each block
+      was decoded 30 to 50 times (the overlapping blocks a page of 5,000 must read to be certain); every row read
+      past the cursor was copied into a Hit under one lock; and each record's JSON took 4.3 µs and 50 allocations
+      through reflection (a CSV row 1.1 µs and 14). Decoding the extras column took three allocations a row.
+    - The fixes: `Engine.Stream` reads the plan once and decodes each block once, keeps each block's matching rows
+      sorted and packed (`flowseg.Packed`, 60–110 bytes a record) while an unread block could still come before them,
+      and merges them under the same bound a page uses, so the order is the pages' exactly; what it keeps is charged
+      to the query pool, and past the pool it carries on with pages from the last record given; it nudges the
+      collector after each wave, as the top-N scans do (without, the 20,000,000-record listing peaked at 324 MiB).
+      JSON and CSV rows are appended by hand (0.40 and 0.34 µs, the same bytes; anything that needs escaping or
+      quoting still goes through encoding/json or encoding/csv). Search pages read in two passes (the ordering and filter columns,
+      then every column only for the blocks holding the page's hits), each worker keeping its own cut. Extras
+      decode into shared arenas.
+    - Guards: `TestFlowListingGolden` (cmd/woodshed: 16 outputs of a fixed store against SHA-256s taken before the
+      change), `TestStreamMatchesSearchPages` and `TestStreamDecodesEachBlockOnce` (flowquery), the encoders' tests
+      against encoding/json and encoding/csv, and `BenchmarkFlowListing` (1,000,000 records: Stream 4.7 M/s, pages
+      of 5,000 206 k/s, of 500 30 k/s, against 69 k/s and 8.2 k/s before).
+    - API pages stay far below a stream: each still reads again every block overlapping it, a cost of the stateless
+      cursor. Keeping a stream's state under the cursor (as top-N keeps its counts) would close the gap; open.
 - **Queries:** top talkers (`by=src`, bytes) over 1 h at 5,000 records/s (18 million records) in under 3 s,
   complete in one response; at 50,000/s (180 million) partial within the 10 s budget and complete within 60 s.
   A filtered search for one address over 1 h at 5,000/s returns its first page in under 1 s.
