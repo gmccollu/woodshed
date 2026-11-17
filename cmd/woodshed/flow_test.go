@@ -209,7 +209,9 @@ func TestFlowStatusValidatesConfig(t *testing.T) {
 	}{
 		{func(c *config.Config) { c.Listeners.Flow.RuleIDIEs = []string{"32473:40003"} }, "listeners.flow.rule_id_ies[0]"},
 		{func(c *config.Config) { c.Listeners.Flow.TemplateTimeout = config.FlowDuration(time.Second) }, "listeners.flow.template_timeout"},
-		{func(c *config.Config) { c.Listeners.Flow.Enabled, c.Listeners.Flow.FlowPort, c.Listeners.Flow.IPFIXPort = true, 0, 0 },
+		{func(c *config.Config) {
+			c.Listeners.Flow.Enabled, c.Listeners.Flow.FlowPort, c.Listeners.Flow.IPFIXPort = true, 0, 0
+		},
 			"listeners.flow.flow_port"},
 	} {
 		cfgPath, _ := testConfig(t, x.edit)
