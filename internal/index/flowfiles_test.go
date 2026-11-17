@@ -38,7 +38,23 @@ func writeSegment(t *testing.T, dataDir, dev string, hour time.Time, n int, clos
 		if _, err := w.Close(); err != nil {
 			t.Fatal(err)
 		}
-	} else if err := w.Sync(); err != nil {
+		return p
+	}
+	// A crash: the file as it is now (its blocks, no footer), and the
+	// writer's handle gone with the process. A handle left open would keep
+	// the file from being removed on Windows (CI run 44032327415: "being used
+	// by another process"), which a crashed server's never does.
+	if err := w.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	img, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, img, 0o640); err != nil {
 		t.Fatal(err)
 	}
 	return p
