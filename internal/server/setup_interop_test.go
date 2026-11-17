@@ -465,8 +465,24 @@ func runRsyslog(t *testing.T, c setupCase) string {
 	os.MkdirAll(work, 0o755)
 	inPort := freeUDP(t)
 	local := filepath.Join(e.dir, "local.log")
+	// rsyslogd's own messages once it's running (an action suspended or
+	// resumed, every retry with the setting above) go through its rules,
+	// so into the local file, not to its stderr.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		b, _ := os.ReadFile(local)
+		var own []string
+		for _, l := range strings.Split(string(b), "\n") {
+			if strings.Contains(l, "rsyslogd") {
+				own = append(own, l)
+			}
+		}
+		t.Logf("rsyslogd's own messages in the local file (%d):\n%s", len(own), strings.Join(own[max(0, len(own)-60):], "\n"))
+	})
 	conf := filepath.Join(e.dir, "rsyslog.conf")
-	os.WriteFile(conf, []byte(fmt.Sprintf("global(workDirectory=%q action.reportSuspension=\"on\")\nmodule(load=\"imudp\")\ninput(type=\"imudp\" address=\"127.0.0.1\" port=\"%d\")\n"+
+	os.WriteFile(conf, []byte(fmt.Sprintf("global(workDirectory=%q action.reportSuspensionContinuation=\"on\")\nmodule(load=\"imudp\")\ninput(type=\"imudp\" address=\"127.0.0.1\" port=\"%d\")\n"+
 		"*.* action(type=\"omfile\" file=%q)\ninclude(file=%q)\n", work, inPort, local, snippetFile)), 0o644)
 	env := append(os.Environ(), "HOME="+e.dir)
 	// The snippet's own check first: rsyslogd -N1.
