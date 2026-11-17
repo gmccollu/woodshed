@@ -80,6 +80,8 @@ type Engine struct {
 
 	// Stream's blocks decoded and its falls back to pages (tests).
 	streamDecodes, streamFallbacks atomic.Int64
+	// fillHook runs as a search page's second pass starts (tests).
+	fillHook func()
 
 	gcMu                  sync.Mutex
 	gcCycles, gcAllocBase uint64
@@ -735,7 +737,26 @@ type searchCursor struct {
 
 // Search returns up to limit records, newest first by flow end (asc: oldest
 // first), after cursor.
+//
+// A page reads in two passes (see search), so a segment retention deletes
+// between them would leave its hits out: the page is then read again, once,
+// without it (a second miss drops them, as an unreadable block's are). A
+// cancel during the second pass loses the page, as one during the first does.
 func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, cursor string, budget time.Duration) (SearchResult, error) {
+	res, err := e.search(ctx, q, limit, asc, cursor, budget, false)
+	if errors.Is(err, errRefill) {
+		res, err = e.search(ctx, q, limit, asc, cursor, budget, true)
+	}
+	return res, err
+}
+
+// errRefill is a second pass that couldn't read a block of the first's.
+var errRefill = errors.New("flows: a block of the page is gone")
+
+// search is one try at a page; final drops the hits of a block the second
+// pass can't read, else that's errRefill.
+func (e *Engine) search(ctx context.Context, q Query, limit int, asc bool, cursor string, budget time.Duration,
+	final bool) (SearchResult, error) {
 	qk := q.key("search", asc)
 	var after *hitKey
 	if cursor != "" {
@@ -921,7 +942,7 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		}
 		res.Cursor = encodeCursor(k, qk, &q)
 	}
-	if err := e.fill(ctx, &res); err != nil {
+	if err := e.fill(ctx, &res, final); err != nil {
 		return SearchResult{}, err
 	}
 	return res, nil
@@ -929,9 +950,15 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 
 // fill reads the blocks holding a page's hits again with every column and
 // fills their records (the second pass). A block that can no longer be read
-// (retention deleted its segment since) drops its hits, as an unreadable
-// block's are skipped.
-func (e *Engine) fill(ctx context.Context, res *SearchResult) error {
+// (retention deleted its segment since) is errRefill, or with final drops
+// its hits, as an unreadable block's are skipped. The hits' extras are
+// copied into the page's own buffers: a decoded block's extras share a
+// copy of the whole column, which a page holding one row of each of many
+// blocks would otherwise keep alive (about 230 KiB a hit).
+func (e *Engine) fill(ctx context.Context, res *SearchResult, final bool) error {
+	if e.fillHook != nil {
+		e.fillHook()
+	}
 	type blockKey struct {
 		src   *segRef
 		block int
@@ -1050,6 +1077,9 @@ more:
 		return err
 	}
 	if firstErr != nil {
+		if !final {
+			return errRefill
+		}
 		e.o.Logger.Warn("flows: a block couldn't be read again; its hits are left out", "err", firstErr)
 	}
 	out := res.Hits[:0]
@@ -1060,7 +1090,41 @@ more:
 		}
 	}
 	res.Hits = out
+	ownExtras(res.Hits)
 	return nil
+}
+
+// ownExtras copies the hits' extras (lists and values) into two buffers of
+// the page's own, keeping nil and empty lists and values as they are.
+func ownExtras(hits []Hit) {
+	var nx, nv int
+	for i := range hits {
+		for _, x := range hits[i].Record.Extras {
+			nx++
+			nv += len(x.Value)
+		}
+	}
+	if nx == 0 {
+		return
+	}
+	xs := make([]flow.Extra, 0, nx)
+	vals := make([]byte, 0, nv)
+	for i := range hits {
+		r := &hits[i].Record
+		if len(r.Extras) == 0 {
+			continue // nil or empty: no shared memory
+		}
+		o := len(xs)
+		for _, x := range r.Extras {
+			if len(x.Value) > 0 {
+				v := len(vals)
+				vals = append(vals, x.Value...)
+				x.Value = vals[v:len(vals):len(vals)]
+			}
+			xs = append(xs, x)
+		}
+		r.Extras = xs[o:len(xs):len(xs)]
+	}
 }
 
 // openSegForFill opens a closed segment, or one another process has been
