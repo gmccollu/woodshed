@@ -68,9 +68,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   2.0.0-rc1 binary can't open a schema-9 index ("newer than this build supports"): after running this version, don't
   go back to rc1 with the same data folder.
 - A restart keeps each flow exporter's last 24 hours (records, late, without a template, malformed, sequence gaps,
-  duplicates, times off arrival), its last-seen time and its sampling and interface names in `GET /api/flows`,
-  `woodshed flow status` and the device page. Templates aren't kept: records after a restart wait for the exporter's
-  next template, as before, so one changed while Woodshed was down is never decoded with the old layout.
+  duplicates, times off arrival) and its last-seen time in `GET /api/flows`, `woodshed flow status` and the device page.
+  Templates, sampling rates, interface names and system init times aren't applied from before the restart: records
+  wait for the exporter's next template and say sampling unknown until its next options data, as before, so a layout
+  or rate changed while Woodshed was down is never written into new records. `GET /api/flows` shows the rate a domain
+  had before the restart as `last_known_sampling` until then.
 - Top lists by bytes (or any metric) leave out keys with none of it, such as denied-only sources and rule IDs at 0
   bytes, and say how many: `zero_omitted` in `GET /api/flows/top`, "4 with 0 bytes not shown" in `woodshed flows top`,
   the Top and Denied views and the bundle README ("at least N" when counting was approximate); `woodshed flows top`

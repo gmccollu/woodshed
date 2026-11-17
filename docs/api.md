@@ -1319,10 +1319,13 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
   `counts_24h.sequence_gaps` counts a jump only when the conventions still in play can't explain it.
 - `counts_24h`, `time_offsets_24h` and `time_offsets_1h` survive a restart (SPEC §13.10 decision 83): at start the
   collector reloads them, for every exporter with stored counts in the last 24 hours, from the per-minute counts in
-  the index (`counts_24h.records` is then the records stored), with `last_seen` from its newest flow segment and its
-  sampling and interface names from that segment's metadata, so such an exporter is listed before it sends again.
-  Templates aren't restored: `templates` is 0 and `last_template` null until the exporter sends one, and its data
-  waits for it as usual.
+  the index (`counts_24h.records` is then the records stored), with `last_seen` from its newest flow segment, so such
+  an exporter is listed before it sends again. Nothing that shapes a stored record is restored: `templates` is 0 and
+  `last_template` null until the exporter sends one (its data waits as usual), and `sampling` is 0 (records say
+  sampling unknown) until its options data gives a rate. Meanwhile `domains[].last_known_sampling` shows the rate the
+  newest segment's metadata had before the restart, for context only: it's never applied, and it's absent once the
+  domain has a rate of its own or when nothing was stored. Interface names and system init times come back only from
+  the exporter's options data too.
 - `time_offsets_24h` and `time_offsets_1h` (since 2.0, SPEC §13.10 decision 70): the exporter's records, over the last
   24 hours (by hour) and the last hour (by 5 minutes), whose flow end was more than 1 h after the datagram arrived
   (`ahead`) or more than 24 h before it (`behind`), and the largest offset each way in ms (`0` when none). Such records

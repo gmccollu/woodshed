@@ -16,12 +16,14 @@ import (
 // last 24 hours, for the collector at start (SPEC §13.10 decision 83): its
 // counts by hour (and its times off arrival by 5 minutes for the last hour)
 // from type_stats, when it last stored a flow datagram, and the newest
-// segment's metadata (sampling, interface names) from its footer. Never its
-// templates: data after a restart waits for the exporter's own.
+// segment's sampling rates from its footer, shown as "last known" only.
+// Nothing that shapes a stored record (templates, sampling, system init
+// times, interface names) is applied: data after a restart waits for the
+// exporter's own.
 //
 // It runs before the listener starts, so it's bounded: restoreBudget for the
 // whole, the index queries first, then one footer read per exporter while
-// the budget lasts (an exporter past it is restored without metadata). A
+// the budget lasts (an exporter past it is restored without its last known rates). A
 // failure leaves an exporter (or everything) out: the collector then starts
 // empty, as before.
 func (b *backend) flowRestore(dataDir string) []flow.Restored {
@@ -86,7 +88,7 @@ func (b *backend) flowRestore(dataDir string) []flow.Restored {
 		out = append(out, *r)
 	}
 	if skipped > 0 {
-		b.log.Warn("flows: restoring exporters' metadata ran out of time; the rest learn it from their next options data", "exporters", skipped)
+		b.log.Warn("flows: restoring exporters' last known sampling ran out of time; the rest show none until their next options data", "exporters", skipped)
 	}
 	return out
 }
