@@ -273,6 +273,9 @@ CREATE INDEX poll_hourly_hour ON poll_hourly (hour);
 	// 7 -> 8: flows (SPEC §13.2, §13.9): flow_segments and flow_minute, both
 	// derived from the segments' footers (flow.go).
 	flowMigration,
+	// 8 -> 9: the flow collector's counts per exporter and minute (SPEC
+	// §13.10 decisions 82 and 83), in type_stats beside msgs and bytes.
+	flowCountsMigration,
 }
 
 // CurrentSchema is the schema version this build writes.

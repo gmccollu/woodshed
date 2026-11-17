@@ -13,8 +13,10 @@ import (
 // kept). raw gets each set or packet stored undecoded (SPEC §13.1.3); its Data
 // and Header are the collector's own copies. Data that arrives before its
 // template waits in the pending buffer and comes out later, through the emit
-// of the Decode (or raw of the Expire) that resolves it.
-func (c *Collector) Decode(p Packet, emit func(*Record), raw func(*RawSet)) {
+// of the Decode (or raw of the Expire) that resolves it. It returns the
+// datagram's counts (also added to the exporter's), so the caller can store
+// them with its records (SPEC §13.10 decision 82).
+func (c *Collector) Decode(p Packet, emit func(*Record), raw func(*RawSet)) Counts {
 	now := p.Received.UnixMilli()
 	c.expireAt(now, raw)
 	addr := p.From.Addr().Unmap()
@@ -23,8 +25,7 @@ func (c *Collector) Decode(p Packet, emit func(*Record), raw func(*RawSet)) {
 	b := p.Data
 	if len(b) < 2 {
 		ds.malformed(b, 0, nil, 0)
-		ds.flush()
-		return
+		return ds.flush()
 	}
 	switch v := binary.BigEndian.Uint16(b); v {
 	case V5:
@@ -36,7 +37,7 @@ func (c *Collector) Decode(p Packet, emit func(*Record), raw func(*RawSet)) {
 	default:
 		ds.malformed(b, uint8(min(v, 255)), nil, 0)
 	}
-	ds.flush()
+	return ds.flush()
 }
 
 // Expire moves data that has waited for its template longer than the
@@ -70,13 +71,14 @@ type decState struct {
 	off      TimeOffsets // records whose flow time is far from their arrival (timeoff.go)
 }
 
-func (ds *decState) flush() {
+func (ds *decState) flush() Counts {
 	if ds.counts != (Counts{}) {
 		ds.e.count(ds.received, ds.counts)
 	}
 	if ds.off.Any() {
 		ds.e.countOff(ds.received, ds.off)
 	}
+	return ds.counts
 }
 
 func clone(b []byte) []byte { return append([]byte(nil), b...) }

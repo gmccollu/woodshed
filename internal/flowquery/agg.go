@@ -204,7 +204,9 @@ func strKind(by string) kind[strK] {
 // aggregator is a top-N aggregation of one key kind.
 type aggregator interface {
 	newLocal() local
-	rows(n int) []Row
+	// rows are the top n with some of the metric, and how many keys have
+	// none (never listed).
+	rows(n int) ([]Row, int64)
 	approx() bool
 	errorBound() int64
 	keys() int
@@ -478,16 +480,23 @@ func (a *agg[K]) errorBound() int64 {
 	return b
 }
 
-// rows are the top n by the metric, ties by key; labels are built only for
-// rows that make it.
-func (a *agg[K]) rows(n int) []Row {
-	if n <= 0 {
-		return nil
-	}
+// rows are the top n by the metric, ties by key, leaving out (and counting)
+// the keys with none of it; labels are built only for rows that make it.
+func (a *agg[K]) rows(n int) ([]Row, int64) {
 	sel := topSel{metric: a.metric, n: n}
 	var scratch []byte
+	var zero int64
 	consider := func(k K, s *Sums, err int64, approx bool) {
 		m := s.Metric(a.metric)
+		if m <= 0 {
+			// A key with none of the metric isn't ranked by it (SPEC §13.3):
+			// it's counted instead, so lists can say how many were left out.
+			zero++
+			return
+		}
+		if n <= 0 {
+			return
+		}
 		if len(sel.h) >= n {
 			w := sel.h[0]
 			if m < w.m {
@@ -518,12 +527,15 @@ func (a *agg[K]) rows(n int) []Row {
 		}
 		sh.mu.Unlock()
 	}
+	if len(sel.h) == 0 {
+		return nil, zero
+	}
 	out := make([]Row, len(sel.h))
 	for i, it := range sel.h {
 		out[i] = it.row
 	}
 	sortRows(out, a.metric)
-	return out
+	return out, zero
 }
 
 func sortRows(rows []Row, metric string) {

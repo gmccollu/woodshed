@@ -403,7 +403,11 @@ type FlowTopPage struct {
 	Total  FlowTopTotal `json:"total"`
 	Rows   []FlowTopRow `json:"rows"`
 	Other  FlowTopOther `json:"other"`
-	Approx bool         `json:"approx"`
+	// ZeroOmitted counts the keys with none of the metric: they're never
+	// rows (a denied-only source has 0 bytes), though Total and Other count
+	// their records.
+	ZeroOmitted int64 `json:"zero_omitted"`
+	Approx      bool  `json:"approx"`
 	// ErrorBound: past the exact limit, a key in neither table has at most
 	// this much of the metric (0 while exact); any key not in rows has at
 	// most the larger of it and the last row's value.

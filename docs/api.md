@@ -1317,6 +1317,12 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
   its stream: `"rfc"` (RFC 7011 §3.1: the data records sent before the message) or `"after"` (counting the message's
   own records too). Absent while undecided (messages of equal size don't tell them apart) and for v5 and v9.
   `counts_24h.sequence_gaps` counts a jump only when the conventions still in play can't explain it.
+- `counts_24h`, `time_offsets_24h` and `time_offsets_1h` survive a restart (SPEC §13.10 decision 83): at start the
+  collector reloads them, for every exporter with stored counts in the last 24 hours, from the per-minute counts in
+  the index (`counts_24h.records` is then the records stored), with `last_seen` from its newest flow segment and its
+  sampling and interface names from that segment's metadata, so such an exporter is listed before it sends again.
+  Templates aren't restored: `templates` is 0 and `last_template` null until the exporter sends one, and its data
+  waits for it as usual.
 - `time_offsets_24h` and `time_offsets_1h` (since 2.0, SPEC §13.10 decision 70): the exporter's records, over the last
   24 hours (by hour) and the last hour (by 5 minutes), whose flow end was more than 1 h after the datagram arrived
   (`ahead`) or more than 24 h before it (`behind`), and the largest offset each way in ms (`0` when none). Such records
@@ -1385,7 +1391,7 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
  "rows": [{"key": "10.20.0.5", "label": "10.20.0.5", "flows": 40211, "bytes": 5642000000, "packets": 4100000,
            "bytes_scaled": 564200000000, "packets_scaled": 410000000, "scaled_lower_bound": false, "connections": 40000,
            "share": 0.31, "first": "2026-11-16T09:00:02Z", "last": "2026-11-16T09:59:58Z", "approx": false, "max_error": 0}],
- "other": {"flows": 1000000, "bytes": 9000000000},
+ "other": {"flows": 1000000, "bytes": 9000000000}, "zero_omitted": 4,
  "approx": false, "error_bound": 0,
  "progress": {"blocks_done": 1800, "blocks_total": 1800, "records_done": 1204332, "records_total": 1204332,
               "complete_from": "2026-11-16T09:00:00Z"},
@@ -1393,6 +1399,10 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
 ```
 - `key` for `conversation` is `"a ↔ b"` with the lower address first (both directions summed); for ports
   `"tcp/443"`; for interfaces the index, with the name as `label`.
+- A key with none of the metric is never a row: a top by bytes doesn't list denied-only sources, rule IDs or ports at
+  0 bytes after the others. `zero_omitted` counts those keys (the CLI, the Top panel and the bundle README say "4 with 0
+  bytes not shown"); with `approx: true` it's a lower bound ("at least 4"). `total` is unchanged; `other` now holds the
+  left-out keys too, which adds to its `flows` but nothing to the ranked metric. Decided (build, 2026-11-17).
 - `share` is of the metric's exported total. `scaled_complete` is false when some records had unknown sampling; a row
   whose records include any is a lower bound (`scaled_lower_bound: true`, shown with "≥").
 - "Top denied sources" is `by=src&fw_event=denied`. Totals follow SPEC §13.2.1's no-double-count rule for event
@@ -1446,13 +1456,25 @@ v9 vendor-range field type is `{"pen": 0, "id": 40003, …}` (the whole type), t
   "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
   "fw_events": {"created", "deleted", "denied"}, "top_denied_sources": [{"key", "count"}], "top_denied_ports": [...],
   "nat_connections", "top_post_nat_sources": [...],
-  "sequence_gaps", "lost_estimate", "no_template", "malformed",
-  "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps`,
-  `lost_estimate` and `time_offsets_24h` are the collector's last 24 hours (`null` from `woodshed bundle`, which has no
-  collector); `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
+  "zero_omitted": {"top_talkers", "top_dst_ports", "top_conversations", "top_denied_sources", "top_denied_ports",
+  "top_post_nat_sources"},
+  "sequence_gaps", "lost_estimate", "sequence_gaps_span": {"from", "to", "by_hour", "partial"}, "sequence_gaps_unknown",
+  "sequence_gaps_24h", "lost_estimate_24h", "no_template", "malformed",
+  "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps` and
+  `lost_estimate` are the window's: the gaps counted in datagrams that arrived in it, from the per-minute counts
+  (SPEC §13.10 decision 82), over `sequence_gaps_span`: the window in whole minutes, its start widened to the hour
+  (`by_hour`) when part of it is older than a day, and with `partial` from the 7-day retention cutoff when the window
+  starts before it. They're `null` when not known, with `sequence_gaps_unknown` `"not_kept"` (the window ends before
+  the 7 days the counts are kept), `"nothing_received"` (no flow datagram arrived in it) or `"not_counted"` (part of
+  it was stored by 2.0.0-rc1). `woodshed bundle` gives them too. `sequence_gaps_24h`, `lost_estimate_24h` and
+  `time_offsets_24h` are the running collector's last 24 hours before the bundle was made, not limited to the window
+  (`null` from `woodshed bundle`); the README shows the 24-hour gaps only when the window's aren't known, labelled as
+  such. `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
   defines it). `time_offsets_24h` can count records the window doesn't hold: they're at their own times. The README's
   Flows block gets a "times off arrival" line when either is non-zero. Entries whose count is 0 are left out of the top
-  lists, which hold at most 3.
+  lists, which hold at most 3; `zero_omitted` says how many keys each list left out that way (bytes for the share lists,
+  flow records for the denied ones; `approx`: some list was counted approximately, so the counts are lower bounds), and
+  the README adds "(4 with 0 bytes not shown)" (or "at least 4") after the list.
 
 ### Banners
 - `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives

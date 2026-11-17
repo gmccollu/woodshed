@@ -43,7 +43,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   `flows.ipfix` (an RFC 5655 IPFIX file; flow v9 vendor-range fields are in it as enterprise fields under enterprise
   number 0, and it reads back record for record) and, when there are undecoded sets, `raw.txt`. The bundle README
   gains a Flows block per device (top talkers, ports, conversations, firewall events, top denied sources and ports, NAT,
-  sequence gaps). **Leave flows out** is offered before building, pre-selected for a long window with large flows; a
+  and the sequence gaps counted in the window, by when the datagrams arrived). **Leave flows out** is offered before building, pre-selected for a long window with large flows; a
   zip holds at most 20 million flow records per device.
 - **Set up a device** (**Connect** in the menu): the configuration a device needs to send Woodshed its syslog (UDP,
   TCP or TLS), SNMP traps (v2c or v3) or flows, or to let Woodshed poll it, filled in with this server's addresses,
@@ -63,8 +63,23 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - Retention: flows have their own budget, `storage.flow_budget_bytes`, 40 % of the storage cap by default. While they
   exceed it the oldest flows are deleted first, fair-shared between exporters, before any other data; the low-disk
   guard deletes flows first too. With no flows nothing changes.
-- The index migrates once (schema 8: `flow_segments`, `flow_minute`). Downgrading to 1.x keeps every syslog, trap and
-  poll file and loses access to flows.
+- The index migrates once (schema 9: `flow_segments`, `flow_minute`, and the flow collector's counts per exporter and
+  minute in the stats tables). Downgrading to 1.x keeps every syslog, trap and poll file and loses access to flows. A
+  2.0.0-rc1 binary can't open a schema-9 index ("newer than this build supports"): after running this version, don't
+  go back to rc1 with the same data folder.
+- A restart keeps each flow exporter's last 24 hours (records, late, without a template, malformed, sequence gaps,
+  duplicates, times off arrival), its last-seen time and its sampling and interface names in `GET /api/flows`,
+  `woodshed flow status` and the device page. Templates aren't kept: records after a restart wait for the exporter's
+  next template, as before, so one changed while Woodshed was down is never decoded with the old layout.
+- Top lists by bytes (or any metric) leave out keys with none of it, such as denied-only sources and rule IDs at 0
+  bytes, and say how many: `zero_omitted` in `GET /api/flows/top`, "4 with 0 bytes not shown" in `woodshed flows top`,
+  the Top and Denied views and the bundle README ("at least N" when counting was approximate); `woodshed flows top`
+  exits 0 when records matched but every key had 0. Shares under 10 % in the README get a decimal and tiny ones read
+  "<0.1 %", as in the Top view, instead of "0 %".
+- `woodshed send` over UDP (syslog, traps and flows) keeps sending when the receiver restarts: a refusal (ICMP port
+  unreachable) after the first second is reported in the summary (when, and how many, a lower bound on the loss) and
+  the datagram sent again. A port that refuses from the start still stops it at once ("nothing is listening"). On
+  Windows a UDP refusal is never detected, so a send there never stops for one.
 - `woodshed snmp status` and `woodshed tls status` check the config first, as `woodshed run`, `reindex` and `flow
   status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
 

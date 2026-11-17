@@ -289,7 +289,9 @@ upgrade opens no new port.
 2. On each exporter (a router, a switch, a firewall, or `softflowd` on a Linux host), set the flow exporter or
    collector to this computer and the port, flow v9 or IPFIX if it offers them, v5 otherwise.
 3. Open **Events → Flows**. Exporters usually send templates every few minutes, so the first records of a v9 or IPFIX
-   exporter can take that long to decode (they wait, and are decoded when the template arrives).
+   exporter can take that long to decode (they wait, and are decoded when the template arrives). The same happens after
+   Woodshed restarts: templates aren't kept across a restart (one the exporter changed meanwhile must never decode with
+   the old layout), but each exporter's last 24 hours' counts, sampling and interface names are.
 
 **What's kept.** Each record's addresses, ports, protocol, TCP flags, packets and bytes, interfaces (with names when
 the exporter sends them as options data), AS numbers, next hop, VLAN, its flow start and end, and for event-style
@@ -337,7 +339,9 @@ comes, the data is kept undecoded (`status=no_template`), and so are malformed p
 dropped silently. When the template turns up later in the same hour, searches, Top and exports decode the kept data
 on read (marked `late`), and `woodshed reindex --flows-redecode` (with the service stopped) rewrites the segments with
 it decoded. Sequence numbers show loss between the exporter and Woodshed: **Settings → Flows** and
-`woodshed flow status` give each exporter's gaps, duplicates, late and undecoded counts.
+`woodshed flow status` give each exporter's gaps, duplicates, late and undecoded counts for the last 24 hours, and a
+bundle's README the gaps counted in its own window ("sequence gaps 3 (≈ 90 records lost before Woodshed) in this
+window"), kept per minute for a day and per hour for 7 days.
 
 **Where it's kept.** Flows are a fourth kind of data, stored as compact columnar segments, one per device per hour
 (`logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf`), at about 20 bytes a record (an exporter sending 1,000 records a second

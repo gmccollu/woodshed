@@ -71,6 +71,9 @@ type SendResult struct {
 	// Backpressure counts sends the OS refused for lack of buffer space (UDP
 	// ENOBUFS) and that were retried; no message is skipped for it.
 	Backpressure int
+	// Refused is the refusals (ICMP port unreachable) after the receiver had
+	// been listening; each datagram was sent again (RefusedGrace).
+	Refused Refusals
 	// Informs holds the Responses' results for Proto "trap" with Trap.Inform.
 	Informs *InformStats
 }
@@ -243,6 +246,8 @@ func sendUDP(ctx context.Context, o *SendOptions, res *SendResult) error {
 	defer c.Close()
 	p := pacer{start: time.Now(), rate: o.Rate}
 	buf := make([]byte, 0, o.Size+128)
+	var ref refusals
+	defer func() { res.Refused = ref.result() }()
 	for res.Sent < o.Count {
 		for due := p.due(o.Count); res.Sent < due; {
 			buf = message(buf[:0], o, o.FirstSeq+res.Sent, time.Now())
@@ -259,12 +264,20 @@ func sendUDP(ctx context.Context, o *SendOptions, res *SendResult) error {
 					continue
 				}
 				if isConnRefused(err) {
-					// ICMP port unreachable from an earlier datagram: nothing is
-					// listening. Report it rather than spin.
-					return fmt.Errorf("loadgen: %s: nothing is listening (connection refused)", o.Addr)
+					// ICMP port unreachable from an earlier datagram: fatal while
+					// nothing has ever answered; later, a restart: count it and
+					// send this message again.
+					if ref.refused(time.Now()) {
+						return notListening(o.Addr)
+					}
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					continue
 				}
 				return fmt.Errorf("loadgen: %w", err)
 			}
+			ref.wrote(time.Now())
 			res.Sent++
 		}
 		if err := p.wait(ctx, res.Sent); err != nil {

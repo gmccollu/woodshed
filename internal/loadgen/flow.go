@@ -101,6 +101,9 @@ type FlowResult struct {
 	Elapsed      time.Duration
 	Rate         float64 // records per second
 	Backpressure int
+	// Refused is the refusals after the collector had been listening
+	// (RefusedGrace); each packet was sent again.
+	Refused Refusals
 }
 
 func (o *FlowOptions) defaults() error {
@@ -694,13 +697,13 @@ func MatchRun(tag, runID string) bool {
 
 // SendFlows sends a flow run to o.Addr over UDP, paced at o.Rate records a
 // second. log, if set, gets each packet's expected records as it goes out.
-func SendFlows(ctx context.Context, o FlowOptions, log func([]Expected)) (FlowResult, error) {
+func SendFlows(ctx context.Context, o FlowOptions, log func([]Expected)) (res FlowResult, err error) {
 	g, err := NewFlowGen(o, time.Now())
 	if err != nil {
 		return FlowResult{}, err
 	}
 	o = g.o
-	res := FlowResult{RunID: o.RunID}
+	res = FlowResult{RunID: o.RunID}
 	var d net.Dialer
 	if o.Source != "" {
 		a, err := netip.ParseAddr(o.Source)
@@ -716,6 +719,8 @@ func SendFlows(ctx context.Context, o FlowOptions, log func([]Expected)) (FlowRe
 	defer c.Close()
 	start := time.Now()
 	p := pacer{start: start, rate: o.Rate}
+	var ref refusals
+	defer func() { res.Refused = ref.result() }() // res is the named result: set on every return
 	for !g.Done() {
 		for g.sent < p.due(o.Count) && !g.Done() {
 			pkt, exp := g.Next(time.Now())
@@ -733,10 +738,19 @@ func SendFlows(ctx context.Context, o FlowOptions, log func([]Expected)) (FlowRe
 					continue
 				}
 				if isConnRefused(err) {
-					return res, fmt.Errorf("loadgen: %s: nothing is listening (connection refused)", o.Addr)
+					// Fatal while nothing has ever answered; later, the
+					// collector restarting: count it and send the packet again.
+					if ref.refused(time.Now()) {
+						return res, notListening(o.Addr)
+					}
+					if ctx.Err() != nil {
+						return res, ctx.Err()
+					}
+					continue
 				}
 				return res, fmt.Errorf("loadgen: %w", err)
 			}
+			ref.wrote(time.Now())
 			res.Packets++
 			res.Records += len(exp)
 			if log != nil {

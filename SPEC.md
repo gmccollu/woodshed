@@ -2789,7 +2789,9 @@ templates that use the same field type numbers are read the same way.
 - A new `flow_minute` table (device, minute, records, bytes, packets, and scaled bytes and packets where sampling is
   known): each record's bytes and packets spread evenly over the minutes its `[start, end]` covers. It serves the
   unfiltered flow histogram and the timeline strip without reading segments, and lives as long as its segments.
-- `type_stats` counts flow records by received minute like any type (rates, totals, fair-share weights).
+- `type_stats` counts flow records by received minute like any type (rates, totals, fair-share weights), and keeps
+  the collector's counts per exporter beside them: sequence gaps, lost records, duplicates, late, `no_template`,
+  `malformed` and times off arrival (§13.10 decisions 82 and 83).
 - **Reindex** reads each segment's footer (or recovers it, as above) and rebuilds `files`, `flow_segments` and
   `flow_minute` from it. `--flows-redecode` also re-reads raw sections with the segment's templates.
 
@@ -2845,6 +2847,9 @@ rule_id, time_source, status, extras}}`. There's no `raw`: a record isn't a line
 - each row has the exported count, the scaled count (when every record behind it has a known sampling rate; with
   some unknown, the scaled value is a lower bound marked `≥`), its share of the window's total, and `first`/`last`
   flow times.
+- **A key with none of the metric is never a row** (§13.10 decision 80): a top by bytes doesn't end with denied-only
+  sources, rule IDs or ports at 0 bytes. `zero_omitted` counts them, and every top list (the CLI, the Top and Denied
+  views, the bundle README) says "4 with 0 bytes not shown" when there are any. Totals still count their records.
 - **Exact vs sampled:** exported counts are exact (what the exporter reported); scaled counts multiply each record by
   its own sampling rate. Both are shown whenever any record was sampled: "312 MB exported (≈ 312 GB at 1:1000)".
   Nothing is scaled silently, and `sampling: 0` records are never scaled.
@@ -2909,7 +2914,7 @@ for a plain export stays `["syslog"]` (§13.9). One zip, one manifest, one folde
                  firewall events: 48,210 created, 47,902 deleted, 3,114 denied
                  top denied sources: 203.0.113.50 1,920, 198.51.100.23 411; top denied ports: tcp/23 1,204, tcp/445 870
                  NAT: 41,377 translated connections; top post-NAT sources: 192.0.2.10 88 %
-                 sequence gaps 3 (≈ 90 records lost before Woodshed); waiting for a template 0; malformed 0
+                 sequence gaps 3 (≈ 90 records lost before Woodshed) in this window; waiting for a template 0; malformed 0
 ```
 and the manifest's summary gains the same numbers as JSON. When any record is far from its arrival time (decision
 70), a line before the sequence gaps says so: `times off arrival: 1 ahead (up to 1.2 h) in this window; 3,600 ahead
@@ -3208,10 +3213,12 @@ Made while building it, each **decided (build, 2026-11-16)**:
 40. `raw.txt` lines: `<received, RFC 3339 UTC ms> <status> v<version> domain=<id> template=<id> <base64 of the set>`.
 41. The estimate's bytes are 225 B a record for the CSV and 95 B for the IPFIX file, uncompressed (measured 205–242
     and 92–95 on the fixtures). The 20,000,000 cap is checked at create, when a bundle resolves, and while writing.
-42. The bundle README's sequence gaps are the collector's last-24-hour counts and say so (only the running collector
-    keeps them; `woodshed bundle` says they aren't known). The firewall-event, denied and NAT lines appear only with
+42. The bundle README's sequence gaps are the window's own, from the per-minute counts in the index, and say so
+    ("… in this window"); **decided (build, 2026-11-17)**, replacing "the collector's last-24-hour counts" (decision
+    82). The firewall-event, denied and NAT lines appear only with
     something to count; scaled figures only when a rate above 1 is known, with "≥" when some sampling is unknown;
-    top lists hold 3 entries; "translated connections" count NAT create events.
+    top lists hold 3 entries, none with 0 of the list's metric (decision 80), with shares as decision 81 writes
+    them; "translated connections" count NAT create events.
 43. `flows.ipfix` writes columns as their IANA IEs at fixed lengths (the received time as
     collectionTimeMilliseconds, 258), extras as they came, interface names as options data before the records that
     use them, and opens each domain with an options record whose observationDomainName says "Written by Woodshed
@@ -3557,6 +3564,89 @@ the connection; present since 1.0):
       A connection's first frame stays ambiguous (it may be a line starting with digits).
     - **Torn markers:** a reader drops lengths that can't be right and takes a torn flag name as its flag, so a later
       flag's name must not be the start of an earlier one's; recovery finishes a torn last line with ` \#incomplete`.
+
+**From the 2.0.0-rc1 lab run, decided (build, 2026-11-17):**
+80. **Top lists leave out keys with 0 of their metric.** A top by bytes listed denied-only rule IDs, firewall-event
+    values and ports at 0 bytes after the non-zero rows, which reads as data where there's none. A top-N by a metric
+    now ranks only keys with some of it; `/api/flows/top` gives `zero_omitted` (how many keys had 0), `woodshed flows
+    top` ends its last line with "; 4 with 0 bytes not shown", the Top and Denied views add it to the total line, and
+    the bundle manifest's summary has `zero_omitted` per list, which the README puts after the list ("… (4 with 0
+    bytes not shown)", or "none (…)" when every key had 0). Totals are unchanged; `other` now holds the left-out keys,
+    which adds to its flow count but nothing to the ranked metric. The count covers the keys counted exactly or held in
+    the approximate table; a key the approximate table never held isn't known, so with `approx` it's a lower bound and
+    every surface says "at least N". `woodshed flows top` exits 0 when records matched but every key had 0 of the
+    metric (the note says so), 1 only when nothing matched, since scripts read the exit code as "found anything".
+81. **Small shares never read "0 %".** The README rounded every share to a whole percent, so a 0.31 % conversation
+    read "0 %". Options: "<1 %" under 0.5 %, or a decimal under 1 %. Chosen: the rule the UI's Top panel already used,
+    now the README's too (and the bundle preview's): whole percents from 10 %, one decimal under that ("4.2 %",
+    "0.3 %"), and "<0.1 %" for a non-zero share under 0.1 %. It keeps the README and the UI identical and the UI's
+    existing strings unchanged, and a decimal says more than "<1 %" where small shares are the point (a scan's share
+    of a window). The manifest's shares are rounded to 0.01 % and never below it for a listed key
+    (review, 2026-11-17: 1 byte in a million rounded to 0 and read "0 %").
+82. **Sequence gaps in a bundle are the window's.** The README said "sequence gaps 849 (≈ 37,498 lost, last 24 h)"
+    for a window with none: the collector's 24-hour ring counted a burst hours earlier, which in an incident bundle
+    reads as loss inside the window. Options weighed: label the 24-hour count unmistakably (honest, but the number
+    stays the wrong one for the question a bundle answers); add gap counts to the segment footer (a format change,
+    and a crash's recovered footer would lose them); a `flow_minute` column (that table is rebuilt from the footers
+    at every start, so the counts would vanish); **the per-minute stats rows**. Chosen: `type_stats` (and its hourly
+    rollup) gain the collector's counts per exporter and minute by arrival (index migration 8 -> 9): sequence gaps,
+    the records they stand for, duplicates, late records, raw sets by status, and times off arrival (counts and
+    maxima). They're what the collector saw, written with the minute's records (a datagram with only a gap counts
+    too and opens no segment), bounded like the other stats (per minute for 24 h, per hour for 7 days), and kept by
+    `reindex`, which can't derive them. A `flow_counted` flag tells "no gaps" from "not counted" (2.0.0-rc1 rows).
+    - The README's line: "sequence gaps 3 (≈ 90 records lost before Woodshed) in this window"; for a window partly
+      older than a day, "… in 2026-11-15 14:00–16:23 UTC (from the hour: counts older than a day are kept by the
+      hour)"; for a window that starts before the 7 days the counts are kept, "… in <cutoff hour>–<end> UTC only
+      (Woodshed keeps the counts 7 days, and this window starts earlier)", counted from the cutoff only (review,
+      2026-11-17: a pruned burst left a 10-day window reading as a known 1). When not known it says why, one of
+      three: the window ends before the 7 days ("Woodshed keeps them 7 days"), no flow datagram arrived in it, or
+      part was stored by 2.0.0-rc1. Only then does it add "collector sequence gaps in the 24 h before this bundle was
+      made (not limited to this window): …".
+    - The manifest: `sequence_gaps` and `lost_estimate` are the window's (`null` when not known), with
+      `sequence_gaps_span` (`from`, `to`, `by_hour`, `partial`) and `sequence_gaps_unknown` (`not_kept`,
+      `nothing_received`, `not_counted`); the collector's are `sequence_gaps_24h` and `lost_estimate_24h`. `woodshed
+      bundle` now has the window's gaps too.
+    - A minute counts when it starts in the window (the dropped and truncated counts' rule): gaps are by when the
+      datagram arrived, records by their own flow time, so a record far from its arrival (decision 70) can be in a
+      window whose gaps don't cover its datagram.
+83. **A restart keeps the collector's last 24 hours, never the templates.** The collector's per-exporter state lived
+    in memory only (lab phase 8): after a restart `/api/flows` listed no exporters, and `woodshed flow status` and the
+    bundle's 24-hour numbers started from 0. At start the collector now restores, for every exporter with stored
+    counts in the last 24 hours:
+    - its counts by hour (records stored, late, `no_template`, `malformed`, sequence gaps, lost, duplicates) and its
+      times off arrival (by hour, and by 5 minutes for the last hour, the `flow_time` banner's window), from the
+      per-minute counts of decision 82. The since-start counts stay 0;
+    - "last seen": when its newest flow segment last stored a datagram (not the device's `last_heard`, which syslog
+      and traps move too);
+    - from that segment's footer, the metadata: sampling per scope and sampler, system init times and interface
+      names, where the exporter hasn't sent them yet. Options records kept raw aren't restored: the segments keep
+      them, and the next options data refreshes them.
+
+    **Templates are never restored into the decoder**, decided (review, 2026-11-17), reversing this decision's first
+    version, which loaded the newest segment's templates. A template the exporter changed while Woodshed was down
+    would have decoded the next data with the old layout (a shorter remainder reads as padding), stored for good as
+    decoded records with nothing to catch it; and the footer has no template's last refresh time, only the
+    segment's last datagram. Correctness beats a faster start: data after a restart waits for the exporter's own
+    template as it always did (pending, then kept raw, with decode-on-read later), and "last template" stays unset
+    until it arrives. Sequence state isn't restored either: the first message after a restart sets the baseline, so
+    the downtime isn't counted as a gap (Woodshed's own downtime shows in the bundle's gaps instead). The index
+    queries and one footer read per exporter heard in the last day run before the listener starts, within a 10 s
+    budget; an exporter past it is restored without metadata.
+84. **`woodshed send` keeps going through a receiver's restart.** Over UDP a refusal is the OS reporting, on a later
+    send, an ICMP port unreachable for an earlier datagram. The sender treated every one as fatal ("nothing is
+    listening"), so a run stopped whenever the receiver restarted, which a real exporter doesn't do. Options: a
+    `--keep-going` flag (one more thing to know, and the default would still stop at a restart), or telling the two
+    cases apart. Chosen: a refusal before the sender has gone 1 s (`loadgen.RefusedGrace`) without one still stops it
+    at once, since nothing has answered (an ICMP reply on a LAN takes milliseconds, so a closed port is caught well
+    within it); after that the receiver had been listening, so the refusal is counted, the datagram is sent again
+    (the OS returned the error instead of sending it), and sending goes on. The summary line gives when the refusals
+    came (first to last) and how many were reported, called a lower bound: the OS keeps one pending error per socket
+    and ICMP replies are rate-limited, so far more datagrams are lost than reported (about 60 to 1 in the review's
+    measurement). The same rule covers syslog over UDP, traps (sends and an inform's reply reader; SNMPv3 discovery
+    still needs an answer) and flows (`woodshed send --proto flow-v5|flow-v9|ipfix`); every retry checks for an
+    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows a UDP refusal is never detected**:
+    Go turns off connection-reset reporting on Windows UDP sockets (`SIO_UDP_CONNRESET`), so a send there never stops
+    for one, before or after the grace, and the summary has none.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
