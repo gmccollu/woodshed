@@ -80,3 +80,25 @@ the verifyseq JSON lines and the samples.
   lab's own tooling with that run's test secrets (never in this repo).
 - `remote/linux-lab.sh` and `remote/win-lab.ps1` are the VM-side halves; `wl stage` copies them with verifyseq,
   the package and the portable binary.
+
+## Flows (2.0)
+
+- `wl-send --proto flow-v5|flow-v9|ipfix` sends `woodshed send` flow runs from the namespaces, one exporter per sender
+  (the run ID is 8 hex digits; the port is 2055, or 4739 for IPFIX). The flow options pass through
+  (`--records-per-packet`, `--domains`, `--sampling`, `--sampled-domains`, `--template-every`, `--template-first-delay`,
+  `--enterprise-ies`, `--events`, `--deny-ratio`, `--biflow`). `--flow-log` makes each sender write every record it sent
+  (`woodshed send --log`) to `/opt/woodpile-lab/runs/<run>/<time>-<pid>/flowlog-<k>.jsonl`: the ground truth for the
+  exactly-once, sum and top-N checks. Leave it off for load steps (a line per record).
+- Every WLSEND line now also carries the sender end of a UDP loss check: the namespaces' own `udp_out` and
+  `sndbuf_errors` over the send, and the parent NIC's `tx_dropped`. Compare them with `labcheck.py udp-snmp` before and
+  after on the target, and with the service's own counts: UDP has no backpressure, so a loss can be on either end or
+  in between.
+- `remote/labcheck.py`: `flow-seq` (exactly once by run and sequence number, from `woodshed search --type flow --json`,
+  with `--truth` against the senders' logs), `flow-top` (`woodshed flows top --json` against a top-N computed from the
+  logs, and a bundle manifest's flow summary), `flow-csv` (a zip's `flows.csv` row by row against the stored records),
+  `flow-ipfix` (its own reader for `flows.ipfix`: structure, records and the CSV's 5-tuples; `--tshark` compares tshark's
+  reading too), `flow-match` (a real exporter's records for one conversation), `flow-size` (segment bytes per record) and
+  `udp-snmp` (the receiving end's UDP counters and socket drops).
+- `remote/linux-lab.sh`: `ports` shows UDP 2055/4739, `sample` adds the flow sockets' kernel drops and the exporters'
+  24 h counts, and `flow-verify-detached` runs a long flow-seq as a transient unit. `wl soak` adds IPFIX records from all
+  8 senders when `LAB_SOAK_FLOW_RATE` is set, and `soak verify` then checks them exactly once (Linux targets).

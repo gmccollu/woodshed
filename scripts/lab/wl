@@ -19,7 +19,8 @@
 #   wl export TARGET             search the correctness run; export one device-day; zip vs manifest; the reboot in gaps
 #   wl reboot TARGET             reboot with a stream running: the service returns, data intact, sending resumes
 #   wl portable TARGET           the tarball/zip binary run by hand, reached from the senders
-#   wl soak TARGET start|status|stop|verify   LAB_SOAK_HOURS at LAB_SOAK_RATE from all senders, sampled on the VM
+#   wl soak TARGET start|status|stop|verify   LAB_SOAK_HOURS at LAB_SOAK_RATE from all senders, sampled on the VM;
+#                                with LAB_SOAK_FLOW_RATE, also IPFIX flow records from all 8 senders (2 domains, one sampled)
 #   wl collect TARGET            pull back the VM's logs and samples
 #   wl all TARGET                install, integrity, check, correctness, integrity, stress, integrity, reboot, integrity, export, portable, collect
 #
@@ -61,6 +62,8 @@ LAB_STRESS_SECS=${LAB_STRESS_SECS:-60}
 LAB_STRESS_MAX=${LAB_STRESS_MAX:-160000}
 LAB_SOAK_RATE=${LAB_SOAK_RATE:-3000}
 LAB_SOAK_HOURS=${LAB_SOAK_HOURS:-24}
+LAB_SOAK_FLOW_RATE=${LAB_SOAK_FLOW_RATE:-0}  # flow records/s in all during the soak (0: none)
+LAB_SOAK_FLOW_SAMPLING=${LAB_SOAK_FLOW_SAMPLING:-100}
 LAB_MSG_SIZE=${LAB_MSG_SIZE:-160}
 LAB_FW_ENABLE=${LAB_FW_ENABLE:-1}
 LAB_PORTABLE_PORT=${LAB_PORTABLE_PORT:-15514}
@@ -528,17 +531,28 @@ cmd_soak() {
 		"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --host $(tv IP) --size $LAB_MSG_SIZE --ns 6-7 --proto tcp --count $nt --rate $tcp_rate --run $r --first-seq $nu --detach woodpile-lab-soak-$target-tcp" | tee -a "$step_dir/log"
 		printf 'SOAK_RUN=%s\nSOAK_N=%s\nSOAK_START=%s\nSOAK_SECS=%s\n' "$r" $((nu + nt)) "$(date -u +%FT%TZ)" "$secs" >"$state"
 		log "soak $r started: $LAB_SOAK_RATE msg/s for $LAB_SOAK_HOURS h ($((nu + nt)) messages); state in $state"
+		if [ "$LAB_SOAK_FLOW_RATE" -gt 0 ]; then
+			local rf nf
+			rf=$(runid); nf=$((LAB_SOAK_FLOW_RATE * secs))
+			"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --host $(tv IP) --ns 0-7 --proto ipfix --count $nf --rate $LAB_SOAK_FLOW_RATE --run $rf --domains 2 --sampling $LAB_SOAK_FLOW_SAMPLING --sampled-domains 1 --detach woodpile-lab-soak-$target-flow" | tee -a "$step_dir/log"
+			printf 'SOAK_FLOW_RUN=%s\nSOAK_FLOW_N=%s\n' "$rf" "$nf" >>"$state"
+			log "soak flows $rf started: $LAB_SOAK_FLOW_RATE records/s (IPFIX, 8 exporters, 2 domains, one sampled 1 in $LAB_SOAK_FLOW_SAMPLING) ($nf records)"
+		fi
 		;;
 	status)
 		# shellcheck source=/dev/null
 		. "$state"
 		echo "soak $SOAK_RUN started $SOAK_START for $SOAK_SECS s"
 		"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --unit-status woodpile-lab-soak-$target-udp; sudo -n /opt/woodpile-lab/bin/wl-send --unit-status woodpile-lab-soak-$target-tcp" || true
+		[ -z "${SOAK_FLOW_RUN:-}" ] || "${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --unit-status woodpile-lab-soak-$target-flow" || true
 		vm soak-sampler status || true
 		vm stats || true
 		;;
 	stop)
 		"${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --unit-stop woodpile-lab-soak-$target-udp; sudo -n /opt/woodpile-lab/bin/wl-send --unit-stop woodpile-lab-soak-$target-tcp" || true
+		# shellcheck source=/dev/null
+		. "$state" 2>/dev/null || true
+		[ -z "${SOAK_FLOW_RUN:-}" ] || "${SSH[@]}" "$LAB_SENDER" "sudo -n /opt/woodpile-lab/bin/wl-send --unit-stop woodpile-lab-soak-$target-flow" || true
 		vm soak-sampler stop || true
 		echo "soak stopped (verify will then show the unsent tail as missing)"
 		;;
@@ -553,6 +567,14 @@ cmd_soak() {
 		log "verify: $(cat "$step_dir/soak-verify.json" 2>/dev/null)"
 		vm_get "$(vm_tmp)/soak-samples.csv" "$step_dir/soak-samples.csv" || true
 		check "soak: every message on disk exactly once" grep -q '"ok":true' "$step_dir/soak-verify.json"
+		if [ -n "${SOAK_FLOW_RUN:-}" ] && [ "$(tv OS)" != windows ]; then
+			local fout
+			fout=$(vm_tmp)/soak-flowverify-$SOAK_FLOW_RUN.json
+			vm flow-verify-detached "$SOAK_FLOW_RUN" "$SOAK_FLOW_N" "$fout" | tee -a "$step_dir/log"
+			for _ in $(seq 720); do vm_get "$fout" "$step_dir/soak-flowverify.json" 2>/dev/null && break; sleep 30; done
+			log "flow verify: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("ok", "received", "missing", "duplicates", "missing_ranges", "by_device")})' "$step_dir/soak-flowverify.json" 2>/dev/null)"
+			check "soak: every flow record stored exactly once" grep -q '"ok": true' "$step_dir/soak-flowverify.json"
+		fi
 		python3 - "$step_dir/soak-samples.csv" <<'PY' | tee -a "$step_dir/log"
 import csv, statistics, sys
 rows = [r for r in csv.DictReader(open(sys.argv[1])) if r.get("cpu_s")]
@@ -725,6 +747,6 @@ all)
 	fails=0; cmd_collect || true
 	exit "$rc"
 	;;
-help | -h | --help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
+help | -h | --help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' ;;
 *) die "unknown command $c (wl help)" ;;
 esac
