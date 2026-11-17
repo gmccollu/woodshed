@@ -27,7 +27,9 @@ const (
 //     message is kept.
 //
 // Empty frames (blank lines, a stray LF after an octet-counted frame) are
-// skipped. A StreamReader is not safe for concurrent use.
+// skipped. An octet-counted frame the stream ends in before its advertised
+// length is kept, and Incomplete says so. A StreamReader is not safe for
+// concurrent use.
 type StreamReader struct {
 	r          io.Reader
 	buf        []byte
@@ -36,6 +38,11 @@ type StreamReader struct {
 	max        int
 	msg        []byte
 	octet      bool // this connection has sent an octet-counted frame
+
+	// The last message's frame, when it was an octet-counted frame the stream
+	// ended in: the bytes of it that arrived and its advertised length.
+	short           bool
+	arrived, length int64
 }
 
 // NewStreamReader returns a reader that yields messages of at most maxSize
@@ -56,7 +63,13 @@ func NewStreamReader(r io.Reader, maxSize int) *StreamReader {
 // octet-counted frame that arrived) is returned first, with a nil error. After
 // that Next returns io.EOF, or the reader's error if it failed. A reader that
 // keeps returning no data and no error gets io.ErrNoProgress.
+//
+// An octet-counted frame the stream ended in, whatever the cause (EOF, a reset,
+// a TLS close, a deadline), is returned with what arrived, and Incomplete
+// reports it. Such a frame is the only message that can be empty: its header
+// arrived and none of its bytes did.
 func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
+	s.short, s.arrived, s.length = false, 0, 0
 	for {
 		for s.start < s.end && isFrameJunk(s.buf[s.start]) {
 			s.start++
@@ -73,6 +86,16 @@ func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
 		return s.readCounted(n, hdr)
 	}
 	return s.readLine()
+}
+
+// Incomplete reports whether the message the last Next returned is an
+// octet-counted frame the stream ended in before its advertised length: arrived
+// of its length bytes came (arrived counts bytes past the max size too, so a
+// frame can be both truncated and incomplete). A newline-framed message is never
+// incomplete here: RFC 6587 non-transparent framing can't tell a last line
+// without its LF from a complete one.
+func (s *StreamReader) Incomplete() (arrived, length int64, ok bool) {
+	return s.arrived, s.length, s.short
 }
 
 // Buffered returns how many bytes of messages not yet returned the reader already
@@ -173,9 +196,12 @@ func (s *StreamReader) readCounted(n int64, hdr int) ([]byte, bool, error) {
 	s.start += hdr
 	s.msg = s.msg[:0]
 	truncated := false
+	length := n
 	for n > 0 {
 		if s.start == s.end && !s.fill() {
-			break // stream ended mid-frame: return what arrived
+			// The stream ended mid-frame: return what arrived, flagged.
+			s.short, s.arrived, s.length = true, length-n, length
+			return s.msg, truncated, nil
 		}
 		take := s.end - s.start
 		if int64(take) > n {
@@ -188,9 +214,6 @@ func (s *StreamReader) readCounted(n int64, hdr int) ([]byte, bool, error) {
 		s.msg = append(s.msg, chunk...)
 		s.start += take
 		n -= int64(take)
-	}
-	if len(s.msg) == 0 && !truncated {
-		return nil, false, s.err
 	}
 	return s.msg, truncated, nil
 }

@@ -84,6 +84,7 @@ func FuzzStreamReader(f *testing.F) {
 		"a\nb\n", "<13>a\r\n<13>b\r\n", "a\x00b", "11 <13>hello x17 <13>hello world!!",
 		"6 <13>ab5 hello", "9999999999 <13>x", "123 apples\n", "05 <13>a\n", "\n\r\n\x00",
 		"10 <13>abcdef3 <1>4 <1>a", "abcdef\r\nf\n", strings.Repeat("x", 300) + "\n",
+		"50 <13>short", "6 <13>ab50 ", "50 <13>abcdefgh",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s), uint16(5), uint8(1))
@@ -152,10 +153,19 @@ func drain(t *testing.T, sr *StreamReader, n, limit int) []frame {
 		if len(msg) > limit {
 			t.Fatalf("message of %d bytes exceeds max %d", len(msg), limit)
 		}
-		if len(msg) == 0 && !tr {
+		arrived, length, short := sr.Incomplete()
+		if len(msg) == 0 && !tr && !short {
 			t.Fatalf("empty untruncated message")
 		}
-		out = append(out, frame{string(msg), tr})
+		if short {
+			// What arrived is short of the count, and the message is what arrived
+			// up to the max (truncated exactly when that cut something).
+			if arrived < 0 || arrived >= length || int64(len(msg)) != min(arrived, int64(limit)) ||
+				tr != (arrived > int64(limit)) {
+				t.Fatalf("incomplete %d/%d with a %d-byte message (truncated %v, max %d)", arrived, length, len(msg), tr, limit)
+			}
+		}
+		out = append(out, frame{string(msg), tr, shortOf(sr)})
 	}
 	t.Fatalf("no EOF after %d calls", n+2)
 	return nil
