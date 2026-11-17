@@ -128,12 +128,18 @@ service is restarted to use it.`, stderr)
 // flowConfigErr reports a config that doesn't validate: the listener's own
 // ports and address first, else every error.
 func flowConfigErr(stderr io.Writer, abs string, errs config.Errors) int {
-	for _, k := range []string{"listeners.flow.flow_port", "listeners.flow.ipfix_port", "listeners.flow.addr"} {
+	return configErr(stderr, "flow", abs, errs, "listeners.flow.flow_port", "listeners.flow.ipfix_port", "listeners.flow.addr")
+}
+
+// configErr reports a config that doesn't validate for command cmd: the first
+// of the command's own keys that has an error, else every error.
+func configErr(stderr io.Writer, cmd, abs string, errs config.Errors, keys ...string) int {
+	for _, k := range keys {
 		if msg, ok := errs[k]; ok {
-			return fail(stderr, "flow", fmt.Errorf("%s %s", k, msg))
+			return fail(stderr, cmd, fmt.Errorf("%s %s", k, msg))
 		}
 	}
-	return fail(stderr, "flow", fmt.Errorf("%s: %w", abs, errs))
+	return fail(stderr, cmd, fmt.Errorf("%s: %w", abs, errs))
 }
 
 func flowPortsText(l config.FlowListener) string {

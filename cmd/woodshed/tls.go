@@ -81,6 +81,11 @@ is restarted to use it.`, stderr)
 	abs, _ := filepath.Abs(*cfgPath)
 	dataDir := cfg.Storage.DataDir
 	if mode == "status" {
+		// As run, reindex and flow status do: a config the server would refuse
+		// to start with is an error, not a status.
+		if errs := cfg.Validate(nil); len(errs) > 0 {
+			return configErr(stderr, "tls", abs, errs, tlsConfigKeys...)
+		}
 		tlsStatus(stdout, cfg)
 		return 0
 	}
@@ -96,12 +101,7 @@ is restarted to use it.`, stderr)
 			next.Listeners.TLS.Port = *port
 		}
 		if errs := next.Validate(&cfg); len(errs) > 0 {
-			for _, k := range []string{"listeners.tls.port", "listeners.tls.addr", "listeners.tls.cert_file", "listeners.tls.key_file"} {
-				if msg, ok := errs[k]; ok {
-					return fail(stderr, "tls", fmt.Errorf("%s %s", k, msg))
-				}
-			}
-			return fail(stderr, "tls", fmt.Errorf("%s: %w", abs, errs))
+			return configErr(stderr, "tls", abs, errs, tlsConfigKeys...)
 		}
 		changed := next.Listeners.TLS != cfg.Listeners.TLS
 		if changed {
@@ -240,6 +240,10 @@ func tlsFromFiles(l config.TLSListener, dataDir string) *server.RunStateTLS {
 	}
 	return rs
 }
+
+// tlsConfigKeys are the TLS listener's keys, reported first when a config
+// doesn't validate.
+var tlsConfigKeys = []string{"listeners.tls.port", "listeners.tls.addr", "listeners.tls.cert_file", "listeners.tls.key_file"}
 
 // tlsStatus is `woodshed tls status`.
 func tlsStatus(stdout io.Writer, cfg config.Config) {
