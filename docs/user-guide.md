@@ -289,9 +289,9 @@ upgrade opens no new port.
 2. On each exporter (a router, a switch, a firewall, or `softflowd` on a Linux host), set the flow exporter or
    collector to this computer and the port, flow v9 or IPFIX if it offers them, v5 otherwise.
 3. Open **Events → Flows**. Exporters usually send templates every few minutes, so the first records of a v9 or IPFIX
-   exporter can take that long to decode (they wait, and are decoded when the template arrives). After Woodshed
-   restarts, the templates an exporter sent in the last `template_timeout` are reloaded from what's stored, so its
-   records decode at once, and its last 24 hours' counts are kept.
+   exporter can take that long to decode (they wait, and are decoded when the template arrives). The same happens after
+   Woodshed restarts: templates aren't kept across a restart (one the exporter changed meanwhile must never decode with
+   the old layout), but each exporter's last 24 hours' counts, sampling and interface names are.
 
 **What's kept.** Each record's addresses, ports, protocol, TCP flags, packets and bytes, interfaces (with names when
 the exporter sends them as options data), AS numbers, next hop, VLAN, its flow start and end, and for event-style
