@@ -749,7 +749,7 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 			q.From, q.To = time.UnixMilli(c.From).UTC(), time.UnixMilli(c.To).UTC()
 		}
 	}
-	p, err := e.planFor(ctx, &q, asc)
+	p, err := e.planOrdered(ctx, &q, asc)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -757,7 +757,9 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 	// Skip segments and blocks wholly before the cursor.
 	if after != nil {
 		p.skip = func(b *planned) bool { return (!asc && b.minEnd > after.End) || (asc && b.maxEnd < after.End) }
-		p.skipSeg = func(s *segRef) bool { return !s.open && ((!asc && s.start > after.End) || (asc && s.end < after.End)) }
+		p.skipSeg = func(s *segRef) bool {
+			return !s.open && !s.wide && ((!asc && s.start > after.End) || (asc && s.end < after.End))
+		}
 	}
 	f := q.filter()
 	// Two passes: the page's blocks are read with the columns that order

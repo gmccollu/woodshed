@@ -262,7 +262,7 @@ func (s *stream) read(ctx context.Context, q Query, waves chan<- wave) {
 			return false
 		}
 	}
-	p, err := e.planFor(ctx, &q, s.asc)
+	p, err := e.planOrdered(ctx, &q, s.asc)
 	if err != nil {
 		send(wave{err: err})
 		return

@@ -1,6 +1,7 @@
 package flowquery
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -98,4 +99,121 @@ func rawFixture(t *testing.T) (*Engine, time.Time) {
 		t.Fatal(err)
 	}
 	return New(Options{DataDir: dataDir, Index: idx}), h
+}
+
+// rawSetsEnding is n records' raw set (kept for lack of a template,
+// received a minute into hour h) whose records end at end, and the template
+// that decodes them.
+func rawSetsEnding(t *testing.T, h time.Time, n int, end time.Time) ([]*flow.RawSet, *flow.Template) {
+	t.Helper()
+	from := netip.MustParseAddrPort("192.0.2.9:40000")
+	fields := []flow.TemplateField{{ID: 8, Length: 4}, {ID: 12, Length: 4}, {ID: 1, Length: 8}, {ID: 2, Length: 8}, {ID: 153, Length: 8}}
+	data := func(n int, src string) []byte {
+		b := flow.NewBuilder(flow.IPFIX)
+		for i := 0; i < n; i++ {
+			b.Data(300, flow.Values(nil).Addr(netip.MustParseAddr(src)).Addr(netip.MustParseAddr("10.0.0.2")).U64(100).U64(1).
+				U64(uint64(end.UnixMilli())))
+		}
+		return b.Message(flow.Header{ExportTime: uint32(h.Unix()), Domain: 1})
+	}
+	now := h
+	coll := flow.NewCollector(flow.Options{TemplateTimeout: time.Minute, Clock: func() time.Time { return now }})
+	var raws []*flow.RawSet
+	var recs []flow.Record
+	keep := func(rs *flow.RawSet) { raws = append(raws, rs) }
+	coll.Decode(flow.Packet{Data: data(n, "10.0.0.7"), From: from, Received: h.Add(time.Minute)}, func(*flow.Record) {}, keep)
+	now = h.Add(3 * time.Minute)
+	coll.Expire(now, keep)
+	tb := flow.NewBuilder(flow.IPFIX)
+	tb.Template(300, fields)
+	emit := func(r *flow.Record) { recs = append(recs, *r) }
+	coll.Decode(flow.Packet{Data: tb.Message(flow.Header{ExportTime: uint32(now.Unix()), Domain: 1}), From: from, Received: now}, emit, keep)
+	coll.Decode(flow.Packet{Data: data(1, "10.0.0.1"), From: from, Received: now}, emit, keep)
+	if len(raws) == 0 || len(recs) != 1 || recs[0].Template == nil {
+		t.Fatalf("raw sets %d, records %d", len(raws), len(recs))
+	}
+	return raws, recs[0].Template
+}
+
+// Raw sets whose records end long after they were received (an exporter's
+// clock ahead of Woodshed's) are found and placed by every page size and by
+// Stream: nothing lost, every record once, in order, the pages and Stream
+// alike. Their blocks used to be bounded by the received times, so a page's
+// cursor passed them (pages of 137 lost all 40 with the clock 29 min ahead).
+func TestRawSetsAheadOfReceived(t *testing.T) {
+	for _, ahead := range []time.Duration{30 * time.Second, 29 * time.Minute, -50 * time.Minute} {
+		fx := newFixture(t, 600)
+		h := fx.h
+		dev := "10.1.0.2"
+		name := flowseg.NameFor(h)
+		name.Part = 1 // a second part of the hour
+		path := filepath.Join(fx.dir, "logs", dev, "flows", name.String())
+		w, err := flowseg.Create(path, dev, h, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A few records of its own, so the index has its row; the raw sets
+		// end ahead of their received time (h + 1 min).
+		for i := 0; i < 50; i++ {
+			ms := h.Add(time.Minute).UnixMilli() + int64(i)
+			r := flow.Record{Has: flow.HasEnd | flow.HasSrc, Received: ms, End: ms, Src: netip.MustParseAddr("10.20.0.99"), SrcAS: uint32(900000 + i)}
+			if err := w.Append(&r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		raws, tmpl := rawSetsEnding(t, h, 40, h.Add(time.Minute+ahead))
+		w.AddTemplate(tmpl)
+		for _, rs := range raws {
+			if err := w.AppendRaw(rs); err != nil {
+				t.Fatal(err)
+			}
+		}
+		foot, err := w.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ff := index.FlowFile{DeviceID: dev, Name: name, Rel: "logs/" + dev + "/flows/" + name.String(), Path: path}
+		rows := index.FlowRowsOf(ff, foot, w.Size(), true)
+		if err := fx.idx.Apply(bg, index.Batch{Files: []index.FileOp{{Kind: index.OpUpsert, File: rows.File, Flow: &rows.Segment}},
+			FlowMinutes: rows.Minutes}); err != nil {
+			t.Fatal(err)
+		}
+		q := Query{From: h.Add(-2 * time.Hour), To: h.Add(4 * time.Hour)}
+		c, err := fx.eng.Count(bg, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total := 0
+		for _, n := range c {
+			total += int(n)
+		}
+		if total != 6*600+50+40 {
+			t.Fatalf("ahead %v: count %d", ahead, total)
+		}
+		for _, asc := range []bool{false, true} {
+			stream := streamAll(t, fx.eng, q, asc)
+			what := fmt.Sprintf("ahead %v asc %v", ahead, asc)
+			if len(stream) != total {
+				t.Fatalf("%s: stream %d of %d", what, len(stream), total)
+			}
+			late := 0
+			for i := range stream {
+				if stream[i].Record.Status == flow.StatusLate {
+					late++
+				}
+				if i > 0 {
+					a, b := keyOfHit(&stream[i-1]), keyOfHit(&stream[i])
+					if !a.before(b, asc) {
+						t.Fatalf("%s: out of order at %d: %+v then %+v", what, i, a, b)
+					}
+				}
+			}
+			if late != 40 {
+				t.Fatalf("%s: %d late records", what, late)
+			}
+			for _, limit := range []int{7, 137, 5000} {
+				sameHits(t, fmt.Sprintf("%s limit %d", what, limit), searchAll(t, fx.eng, q, asc, limit), stream)
+			}
+		}
+	}
 }
