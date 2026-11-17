@@ -88,12 +88,24 @@ func TestV5(t *testing.T) {
 	if st.Counts24h != st.Counts {
 		t.Errorf("24h counts %+v != %+v", st.Counts24h, st.Counts)
 	}
-	// Unsampled header: interval 0 is every packet.
+	// The domain reports the header's rate, as the records do (lab, 2.0.0-rc1:
+	// it said 0, unknown).
+	if len(st.Domains) != 1 || st.Domains[0].ID != 0 || st.Domains[0].Sampling != 100 {
+		t.Errorf("domains %+v, want domain 0 sampling 100", st.Domains)
+	}
+	ver := c.exporters[exp1.Addr()].metaVer.Load()
+	// Unsampled header: interval 0 is every packet, for the records and the domain.
 	h.SamplingInterval, h.Seq = 0, 1006
 	s.recs = nil
 	s.decode(c, EncodeV5(h, []V5Record{{Src: ip("10.0.0.1"), Dst: ip("10.0.0.2")}}), exp1, t0.Add(3*time.Second))
 	if s.recs[0].Sampling != 1 {
 		t.Errorf("sampling %d, want 1", s.recs[0].Sampling)
+	}
+	if st := stats(t, c, exp1.Addr()); len(st.Domains) != 1 || st.Domains[0].Sampling != 1 {
+		t.Errorf("domains %+v, want domain 0 sampling 1", st.Domains)
+	}
+	if c.exporters[exp1.Addr()].metaVer.Load() == ver {
+		t.Error("a sampling change didn't change the metadata version")
 	}
 	// A count past the packet: what fits is decoded, the packet kept raw.
 	s.recs = nil
@@ -102,6 +114,24 @@ func TestV5(t *testing.T) {
 	s.decode(c, bad, exp1, t0.Add(4*time.Second))
 	if len(s.recs) != 2 || len(s.raws) != 1 || s.raws[0].Status != StatusMalformed || !bytes.Equal(s.raws[0].Data, bad) {
 		t.Errorf("records %d raws %v", len(s.recs), s.raws)
+	}
+}
+
+// One exporter's v5 (always domain 0) and a v9 or IPFIX domain 0 merge into
+// one domain row: the highest rate, whatever the map order.
+func TestDomainSamplingMerge(t *testing.T) {
+	c := NewCollector(Options{})
+	var s sink
+	s.decode(c, EncodeV5(V5Header{SysUptime: 100000, UnixSecs: uint32(t0.Unix())}, []V5Record{{Src: ip("10.0.0.1")}}), exp1, t0)
+	e := c.exporters[exp1.Addr()]
+	c.mu.Lock()
+	e.domains[tkey{port: exp1.Port(), version: V9}] = &domainState{key: tkey{port: exp1.Port(), version: V9},
+		templates: map[uint16]*tmplEntry{}, samplers: map[uint32]uint32{1: 100}}
+	c.mu.Unlock()
+	for range 20 {
+		if st := stats(t, c, exp1.Addr()); len(st.Domains) != 1 || st.Domains[0].Sampling != 100 {
+			t.Fatalf("domains %+v, want domain 0 sampling 100", st.Domains)
+		}
 	}
 }
 

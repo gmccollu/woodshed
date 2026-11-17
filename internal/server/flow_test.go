@@ -55,6 +55,36 @@ func waitFlows(t *testing.T, r *running, q string, want int64) {
 	t.Fatalf("%s: %d flows, want %d", q, got, want)
 }
 
+// Flow v5's header sampling interval reaches /api/flows (the domain), the
+// stored records and the scaled totals: 100, and 0 (every packet, so 1)
+// (lab, 2.0.0-rc1: the domain said 0, unknown).
+func TestFlowV5Sampling(t *testing.T) {
+	for _, x := range []struct{ interval, want int }{{100, 100}, {0, 1}} {
+		r, nf, _ := flowServer(t, nil)
+		if _, err := loadgen.SendFlows(context.Background(), loadgen.FlowOptions{Proto: loadgen.ProtoFlowV5,
+			Addr: fmt.Sprintf("127.0.0.1:%d", nf), Count: 60, Rate: 20000, Sampling: x.interval, RunID: "00001111"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		waitFlows(t, r, "", 60)
+		var st api.FlowState
+		if code := r.do(t, "GET", "/api/flows", nil, &st); code != 200 || len(st.Exporters) != 1 {
+			t.Fatalf("flows: %d %+v", code, st)
+		}
+		if d := st.Exporters[0].Domains; len(d) != 1 || d[0].ID != 0 || d[0].Sampling != uint32(x.want) {
+			t.Errorf("interval %d: domains %+v, want domain 0 sampling %d", x.interval, d, x.want)
+		}
+		var top api.FlowTopPage
+		if code := r.do(t, "GET", "/api/flows/top?by=src&metric=bytes&budget_ms=10000", nil, &top); code != 200 {
+			t.Fatalf("top: %d", code)
+		}
+		if tt := top.Total; tt.Flows != 60 || tt.Bytes == 0 || tt.BytesScaled != tt.Bytes*int64(x.want) ||
+			tt.PacketsScaled != tt.Packets*int64(x.want) || !tt.ScaledComplete {
+			t.Errorf("interval %d: totals %+v, want scaled = %d x", x.interval, tt, x.want)
+		}
+		r.stop(t)
+	}
+}
+
 // Flows end to end, in process: IPFIX event records and flow v5 and v9 from the
 // generator to stored records, exactly once by sequence number; the flow
 // state, top-N (denied sources by flows), search paging, the timeline and the

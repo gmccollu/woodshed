@@ -143,6 +143,14 @@ func (ds *decState) v5(b []byte) {
 	n := min(count, fit)
 	k := tkey{port: ds.port, version: V5}
 	d := ds.c.domainFor(ds.e, k)
+	// The domain reports the header's rate, as its records carry it
+	// (/api/flows, woodshed flow status). Only Decode's goroutine writes it.
+	if d.sampling != rate {
+		ds.c.mu.Lock()
+		d.sampling = rate
+		ds.c.mu.Unlock()
+		ds.e.metaVer.Add(1)
+	}
 	if gap, dup := d.seq.check(seq, uint32(count), n == count, ds.received); dup {
 		ds.counts.Duplicates++
 	} else if gap > 0 {

@@ -2593,7 +2593,8 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
 
 #### 13.1.1 Versions
 - **Flow v5:** the fixed 48-byte record; the header's `sampling_interval` (mode and 14-bit rate) is the records'
-  sampling; `unix_secs`, `unix_nsecs` and `sys_uptime` turn the records' uptime-relative times into UTC.
+  sampling and the domain's (v5 is always domain 0); `unix_secs`, `unix_nsecs` and `sys_uptime` turn the records'
+  uptime-relative times into UTC.
 - **Flow v9** (RFC 3954): template, options template and data FlowSets, per (exporter address, source ID).
 - **IPFIX** (RFC 7011): template, options template and data sets, per (exporter address, observation domain ID),
   with variable-length fields, enterprise-specific IEs, and the RFC 7011 time IEs (seconds, milliseconds,
@@ -3109,9 +3110,10 @@ Made while building it, each **decided (build, 2026-11-16)**:
 18. Both flow ports feed one receive queue (shown as `flow` in `udp_queues`) and one drainer, so the collector's
     template state stays single-threaded; there's no inline fast path for flows (exporters send steadily, and a
     packet carries ~30 records).
-19. A v5 header sampling interval of 0 or 1 is unsampled. Domain-level sampling comes from options data without a
-    sampler ID (v9 scope System, IPFIX scope observationDomainId); sampler tables from 48/302 with 34, 50, 305/306,
-    309/310 or 311.
+19. A v5 header sampling interval of 0 or 1 is unsampled, for the records and domain 0. An exporter's scopes with
+    one domain ID (other ports or versions) show the highest rate among them in `/api/flows`. Domain-level sampling
+    comes from options data without a sampler ID (v9 scope System, IPFIX scope observationDomainId); sampler tables
+    from 48/302 with 34, 50, 305/306, 309/310 or 311.
 20. `rule_id`: a fixed-length field of 1–8 bytes is a big-endian unsigned integer in decimal; a variable-length or
     longer one is printable ASCII as text (trailing NULs trimmed), else hex. The IE also stays in extras.
 21. An exporter clock more than 1 h off: end = received, start = received − duration, event time = received,

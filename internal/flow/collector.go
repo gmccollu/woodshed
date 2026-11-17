@@ -662,13 +662,16 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 			if d.lastTemplate > 0 && time.UnixMilli(d.lastTemplate).After(ds.LastTemplate) {
 				ds.LastTemplate = time.UnixMilli(d.lastTemplate).UTC()
 			}
-			if r := d.sampling; r != 0 {
-				ds.Sampling = r
-			} else if len(d.samplers) > 0 && ds.Sampling == 0 {
-				for _, r := range d.samplers {
-					ds.Sampling = max(ds.Sampling, r)
+			// A scope's own rate, else its samplers' highest. The scopes
+			// of one ID (ports, versions: v5 is always domain 0) merge to
+			// the highest, so the result doesn't depend on map order.
+			r := d.sampling
+			if r == 0 {
+				for _, x := range d.samplers {
+					r = max(r, x)
 				}
 			}
+			ds.Sampling = max(ds.Sampling, r)
 		}
 		for _, ds := range byID {
 			st.Domains = append(st.Domains, *ds)
