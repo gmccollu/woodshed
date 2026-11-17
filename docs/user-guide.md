@@ -310,9 +310,11 @@ counts but add nothing. **Top → Denied** ranks denied sources, destinations, p
 no bytes).
 
 **Rule IDs.** No standard IPFIX field carries an ACL or rule ID; exporters that send one use an enterprise-specific
-field. **Settings → Flows** lists each exporter's template fields: find the one that holds the rule (its
-`<enterprise number>:<element ID>`), add it under **Rule ID fields**, and new records fill `rule_id` from it (filter
-with `rule_id=…`, or Top by rule).
+field, and flow v9 exporters (which have no enterprise numbers) a field type from the vendor range, 32768 and up.
+**Settings → Flows** lists each exporter's template fields: find the one that holds the rule (its
+`<enterprise number>:<element ID>`, or for flow v9 `0:<field type>`, e.g. `0:40003`), add it under **Rule ID fields**
+(or press **Use as rule ID** beside it), and new records fill `rule_id` from it (filter with `rule_id=…`, or Top by
+rule). `woodshed send --events` puts its rule IDs in `32473:3` (IPFIX) and `0:40003` (flow v9).
 
 **Time.** Searches use flow time: a record matches a window when its start-to-end overlaps it, so "the flows around
 the outage" means when the traffic happened, not when the exporter got round to sending it. A record with only an
@@ -340,7 +342,9 @@ it decoded. Sequence numbers show loss between the exporter and Woodshed: **Sett
 **Where it's kept.** Flows are a fourth kind of data, stored as compact columnar segments, one per device per hour
 (`logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf`), at about 20 bytes a record (an exporter sending 1,000 records a second
 writes about 1.7 GB a day). Unlike the other files they aren't plain text: read them through Events, `woodshed
-search --type flow`, or an export, whose `flows.csv` is plain text and whose `flows.ipfix` any IPFIX tool reads.
+search --type flow`, or an export, whose `flows.csv` is plain text and whose `flows.ipfix` any IPFIX tool reads (a
+flow v9 vendor-range field is in it as an enterprise field under enterprise number 0, `0:40003` read back as v9 type
+40003).
 Flows have their own **budget**, 40 % of the storage cap by default (`storage.flow_budget_bytes`): past it the oldest
 flows are deleted first, before any other data, and the low-disk guard deletes flows first too, so a busy exporter
 can't push out its own syslog. Settings says how many days the budget holds at the current rate.
@@ -354,6 +358,9 @@ woodshed flows top --by src --last 1h                                         # 
 woodshed flows top --by dst-port --fw-event denied --last 24h                 # top denied ports
 woodshed flow status                                                          # each exporter's rate, templates, gaps
 ```
+
+`woodshed flow status` checks the config first, as `woodshed run` does, and stops with the error if the server
+wouldn't start with it.
 
 To test from another computer, `woodshed send --proto ipfix --host 192.0.2.50 --count 1000` (or `flow-v9`,
 `flow-v5`) sends generated records, `--events` sends firewall-event records, and `woodshed bench --proto ipfix`

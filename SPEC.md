@@ -2628,7 +2628,8 @@ queue_bytes = 134217728    #   and bytes, whichever fills first
 #### 13.1.3 Unknown, malformed and enterprise-specific data
 - **Enterprise-specific IEs** (the IPFIX enterprise bit) and IEs Woodshed doesn't know (in v9, any type it has no
   column for) are kept raw, per record: enterprise number, element ID and bytes. They're shown as `pen:id=hex` and
-  exported as they came (§13.4).
+  exported as they came (§13.4). A v9 vendor-range field type (32768–65535; v9 has no enterprise numbers) is
+  enterprise number 0 with the whole type as its ID, `0:40003` (decision 74).
 - **Data before its template:** a data set whose template isn't cached waits in a bounded buffer: `pending_bytes`
   (32 MiB) in all, at most 1 MiB per exporter, for at most `template_timeout`. When the template arrives the data is
   decoded with each record's original received time and marked `late=1`.
@@ -2718,9 +2719,10 @@ templates that use the same field type numbers are read the same way.
 
 - **No standard IE carries an ACL or rule identifier.** The IANA registry has none (checked 2026-11-16); exporters
   that send one use enterprise-specific IEs. So `rule_id` is filled from IEs listed in
-  `listeners.flow.rule_id_ies` (`["<enterprise number>:<element ID>", …]`, the first present wins; empty by default),
-  and stays in extras otherwise. The setup helper and the docs say how to find the IE in an exporter's template (the
-  Flows tab lists each exporter's template fields).
+  `listeners.flow.rule_id_ies` (`["<enterprise number>:<element ID>", …]`, the first present wins; empty by default;
+  a flow v9 field type as `"0:<type>"`, e.g. `"0:40003"`, decision 76), and stays in extras otherwise. The setup
+  helper and the docs say how to find the IE in an exporter's template (the Flows tab lists each exporter's template
+  fields).
 - **Event records work with flow time.** A record with only an event time (`observationTimeMilliseconds`, or a v9
   event timestamp field) gets `start = end = event_time`, so it matches every window containing that moment, sorts
   by it, and falls in that minute of `flow_minute`. A record with no time at all uses its received time
@@ -2862,8 +2864,9 @@ for a plain export stays `["syslog"]` (§13.9). One zip, one manifest, one folde
   cells for "not reported". Extras (enterprise IEs) aren't in the CSV.
 - `flows/<device>/flows.ipfix`: an IPFIX file (RFC 5655): the same records re-encoded as IPFIX messages, one
   observation domain per original domain, with templates that carry every field the records had, extras and
-  enterprise-specific IEs included; v5 and v9 records are mapped to their IPFIX IEs. The file says it was written by
-  Woodshed from stored records, not captured off the wire.
+  enterprise-specific IEs included; v5 and v9 records are mapped to their IPFIX IEs, and a v9 vendor-range field type
+  is written with the enterprise bit and enterprise number 0 (decision 75). The file says it was written by Woodshed
+  from stored records, not captured off the wire.
 - **Both by default**, because they serve different readers: the CSV is what a person opens first (a spreadsheet,
   `grep`), and the IPFIX file is the lossless form flow tools read, with the enterprise fields a CSV can't hold.
   `flow_formats` (`["csv"]`, `["ipfix"]` or both) picks one; the CSV compresses well inside the zip.
@@ -3013,7 +3016,7 @@ the first bench, which records the measured numbers here:
   `woodshed run` as v5, v9 and IPFIX, and the stored records are compared with the pcap's flows computed independently.
   pmacct's `nfprobe` as a second exporter for IPFIX with options data (sampling and interface names). The IPFIX file
   Woodshed exports is read back by our decoder and by an independent IPFIX file reader in CI (tshark), and both must
-  agree with the CSV.
+  agree with the CSV; so is a bundle's file from a v9 `--events` run with vendor-range fields (decision 77).
 - **`woodshed send --proto flow-v5|flow-v9|ipfix`:** generators for the lab with exactly-once-checkable records.
   Each record carries the run ID and a sequence number: in v9 and IPFIX as an enterprise-specific IE under 32473
   (IANA's documentation enterprise number, as 1.2's trap generator uses), in v5 split across `src_as` and `dst_as`
@@ -3441,6 +3444,40 @@ count and flag these records, never drop them):
     - A side cost, also left as is: a segment holding normal and far-off records has a flow-time range spanning the
       offset, so queries anywhere in that span plan it (a footer read; a mixed block is decoded). Bounded by the plan's
       batches (decision 56); it only happens while an exporter is broken.
+
+**Flow v9 vendor-range field types, decided (build, 2026-11-17)** (the lab-prep agent's `woodshed run` found two bugs:
+the IPFIX file wrote v9 types 32768–65535 with the enterprise bit but no enterprise number, `9c43 ffff 9c41 ffff …`,
+so tshark decoded 190 garbage records of 2,000 and an independent reader stopped at the template; and `rule_id_ies`
+couldn't name one, so v9 event runs never filled `rule_id`):
+74. **The key:** a v9 vendor-range type is `{enterprise number 0, ID = the type}`, all 16 bits, everywhere: records,
+    extras (`0:40003=…`), `rule_id_ies`, `/api/flows/templates`. An IANA IE never has the high bit, so `0:` with an
+    ID above 32767 can only be a v9 type. This was already the decoder's and the generator's key (`loadgen.RuleIE`).
+75. **In IPFIX (the export file and the generator's builder):** RFC 7011 §3.2 requires an enterprise number after the
+    enterprise bit, so such a field is written as the enterprise bit, the type's low 15 bits and **enterprise number
+    0**, at its own length like an enterprise IE (`9c43 0004 00000000` for type 40003, 4 bytes). The decoder reads
+    enterprise bit + number 0 back as the v9 type (`flow.VendorRangePEN`), live and in the file reader, so the file
+    round-trips every record and field. Options weighed:
+    - IANA's documentation number (32473, RFC 5612), as the type's low 15 bits: valid, but a reader can't tell these
+      fields from real 32473 IEs (`woodshed send`'s IPFIX run uses 32473:1–3), so the file wouldn't round-trip without
+      a side table. Any registered number has the same problem and claims a field for an enterprise that didn't
+      define it.
+    - No enterprise bit (the low 15 bits as an IANA ID): no number needed, but it collides with the IANA registry.
+    - Number 0: the registry's own reserved entry, never an exporter's, so it can't clash with a real enterprise IE;
+      an RFC 7011 reader skips it by its length like any enterprise field it doesn't know (CI's tshark check, decision
+      77, is the proof). Chosen.
+    - A v9 run and an IPFIX run of the same flows (the generator's same seed) store and export the same columns and
+      rule IDs, with run, sequence and rule fields at the same lengths (4, 8, 4), under `0:40001–40003` and
+      `32473:1–3`.
+76. **`rule_id_ies` syntax:** `"<enterprise number>:<element ID>"` as before (element ID 0–32767 with a non-zero
+    number), and with number 0 an ID of 0–65535: `"0:40003"` names v9 type 40003. No separate `v9:` prefix: the
+    templates list already shows the field as `0:40003`, and Settings → Flows offers **Use as rule ID** for it. The
+    server, the form and the mock check the same.
+77. **Tests and checks:** a strict RFC 7011 walker (independent of our decoder) reads every record of a v9 export with
+    vendor fields; `ReadFile` gives back every record and field, `rule_id` included; in-process end to end, a v9
+    `--events` run with `rule_id_ies = ["0:40003", "32473:3"]` fills `rule_id`, which filters, ranks in Top and fills
+    the bundle's `flows.csv`; the CI job `flow-interop` runs it with tshark required (`TestFlowV9VendorRuleIDEndToEnd`:
+    every record's 5-tuple equals the CSV, no malformed frames). Alongside: `woodshed flow status` validates the config
+    as `run` and `reindex` do (exit 1 with the same message), and `woodshed search --help` lists `flow` under `-type`.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
