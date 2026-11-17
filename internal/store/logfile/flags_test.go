@@ -63,6 +63,13 @@ func TestLineFlagsUnknown(t *testing.T) {
 		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#later`:                {},
 		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#incomplete=x/4`:       {Incomplete: true},
 		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#incomplete=3/0`:       {Incomplete: true},
+		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#incomplete=9/5`:       {Incomplete: true},
+		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#incomplete=9/9`:       {Incomplete: true},
+		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#incomplete=9/`:        {Incomplete: true},
+		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#incompl`:              {Incomplete: true},
+		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#trunc`:                {Truncated: true},
+		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#truncated,inc`:        {Truncated: true, Incomplete: true},
+		`2026-11-17T10:00:00.000Z 192.0.2.1 m \#`:                     {},
 	} {
 		l, err := ParseLine([]byte(in))
 		if err != nil || string(l.Escaped) != "m" || l.Flags != want {
@@ -76,7 +83,7 @@ func FuzzLineFlags(f *testing.F) {
 	f.Add([]byte(""), false, true, int64(0), int64(0))
 	f.Fuzz(func(t *testing.T, raw []byte, tr, inc bool, arrived, length int64) {
 		fl := Flags{Truncated: tr, Incomplete: inc}
-		if inc && arrived >= 0 && length > 0 {
+		if inc && arrived >= 0 && arrived < length {
 			fl.Arrived, fl.Length = arrived, length
 		}
 		line := AppendLineFlags(nil, time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC), ip1, raw, fl)

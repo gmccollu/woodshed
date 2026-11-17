@@ -185,7 +185,9 @@ func AppendLineFlags(dst []byte, received time.Time, sender netip.Addr, raw []by
 //   - "incomplete": a line Woodshed cut by closing the connection itself (the
 //     frame timeout, an eviction, shutdown), whose length isn't known.
 //
-// A reader ignores flags it doesn't know, so later versions can add some.
+// A reader ignores flags it doesn't know, so later versions can add some. Lengths
+// that can't be right (A not below L, a torn number) are dropped and the flag
+// kept; a torn flag name ("incompl") still counts as its flag.
 type Flags struct {
 	Truncated  bool
 	Incomplete bool
@@ -235,23 +237,30 @@ func SplitFlags(esc []byte) ([]byte, Flags) {
 	var f Flags
 	for item := range bytes.SplitSeq(esc[sp+1+len(flagMark):], []byte{','}) {
 		name, val, _ := bytes.Cut(item, []byte{'='})
-		switch string(name) {
-		case "truncated":
+		switch {
+		case flagName(name, "truncated"):
 			f.Truncated = true
-		case "incomplete":
+		case flagName(name, "incomplete"):
 			f.Incomplete = true
 			a, l, ok := bytes.Cut(val, []byte{'/'})
-			if !ok {
+			if !ok || string(name) != "incomplete" {
 				break
 			}
 			arrived, err1 := strconv.ParseInt(string(a), 10, 64)
 			length, err2 := strconv.ParseInt(string(l), 10, 64)
-			if err1 == nil && err2 == nil && arrived >= 0 && length > 0 {
+			if err1 == nil && err2 == nil && arrived >= 0 && arrived < length {
 				f.Arrived, f.Length = arrived, length
 			}
 		}
 	}
 	return esc[:sp], f
+}
+
+// flagName reports whether a marker item's name is flag, or the start of it: a
+// line torn inside its marker (" \#incompl") keeps what the marker said. So a
+// later flag's name must not be the start of an earlier one's.
+func flagName(name []byte, flag string) bool {
+	return len(name) > 0 && len(name) <= len(flag) && string(name) == flag[:len(name)]
 }
 
 // Line is one parsed line. Escaped aliases the input passed to ParseLine.
