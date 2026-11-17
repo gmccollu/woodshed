@@ -1376,6 +1376,9 @@ function statsJSON(now: number): Stats {
     dropped_by_reason: { paused: droppedByGuard, write_error: 0, refused: 0, queue_full: droppedByQueue },
     udp_queue: queueJSON(now),
     flow_parts_early: 0,
+    tcp_frames: (['tcp', 'tls'] as const)
+      .filter((p) => settings.listeners[p]?.enabled)
+      .map((p) => ({ listener: p, port: settings.listeners[p]!.port, incomplete: p === 'tcp' && devs.size > 1 ? 2 : 0, frame_timeouts: 0 })),
   };
 }
 
