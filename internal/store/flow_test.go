@@ -134,12 +134,12 @@ func TestFlowCountsStored(t *testing.T) {
 		t.Fatalf("a counts-only batch opened %v", got)
 	}
 	e.reopen()
-	w, err := e.idx.FlowCountsIn(bg, "192.0.2.8", h, h.Add(time.Hour))
+	w, err := e.idx.FlowCountsIn(bg, "192.0.2.8", h, h.Add(time.Hour), time.Time{})
 	if err != nil || !w.Known || w.SeqGaps != 2 || w.SeqLost != 60 || w.Duplicates != 1 || w.Late != 1 || w.NoTemplate != 1 ||
 		w.Malformed != 1 || w.Ahead != 1 || w.MaxAheadMs != 2*time.Hour.Milliseconds() || w.Records != 3 {
 		t.Fatalf("counts %+v %v", w, err)
 	}
-	if w, _ := e.idx.FlowCountsIn(bg, "192.0.2.9", h, h.Add(time.Hour)); !w.Known || w.SeqGaps != 1 || w.Records != 0 {
+	if w, _ := e.idx.FlowCountsIn(bg, "192.0.2.9", h, h.Add(time.Hour), time.Time{}); !w.Known || w.SeqGaps != 1 || w.Records != 0 {
 		t.Fatalf("counts only %+v", w)
 	}
 }
