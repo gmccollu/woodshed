@@ -179,6 +179,30 @@ func (c *Collector) Options(addr netip.Addr) []OptionsData {
 	return out
 }
 
+// metaBlob is Metadata's JSON: per scope its sampling, samplers and system
+// init time, the interface names, and the options records kept raw.
+type metaBlob struct {
+	Exporter string        `json:"exporter"`
+	Scopes   []metaScope   `json:"scopes"`
+	IfNames  []metaIfName  `json:"if_names,omitempty"`
+	Options  []OptionsData `json:"options,omitempty"`
+}
+
+type metaScope struct {
+	Port      uint16            `json:"port"`
+	Domain    uint32            `json:"domain"`
+	Version   uint8             `json:"version"`
+	Sampling  uint32            `json:"sampling,omitempty"`
+	Samplers  map[uint32]uint32 `json:"samplers,omitempty"`
+	SysInitMs int64             `json:"sys_init_ms,omitempty"`
+}
+
+type metaIfName struct {
+	Domain  uint32 `json:"domain"`
+	IfIndex uint32 `json:"if_index"`
+	Name    string `json:"name"`
+}
+
 // Metadata is an exporter's metadata as one JSON blob, for a segment's
 // template table (flowseg.Writer.SetMeta): per scope its sampling, samplers
 // and system init time, the interface names, and the options records kept
@@ -191,28 +215,10 @@ func (c *Collector) Metadata(addr netip.Addr) (blob []byte, version uint64) {
 	if e == nil {
 		return nil, 0
 	}
-	type scope struct {
-		Port      uint16            `json:"port"`
-		Domain    uint32            `json:"domain"`
-		Version   uint8             `json:"version"`
-		Sampling  uint32            `json:"sampling,omitempty"`
-		Samplers  map[uint32]uint32 `json:"samplers,omitempty"`
-		SysInitMs int64             `json:"sys_init_ms,omitempty"`
-	}
-	type ifn struct {
-		Domain  uint32 `json:"domain"`
-		IfIndex uint32 `json:"if_index"`
-		Name    string `json:"name"`
-	}
-	var m struct {
-		Exporter string        `json:"exporter"`
-		Scopes   []scope       `json:"scopes"`
-		IfNames  []ifn         `json:"if_names,omitempty"`
-		Options  []OptionsData `json:"options,omitempty"`
-	}
+	var m metaBlob
 	m.Exporter = e.addr.String()
 	for _, d := range e.domains {
-		m.Scopes = append(m.Scopes, scope{Port: d.key.port, Domain: d.key.domain, Version: d.key.version, Sampling: d.sampling,
+		m.Scopes = append(m.Scopes, metaScope{Port: d.key.port, Domain: d.key.domain, Version: d.key.version, Sampling: d.sampling,
 			Samplers: d.samplers, SysInitMs: d.sysInitMs})
 		for _, hist := range d.opts {
 			for _, od := range hist {
@@ -220,7 +226,7 @@ func (c *Collector) Metadata(addr netip.Addr) (blob []byte, version uint64) {
 			}
 		}
 	}
-	slices.SortFunc(m.Scopes, func(a, b scope) int {
+	slices.SortFunc(m.Scopes, func(a, b metaScope) int {
 		if a.Domain != b.Domain {
 			return int(int64(a.Domain) - int64(b.Domain))
 		}
@@ -228,9 +234,9 @@ func (c *Collector) Metadata(addr netip.Addr) (blob []byte, version uint64) {
 	})
 	slices.SortFunc(m.Options, func(a, b OptionsData) int { return a.Received.Compare(b.Received) })
 	for k, n := range e.ifNames {
-		m.IfNames = append(m.IfNames, ifn{Domain: uint32(k >> 32), IfIndex: uint32(k), Name: n})
+		m.IfNames = append(m.IfNames, metaIfName{Domain: uint32(k >> 32), IfIndex: uint32(k), Name: n})
 	}
-	slices.SortFunc(m.IfNames, func(a, b ifn) int {
+	slices.SortFunc(m.IfNames, func(a, b metaIfName) int {
 		if a.Domain != b.Domain {
 			return int(int64(a.Domain) - int64(b.Domain))
 		}

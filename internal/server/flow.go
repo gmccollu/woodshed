@@ -159,6 +159,10 @@ func (b *backend) openFlows(cfg config.Config) {
 			return out
 		}})
 	fs.fwCheck = func(nf, ix int) []fwrule.FlowRuleState { return fwrule.FlowWindowsStates(fwrule.Exec, nf, ix) }
+	// What the stored data says about recent exporters: their last 24 hours'
+	// counts, and the templates and metadata they sent before the restart
+	// (SPEC §13.10 decision 83).
+	fs.coll.Restore(b.flowRestore(cfg.Storage.DataDir, time.Duration(l.TemplateTimeout)))
 	b.flows = fs
 	go fs.expireLoop(b)
 }

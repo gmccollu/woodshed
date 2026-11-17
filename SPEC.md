@@ -3600,6 +3600,26 @@ the connection; present since 1.0):
     - A minute counts when it starts in the window (the dropped and truncated counts' rule): gaps are by when the
       datagram arrived, records by their own flow time, so a record far from its arrival (decision 70) can be in a
       window whose gaps don't cover its datagram.
+83. **A restart keeps the collector's last 24 hours and the exporters' templates.** The collector's per-exporter
+    state lived in memory only (lab phase 8): after a restart `/api/flows` listed no exporters, `woodshed flow status`
+    and the bundle's 24-hour numbers started from 0, and the next records waited for the exporter's next template.
+    At start the collector now restores, for every exporter with stored counts in the last 24 hours:
+    - its counts by hour (records stored, late, `no_template`, `malformed`, sequence gaps, lost, duplicates) and its
+      times off arrival (by hour, and by 5 minutes for the last hour, the `flow_time` banner's window), from the
+      per-minute counts of decision 82. The since-start counts stay 0;
+    - from its newest segment's footer, the metadata (sampling per scope and sampler, system init times, interface
+      names), and the templates when that segment stored something within `template_timeout`. Restored templates are
+      treated as refreshed when the segment last stored data, so they time out as they would have without the
+      restart. Options records kept raw aren't restored: the segments keep them, and the next options data refreshes
+      them.
+
+    Options weighed: decode-on-read already decodes raw sets later, so restoring templates only helps the live path
+    (counts, the UI, the files written right after a restart), and a stale template could misdecode if the exporter
+    changed it while Woodshed was down. That risk is the same as between two refreshes, and the timeout bounds it.
+    **A template seen again from the exporter always wins**, as it replaces any cached one; scopes stay per source
+    port, so an exporter that restarted on a new port gets nothing restored for it. Sequence state isn't restored:
+    the first message after a restart sets the baseline, so the downtime isn't counted as a gap (Woodshed's own
+    downtime shows in the bundle's gaps instead). Reading costs one footer per exporter heard in the last day.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
