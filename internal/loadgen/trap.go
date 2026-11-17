@@ -214,7 +214,7 @@ func sendTrap(ctx context.Context, o *SendOptions, res *SendResult) error {
 	}
 	stopRead()
 	wg.Wait()
-	res.Refused = s.ref.count()
+	res.Refused = s.ref.result()
 	if t.Inform {
 		s.mu.Lock()
 		st := s.stats
@@ -339,7 +339,10 @@ func (s *trapSender) sendAll(ctx context.Context, res *SendResult) error {
 				}
 				// A refusal after the receiver had been listening (a restart):
 				// counted, and this one sent again (RefusedGrace).
-				if isConnRefused(err) && !s.ref.refused() {
+				if isConnRefused(err) && !s.ref.refused(time.Now()) {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
 					continue
 				}
 				return s.writeErr(err)
@@ -460,7 +463,7 @@ func (s *trapSender) readReplies(ctx context.Context) {
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
-			if isConnRefused(err) && s.ref.refused() {
+			if isConnRefused(err) && s.ref.refused(time.Now()) {
 				s.mu.Lock()
 				s.readErr = notListening(s.o.Addr)
 				s.mu.Unlock()

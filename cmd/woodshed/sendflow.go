@@ -75,8 +75,10 @@ rule_id from it). Addresses are from 10/8 and the documentation ranges.
 
 If the port refuses (ICMP port unreachable) before a second of sending, it
 stops: nothing is listening. A refusal after that is the collector going away
-for a while (a restart): it's counted, the packet is sent again, and sending
-goes on, as an exporter's would; the summary says how many.
+for a while (a restart): the packet is sent again and sending goes on, as an
+exporter's would; the summary gives when the refusals came and how many were
+reported, a lower bound on what was lost. On Windows a refusal is never
+detected (Go doesn't report them for UDP there), so it never stops for one.
 
 Examples:
   woodshed send --proto ipfix --count 1000                1,000 IPFIX records to 127.0.0.1:4739

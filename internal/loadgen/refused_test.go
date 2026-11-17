@@ -3,6 +3,7 @@ package loadgen
 import (
 	"context"
 	"net"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,15 +15,22 @@ func TestRefusalsState(t *testing.T) {
 	t0 := time.Now()
 	r.wrote(t0)
 	r.wrote(t0.Add(RefusedGrace / 2))
-	if !r.refused() {
+	if !r.refused(t0.Add(RefusedGrace / 2)) {
 		t.Fatal("a refusal before the grace isn't fatal")
 	}
 	r.wrote(t0.Add(RefusedGrace))
-	if r.refused() || r.refused() || r.count() != 2 {
-		t.Fatalf("after the grace: count %d", r.count())
+	a, b := t0.Add(2*time.Second), t0.Add(5*time.Second)
+	if r.refused(a) || r.refused(b) {
+		t.Fatal("a refusal after the grace is fatal")
 	}
-	if RefusedText(0) != "" || !strings.HasPrefix(RefusedText(3), "3 refused (ICMP port unreachable") {
-		t.Fatalf("%q", RefusedText(3))
+	if got := r.result(); got.Count != 2 || !got.First.Equal(a) || !got.Last.Equal(b) {
+		t.Fatalf("after the grace: %+v", got)
+	}
+	if RefusedText(Refusals{}) != "" {
+		t.Fatal("text for none")
+	}
+	if got := RefusedText(r.result()); !strings.Contains(got, "(3.0 s): 2 ICMP port unreachable reported, a lower bound on the datagrams lost") {
+		t.Fatalf("%q", got)
 	}
 }
 
@@ -76,6 +84,12 @@ func TestSendThroughReceiverRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("about 3 s")
 	}
+	if runtime.GOOS == "windows" {
+		// Go turns off UDP connection-reset reporting on Windows sockets
+		// (SIO_UDP_CONNRESET, net/fd_windows.go): no refusal is ever reported,
+		// so there's nothing to see (SPEC §13.10 decision 84).
+		t.Skip("Windows never reports a UDP refusal")
+	}
 	ctx := context.Background()
 	for _, c := range []struct {
 		name string
@@ -83,15 +97,15 @@ func TestSendThroughReceiverRestart(t *testing.T) {
 	}{
 		{"syslog", func(addr string, n int, rate float64) (int, int, error) {
 			res, err := Send(ctx, SendOptions{Addr: addr, Proto: "udp", Count: n, Rate: rate, RunID: "0000bbbb"})
-			return res.Refused, res.Sent, err
+			return res.Refused.Count, res.Sent, err
 		}},
 		{"trap", func(addr string, n int, rate float64) (int, int, error) {
 			res, err := Send(ctx, SendOptions{Addr: addr, Proto: "trap", Count: n, Rate: rate, RunID: "0000cccc", Trap: TrapOptions{Version: "2c"}})
-			return res.Refused, res.Sent, err
+			return res.Refused.Count, res.Sent, err
 		}},
 		{"flows", func(addr string, n int, rate float64) (int, int, error) {
 			res, err := SendFlows(ctx, FlowOptions{Proto: ProtoIPFIX, Addr: addr, Count: n, Rate: rate, RecordsPerPacket: 1, RunID: "0000dddd"}, nil)
-			return res.Refused, res.Packets, err
+			return res.Refused.Count, res.Packets, err
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

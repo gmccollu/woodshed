@@ -3639,11 +3639,14 @@ the connection; present since 1.0):
     cases apart. Chosen: a refusal before the sender has gone 1 s (`loadgen.RefusedGrace`) without one still stops it
     at once, since nothing has answered (an ICMP reply on a LAN takes milliseconds, so a closed port is caught well
     within it); after that the receiver had been listening, so the refusal is counted, the datagram is sent again
-    (the OS returned the error instead of sending it), and sending goes on. The summary line says "N refused (ICMP
-    port unreachable: the receiver stopped listening for a while, so at least that many datagrams were lost)". The
-    same rule covers syslog over UDP, traps (sends and an inform's reply reader; SNMPv3 discovery still needs an
-    answer) and flows (`woodshed send --proto flow-v5|flow-v9|ipfix`). TCP and TLS are unchanged: a refused dial is an
-    error.
+    (the OS returned the error instead of sending it), and sending goes on. The summary line gives when the refusals
+    came (first to last) and how many were reported, called a lower bound: the OS keeps one pending error per socket
+    and ICMP replies are rate-limited, so far more datagrams are lost than reported (about 60 to 1 in the review's
+    measurement). The same rule covers syslog over UDP, traps (sends and an inform's reply reader; SNMPv3 discovery
+    still needs an answer) and flows (`woodshed send --proto flow-v5|flow-v9|ipfix`); every retry checks for an
+    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows a UDP refusal is never detected**:
+    Go turns off connection-reset reporting on Windows UDP sockets (`SIO_UDP_CONNRESET`), so a send there never stops
+    for one, before or after the grace, and the summary has none.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

@@ -37,8 +37,10 @@ never from the command line.
 
 Over UDP (and for traps), a port that refuses (ICMP port unreachable) before a
 second of sending stops the run: nothing is listening. A refusal after that is
-the receiver going away for a while (a restart): it's counted, the message is
-sent again, and sending goes on; the summary says how many.
+the receiver going away for a while (a restart): the message is sent again and
+sending goes on; the summary gives when the refusals came and how many were
+reported, a lower bound on what was lost. On Windows a UDP refusal is never
+detected (Go doesn't report them there), so it never stops for one.
 
 Examples:
   woodshed send --message "hello from woodshed"          one message to 127.0.0.1:514 over UDP

@@ -18,13 +18,27 @@ import (
 // error instead of sending it), and sending goes on, as a real exporter's does.
 const RefusedGrace = time.Second
 
+// Refusals are a sender's counted refusals (RefusedGrace) and when the first
+// and last came. The count is a lower bound on the datagrams lost: the OS
+// keeps one pending error per socket and ICMP replies are rate-limited, so
+// many datagrams can be lost for each refusal reported. On Windows none is
+// ever reported (Go turns off UDP connection-reset reporting there), so a
+// sender just goes on.
+type Refusals struct {
+	Count       int
+	First, Last time.Time
+}
+
 // refusals tracks a sender's refusals. Safe for concurrent use (a trap
 // sender's reply reader shares it).
 type refusals struct {
-	mu    sync.Mutex
-	since time.Time // the first send, or the last refusal before the sender was established
-	ok    bool      // a refusal-free RefusedGrace has passed: the receiver was listening
-	n     int
+	mu sync.Mutex
+	// since is the first datagram the OS accepted; ok turns true once a
+	// RefusedGrace has passed since then with no refusal (a refusal before
+	// that is fatal, so since never moves).
+	since time.Time
+	ok    bool
+	r     Refusals
 }
 
 // wrote notes a datagram the OS accepted.
@@ -39,33 +53,43 @@ func (r *refusals) wrote(now time.Time) {
 	}
 }
 
-// refused handles a refusal: fatal (nothing has ever answered) before the
-// sender is established, else counted.
-func (r *refusals) refused() (fatal bool) {
+// refused handles a refusal at now: fatal (nothing has ever answered)
+// before the sender is established, else counted.
+func (r *refusals) refused(now time.Time) (fatal bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.ok {
 		return true
 	}
-	r.n++
+	if r.r.Count == 0 {
+		r.r.First = now
+	}
+	r.r.Count++
+	r.r.Last = now
 	return false
 }
 
-func (r *refusals) count() int {
+func (r *refusals) result() Refusals {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.n
+	return r.r
 }
 
 func notListening(addr string) error {
 	return fmt.Errorf("loadgen: %s: nothing is listening (connection refused)", addr)
 }
 
-// RefusedText is the summary's words for n refusals ("" for none).
-func RefusedText(n int) string {
-	if n <= 0 {
+// RefusedText is the summary's words for a sender's refusals ("" for none).
+func RefusedText(r Refusals) string {
+	if r.Count <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d refused (ICMP port unreachable: the receiver stopped listening for a while, so at least that many "+
-		"datagrams were lost); sending went on", n)
+	span := r.First.Format("15:04:05.000")
+	if r.Last.After(r.First) {
+		span = "from " + span + " to " + r.Last.Format("15:04:05.000") + fmt.Sprintf(" (%.1f s)", r.Last.Sub(r.First).Seconds())
+	} else {
+		span = "at " + span
+	}
+	return fmt.Sprintf("The receiver refused datagrams %s: %d ICMP port unreachable reported, a lower bound on the datagrams "+
+		"lost (one is reported per send at most, and ICMP is rate-limited); sending went on", span, r.Count)
 }

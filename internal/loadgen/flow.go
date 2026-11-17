@@ -101,9 +101,9 @@ type FlowResult struct {
 	Elapsed      time.Duration
 	Rate         float64 // records per second
 	Backpressure int
-	// Refused counts refusals after the collector had been listening
+	// Refused is the refusals after the collector had been listening
 	// (RefusedGrace); each packet was sent again.
-	Refused int
+	Refused Refusals
 }
 
 func (o *FlowOptions) defaults() error {
@@ -720,7 +720,7 @@ func SendFlows(ctx context.Context, o FlowOptions, log func([]Expected)) (res Fl
 	start := time.Now()
 	p := pacer{start: start, rate: o.Rate}
 	var ref refusals
-	defer func() { res.Refused = ref.count() }() // res is the named result: set on every return
+	defer func() { res.Refused = ref.result() }() // res is the named result: set on every return
 	for !g.Done() {
 		for g.sent < p.due(o.Count) && !g.Done() {
 			pkt, exp := g.Next(time.Now())
@@ -740,8 +740,11 @@ func SendFlows(ctx context.Context, o FlowOptions, log func([]Expected)) (res Fl
 				if isConnRefused(err) {
 					// Fatal while nothing has ever answered; later, the
 					// collector restarting: count it and send the packet again.
-					if ref.refused() {
+					if ref.refused(time.Now()) {
 						return res, notListening(o.Addr)
+					}
+					if ctx.Err() != nil {
+						return res, ctx.Err()
 					}
 					continue
 				}
