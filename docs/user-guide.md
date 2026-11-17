@@ -192,9 +192,13 @@ OIDs aren't supported.
   used. The device page says so under the memory chart; 1.3 shows the figure as the agent reports it.
 - *interfaces*: for every interface up to the limit (64 by default), the 64-bit in and out octets and unicast,
   multicast and broadcast packets, errors, discards, up/down state and the discontinuity time; names, aliases and
-  speeds hourly. A device without 64-bit counters (or SNMPv1) gets the 32-bit ones, and its page warns that rates
-  above about 115 Mb/s at a 5-minute interval can be wrong. Over the limit, Woodshed polls the interfaces you
-  **pinned**, then the ones that are up, fastest first; the device page says how many were left out.
+  speeds hourly. Interfaces often appear after the SNMP agent starts (bridges, tunnels, line cards), so after a
+  restart Woodshed looks at the interface list again about 1, 2 and 5 polls later, and between the hourly looks
+  whenever the device's interface count (`ifNumber`) or `ifTableLastChange` changes. A new interface gets its first
+  rate at the poll after it's found; the others carry on without a gap. A device without 64-bit counters (or
+  SNMPv1) gets the 32-bit ones, and its page warns that rates above about 115 Mb/s at a 5-minute interval can be
+  wrong. Over the limit, Woodshed polls the interfaces you **pinned**, then the ones that are up, fastest first; the
+  device page says how many were left out.
 - *system-info*: `sysName`, `sysDescr` and `sysObjectID`, hourly.
 - *custom OIDs* (up to 32 per device): a value (`1.3.6.1.4.1.…0`) or a walk of a table column (up to 128 rows by
   default). Counters become rates; numbers are kept as values; text is kept but not graphed.

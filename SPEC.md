@@ -2095,7 +2095,8 @@ poll" asks a device only for what its configured poll would.
 |---|---|---|
 | `system` | `sysUpTime.0`; `hrSystemUptime.0` where supported; `hrProcessorLoad` (every processor row, averaged); `hrStorageTable` rows of type `hrStorageRam` (used and size × allocation units) | interval |
 | `interfaces` | per interface: `ifHCInOctets`, `ifHCOutOctets`, `ifInErrors`, `ifOutErrors`, `ifInDiscards`, `ifOutDiscards`, `ifOperStatus`, `ifCounterDiscontinuityTime` | interval |
-| | `ifName`, `ifDescr`, `ifAlias`, `ifHighSpeed` (names and speed) | hourly, and after a discontinuity |
+| | `ifNumber.0` and `ifTableLastChange.0` (in the same `Get` as `sysUpTime`), where supported | interval |
+| | `ifName`, `ifDescr`, `ifAlias`, `ifHighSpeed` (names and speed) | hourly, after a discontinuity or a restart, and when the table changes (below) |
 | `system-info` | `sysName.0`, `sysDescr.0`, `sysObjectID.0` (shown on the device page) | hourly |
 
 - An agent without `ifXTable` (no HC counters, or SNMP v1, which has no Counter64) gets the 32-bit `ifInOctets` and
@@ -2103,6 +2104,22 @@ poll" asks a device only for what its configured poll would.
   interval can be wrong").
 - An OID the agent doesn't have (`noSuchObject`, `noSuchName` in v1) turns that part off for the device until the
   next hourly refresh; the device page says "CPU and memory: not available on this device".
+- **Interface table refresh** (1.3 lab: an interface that appeared 20 s after a reboot went unpolled for an hour).
+  The table (names, speeds, states; which interfaces are polled) is walked again:
+  - hourly, and at the cycle after an `ifCounterDiscontinuityTime` change;
+  - on a restart's cycle (§12.2.2), and again at the **1st, 2nd and 5th answered cycle after it** (at a 60 s interval
+    about 1, 2 and 5 minutes later). Interfaces often appear after the agent starts (bridges, virtual and tunnel
+    interfaces, line cards), and which are up, and their speeds, settle as links come up, which changes the pick over
+    `max_interfaces`. A follow-up runs only in a cycle the device answers; one that fails is retried at the next;
+  - when `ifNumber.0` or `ifTableLastChange.0` (IF-MIB: `sysUpTime` at the last row added or removed) differs from
+    the last cycle's, at that cycle. Walks made only for such a change are at least 5 minutes apart, so a device whose
+    interfaces come and go every cycle (dial-up or tunnel interfaces) isn't walked every cycle; the first change after
+    a quiet spell is walked at once. They cost no request: about 30 bytes more each way in the `sysUpTime` `Get`. One
+    the agent lacks is left out, without a status line, until the next hourly try (v1, whose `noSuchName` makes the
+    request go again without it, pays one extra `Get` an hour).
+  An interface found this way starts without a rate (its first sample) and without `disc=1`; the others keep their
+  rates. One that's gone stops being polled at the walk. A walk that changes how many interfaces there are or are
+  polled writes the system-info line again (`ifs_total`, `ifs_polled`).
 - **Interfaces:** every interface by default, up to `max_interfaces` (64 by default, at most 1,024), in `ifIndex`
   order; or a list of `ifName`s or indexes. More than the cap: the first 64 are polled and the device page says how
   many were left out.
@@ -2426,8 +2443,8 @@ Everything below is **decided (coordinator, 2026-11-15, owner-delegated)**:
    the 32-bit fallback, the packet counters `in_ucast` … `out_bcast` and their `*_pps` rates (§12.11 #1), and
    `wraps=` naming the counters that wrapped; `sys` and `status` lines carry `interval_s`; a capped walk's last row has
    `capped=1`; `info` lines are either the system form (`sys_name`, `sys_descr`, `sys_oid`, `hc`, `hr`, `ifs_total`,
-   `ifs_polled`) or one per polled interface (`if`, `name`, `descr`, `alias`, `speed_mbps`), hourly and after a
-   discontinuity. Errors and discards are stored as per-cycle deltas only (`_d`); per second is the delta over
+   `ifs_polled`) or one per polled interface (`if`, `name`, `descr`, `alias`, `speed_mbps`), at each interface table
+   refresh (§12.1). Errors and discards are stored as per-cycle deltas only (`_d`); per second is the delta over
    `interval_s`.
 4. **Custom OIDs** are asked every cycle even when missing (stored as `type=nosuchobject`, an empty walk as one such
    line); only the presets' parts turn off until the hourly refresh.
