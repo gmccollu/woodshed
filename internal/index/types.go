@@ -66,6 +66,9 @@ type Counts struct {
 	Bytes     int64 // raw bytes stored
 	Truncated int64 // messages cut at the max message size (still stored)
 	Dropped   int64 // messages Woodshed received but could not store
+	// Flow is the flow collector's counts (type_stats rows of type flow
+	// only; zero for the other types).
+	Flow FlowCounts
 }
 
 // Add adds o to c.
@@ -74,6 +77,7 @@ func (c *Counts) Add(o Counts) {
 	c.Bytes += o.Bytes
 	c.Truncated += o.Truncated
 	c.Dropped += o.Dropped
+	c.Flow.Add(o.Flow)
 }
 
 // MinuteCounts are the counts for the minute starting at Minute.

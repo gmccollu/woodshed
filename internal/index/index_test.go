@@ -431,19 +431,30 @@ func TestRollupAndCounts(t *testing.T) {
 	}
 }
 
-// dropV7 undoes migration 6 -> 7 (the poller's tables).
-// dropV8 undoes migration 7 -> 8 (flows).
-const dropV8 = `DROP TABLE flow_segments; DROP TABLE flow_minute; `
+// dropV9 undoes migration 8 -> 9 (the flow counts in the stats tables).
+var dropV9 = func() string {
+	var b strings.Builder
+	for _, t := range []string{"type_stats", "type_stats_hourly"} {
+		for _, c := range []string{"late", "no_template", "malformed", "seq_gaps", "seq_lost", "duplicates", "off_ahead", "off_behind",
+			"off_max_ahead_ms", "off_max_behind_ms", "flow_counted"} {
+			b.WriteString("ALTER TABLE " + t + " DROP COLUMN " + c + "; ")
+		}
+	}
+	return b.String()
+}()
+
+// dropV8 undoes migrations 8 -> 9 and 7 -> 8 (flows).
+var dropV8 = dropV9 + `DROP TABLE flow_segments; DROP TABLE flow_minute; `
 
 // dropV7 undoes migrations 7 -> 8 and 6 -> 7 (polls).
-const dropV7 = dropV8 + `DROP TABLE poll_targets; DROP TABLE poll_hourly; `
+var dropV7 = dropV8 + `DROP TABLE poll_targets; DROP TABLE poll_hourly; `
 
 // dropV6 undoes migrations 6 -> 7 and 5 -> 6 (data types).
-const dropV6 = dropV7 + `DROP INDEX files_type_device_time; ALTER TABLE files DROP COLUMN type; ALTER TABLE deletions DROP COLUMN type;
+var dropV6 = dropV7 + `DROP INDEX files_type_device_time; ALTER TABLE files DROP COLUMN type; ALTER TABLE deletions DROP COLUMN type;
 	DROP TABLE type_stats; DROP TABLE type_stats_hourly; `
 
 // dropV4Indexes undoes migrations 5 -> 6, 4 -> 5 and 3 -> 4, for tests that rebuild an older schema.
-const dropV4Indexes = dropV6 + `DROP TABLE saved_searches; DROP INDEX stats_minute_msgs; DROP INDEX stats_drops; DROP INDEX stats_hourly_drops;
+var dropV4Indexes = dropV6 + `DROP TABLE saved_searches; DROP INDEX stats_minute_msgs; DROP INDEX stats_drops; DROP INDEX stats_hourly_drops;
 	DROP INDEX devices_last_heard; DROP INDEX devices_first_seen; DROP INDEX devices_name_sort; `
 
 func TestMigrateV3ToV4Indexes(t *testing.T) {
@@ -454,7 +465,7 @@ func TestMigrateV3ToV4Indexes(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 8 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 9 {
 		t.Fatalf("version %d", v)
 	}
 	var n int
