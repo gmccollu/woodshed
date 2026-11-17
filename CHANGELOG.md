@@ -4,7 +4,7 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
-## [1.3.0] - unreleased
+## [1.3.0] - 2026-11-17
 
 ### Added
 - SNMP polling of the devices you choose, off until you add one under **Devices → Polling** (**Add polling** on a
