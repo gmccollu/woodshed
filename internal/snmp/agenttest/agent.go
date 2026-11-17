@@ -3,7 +3,8 @@
 // ifXTable, HOST-RESOURCES CPU and memory, extra scalars and tables), counters
 // that advance at a set rate on its own clock, and hooks to inject what the
 // poller must handle: a Counter32 wrap, a Counter64 drop, a discontinuity
-// time change, an interface renamed under its index, an agent restart, a
+// time change, an interface renamed under its index, an interface added or
+// removed (ifNumber and ifTableLastChange follow), an agent restart, a
 // reboot, a sysUpTime wrap, tooBig, noSuchObject, replies from another
 // address, slowness and silence. It's authoritative for SNMPv3 with every
 // auth and priv protocol internal/snmp supports.
@@ -61,8 +62,8 @@ type Options struct {
 	SysObjectID       snmp.OID
 
 	Interfaces []Interface
-	// NoIfXTable leaves out ifXTable (no HC counters, no names), like an old
-	// agent.
+	// NoIfXTable leaves out ifXTable (no HC counters, no names) and
+	// ifTableLastChange, like an old agent.
 	NoIfXTable bool
 	// HostResources serves hrSystemUptime, hrProcessorLoad (CPUs) and one
 	// hrStorageRam row (MemUsed and MemTotal bytes, in 1,024-byte units).
@@ -134,6 +135,7 @@ type Agent struct {
 	upOff      uint64    // ticks added to sysUpTime (a wrap test)
 	hrStart    time.Time
 	ifs        []*ifState
+	ifLast     uint64 // ifTableLastChange (ticks): sysUpTime at the last add or remove, 0 since a restart
 	cpus       []int
 	memUsed    uint64
 	extra      map[string]snmp.Value
@@ -200,16 +202,7 @@ func Start(opts Options) (*Agent, error) {
 		a.extra[k] = v
 	}
 	for _, in := range opts.Interfaces {
-		st := &ifState{Interface: in}
-		if st.Oper == 0 {
-			st.Oper = 1
-		}
-		rates := []float64{in.InBps / 8, in.OutBps / 8, in.InUcastPps, in.OutUcastPps, in.InMcastPps, in.OutMcastPps,
-			in.InBcastPps, in.OutBcastPps, in.InErrPs, in.OutErrPs, in.InDiscPs, in.OutDiscPs}
-		for i := range st.ctr {
-			st.ctr[i] = counter{rate: rates[i], at: now}
-		}
-		a.ifs = append(a.ifs, st)
+		a.ifs = append(a.ifs, newIfState(in, now))
 	}
 	sort.Slice(a.ifs, func(i, j int) bool { return a.ifs[i].Index < a.ifs[j].Index })
 	if err := a.newEngine(opts.Boots, now); err != nil {
@@ -219,6 +212,19 @@ func Start(opts Options) (*Agent, error) {
 	a.buildView()
 	go a.serve()
 	return a, nil
+}
+
+func newIfState(in Interface, now time.Time) *ifState {
+	st := &ifState{Interface: in}
+	if st.Oper == 0 {
+		st.Oper = 1
+	}
+	rates := []float64{in.InBps / 8, in.OutBps / 8, in.InUcastPps, in.OutUcastPps, in.InMcastPps, in.OutMcastPps,
+		in.InBcastPps, in.OutBcastPps, in.InErrPs, in.OutErrPs, in.InDiscPs, in.OutDiscPs}
+	for i := range st.ctr {
+		st.ctr[i] = counter{rate: rates[i], at: now}
+	}
+	return st
 }
 
 func (a *Agent) newEngine(boots int64, now time.Time) error {
@@ -267,6 +273,35 @@ func (a *Agent) iface(index int) *ifState {
 		}
 	}
 	panic(fmt.Sprintf("agenttest: no interface %d", index))
+}
+
+// AddInterface adds an interface (one that appears after the agent started:
+// a line card, a bridge, a tunnel). Its counters start from 0; ifNumber and
+// ifTableLastChange change with it.
+func (a *Agent) AddInterface(in Interface) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.opts.Clock()
+	for _, s := range a.ifs {
+		if s.Index == in.Index {
+			panic(fmt.Sprintf("agenttest: interface %d already exists", in.Index))
+		}
+	}
+	a.ifs = append(a.ifs, newIfState(in, now))
+	sort.Slice(a.ifs, func(i, j int) bool { return a.ifs[i].Index < a.ifs[j].Index })
+	a.ifLast = a.sysUpTimeLocked(now)
+	a.buildView()
+}
+
+// RemoveInterface removes an interface; ifNumber and ifTableLastChange
+// change with it.
+func (a *Agent) RemoveInterface(index int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.iface(index)
+	a.ifs = slices.DeleteFunc(a.ifs, func(x *ifState) bool { return x == s })
+	a.ifLast = a.sysUpTimeLocked(a.opts.Clock())
+	a.buildView()
 }
 
 // SetRates changes an interface's octet rates (bits per second).
@@ -359,7 +394,7 @@ func (a *Agent) Restart() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.opts.Clock()
-	a.sysStart, a.upOff = now, 0
+	a.sysStart, a.upOff, a.ifLast = now, 0, 0
 	_ = a.newEngine(a.engine.Boots+1, now)
 }
 
@@ -370,7 +405,7 @@ func (a *Agent) RestartKeepBoots() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.opts.Clock()
-	a.sysStart, a.upOff = now, 0
+	a.sysStart, a.upOff, a.ifLast = now, 0, 0
 	_ = a.newEngine(a.engine.Boots, now)
 }
 
@@ -380,7 +415,7 @@ func (a *Agent) Reboot() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.opts.Clock()
-	a.sysStart, a.upOff, a.hrStart = now, 0, now
+	a.sysStart, a.upOff, a.hrStart, a.ifLast = now, 0, now, 0
 	for _, s := range a.ifs {
 		for i := range s.ctr {
 			s.ctr[i] = counter{rate: s.ctr[i].rate, at: now}
@@ -487,6 +522,7 @@ var (
 	oidIfNumber    = snmp.OID{1, 3, 6, 1, 2, 1, 2, 1, 0}
 	oidIfEntry     = snmp.OID{1, 3, 6, 1, 2, 1, 2, 2, 1}
 	oidIfXEntry    = snmp.OID{1, 3, 6, 1, 2, 1, 31, 1, 1, 1}
+	oidIfLastChg   = snmp.OID{1, 3, 6, 1, 2, 1, 31, 1, 5, 0} // ifTableLastChange
 	oidHrUptime    = snmp.OID{1, 3, 6, 1, 2, 1, 25, 1, 1, 0}
 	oidHrStorage   = snmp.OID{1, 3, 6, 1, 2, 1, 25, 2, 3, 1}
 	oidHrStorRam   = snmp.OID{1, 3, 6, 1, 2, 1, 25, 2, 1, 2}
@@ -580,6 +616,7 @@ func (a *Agent) buildView() {
 		}
 	}
 	if !a.opts.NoIfXTable {
+		add(oidIfLastChg, func(a *Agent, _ time.Time) snmp.Value { return timeticks(a.ifLast) })
 		for _, c := range ifxCols {
 			for i := range a.ifs {
 				add(cat(oidIfXEntry, c.n, uint32(a.ifs[i].Index)), func(a *Agent, now time.Time) snmp.Value { return c.f(a.ifs[i], now) })
