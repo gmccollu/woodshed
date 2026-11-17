@@ -1,10 +1,11 @@
 <script lang="ts">
   // The device page's Flows card (SPEC §13.3): what this exporter has sent (records stored, from
   // /api/devices), its rate, observation domains, sampling and templates, the last 24 hours'
-  // losses (sequence gaps are loss before Woodshed, between the exporter and here), and a clock
-  // warning when its times are more than an hour off (its flows then use the received time).
+  // losses (sequence gaps are loss before Woodshed, between the exporter and here), a clock
+  // warning when its times are more than an hour off (its flows then use the received time), and
+  // records whose own times were far from when they arrived (kept as sent; SPEC §13.10 decision 70).
   import { getFlows, type Device } from '../lib/api';
-  import { samplingText, short, type FlowExporter } from '../lib/flows';
+  import { samplingText, short, timeOffNow, timeOffWords, type FlowExporter } from '../lib/flows';
   import { ago, num } from '../lib/format';
 
   let { id, device }: { id: string; device: Device | null | undefined } = $props();
@@ -35,6 +36,12 @@
         with each record). Fix its clock (NTP).
       </p>
     {/if}
+    {#if exp && timeOffNow(exp)}
+      <p class="warn" role="status" data-flow-time-off>
+        In the last hour this exporter sent records whose times are far from when they arrived: {timeOffWords(exp.time_offsets_1h)}. Its clock or uptime is
+        probably wrong. They're kept as sent, so they show in Events at their own times.
+      </p>
+    {/if}
     <dl class="kv">
       <dt>Records stored</dt>
       <dd>{num(stored)}</dd>
@@ -55,6 +62,10 @@
         {#if exp.pending_bytes}<dt>Waiting for a template</dt><dd>{num(exp.pending_bytes)} bytes</dd>{/if}
         <dt>Clock</dt>
         <dd>{skew(exp.clock_skew_ms)} from Woodshed's</dd>
+        {#if timeOffWords(exp.time_offsets_24h)}
+          <dt>Times off arrival</dt>
+          <dd data-flow-time-24h>{timeOffWords(exp.time_offsets_24h)} in the last 24 hours (ahead: more than 1 h after arrival; behind: more than 24 h before)</dd>
+        {/if}
       {:else if exp === null}
         <dt>Now</dt>
         <dd>Not exporting since the server started.</dd>

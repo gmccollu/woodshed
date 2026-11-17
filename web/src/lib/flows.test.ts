@@ -21,13 +21,18 @@ import {
   isPortOrRange,
   isTooManyFlows,
   leaveFlowsOutByDefault,
+  offsetText,
   progressText,
   rowFilters,
   ruleIeOk,
   samplingText,
   shareText,
   short,
+  TIME_BANNER_MIN,
+  timeOffNow,
+  timeOffWords,
   type FlowBundleSummary,
+  type FlowExporter,
   type FlowFields,
 } from './flows.ts';
 
@@ -177,4 +182,34 @@ test('a record’s detail and its event note', () => {
   assert.equal(d['Input interface'], '3 (eth3)');
   assert.equal(d.Protocol, 'tcp (6)');
   assert.ok(!('Event time' in d) && !('Reverse bytes / packets' in d));
+});
+
+test('times off arrival: words, the banner count and the README line (SPEC §13.10 decision 70)', () => {
+  // The same as the server's flow.OffsetText.
+  for (const [ms, want] of [[3_600_001, '1.0 h'], [5_400_000, '1.5 h'], [30 * 3_600_000, '30 h'], [47 * 3_600_000 + 1, '47 h'], [48 * 3_600_000, '2.0 days'], [2 ** 32, '49.7 days']] as const)
+    assert.equal(offsetText(ms), want);
+  assert.equal(timeOffWords({ ahead: 3600, behind: 2, max_ahead_ms: 2 ** 32, max_behind_ms: 30 * 3_600_000 }), '3,600 ahead (up to 49.7 days), 2 behind (up to 30 h)');
+  assert.equal(timeOffWords({ ahead: 0, behind: 0, max_ahead_ms: 0, max_behind_ms: 0 }), '');
+  assert.equal(timeOffWords(null), '');
+  const none = { ahead: 0, behind: 0, max_ahead_ms: 0, max_behind_ms: 0 };
+  const exp = (ahead: number, behind: number) =>
+    ({ device_id: '10.1.0.1', domains: [], records_per_sec: 1, pending_bytes: 0, clock_skew_ms: 0, time_source: 'exporter',
+      counts_24h: { records: 1, late: 0, no_template: 0, malformed: 0, sequence_gaps: 0, duplicates: 0 }, time_offsets_24h: none,
+      time_offsets_1h: { ...none, ahead, behind } }) as FlowExporter;
+  assert.equal(TIME_BANNER_MIN, 10);
+  assert.ok(!timeOffNow(exp(9, 9)));
+  assert.ok(timeOffNow(exp(10, 0)) && timeOffNow(exp(0, 10)));
+  const base: FlowBundleSummary = {
+    records: 2, domains: 1, sampling: [{ domain: 1, sampling: 1 }], bytes: 200, bytes_scaled: null, packets: 2, packets_scaled: null,
+    top_talkers: [], top_dst_ports: [], top_conversations: [], fw_events: { created: 0, deleted: 0, denied: 0 }, top_denied_sources: [],
+    top_denied_ports: [], nat_connections: 0, top_post_nat_sources: [], sequence_gaps: 0, lost_estimate: 0, no_template: 0, malformed: 0,
+  };
+  assert.ok(!flowReadme(base).includes('times off arrival'));
+  assert.ok(!flowReadme({ ...base, time_offsets: none, time_offsets_24h: none }).includes('times off arrival'));
+  // The same line as the Go README (internal/export TestFlowBundleTimeOffsets).
+  const lines = flowReadme({ ...base, time_offsets: { ...none, ahead: 1, max_ahead_ms: 70 * 60_000 }, time_offsets_24h: { ...none, ahead: 2, max_ahead_ms: 2 ** 32 } }).split('\n');
+  assert.equal(
+    lines[lines.length - 2],
+    "                 times off arrival: 1 ahead (up to 1.2 h) in this window; 2 ahead (up to 49.7 days) in the last 24 h; kept at their own times, so a window around their arrival misses them (the exporter's clock or uptime is probably wrong)",
+  );
 });

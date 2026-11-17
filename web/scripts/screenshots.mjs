@@ -2495,12 +2495,38 @@ const SHOTS = [
     check: `document.querySelector('[data-flow-device]')?.innerText.includes('1:1,000') && document.querySelector('[data-flow-device]').innerText.includes('records a second')`,
     maxh: 1400,
   }),
+  ...both({
+    // Records far from their arrival time (SPEC §13.10 decision 70): the device page's warning and its 24-hour line.
+    name: 'flows-device-page-time-off',
+    url: '/?mock_panel=0&mock_flow_banners=1#/device?id=10.1.0.10',
+    wait: 3000,
+    check: `document.querySelector('[data-flow-time-off]')?.innerText.includes('288 ahead (up to 49.7 days)')
+      && document.querySelector('[data-flow-time-24h]')?.innerText.includes('3,412 ahead (up to 49.7 days), 14 behind (up to 30 h)')`,
+    clip: '[data-flow-device]',
+  }),
+  {
+    name: 'flows-time-off-settings',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0&mock_flow_banners=1#/settings?section=flows',
+    wait: 3000,
+    check: `[...document.querySelectorAll('[data-flow-state] td.bad')].some((td) => td.innerText.includes('records off arrival, 24 h: 3,412 ahead'))`,
+  },
+  {
+    name: 'flows-bundle-readme-time-off',
+    noshot: true,
+    mode: 'light',
+    url: `/?mock_panel=0&mock_flow_banners=1#/events?bundle=${new Date(Date.now() - 10 * 60_000).toISOString().slice(0, 19)}Z&bb=30m&ba=10m&type=flow`,
+    wait: 6000,
+    check: `document.querySelector('[data-flow-readme]')?.innerText.includes('times off arrival: 3,412 ahead (up to 49.7 days), 14 behind (up to 30 h) in the last 24 h')`,
+  },
   {
     name: 'flows-banners-light',
     mode: 'light',
     url: '/?mock_panel=0&mock_flow_banners=1#/dashboard',
     wait: 2500,
-    check: `['flow_budget', 'flow_templates', 'flow_clock'].every((k) => document.querySelector('[data-kind=' + k + ']'))`,
+    check: `['flow_budget', 'flow_templates', 'flow_clock', 'flow_time'].every((k) => document.querySelector('[data-kind=' + k + ']'))
+      && document.querySelector('[data-kind=flow_time]').innerText.includes('49.7 days ahead of when they arrived')`,
     report: `[...document.querySelectorAll('[data-kind]')].map((x) => x.dataset.kind).join(',')`,
     maxh: 1100,
   },
