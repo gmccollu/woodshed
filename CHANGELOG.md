@@ -67,6 +67,10 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   poll file and loses access to flows.
 - `woodshed snmp status` and `woodshed tls status` check the config first, as `woodshed run`, `reindex` and `flow
   status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
+- Woodshed describes itself as a "syslog, SNMP and flow collector", not a "syslog server": in the package descriptions
+  (deb, rpm, cask, scoop), the Windows service's display name and description (the MSI updates them on upgrade), the
+  systemd unit, the web UI header and the site. The service names don't change. New service accounts get the comment
+  "Woodshed service"; existing ones keep theirs.
 
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The
