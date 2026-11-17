@@ -32,12 +32,15 @@ func TestRestore(t *testing.T) {
 	c := NewCollector(Options{TemplateTimeout: 30 * time.Minute, Clock: func() time.Time { return now }})
 	hour := t0.Truncate(time.Hour).UnixMilli()
 	c.Restore([]Restored{{Addr: exp1.Addr(), LastHeard: t0.UnixMilli(), TemplatesAt: t0.UnixMilli(), Templates: defs, Meta: meta,
+		// The hour 24 h back shares the current hour's ring slot, and comes last (from the hourly table): it mustn't
+		// replace it.
 		Hours: []RestoreBucket{{At: hour - 3*3600000, Counts: Counts{Records: 100, SequenceGaps: 849, LostEstimate: 37498}},
-			{At: hour, Counts: Counts{Records: 1, SequenceGaps: 1, NoTemplate: 2}, Off: TimeOffsets{Ahead: 1, MaxAheadMs: 7200000}}},
+			{At: hour, Counts: Counts{Records: 1, SequenceGaps: 1, NoTemplate: 2}, Off: TimeOffsets{Ahead: 1, MaxAheadMs: 7200000}},
+			{At: hour - 24*3600000, Counts: Counts{Records: 7, SequenceGaps: 5}, Off: TimeOffsets{Behind: 1, MaxBehindMs: 1}}},
 		Fives: []RestoreBucket{{At: t0.Truncate(5 * time.Minute).UnixMilli(), Off: TimeOffsets{Ahead: 1, MaxAheadMs: 7200000}}}}})
 	st := c.Stats(now)
 	if len(st) != 1 || st[0].Counts24h.SequenceGaps != 850 || st[0].Counts24h.Records != 101 || st[0].Counts24h.NoTemplate != 2 ||
-		st[0].Counts != (Counts{}) || st[0].TimeOffsets24h.Ahead != 1 || st[0].TimeOffsets1h.Ahead != 1 {
+		st[0].Counts != (Counts{}) || st[0].TimeOffsets24h.Ahead != 1 || st[0].TimeOffsets24h.Behind != 0 || st[0].TimeOffsets1h.Ahead != 1 {
 		t.Fatalf("stats %+v", st)
 	}
 	if len(st[0].Domains) != 1 || st[0].Domains[0].Sampling != 1000 || st[0].Domains[0].Templates != 1 {

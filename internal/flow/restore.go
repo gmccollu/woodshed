@@ -68,9 +68,14 @@ func (c *Collector) Restore(rs []Restored) {
 func (c *Collector) restoreCounts(e *exporter, r *Restored) {
 	e.cmu.Lock()
 	defer e.cmu.Unlock()
+	// Buckets may come in any order; in a ring slot the newer hour wins (the
+	// hour 24 h back shares a slot with the current one).
 	for _, b := range r.Hours {
 		h := b.At / 3600000
 		slot := &e.hours[h%24]
+		if slot.hour > h {
+			continue
+		}
 		if slot.hour != h {
 			*slot = hourCounts{hour: h}
 		}
@@ -81,7 +86,7 @@ func (c *Collector) restoreCounts(e *exporter, r *Restored) {
 			}
 			if sl := &e.off.hours[h%24]; sl.at == h {
 				sl.o.merge(b.Off)
-			} else {
+			} else if sl.at < h {
 				*sl = offSlot{at: h, o: b.Off}
 			}
 		}
@@ -96,7 +101,7 @@ func (c *Collector) restoreCounts(e *exporter, r *Restored) {
 		f := b.At / fiveMinMs
 		if sl := &e.off.fives[f%12]; sl.at == f {
 			sl.o.merge(b.Off)
-		} else {
+		} else if sl.at < f {
 			*sl = offSlot{at: f, o: b.Off}
 		}
 	}
