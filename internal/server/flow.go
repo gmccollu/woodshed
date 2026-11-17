@@ -430,7 +430,7 @@ func (b *backend) FlowTop(ctx context.Context, r api.FlowTopRequest) (api.FlowTo
 func ToAPITop(by, metric string, q flowquery.Query, res flowquery.TopResult, took time.Duration) api.FlowTopPage {
 	t := res.Total
 	page := api.FlowTopPage{By: by, Metric: metric, From: q.From, To: q.To, Approx: res.Approx, ErrorBound: res.ErrorBound,
-		Partial:    res.Partial,
+		ZeroOmitted: res.ZeroOmitted, Partial: res.Partial,
 		NextCursor: res.Cursor, Progress: toAPIProgress(res.Progress), ElapsedMS: took.Milliseconds(),
 		Total: api.FlowTopTotal{Flows: t.Flows, Connections: t.Connections, Bytes: t.Bytes, Packets: t.Packets,
 			BytesScaled: t.BytesScaled, PacketsScaled: t.PacketsScaled, ScaledComplete: t.Unknown == 0}}

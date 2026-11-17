@@ -110,3 +110,59 @@ func TestTopKeys(t *testing.T) {
 		t.Fatalf("in_if %+v", rows)
 	}
 }
+
+// A key with none of the metric is never a row (a denied-only source in a
+// top by bytes): it's counted as left out, and the totals still hold its
+// records (lab, 2.0.0-rc1).
+func TestTopLeavesOutZeroMetric(t *testing.T) {
+	top, _ := NewTop("src", "bytes")
+	add := func(src string, bytes uint64, ev uint8) {
+		r := rec()
+		r.Src, r.Bytes = netip.MustParseAddr(src), bytes
+		if ev != 0 {
+			r.Has |= flow.HasFwEvent
+			r.FwEvent = ev
+		}
+		top.Add(r)
+	}
+	add("10.0.0.1", 100, 0)
+	add("10.0.0.2", 0, 0)
+	add("203.0.113.5", 0, flow.FwDenied) // a denied event carries no bytes
+	add("10.0.0.3", 40, 0)
+	rows, zero := top.RowsZero(10)
+	if len(rows) != 2 || rows[0].Key != "10.0.0.1" || rows[1].Key != "10.0.0.3" || zero != 2 {
+		t.Fatalf("rows %+v zero %d", rows, zero)
+	}
+	if top.Total.Flows != 4 || top.Total.Bytes != 140 {
+		t.Fatalf("total %+v", top.Total)
+	}
+	// Fewer rows asked for: the count is still every zero key.
+	if rows, zero := top.RowsZero(1); len(rows) != 1 || zero != 2 {
+		t.Fatalf("top 1: %+v %d", rows, zero)
+	}
+	// Ranked by flows, every key has some: nothing left out.
+	byFlows, _ := NewTop("src", "flows")
+	for _, s := range []string{"10.0.0.1", "203.0.113.5"} {
+		r := rec()
+		r.Src, r.Bytes = netip.MustParseAddr(s), 0
+		byFlows.Add(r)
+	}
+	if rows, zero := byFlows.RowsZero(10); len(rows) != 2 || zero != 0 {
+		t.Fatalf("by flows: %+v %d", rows, zero)
+	}
+	// Only zero keys: no rows at all.
+	none, _ := NewTop("fw_event", "bytes")
+	r := rec()
+	r.Has |= flow.HasFwEvent
+	r.FwEvent, r.Bytes = flow.FwDenied, 0
+	none.Add(r)
+	if rows, zero := none.RowsZero(10); rows != nil || zero != 1 {
+		t.Fatalf("only zero: %+v %d", rows, zero)
+	}
+	if got := ZeroOmittedText(1234, "bytes"); got != "1,234 with 0 bytes not shown" {
+		t.Fatalf("text %q", got)
+	}
+	if ZeroOmittedText(0, "bytes") != "" || ZeroOmittedText(2, "flows") != "2 with 0 flow records not shown" {
+		t.Fatal("text")
+	}
+}

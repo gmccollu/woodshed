@@ -130,6 +130,28 @@ func TestFlowsTop(t *testing.T) {
 	}
 }
 
+// printTop says how many keys a top by bytes left out for having 0 bytes,
+// and says nothing when none were (lab, 2.0.0-rc1: denied-only rule IDs
+// and ports were rows at 0 bytes).
+func TestPrintTopZeroOmitted(t *testing.T) {
+	var b strings.Builder
+	p := api.FlowTopPage{By: "rule_id", Metric: "bytes", Total: api.FlowTopTotal{Flows: 30, Bytes: 9000, Packets: 12},
+		Rows: []api.FlowTopRow{{Key: "r1", Label: "r1", Flows: 10, Bytes: 9000, Share: 1}}, ZeroOmitted: 1234}
+	printTop(&b, p)
+	if out := b.String(); !strings.Contains(out, "30 flows, 9000 bytes, 12 packets in the window; 1,234 with 0 bytes not shown\n") {
+		t.Fatalf("%q", out)
+	}
+	b.Reset()
+	p.ZeroOmitted = 0
+	printTop(&b, p)
+	if strings.Contains(b.String(), "not shown") {
+		t.Fatalf("%q", b.String())
+	}
+	if j, _ := json.Marshal(api.FlowTopPage{ZeroOmitted: 3}); !strings.Contains(string(j), `"zero_omitted":3`) {
+		t.Fatalf("%s", j)
+	}
+}
+
 // woodshed flow on|off|status, on Linux: the config, the firewall (ufw),
 // one port off.
 func TestFlowCommandLinux(t *testing.T) {

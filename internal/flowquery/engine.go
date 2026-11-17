@@ -513,9 +513,12 @@ func (e *Engine) takeState(cursor, key string) (*state, error) {
 
 // TopResult is a top-N answer.
 type TopResult struct {
-	Rows   []Row
-	Total  Sums
-	Approx bool
+	Rows  []Row
+	Total Sums
+	// ZeroOmitted counts the keys with none of the metric, which are never
+	// rows (SPEC §13.3); Total still counts their records.
+	ZeroOmitted int64
+	Approx      bool
 	// ErrorBound: a key in neither table has at most this of the metric (0
 	// while exact); any key not in Rows has at most the larger of it and the
 	// last row's. Each approximate row has its own Err.
@@ -595,7 +598,8 @@ func (e *Engine) Top(ctx context.Context, q Query, by, metric string, n int, bud
 		locals[i].flush()
 		st.total.merge(&totals[i])
 	}
-	res := TopResult{Rows: st.agg.rows(n), Total: st.total, Approx: st.agg.approx(), ErrorBound: st.agg.errorBound(),
+	rows, zero := st.agg.rows(n)
+	res := TopResult{Rows: rows, Total: st.total, ZeroOmitted: zero, Approx: st.agg.approx(), ErrorBound: st.agg.errorBound(),
 		Progress: st.plan.progress(ctx, int64(st.done), st.recsDone)}
 	if st.plan.more(ctx) {
 		res.Partial = true

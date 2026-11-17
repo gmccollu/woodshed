@@ -1385,7 +1385,7 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
  "rows": [{"key": "10.20.0.5", "label": "10.20.0.5", "flows": 40211, "bytes": 5642000000, "packets": 4100000,
            "bytes_scaled": 564200000000, "packets_scaled": 410000000, "scaled_lower_bound": false, "connections": 40000,
            "share": 0.31, "first": "2026-11-16T09:00:02Z", "last": "2026-11-16T09:59:58Z", "approx": false, "max_error": 0}],
- "other": {"flows": 1000000, "bytes": 9000000000},
+ "other": {"flows": 1000000, "bytes": 9000000000}, "zero_omitted": 4,
  "approx": false, "error_bound": 0,
  "progress": {"blocks_done": 1800, "blocks_total": 1800, "records_done": 1204332, "records_total": 1204332,
               "complete_from": "2026-11-16T09:00:00Z"},
@@ -1393,6 +1393,9 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
 ```
 - `key` for `conversation` is `"a ↔ b"` with the lower address first (both directions summed); for ports
   `"tcp/443"`; for interfaces the index, with the name as `label`.
+- A key with none of the metric is never a row: a top by bytes doesn't list denied-only sources, rule IDs or ports at
+  0 bytes after the others. `zero_omitted` counts those keys (the CLI, the Top panel and the bundle README say "4 with 0
+  bytes not shown"); `total` and `other` still count their records. Decided (build, 2026-11-17).
 - `share` is of the metric's exported total. `scaled_complete` is false when some records had unknown sampling; a row
   whose records include any is a lower bound (`scaled_lower_bound: true`, shown with "≥").
 - "Top denied sources" is `by=src&fw_event=denied`. Totals follow SPEC §13.2.1's no-double-count rule for event

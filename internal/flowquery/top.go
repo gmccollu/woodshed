@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"strconv"
 
+	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/flow"
 )
 
@@ -333,8 +334,29 @@ type Row struct {
 	Err    int64
 }
 
-// Rows returns the top n rows by the metric, ties by key.
+// Rows returns the top n rows by the metric, ties by key. Keys with none of
+// the metric are never rows (RowsZero counts them).
 func (t *Top) Rows(n int) []Row {
+	rows, _ := t.RowsZero(n)
+	return rows
+}
+
+// RowsZero is Rows plus the number of keys left out for having none of the
+// metric (a denied-only source in a top by bytes, say).
+func (t *Top) RowsZero(n int) ([]Row, int64) {
 	t.l.flush()
 	return t.agg.rows(n)
+}
+
+// ZeroOmittedText is how lists say what ZeroOmitted left out: "4 with 0
+// bytes not shown" ("" for none).
+func ZeroOmittedText(n int64, metric string) string {
+	if n <= 0 {
+		return ""
+	}
+	unit := metric
+	if metric == "flows" {
+		unit = "flow records"
+	}
+	return datatype.Thousands(n) + " with 0 " + unit + " not shown"
 }

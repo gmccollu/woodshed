@@ -2845,6 +2845,9 @@ rule_id, time_source, status, extras}}`. There's no `raw`: a record isn't a line
 - each row has the exported count, the scaled count (when every record behind it has a known sampling rate; with
   some unknown, the scaled value is a lower bound marked `≥`), its share of the window's total, and `first`/`last`
   flow times.
+- **A key with none of the metric is never a row** (§13.10 decision 80): a top by bytes doesn't end with denied-only
+  sources, rule IDs or ports at 0 bytes. `zero_omitted` counts them, and every top list (the CLI, the Top and Denied
+  views, the bundle README) says "4 with 0 bytes not shown" when there are any. Totals still count their records.
 - **Exact vs sampled:** exported counts are exact (what the exporter reported); scaled counts multiply each record by
   its own sampling rate. Both are shown whenever any record was sampled: "312 MB exported (≈ 312 GB at 1:1000)".
   Nothing is scaled silently, and `sampling: 0` records are never scaled.
@@ -3557,6 +3560,15 @@ the connection; present since 1.0):
       A connection's first frame stays ambiguous (it may be a line starting with digits).
     - **Torn markers:** a reader drops lengths that can't be right and takes a torn flag name as its flag, so a later
       flag's name must not be the start of an earlier one's; recovery finishes a torn last line with ` \#incomplete`.
+
+**From the 2.0.0-rc1 lab run, decided (build, 2026-11-17):**
+80. **Top lists leave out keys with 0 of their metric.** A top by bytes listed denied-only rule IDs, firewall-event
+    values and ports at 0 bytes after the non-zero rows, which reads as data where there's none. A top-N by a metric
+    now ranks only keys with some of it; `/api/flows/top` gives `zero_omitted` (how many keys had 0), `woodshed flows
+    top` ends its last line with "; 4 with 0 bytes not shown", the Top and Denied views add it to the total line, and
+    the bundle manifest's summary has `zero_omitted` per list, which the README puts after the list ("… (4 with 0
+    bytes not shown)", or "none (…)" when every key had 0). Totals and `other` are unchanged. The count covers the
+    keys counted exactly or held in the approximate table; a key the approximate table never held isn't known.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

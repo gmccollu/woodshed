@@ -150,9 +150,15 @@ func TestEngineTopMatchesBruteForce(t *testing.T) {
 			for _, r := range fx.brute(q) {
 				want.Add(&r)
 			}
-			wr := want.Rows(5)
-			if res.Partial || res.Total != want.Total || len(res.Rows) != len(wr) {
-				t.Fatalf("%s by %s: total %+v want %+v (partial %v)", fq, by, res.Total, want.Total, res.Partial)
+			wr, wz := want.RowsZero(5)
+			if res.Partial || res.Total != want.Total || len(res.Rows) != len(wr) || res.ZeroOmitted != wz {
+				t.Fatalf("%s by %s: total %+v want %+v (partial %v, zero %d want %d)", fq, by, res.Total, want.Total, res.Partial,
+					res.ZeroOmitted, wz)
+			}
+			for _, row := range res.Rows {
+				if row.Bytes == 0 {
+					t.Fatalf("%s by %s: a row with 0 bytes: %+v", fq, by, row)
+				}
 			}
 			for i := range wr {
 				if res.Rows[i].Key != wr[i].Key || res.Rows[i].Sums != wr[i].Sums {
