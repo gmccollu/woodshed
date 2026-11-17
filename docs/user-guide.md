@@ -291,7 +291,9 @@ upgrade opens no new port.
 3. Open **Events → Flows**. Exporters usually send templates every few minutes, so the first records of a v9 or IPFIX
    exporter can take that long to decode (they wait, and are decoded when the template arrives). The same happens after
    Woodshed restarts: templates aren't kept across a restart (one the exporter changed meanwhile must never decode with
-   the old layout), but each exporter's last 24 hours' counts, sampling and interface names are.
+   the old layout), and neither are sampling rates and interface names: records say "sampling unknown" until the
+   exporter's next options data (`GET /api/flows` gives the rate it had before as `last_known_sampling`, for context).
+   Each exporter's last 24 hours' counts are kept.
 
 **What's kept.** Each record's addresses, ports, protocol, TCP flags, packets and bytes, interfaces (with names when
 the exporter sends them as options data), AS numbers, next hop, VLAN, its flow start and end, and for event-style

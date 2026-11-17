@@ -3659,7 +3659,7 @@ the connection; present since 1.0):
     - A minute counts when it starts in the window (the dropped and truncated counts' rule): gaps are by when the
       datagram arrived, records by their own flow time, so a record far from its arrival (decision 70) can be in a
       window whose gaps don't cover its datagram.
-83. **A restart keeps the collector's last 24 hours, never the templates.** The collector's per-exporter state lived
+83. **A restart keeps the collector's last 24 hours, never the templates or the sampling.** The collector's per-exporter state lived
     in memory only (lab phase 8): after a restart `/api/flows` listed no exporters, and `woodshed flow status` and the
     bundle's 24-hour numbers started from 0. At start the collector now restores, for every exporter with stored
     counts in the last 24 hours:
@@ -3668,9 +3668,16 @@ the connection; present since 1.0):
       per-minute counts of decision 82. The since-start counts stay 0;
     - "last seen": when its newest flow segment last stored a datagram (not the device's `last_heard`, which syslog
       and traps move too);
-    - from that segment's footer, the metadata: sampling per scope and sampler, system init times and interface
-      names, where the exporter hasn't sent them yet. Options records kept raw aren't restored: the segments keep
-      them, and the next options data refreshes them.
+    - from that segment's footer, each domain's last sampling rate, **shown, never applied**: `/api/flows`
+      `domains[].last_known_sampling` while the domain has no rate of its own (`sampling: 0`), gone once the
+      exporter's options data gives one. Records after a restart say sampling unknown (0) until then, as on 2.0.0-rc1,
+      so their scaled totals read as "≥" lower bounds. Decided (coordinator, 2026-11-17): a rate the exporter changed
+      while Woodshed was down would otherwise scale its new records wrongly, with no sign of it, the same class of
+      risk as the templates below. The first version of this decision applied the stored rates.
+    - Nothing else from the footer is applied either. System init times convert uptime-relative flow times into the
+      stored start and end, and interface names are stored on each record (`in_if_name`, `out_if_name`), so both
+      shape stored values and follow the same rule: the exporter's next options data sets them. Options records kept
+      raw aren't restored: the segments keep them.
 
     **Templates are never restored into the decoder**, decided (review, 2026-11-17), reversing this decision's first
     version, which loaded the newest segment's templates. A template the exporter changed while Woodshed was down
@@ -3681,7 +3688,7 @@ the connection; present since 1.0):
     until it arrives. Sequence state isn't restored either: the first message after a restart sets the baseline, so
     the downtime isn't counted as a gap (Woodshed's own downtime shows in the bundle's gaps instead). The index
     queries and one footer read per exporter heard in the last day run before the listener starts, within a 10 s
-    budget; an exporter past it is restored without metadata.
+    budget; an exporter past it is restored without its last known rates.
 84. **`woodshed send` keeps going through a receiver's restart.** Over UDP a refusal is the OS reporting, on a later
     send, an ICMP port unreachable for an earlier datagram. The sender treated every one as fatal ("nothing is
     listening"), so a run stopped whenever the receiver restarted, which a real exporter doesn't do. Options: a
