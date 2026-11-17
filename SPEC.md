@@ -3026,6 +3026,18 @@ the first bench, which records the measured numbers here:
       of 5,000 206 k/s, of 500 30 k/s, against 69 k/s and 8.2 k/s before).
     - API pages stay far below a stream: each still reads again every block overlapping it, a cost of the stateless
       cursor. Keeping a stream's state under the cursor (as top-N keeps its counts) would close the gap; open.
+    - Fixed after the independent review (2026-11-17): a page's hits own their extras (the shared arenas had pinned
+      about 230 KiB a hit; a 40-hit page from 40 blocks now holds 34 KiB, `TestSearchPageExtrasNotPinned`); and raw
+      sets decoded on read are found and ordered wherever their records end (`TestRawSetsAheadOfReceived`): search
+      pages and Stream read the segments holding raw sets to decode first and bound them by nothing, where a
+      bound from the received times had let a cursor pass them (an exporter's clock 29 min ahead lost all 40 such
+      records to pages of 137, a bug older than this work).
+    - The two passes and retention, decided (build, 2026-11-17): a segment deleted between a page's passes makes
+      the page read again, once, without it (`TestSearchPageRereadsAfterDeletion`); a second miss leaves those hits
+      out, logged, as an unreadable block's are. A cancel during the second pass loses the page, as one during the
+      first does: the caller has gone. Both accepted. Each, Count, top-N and summaries read raw sets at their
+      received-time position (their results don't depend on the order), and an open segment whose first raw set
+      arrived after its index row was written is ordered by its blocks until the row catches up; also accepted.
 - **Queries:** top talkers (`by=src`, bytes) over 1 h at 5,000 records/s (18 million records) in under 3 s,
   complete in one response; at 50,000/s (180 million) partial within the 10 s budget and complete within 60 s.
   A filtered search for one address over 1 h at 5,000/s returns its first page in under 1 s.
