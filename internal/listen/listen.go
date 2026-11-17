@@ -198,8 +198,10 @@ type FrameStatus struct {
 	Port     int    // the bound port, or the configured one while it's down
 	// Incomplete counts messages whose frame ended before all of it arrived: an
 	// octet-counted frame shorter than its count (whoever closed the
-	// connection), or a line Woodshed cut by closing the connection. They're
-	// stored, marked incomplete, except a frame of which only the header came.
+	// connection), or a line Woodshed cut by closing the connection or the
+	// sender's reset ended. Counted when the frame ends; stored, marked
+	// incomplete, unless refused or dropped (and a frame of which only the
+	// count, or part of it, came has nothing to store).
 	Incomplete    int64
 	FrameTimeouts int64 // connections closed on tcp_frame_timeout (their message is among Incomplete)
 }

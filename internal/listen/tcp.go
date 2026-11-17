@@ -363,12 +363,13 @@ func (t *tcpListener) serve(tc *tconn) {
 		// unterminated last one. An octet-counted frame shorter than its count is
 		// incomplete whoever ended the connection (the sender's EOF, a reset, a TLS
 		// close, our deadline or an eviction): the reader says so. A line is
-		// incomplete only if we ended it; a sender's last line without its LF is
-		// normal (RFC 6587 non-transparent framing can't tell).
+		// incomplete if we ended it or the sender reset the connection; a last
+		// line without its LF before a clean close (FIN, TLS close) is normal (RFC
+		// 6587 non-transparent framing can't tell).
 		var end frameEnd
 		if arrived, length, ok := r.Incomplete(); ok {
 			end = frameEnd{incomplete: true, arrived: arrived, length: length}
-		} else if fr.fails != fails && (fr.timedOut || tc.cut.Load()) {
+		} else if fr.fails != fails && (fr.timedOut || tc.cut.Load() || fr.reset) {
 			end.incomplete = true
 		}
 		if tc.blocked.Load() {
@@ -461,6 +462,7 @@ type frameReader struct {
 	fails      int  // errors returned to the StreamReader
 	timedOut   bool // the connection ended on one of our deadlines
 	frameCut   bool // ... on the frame deadline
+	reset      bool // the connection ended on the sender's reset
 }
 
 func (r *frameReader) Read(p []byte) (int, error) {
@@ -488,6 +490,7 @@ func (r *frameReader) Read(p []byte) (int, error) {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			r.timedOut, r.frameCut = true, frameBound
 		}
+		r.reset = isConnReset(err)
 		if n > 0 {
 			r.stashed = err
 			return n, nil

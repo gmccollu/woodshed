@@ -102,17 +102,26 @@ func TestTCPIncompleteFrames(t *testing.T) {
 	// Only the header of the second frame arrives: nothing to store, but counted.
 	send("header only", "6 <13>ab50 ", false, wantMsg{raw: "<13>ab"})
 	waitFor(t, "the header-only frame's count", func() bool { return s.Status().TCPIncompleteFrames == 4 })
+	// Cut inside the count, once the connection counts octets: the digits aren't
+	// a message. Counted, not stored.
+	send("count cut", "6 <13>ab50", false, wantMsg{raw: "<13>ab"})
+	waitFor(t, "the cut count's frame", func() bool { return s.Status().TCPIncompleteFrames == 5 })
+	send("one-digit count cut", "6 <13>ab5", false, wantMsg{raw: "<13>ab"})
+	waitFor(t, "the cut one-digit count's frame", func() bool { return s.Status().TCPIncompleteFrames == 6 })
+	send("count and '<'", "6 <13>ab50 <", false, wantMsg{raw: "<13>ab"}, wantMsg{raw: "<", inc: true, arrived: 1, length: 50})
+	// A line ended by the sender's reset is incomplete (a FIN's isn't, above).
+	send("line then reset", "<13>one\n<13>half a li", true, wantMsg{raw: "<13>one"}, wantMsg{raw: "<13>half a li", inc: true})
 
 	st := s.Status()
-	if f := frameOf(st, "tcp"); f.Incomplete != 4 || f.FrameTimeouts != 0 || f.Port == 0 {
+	if f := frameOf(st, "tcp"); f.Incomplete != 8 || f.FrameTimeouts != 0 || f.Port == 0 {
 		t.Errorf("frames %+v", st.Frames)
 	}
 	// "Truncated" stays the max size's: the two frames over 64 bytes.
-	if st.Truncated != 2 || st.Received != 9 || st.TCPFrameTimeouts != 0 {
+	if st.Truncated != 2 || st.Received != 15 || st.TCPFrameTimeouts != 0 {
 		t.Errorf("status %+v", st)
 	}
-	if c.count() != 9 {
-		t.Errorf("%d messages delivered, want 9", c.count())
+	if c.count() != 15 {
+		t.Errorf("%d messages delivered, want 15", c.count())
 	}
 }
 
@@ -137,6 +146,22 @@ func TestTCPIncompleteOurCut(t *testing.T) {
 		t.Errorf("frames %+v", f)
 	}
 
+	// The frame timeout inside the next frame's count: counted, nothing stored.
+	cn3, err := net.Dial("tcp", tcpAddr(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cn3.Close()
+	cn3.Write([]byte("6 <13>ab50"))
+	if !closedByServer(cn3, 5*time.Second) {
+		t.Fatal("the frame timeout didn't close the second connection")
+	}
+	checkMsg(t, "before a count cut by the timeout", c.wait(t, 2)[1], wantMsg{raw: "<13>ab"})
+	waitFor(t, "the second frame timeout's count", func() bool { return s.Status().TCPFrameTimeouts == 2 })
+	if f := frameOf(s.Status(), "tcp"); f.Incomplete != 2 || c.count() != 2 {
+		t.Errorf("frames %+v, %d messages", f, c.count())
+	}
+
 	cn2, err := net.Dial("tcp", tcpAddr(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -145,10 +170,52 @@ func TestTCPIncompleteOurCut(t *testing.T) {
 	cn2.Write([]byte("40 <13>at shutdown"))
 	waitInFrame(t, s)
 	s.Close() // no sink call after Close returns
-	got := c.wait(t, 2)
-	checkMsg(t, "shutdown", got[1], wantMsg{raw: "<13>at shutdown", inc: true, arrived: 15, length: 40})
-	if f := frameOf(s.Status(), "tcp"); f.Incomplete != 2 || f.FrameTimeouts != 1 {
+	got := c.wait(t, 3)
+	checkMsg(t, "shutdown", got[2], wantMsg{raw: "<13>at shutdown", inc: true, arrived: 15, length: 40})
+	if f := frameOf(s.Status(), "tcp"); f.Incomplete != 3 || f.FrameTimeouts != 2 {
 		t.Errorf("frames %+v", f)
+	}
+}
+
+// An eviction of a connection in the middle of an octet-counted frame keeps
+// the frame's lengths.
+func TestTCPIncompleteEvicted(t *testing.T) {
+	const evictIdle = 20 * time.Millisecond
+	s, c, _ := start(t, loopback(0, 0), func(o *Options) { o.MaxConns, o.EvictIdle = 1, evictIdle })
+	a, err := net.Dial("tcp", tcpAddr(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	connected := time.Now()
+	a.Write([]byte("40 <13>evict me"))
+	waitInFrame(t, s)
+	waitFor(t, "A to be idle long enough to evict", func() bool { return time.Since(connected) > 3*evictIdle })
+	b, err := net.Dial("tcp", tcpAddr(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	b.Write([]byte("<13>b\n"))
+	if !closedByServer(a, 5*time.Second) {
+		t.Fatal("A wasn't evicted")
+	}
+	got := c.wait(t, 2)
+	var evicted, fromB bool
+	for _, m := range got {
+		switch string(m.Raw) {
+		case "<13>evict me":
+			checkMsg(t, "evicted", m, wantMsg{raw: "<13>evict me", inc: true, arrived: 12, length: 40})
+			evicted = true
+		case "<13>b":
+			fromB = !m.Incomplete
+		}
+	}
+	if !evicted || !fromB || len(got) != 2 {
+		t.Errorf("got %v", got)
+	}
+	if st := s.Status(); st.TCPConnsEvicted != 1 || frameOf(st, "tcp").Incomplete != 1 {
+		t.Errorf("status %+v", st)
 	}
 }
 

@@ -307,8 +307,9 @@ type TCPFrames struct {
 	Port     int    `json:"port"`
 	// Incomplete counts messages whose frame ended before all of it arrived: an
 	// octet-counted frame shorter than its count (whoever closed the
-	// connection), or a line Woodshed cut by closing the connection. They're
-	// stored with an incomplete marker; they aren't in truncated_24h.
+	// connection), or a line Woodshed cut by closing the connection or the
+	// sender's reset ended. Counted when the frame ends; stored with an
+	// incomplete marker unless refused or dropped. Not in truncated_24h.
 	Incomplete    int64 `json:"incomplete"`
 	FrameTimeouts int64 `json:"frame_timeouts"` // connections closed on tcp_frame_timeout
 }
