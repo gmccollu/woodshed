@@ -39,7 +39,7 @@ if ! getent passwd "$USER_NAME" >/dev/null 2>&1; then
 	[ -x "$nologin" ] || nologin=/sbin/nologin
 	[ -x "$nologin" ] || nologin=/bin/false
 	useradd --system --gid "$USER_NAME" --home-dir "$DATA_DIR" --no-create-home \
-		--shell "$nologin" --comment "Woodshed syslog server" "$USER_NAME"
+		--shell "$nologin" --comment "Woodshed service" "$USER_NAME"
 fi
 
 # Data and config directories. Existing ones are left as the admin set them.

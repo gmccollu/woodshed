@@ -135,7 +135,7 @@ func TestInstallSystemd(t *testing.T) {
 	}
 	for _, c := range []string{
 		"groupadd --system woodshed",
-		"useradd --system --gid woodshed --home-dir /var/lib/woodshed --no-create-home --shell /usr/sbin/nologin --comment Woodshed syslog server woodshed",
+		"useradd --system --gid woodshed --home-dir /var/lib/woodshed --no-create-home --shell /usr/sbin/nologin --comment Woodshed service woodshed",
 		"sysctl -q -p /etc/sysctl.d/60-woodshed.conf",
 		"systemctl daemon-reload",
 		"systemctl enable woodshed.service",

@@ -75,9 +75,11 @@ func installSystemd(h *host, o InstallOptions, dataDir string) (Result, error) {
 		}
 		h.say("created group %s", LinuxUser)
 	}
+	// The comment names the account, not what Woodshed collects: no comma (GECOS splits
+	// fields on commas), and nothing that goes stale. An existing account keeps its comment.
 	if _, err := h.run("getent", "passwd", LinuxUser); err != nil {
 		if _, err := h.run("useradd", "--system", "--gid", LinuxUser, "--home-dir", "/var/lib/woodshed", "--no-create-home",
-			"--shell", nologinShell(h), "--comment", "Woodshed syslog server", LinuxUser); err != nil {
+			"--shell", nologinShell(h), "--comment", "Woodshed service", LinuxUser); err != nil {
 			return res, err
 		}
 		h.say("created user %s", LinuxUser)

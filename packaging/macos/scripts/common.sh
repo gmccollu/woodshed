@@ -50,7 +50,7 @@ ensure_service_account() {
 		}
 		dscl . -create "/Groups/$SVC_GROUP"
 		dscl . -create "/Groups/$SVC_GROUP" PrimaryGroupID "$gid"
-		dscl . -create "/Groups/$SVC_GROUP" RealName "Woodshed syslog server"
+		dscl . -create "/Groups/$SVC_GROUP" RealName "Woodshed service"
 		dscl . -create "/Groups/$SVC_GROUP" Password '*'
 		log "created group $SVC_GROUP ($gid)"
 	fi
@@ -69,7 +69,7 @@ ensure_service_account() {
 		dscl . -create "/Users/$SVC_USER" PrimaryGroupID "$gid"
 		dscl . -create "/Users/$SVC_USER" UserShell /usr/bin/false
 		dscl . -create "/Users/$SVC_USER" NFSHomeDirectory /var/empty
-		dscl . -create "/Users/$SVC_USER" RealName "Woodshed syslog server"
+		dscl . -create "/Users/$SVC_USER" RealName "Woodshed service"
 		dscl . -create "/Users/$SVC_USER" Password '*'
 		dscl . -create "/Users/$SVC_USER" IsHidden 1
 		log "created user $SVC_USER ($uid)"
