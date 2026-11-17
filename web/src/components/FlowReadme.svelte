@@ -88,7 +88,12 @@
       top_denied_ports: counts(dport),
       nat_connections: natTotal,
       top_post_nat_sources: nat.rows.map((x) => ({ key: x.key, share: natTotal ? (x.connections ?? x.flows) / natTotal : 0 })),
-      zero_omitted: { top_talkers: talk.zero_omitted ?? 0, top_dst_ports: ports.zero_omitted ?? 0, top_conversations: conv.zero_omitted ?? 0 },
+      zero_omitted: {
+        top_talkers: talk.zero_omitted ?? 0,
+        top_dst_ports: ports.zero_omitted ?? 0,
+        top_conversations: conv.zero_omitted ?? 0,
+        approx: talk.approx || ports.approx || conv.approx,
+      },
       // The window's gaps are counted when the bundle is built (decision 82); the collector's last 24 h stand in,
       // labelled as not the window's.
       sequence_gaps: null,

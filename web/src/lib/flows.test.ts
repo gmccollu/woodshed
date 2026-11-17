@@ -160,15 +160,22 @@ test('the README Flows block matches SPEC §13.4', () => {
   assert.equal(zeroOmittedText(1234, 'bytes'), '1,234 with 0 bytes not shown');
   assert.equal(zeroOmittedText(2, 'flows'), '2 with 0 flow records not shown');
   assert.equal(zeroOmittedText(0, 'bytes'), '');
+  assert.equal(zeroOmittedText(4, 'bytes', true), 'at least 4 with 0 bytes not shown');
+  assert.ok(flowReadme({ ...s, zero_omitted: { top_talkers: 3, approx: true } }).includes('(at least 3 with 0 bytes not shown)'));
   // Sequence gaps (decision 82): the window's; by the hour past a day; not known, and only then the collector's 24 h.
   const last = (x: Partial<FlowBundleSummary>) => flowReadme({ ...s, ...x }).split('\n').slice(-2);
   assert.equal(last({ sequence_gaps: 0, lost_estimate: 0, sequence_gaps_24h: 849 })[1], '                 sequence gaps 0 in this window; waiting for a template 0; malformed 0');
   assert.equal(
     last({ sequence_gaps: 1234, lost_estimate: 5000, sequence_gaps_span: { from: '2026-11-15T14:00:00Z', to: '2026-11-15T16:00:00Z', by_hour: true } })[1],
-    '                 sequence gaps 1,234 (≈ 5,000 records lost before Woodshed) in the whole hours 2026-11-15 14:00–16:00 UTC (counts older than a day are kept by the hour); waiting for a template 0; malformed 0',
+    '                 sequence gaps 1,234 (≈ 5,000 records lost before Woodshed) in 2026-11-15 14:00–16:00 UTC (from the hour: counts older than a day are kept by the hour); waiting for a template 0; malformed 0',
   );
+  assert.equal(
+    last({ sequence_gaps: 1, lost_estimate: 30, sequence_gaps_span: { from: '2026-11-15T14:00:00Z', to: '2026-11-22T14:20:00Z', by_hour: false, partial: true } })[1],
+    '                 sequence gaps 1 (≈ 30 records lost before Woodshed) in 2026-11-15 14:00–2026-11-22 14:20 UTC only (Woodshed keeps the counts 7 days, and this window starts earlier); waiting for a template 0; malformed 0',
+  );
+  assert.ok(last({ sequence_gaps: null, lost_estimate: null, sequence_gaps_unknown: 'nothing_received' })[1].includes('not known (no flow datagram arrived in it'));
   assert.deepEqual(last({ sequence_gaps: null, lost_estimate: null, sequence_gaps_unknown: 'not_kept', sequence_gaps_24h: 849, lost_estimate_24h: 37_498 }), [
-    '                 sequence gaps in this window not known (Woodshed keeps them 7 days, by datagram arrival); waiting for a template 0; malformed 0',
+    '                 sequence gaps in this window not known (Woodshed keeps them 7 days); waiting for a template 0; malformed 0',
     '                 collector sequence gaps in the 24 h before this bundle was made (not limited to this window): 849 (≈ 37,498 records lost)',
   ]);
   assert.deepEqual(last({ sequence_gaps: null, lost_estimate: null, sequence_gaps_unknown: 'preview', sequence_gaps_24h: 3, lost_estimate_24h: null }), [
