@@ -48,6 +48,7 @@ func TestPollInterop(t *testing.T) {
 	}
 	d := newSnmpd(t, bin)
 	var skipped, passed []string
+	signals := "not checked"
 	required := map[string]bool{}
 	for _, p := range strings.Split(os.Getenv("WOODSHED_SNMP_POLL_INTEROP_REQUIRE"), ",") {
 		if p = strings.TrimSpace(p); p != "" {
@@ -55,8 +56,8 @@ func TestPollInterop(t *testing.T) {
 		}
 	}
 	defer func() {
-		summary := fmt.Sprintf("snmp poll interop (%s): %d passed: %s\nskipped: %s\n", d.version, len(passed),
-			strings.Join(passed, ", "), strings.Join(skipped, "; "))
+		summary := fmt.Sprintf("snmp poll interop (%s): %d passed: %s\nskipped: %s\ninterface change signals: %s\n", d.version,
+			len(passed), strings.Join(passed, ", "), strings.Join(skipped, "; "), signals)
 		t.Log(summary)
 		if f := os.Getenv("GITHUB_STEP_SUMMARY"); f != "" {
 			if fh, err := os.OpenFile(f, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644); err == nil {
@@ -123,6 +124,19 @@ func TestPollInterop(t *testing.T) {
 		}
 		h := d.harness(t, c)
 		h.cycle()
+		h.st.mu.Lock()
+		yes := map[bool]string{true: "answers", false: "not answered"}
+		signals = fmt.Sprintf("ifNumber %s, ifTableLastChange %s", yes[!h.st.ifNumOff], yes[!h.st.ifLastOff])
+		firstWalk := h.st.ifAt
+		h.st.mu.Unlock()
+		// In steady state they hold still: no walk for a change.
+		time.Sleep(6 * time.Second) // past snmpd's ifTable cache
+		h.cycle()
+		h.st.mu.Lock()
+		if h.st.ifAt != firstWalk || h.st.ifChanged {
+			t.Errorf("%s: the interface change signals moved in steady state (%s)", c.name, signals)
+		}
+		h.st.mu.Unlock()
 		before := fmt.Sprintf("%s boots %d", h.p.States()["pt_1"].EngineID, h.st.sess.Engine().Boots)
 		d.restart(t)
 		time.Sleep(6 * time.Second)
@@ -150,6 +164,22 @@ func TestPollInterop(t *testing.T) {
 			t.Errorf("%s: an snmpd restart called a reboot: %+v", c.name, r)
 		default:
 			passed = append(passed, c.name+" restart")
+		}
+		if r == nil {
+			continue
+		}
+		// The first follow-up walk after the restart (SPEC §12.1) answers too.
+		h.st.mu.Lock()
+		walked := h.st.ifAt
+		h.st.mu.Unlock()
+		ls = h.cycle()
+		h.st.mu.Lock()
+		rewalked := h.st.ifAt.After(walked)
+		h.st.mu.Unlock()
+		if s := find(ls, pollrec.KindStatus, nil); s != nil || !rewalked {
+			t.Errorf("%s: the follow-up walk after the restart: walked %v, status %+v", c.name, rewalked, s)
+		} else {
+			passed = append(passed, c.name+" follow-up walk")
 		}
 	}
 }

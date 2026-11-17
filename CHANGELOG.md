@@ -32,6 +32,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   `woodshed status` gains a Polling row.
 
 ### Fixed
+- After a restart or reboot, the poller read a device's interface list once, as the agent came up, and then not for
+  an hour, so an interface that appeared a little later (a bridge, a tunnel, a line card) went unpolled for that
+  hour (in the lab, one that appeared 20 s after the agent). It now looks again about 1, 2 and 5 polls after the
+  restart, and between the hourly looks whenever the device's interface count or `ifTableLastChange` changes (read
+  in the poll's existing request, so it costs no extra one). A device without `ifTableLastChange` is polled as before.
 - A sender on `::1`, or on an IPv4-compatible IPv6 address (`::a.b.c.d`), was stored but never listed as a device,
   so nothing it sent could be found (since 1.1). It's listed now. To find what such a sender sent before the upgrade,
   run `woodshed reindex` once.

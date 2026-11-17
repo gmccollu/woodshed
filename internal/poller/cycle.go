@@ -35,6 +35,13 @@ var (
 
 	oidIfEntry  = snmp.OID{1, 3, 6, 1, 2, 1, 2, 2, 1}
 	oidIfXEntry = snmp.OID{1, 3, 6, 1, 2, 1, 31, 1, 1, 1}
+
+	// The interface table's change signals (IF-MIB, RFC 2863): ifNumber is
+	// MIB-II's row count; ifTableLastChange is sysUpTime at the last row
+	// added or removed (ifGeneralInformationGroup, mandatory in ifCompliance3,
+	// though older agents may lack it).
+	oidIfNumber          = snmp.OID{1, 3, 6, 1, 2, 1, 2, 1, 0}
+	oidIfTableLastChange = snmp.OID{1, 3, 6, 1, 2, 1, 31, 1, 5, 0}
 )
 
 func col(base snmp.OID, c uint32) snmp.OID { return append(slices.Clone(base), c) }
@@ -98,7 +105,22 @@ const (
 	maxIfRows = 4096
 	maxHrRows = 256
 	refresh   = time.Hour
+	// changeGap is the least time between two interface refreshes made only
+	// because ifNumber or ifTableLastChange moved: a device whose interfaces
+	// come and go every cycle (dial-up or tunnel interfaces) is walked for it
+	// at most this often, not every cycle. The first change after a quiet
+	// spell is walked at once.
+	changeGap = 5 * time.Minute
 )
+
+// restartRewalks are the answered cycles after a restart's cycle at which the
+// interface table is walked again (SPEC §12.1): interfaces often appear after
+// the agent starts (virtual and tunnel interfaces, bridges, line cards), and
+// the ones that are up, and their speeds, settle as links come up, which
+// changes which are picked over max_interfaces. The 1st and 2nd catch what
+// appears in the first minute or two; the 5th, what takes a few minutes. Each
+// is one walk, only while the device answers.
+var restartRewalks = []int{1, 2, 5}
 
 // cycleRun is one cycle of one target.
 type cycleRun struct {
@@ -315,10 +337,24 @@ func (c *cycleRun) poll(ctx context.Context) error {
 		}
 	}
 
-	// 1. sysUpTime always (restarts and the wrap rules need it); HOST-RESOURCES
-	// with the system preset.
+	// 1. sysUpTime always (restarts and the wrap rules need it); the interface
+	// table's change signals with the interfaces preset; HOST-RESOURCES with the
+	// system preset.
 	st.mu.Lock()
 	oids := []snmp.OID{oidSysUpTime}
+	askNum, askLast := false, false
+	if c.t.has(config.PresetInterfaces) {
+		if st.ifSigAt.IsZero() || now.Sub(st.ifSigAt) >= refresh {
+			st.ifNumOff, st.ifLastOff, st.ifSigAt = false, false, now
+		}
+		askNum, askLast = !st.ifNumOff, !st.ifLastOff
+	}
+	if askNum {
+		oids = append(oids, oidIfNumber)
+	}
+	if askLast {
+		oids = append(oids, oidIfTableLastChange)
+	}
 	hrUp := wantSys && st.hrUptimeOK
 	if hrUp {
 		oids = append(oids, oidHrSystemUptime)
@@ -347,8 +383,17 @@ func (c *cycleRun) poll(ctx context.Context) error {
 		sys.Uint("uptime", uptime)
 	}
 	k := 1
+	numV, lastV := snmp.Value{}, snmp.Value{}
+	if askNum {
+		numV = vbs[k].Value
+		k++
+	}
+	if askLast {
+		lastV = vbs[k].Value
+		k++
+	}
 	if hrUp {
-		if v := vbs[1].Value; v.Kind == snmp.KindTimeTicks {
+		if v := vbs[k].Value; v.Kind == snmp.KindTimeTicks {
 			hr, haveHr = v.Uint, true
 			sys.Uint("hr_uptime", hr)
 		} else {
@@ -356,7 +401,7 @@ func (c *cycleRun) poll(ctx context.Context) error {
 			st.hrUptimeOK = false // off until the next hourly refresh
 			st.mu.Unlock()
 		}
-		k = 2
+		k++
 	}
 	if len(cpus) > 0 {
 		var sum int64
@@ -403,8 +448,20 @@ func (c *cycleRun) poll(ctx context.Context) error {
 		st.prevHr, st.havePrevHr = hr, true
 	}
 	restart := upDrop || bootsUp
+	if askNum {
+		st.ifNumOff = !st.noteIfNum(numV)
+	}
+	if askLast {
+		st.ifLastOff = !st.noteIfLast(lastV)
+	}
 	if restart {
-		st.ifRefresh = true
+		st.ifRefresh, st.rewalking, st.sinceStart = true, true, 0
+	} else if st.rewalking {
+		st.sinceStart++
+		if slices.Contains(restartRewalks, st.sinceStart) {
+			st.ifRefresh = true
+		}
+		st.rewalking = st.sinceStart < restartRewalks[len(restartRewalks)-1]
 	}
 	st.mu.Unlock()
 	if err := c.write(sys.Record(), at); err != nil {
@@ -447,16 +504,19 @@ func (c *cycleRun) poll(ctx context.Context) error {
 	}
 
 	// 2. Interfaces.
+	ifsMoved := false
 	if c.t.has(config.PresetInterfaces) {
-		if err := c.interfaces(ctx, restart); err != nil {
+		var err error
+		if ifsMoved, err = c.interfaces(ctx, restart); err != nil {
 			return err
 		}
 	}
 
-	// 3. System info (hourly), after the interface refresh so it can say what
-	// was found.
+	// 3. System info (hourly, and after an interface refresh that changed how
+	// many there are or are polled), after the interface refresh so it can say
+	// what was found.
 	st.mu.Lock()
-	infoDue := c.t.has(config.PresetSystemInfo) && (st.infoAt.IsZero() || c.p.now().Sub(st.infoAt) >= refresh || restart)
+	infoDue := c.t.has(config.PresetSystemInfo) && (st.infoAt.IsZero() || c.p.now().Sub(st.infoAt) >= refresh || restart || ifsMoved)
 	st.mu.Unlock()
 	if infoDue {
 		vbs, err := c.get(ctx, []snmp.OID{oidSysName, oidSysDescr, oidSysObjectID})
@@ -718,25 +778,36 @@ func (c *cycleRun) refreshInterfaces(ctx context.Context) ([]*ifState, map[int]b
 		s.name, s.descr, s.alias, s.speed = r.name, r.descr, r.alias, r.speed
 		out = append(out, s)
 	}
-	st.ifs, st.ifTotal, st.hc, st.ifx, st.ifAt, st.ifRefresh = out, len(list), hc, ifx, c.p.now(), false
+	st.ifs, st.ifTotal, st.hc, st.ifx, st.ifAt, st.ifRefresh, st.ifChanged = out, len(list), hc, ifx, c.p.now(), false, false
 	return out, renamed, nil
 }
 
-// interfaces polls the interface counters and writes one if record each.
-func (c *cycleRun) interfaces(ctx context.Context, restart bool) error {
+// interfaces polls the interface counters and writes one if record each. The
+// table is walked again hourly, after a discontinuity or a restart, at the
+// restart's follow-ups, and when ifNumber or ifTableLastChange moved (at most
+// every changeGap). moved reports a walk that changed how many interfaces
+// there are or are polled.
+func (c *cycleRun) interfaces(ctx context.Context, restart bool) (moved bool, err error) {
 	st := c.st
 	st.mu.Lock()
-	due := st.ifAt.IsZero() || c.p.now().Sub(st.ifAt) >= refresh || st.ifRefresh || restart
+	now := c.p.now()
+	other := st.ifAt.IsZero() || now.Sub(st.ifAt) >= refresh || st.ifRefresh || restart
+	byChange := !other && st.ifChanged && (st.ifChgAt.IsZero() || now.Sub(st.ifChgAt) >= changeGap)
+	due := other || byChange
 	ifs, hc, ifx := st.ifs, st.hc, st.ifx
+	total, polled := st.ifTotal, len(st.ifs)
 	st.mu.Unlock()
 	renamed := map[int]bool{}
 	if due {
-		var err error
 		if ifs, renamed, err = c.refreshInterfaces(ctx); err != nil {
-			return err
+			return false, err
 		}
 		st.mu.Lock()
 		hc, ifx = st.hc, st.ifx
+		moved = st.ifTotal != total || len(ifs) != polled
+		if byChange {
+			st.ifChgAt = now
+		}
 		st.mu.Unlock()
 		at := c.p.now()
 		for _, s := range ifs {
@@ -746,12 +817,12 @@ func (c *cycleRun) interfaces(ctx context.Context, restart bool) error {
 				r.Uint("speed_mbps", s.speed)
 			}
 			if err := c.write(r.Record(), at); err != nil {
-				return err
+				return moved, err
 			}
 		}
 	}
 	if len(ifs) == 0 {
-		return nil
+		return moved, nil
 	}
 	cols := slices.Clone(ifCommon)
 	if hc {
@@ -779,7 +850,7 @@ func (c *cycleRun) interfaces(ctx context.Context, restart bool) error {
 	}
 	vbs, err := c.get(ctx, oids)
 	if err != nil {
-		return err
+		return moved, err
 	}
 	at := c.p.now()
 	for i, s := range ifs {
@@ -860,10 +931,10 @@ func (c *cycleRun) interfaces(ctx context.Context, restart bool) error {
 		}
 		r := rec.Record()
 		if err := c.write(r, at); err != nil {
-			return err
+			return moved, err
 		}
 	}
-	return nil
+	return moved, nil
 }
 
 // typeName is a value's record type (as in trap records).
