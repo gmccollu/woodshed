@@ -416,10 +416,15 @@ func (r *Record) IsConnection() bool {
 
 // TemplateField is one field of a template.
 type TemplateField struct {
-	PEN    uint32 // enterprise number; 0 for an IANA IE
-	ID     uint16 // the element ID (without the enterprise bit)
+	PEN    uint32 // enterprise number; 0 for an IANA IE (and a v9 field type)
+	ID     uint16 // the element ID (without the enterprise bit); with PEN 0, a v9 vendor-range type keeps its high bit
 	Length uint16 // 65535 is variable length (IPFIX)
 }
+
+// enterprise reports whether the field is written with IPFIX's enterprise
+// bit and an enterprise number: an enterprise IE, or a flow v9 vendor-range
+// field type (32768–65535, PEN 0; see VendorRangePEN).
+func (f TemplateField) enterprise() bool { return f.PEN != 0 || f.ID&0x8000 != 0 }
 
 // Template is a template definition as an exporter sent it (SPEC §13.1.2).
 // Immutable once decoded; records share it.
