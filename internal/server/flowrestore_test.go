@@ -80,7 +80,7 @@ func TestFlowRestartKeepsCountsNotTemplates(t *testing.T) {
 	}
 
 	r := start(t, cfgPath)
-	first := send(gen(loadgen.FlowOptions{TemplateEvery: 1 << 20, RunID: "0000aaaa"}), 20, 5, time.Millisecond)
+	first := send(gen(loadgen.FlowOptions{TemplateEvery: 1 << 20, Sampling: 100, RunID: "0000aaaa"}), 20, 5, time.Millisecond)
 	waitFlows(t, r, "", int64(first))
 	before := exporter(r)
 	oldFields := fields(r)
@@ -106,9 +106,16 @@ func TestFlowRestartKeepsCountsNotTemplates(t *testing.T) {
 	if after.LastSeen == nil || after.LastSeen.After(before.LastSeen.Add(500*time.Millisecond)) {
 		t.Fatalf("last seen %v, the last flow datagram was at %v", after.LastSeen, before.LastSeen)
 	}
+	if len(after.Domains) == 0 {
+		t.Fatal("no domain after the restart")
+	}
 	for _, d := range after.Domains {
 		if d.Templates != 0 || d.LastTemplate != nil {
 			t.Fatalf("a template restored into the decoder: %+v", after.Domains)
+		}
+		// The rate before the restart is shown, not applied.
+		if d.Sampling != 0 || d.LastKnownSampling != 100 {
+			t.Fatalf("sampling restored into the decoder, or not shown: %+v", after.Domains)
 		}
 	}
 	// The exporter's new layout (two more fields); its data comes before its template.

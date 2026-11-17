@@ -7,12 +7,14 @@ import (
 )
 
 // The collector at start (SPEC §13.10 decision 83): what an exporter's stored
-// data says about it, so a restart doesn't zero its last 24 hours or forget
-// its sampling and interface names. Templates are never restored: one the
-// exporter changed while Woodshed was down would decode its data with the old
-// layout, stored for good and unnoticed, so data after a restart waits for
-// the exporter's own template, as it always did (pending, then raw, with
-// decode-on-read later).
+// data says about it, so a restart doesn't zero its last 24 hours. Nothing
+// that shapes a stored record is restored into the decoder: a template, a
+// sampling rate, a system init time or an interface name the exporter changed
+// while Woodshed was down would be written into new records with no sign of
+// it. Data after a restart waits for the exporter's own template, as it
+// always did (pending, then raw, with decode-on-read later), and says
+// sampling unknown until its own options data comes; the last known rate is
+// only shown.
 
 // RestoreBucket is one stored bucket of an exporter's counts: At is its start
 // (unix ms), an hour or 5 minutes long.
@@ -37,8 +39,8 @@ type Restored struct {
 // Restore loads exporters' stored state into a collector that hasn't
 // decoded anything yet (call it before the first Decode, from Decode's
 // goroutine). Counts land in the 24-hour rings (not in the since-start
-// counts); metadata only fills what's empty, so anything the exporter has
-// already sent wins. Exporters are restored least recently heard first, so
+// counts), and the stored sampling only as "last known" (restoreMeta).
+// Exporters are restored least recently heard first, so
 // the exporter cap keeps the most recent.
 func (c *Collector) Restore(rs []Restored) {
 	rs = slices.Clone(rs)
@@ -104,10 +106,13 @@ func (c *Collector) restoreCounts(e *exporter, r *Restored) {
 	}
 }
 
-// restoreMeta fills the sampling, samplers, system init times and interface
-// names a metadata blob holds, where the collector has none yet. Options
-// records kept raw aren't restored: the segments keep them, and the next
-// options data refreshes them.
+// restoreMeta keeps the sampling rate a metadata blob holds per scope as
+// "last known before the restart", for Stats to show, and applies nothing:
+// a rate, a system init time or an interface name the exporter changed
+// while Woodshed was down would otherwise be written into new records
+// (scaled counts, flow times, interface names) with no sign of it. Until
+// the exporter's own options data arrives its records say sampling unknown,
+// as they did before the restore (SPEC §13.10 decision 83).
 func (c *Collector) restoreMeta(e *exporter, blob []byte) {
 	if len(blob) == 0 {
 		return
@@ -120,30 +125,18 @@ func (c *Collector) restoreMeta(e *exporter, blob []byte) {
 		if sc.Version != V5 && sc.Version != V9 && sc.Version != IPFIX {
 			continue
 		}
+		r := sc.Sampling // the scope's own rate, else its samplers' highest (as Stats)
+		if r == 0 {
+			for _, x := range sc.Samplers {
+				r = max(r, x)
+			}
+		}
+		if r == 0 {
+			continue
+		}
 		d := c.domainFor(e, tkey{port: sc.Port, domain: sc.Domain, version: sc.Version})
 		c.mu.Lock()
-		if d.sampling == 0 && sc.Sampling != 0 {
-			d.sampling = sc.Sampling
-			e.metaVer.Add(1)
-		}
-		if d.sysInitMs == 0 && sc.SysInitMs != 0 {
-			d.sysInitMs = sc.SysInitMs
-			e.metaVer.Add(1)
-		}
-		for id, rate := range sc.Samplers {
-			if d.samplers == nil {
-				d.samplers = map[uint32]uint32{}
-			}
-			if _, ok := d.samplers[id]; !ok && len(d.samplers) < maxSamplers && rate != 0 {
-				d.samplers[id] = rate
-				e.metaVer.Add(1)
-			}
-		}
+		d.lastKnown = r
 		c.mu.Unlock()
-	}
-	for _, n := range m.IfNames {
-		if _, ok := e.ifNames[uint64(n.Domain)<<32|uint64(n.IfIndex)]; !ok {
-			c.setIfName(e, n.Domain, n.IfIndex, n.Name)
-		}
 	}
 }

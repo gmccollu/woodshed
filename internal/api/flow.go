@@ -218,6 +218,11 @@ type FlowDomain struct {
 	// before the message) or "after" (counting the message's own records
 	// too); absent while it isn't decided.
 	SeqMode string `json:"seq_mode,omitempty"`
+	// LastKnownSampling (since 2.0) is the rate the domain had before
+	// Woodshed restarted, from the stored metadata, while it has none of its
+	// own yet (sampling 0): shown for context, never applied to records
+	// (SPEC §13.10 decision 83). Absent otherwise.
+	LastKnownSampling uint32 `json:"last_known_sampling,omitempty"`
 }
 
 // FlowCounts are an exporter's last-24-hour counts.
