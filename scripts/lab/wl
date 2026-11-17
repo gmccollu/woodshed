@@ -126,10 +126,16 @@ has() { echo "$1" | grep -q -- "$2"; }             # has <text> <pattern>
 has_line() { echo "$1" | grep -qx -- "$2"; }
 field() { sed -n "s/.* $1=\([^ ]*\).*/\1/p"; } # field <name> < WLSEND line
 
-asset() { # asset <glob>: one matching release asset in LAB_ASSETS
-	local m
-	m=$(find "$LAB_ASSETS" -maxdepth 1 -name "$1" ! -name '*arm64*' ! -name '*aarch64*' | sort | tail -1)
-	[ -n "$m" ] || die "no asset matching $1 in $LAB_ASSETS (wl fetch TAG)"
+asset() { # asset <glob>: the matching release asset of the last fetched TAG (listed in its checksums.txt)
+	local m n f
+	# Only names in the current checksums.txt count: older tags' files stay in LAB_ASSETS, and a plain sort
+	# picks the wrong one between an rc and its final (woodshed-1.3.0-1 sorts before woodshed-1.3.0-rc3-1).
+	[ -s "$LAB_ASSETS/checksums.txt" ] || die "no checksums.txt in $LAB_ASSETS (wl fetch TAG)"
+	m=$(find "$LAB_ASSETS" -maxdepth 1 -name "$1" ! -name '*arm64*' ! -name '*aarch64*' | while read -r f; do
+		awk -v n="$(basename "$f")" '$2 == n {found=1} END {exit !found}' "$LAB_ASSETS/checksums.txt" && echo "$f"
+	done)
+	n=$(printf '%s\n' "$m" | grep -c . || true)
+	[ "$n" = 1 ] || die "want exactly one asset matching $1 from $(cat "$LAB_ASSETS/TAG" 2>/dev/null) in $LAB_ASSETS, found $n (wl fetch TAG)"
 	echo "$m"
 }
 pkg_for() {
