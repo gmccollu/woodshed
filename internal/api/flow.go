@@ -337,6 +337,11 @@ type FlowDomain struct {
 	Sampling     uint32     `json:"sampling"`
 	Templates    int        `json:"templates"`
 	LastTemplate *time.Time `json:"last_template"`
+	// SeqMode (IPFIX, since 2.0) is how the domain numbers its messages,
+	// learned from its stream: "rfc" (RFC 7011 §3.1: the data records sent
+	// before the message) or "after" (counting the message's own records
+	// too); absent while it isn't decided.
+	SeqMode string `json:"seq_mode,omitempty"`
 }
 
 // FlowCounts are an exporter's last-24-hour counts.

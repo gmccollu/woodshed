@@ -125,6 +125,8 @@ v9 (RFC 3954) and IPFIX (RFC 7011), firewall-event and NAT records included. See
   oldest flows go first, and the low-disk guard deletes flows before anything else.
 - **Are sampled counts scaled?** Shown both ways: as the exporter reported them and, where the sampling rate is known,
   scaled by it. Nothing is scaled silently, and a rate the exporter didn't send is shown as unknown.
+- **Why do softflowd's counts trail the traffic?** softflowd exports a flow when it ends or times out (its `-t`
+  timeouts), so Woodshed's counts can trail what's on the wire until then.
 - **What about sFlow?** Not in 2.0; it's a candidate for a later release.
 
 ## Why no vendor-specific instructions?

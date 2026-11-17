@@ -113,6 +113,7 @@ type domainState struct {
 	sampling     uint32            // the domain's own (options data without a sampler)
 	samplers     map[uint32]uint32 // sampler or selector ID -> rate
 	seq          seqState
+	seqMode      string  // seq.mode() for Stats (written under Collector.mu)
 	avgPerPkt    float64 // records per packet (v9 loss estimate)
 	// opts are the options records kept raw (options.go), by template and
 	// scope values, oldest version first.
@@ -432,43 +433,215 @@ type seqSeen struct {
 	at  int64
 }
 
+// The sequence conventions (SPEC §13, decision 78). RFC 7011 §3.1 numbers a
+// message by the data records sent before it: seq[n+1] = seq[n] + count[n].
+// Some exporters number it after counting its own: seq[n+1] = seq[n] +
+// count[n+1]. Either may or may not count options data records.
+const (
+	seqRFC   = 1 // timing: the records before the message (RFC 7011)
+	seqAfter = 2 // timing: the records up to and including it
+
+	seqOptsCounted = 1 // options data records count
+	seqOptsNot     = 2 // only (non-options) data records count
+
+	// seqDecide telling messages in a row decide (or change) a convention:
+	// ones that only one side of it explains.
+	seqDecide = 3
+	// seqRestartRun messages behind the expected number, each following the
+	// one before, are an exporter restart (a late message is one alone).
+	seqRestartRun = 3
+)
+
+// seqMsg is one message's number and record counts.
+type seqMsg struct {
+	seq        uint32
+	data, opts uint32 // data records, options data records
+	known      bool   // both counts are known
+}
+
+func (m seqMsg) count(opts int) uint32 {
+	if opts == seqOptsCounted {
+		return m.data + m.opts
+	}
+	return m.data
+}
+
 type seqState struct {
-	valid  bool
-	next   uint32
+	valid bool
+	prev  seqMsg // the last message in order
+	// learn: the convention is learned from the stream (IPFIX); otherwise
+	// it's fixed: RFC, every counted unit (v5 records, v9 packets).
+	learn bool
+	// timing and opts are the conventions in use, 0 while undecided (then
+	// either explains a jump); tRun and oRun count telling messages in a
+	// row for each side (index: convention - 1).
+	timing, opts int
+	tRun, oRun   [2]int
+	// back is the run of messages behind the expected number, each
+	// following the one before (backN of them).
+	back   seqMsg
+	backN  int
 	recent [16]seqSeen
 	ri     int
 }
 
+// mode is the learned timing for /api/flows: "rfc", "after", or "" while
+// it's undecided (and for v5 and v9, which don't learn).
+func (s *seqState) mode() string {
+	switch s.timing {
+	case seqRFC:
+		return "rfc"
+	case seqAfter:
+		return "after"
+	}
+	return ""
+}
+
+// expect is the number m should carry after p under a convention, false
+// when the counts it needs are unknown.
+func expect(p, m seqMsg, timing, opts int) (uint32, bool) {
+	if timing == seqRFC {
+		return p.seq + p.count(opts), p.known
+	}
+	return p.seq + m.count(opts), m.known
+}
+
 // check records a message's sequence number. count is what it advances
-// (records for v5 and IPFIX, 1 packet for v9); known is false when some of
-// the message's records couldn't be counted (the next is then unknown).
-// It returns the gap (units lost before this message) and whether it's a
-// duplicate.
+// (records for v5, 1 packet for v9); known is false when some of the
+// message's records couldn't be counted. It returns the gap (units lost
+// before this message) and whether it's a duplicate.
 func (s *seqState) check(seq, count uint32, known bool, at int64) (gap int64, dup bool) {
-	for _, r := range s.recent {
-		if r.at != 0 && r.seq == seq && at-r.at <= dupWindow.Milliseconds() && at >= r.at {
-			return 0, true
+	return s.checkMsg(seqMsg{seq: seq, data: count, known: known}, at)
+}
+
+// checkMsg is check with the data and options record counts apart (IPFIX).
+// A gap is counted only when no convention still in play explains the
+// jump; once one is decided, only it does, so a real loss always shows.
+func (s *seqState) checkMsg(m seqMsg, at int64) (gap int64, dup bool) {
+	// A message without records (templates only) shares its number with the
+	// next one under either convention: it's not a duplicate.
+	if !m.known || m.data+m.opts > 0 {
+		for _, r := range s.recent {
+			if r.at != 0 && r.seq == m.seq && at-r.at <= dupWindow.Milliseconds() && at >= r.at {
+				return 0, true
+			}
+		}
+		s.recent[s.ri] = seqSeen{seq: m.seq, at: at}
+		s.ri = (s.ri + 1) % len(s.recent)
+	}
+	if !s.valid {
+		s.prev, s.valid, s.backN = m, true, 0
+		return 0, false
+	}
+	timings, optses := []int{seqRFC}, []int{seqOptsCounted}
+	if s.learn {
+		timings, optses = []int{seqRFC, seqAfter}, []int{seqOptsCounted, seqOptsNot}
+	}
+	var explains [3][3]bool // [timing][opts]
+	computed, zero, behind, restart := false, false, false, true
+	var ahead int64 = -1
+	for _, t := range timings {
+		for _, o := range optses {
+			e, ok := expect(s.prev, m, t, o)
+			if !ok {
+				continue
+			}
+			d := int32(m.seq - e)
+			explains[t][o] = d == 0
+			if (s.timing != 0 && t != s.timing) || (s.opts != 0 && o != s.opts) {
+				continue // not in play
+			}
+			computed = true
+			switch {
+			case d == 0:
+				zero = true
+			case d > 0:
+				if ahead < 0 || int64(d) < ahead {
+					ahead = int64(d)
+				}
+			default:
+				behind = true
+			}
+			restart = restart && d < -100000
 		}
 	}
-	s.recent[s.ri] = seqSeen{seq: seq, at: at}
-	s.ri = (s.ri + 1) % len(s.recent)
-	if s.valid {
-		d := int32(seq - s.next)
-		switch {
-		case d > 0:
-			gap = int64(d)
-		case d < -100000:
-			// An exporter restart: start again from here.
-		case d < 0:
-			// Reordered behind the expected one: don't move back.
-			if !known {
+	if s.learn && m.known && s.prev.known {
+		s.vote(explains)
+	}
+	switch {
+	case !computed: // the counts it needs are unknown: resync from here
+	case zero:
+	case restart: // a jump back of over 100,000: an exporter restart
+	case behind:
+		// Behind the expected number: a late message (don't move back), or,
+		// after a run of them in sequence, an exporter restart.
+		if s.backN > 0 && s.follows(s.back, m) {
+			s.backN++
+		} else {
+			s.backN = 1
+		}
+		s.back = m
+		if s.backN < seqRestartRun {
+			if !m.known && s.timing != seqAfter {
 				s.valid = false
 			}
 			return 0, false
 		}
+	default:
+		gap = ahead
 	}
-	s.next, s.valid = seq+count, known
+	s.prev, s.backN = m, 0
 	return gap, false
+}
+
+// follows reports whether m comes right after p under a convention in play.
+func (s *seqState) follows(p, m seqMsg) bool {
+	for _, t := range []int{seqRFC, seqAfter} {
+		for _, o := range []int{seqOptsCounted, seqOptsNot} {
+			if (!s.learn && (t != seqRFC || o != seqOptsCounted)) || (s.timing != 0 && t != s.timing) || (s.opts != 0 && o != s.opts) {
+				continue
+			}
+			if e, ok := expect(p, m, t, o); ok && e == m.seq {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// vote learns from one message whose counts and predecessor's are known: a
+// side of a convention gets a vote when only it explains the number (among
+// the other convention's sides in play). seqDecide votes in a row decide it,
+// or change a decided one (an exporter replaced by another).
+func (s *seqState) vote(ex [3][3]bool) {
+	inPlay := func(cur, v int) bool { return cur == 0 || cur == v }
+	var t, o [3]bool
+	for _, ti := range []int{seqRFC, seqAfter} {
+		for _, oi := range []int{seqOptsCounted, seqOptsNot} {
+			if ex[ti][oi] && inPlay(s.opts, oi) {
+				t[ti] = true
+			}
+			if ex[ti][oi] && inPlay(s.timing, ti) {
+				o[oi] = true
+			}
+		}
+	}
+	tally := func(side [3]bool, run *[2]int, decided *int) {
+		if side[1] == side[2] {
+			return // both or neither: nothing learned
+		}
+		v := 1
+		if side[2] {
+			v = 2
+		}
+		run[v-1]++
+		run[2-v] = 0
+		if run[v-1] >= seqDecide {
+			*decided = v
+		}
+	}
+	tally(t, &s.tRun, &s.timing)
+	tally(o, &s.oRun, &s.opts)
 }
 
 // --- the pending buffer ---
@@ -604,8 +777,12 @@ func (p *pendingBuf) dropExporter(e *exporter) {
 
 // DomainStats is one observation domain (or v9 source ID) of an exporter.
 type DomainStats struct {
-	ID           uint32    `json:"id"`
-	Sampling     uint32    `json:"sampling"`
+	ID       uint32 `json:"id"`
+	Sampling uint32 `json:"sampling"`
+	// SeqMode is how the domain numbers its messages, learned from its
+	// stream (IPFIX): "rfc" (RFC 7011: the records before the message) or
+	// "after" (the records up to and including it); "" while undecided.
+	SeqMode      string    `json:"seq_mode,omitempty"`
 	Templates    int       `json:"templates"`
 	LastTemplate time.Time `json:"last_template"`
 }
@@ -672,6 +849,11 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 				}
 			}
 			ds.Sampling = max(ds.Sampling, r)
+			// The scopes of one ID with different numberings: "after" wins
+			// (the one a reader needs to know about), whatever the map order.
+			if d.seqMode != "" && ds.SeqMode != "after" {
+				ds.SeqMode = d.seqMode
+			}
 		}
 		for _, ds := range byID {
 			st.Domains = append(st.Domains, *ds)

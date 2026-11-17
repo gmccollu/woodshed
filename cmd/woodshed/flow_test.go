@@ -196,16 +196,18 @@ func TestFlowStatusRows(t *testing.T) {
 			TimeOffsets24h: api.FlowTimeOffsets{Ahead: 40, MaxAheadMS: 1 << 32}},
 			// v5: domain 0, the header's interval (0 is every packet).
 			{DeviceID: "10.1.0.2", Domains: []api.FlowDomain{{ID: 0, Sampling: 1}}},
-			{DeviceID: "10.1.0.3", Domains: []api.FlowDomain{{ID: 0, Sampling: 100}}}}}
+			{DeviceID: "10.1.0.3", Domains: []api.FlowDomain{{ID: 0, Sampling: 100}}},
+			{DeviceID: "10.1.0.4", Domains: []api.FlowDomain{{ID: 0, Sampling: 1, SeqMode: "after"}, {ID: 1, Sampling: 1, SeqMode: "rfc"}}}}}
 	var b strings.Builder
 	statusFlowRows(&tabw{w: &b}, &server.RunState{Flows: fs})
-	if got := b.String(); !strings.Contains(got, "Flows:      on; 3 exporters, 1180 records/s; budget 25 % used (2.0 GiB of 8.0 GiB)") {
+	if got := b.String(); !strings.Contains(got, "Flows:      on; 4 exporters, 1180 records/s; budget 25 % used (2.0 GiB of 8.0 GiB)") {
 		t.Fatalf("status row %q", got)
 	}
 	b.Reset()
 	flowStateRows(&tabw{w: &b}, fs)
 	for _, want := range []string{"about 4.8 days", "10.1.0.1: 1180.5 records/s; domain 1: 6 templates, 1 in 1000", "3 sequence gaps",
 		"10.1.0.2: 0.0 records/s; domain 0: 0 templates, unsampled", "10.1.0.3: 0.0 records/s; domain 0: 0 templates, 1 in 100",
+		"domain 0: 0 templates, unsampled, sequence numbers count each message's own records (not RFC 7011; no loss implied); domain 1: 0 templates, unsampled\n",
 		"its clock is 4000000 ms off", "24 h: 40 records more than 1 h ahead of when they arrived (up to 49.7 days); kept at their own times"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("flow status lacks %q:\n%s", want, b.String())
