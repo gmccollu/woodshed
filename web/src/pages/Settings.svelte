@@ -612,7 +612,12 @@
     if (!form) return;
     form.blocklist = parseAllowlist(form.blocklist).filter((c) => c !== ip && c !== hostCidr(ip)).join('\n');
   }
-  const reasonText = { age: 'older than the retention period', cap: 'disk cap reached', low_disk: 'low disk space' };
+  const reasonText = {
+    age: 'older than the retention period',
+    cap: 'disk cap reached',
+    flow_budget: 'flows over their budget',
+    low_disk: 'low disk space',
+  };
 </script>
 
 {#snippet firewall(port: number)}

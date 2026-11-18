@@ -635,7 +635,7 @@ export interface TlsFailure {
   device_id: string;
 }
 
-export type DeletionReason = 'age' | 'cap' | 'low_disk';
+export type DeletionReason = 'age' | 'cap' | 'flow_budget' | 'low_disk';
 
 // ---------- SNMP traps (docs/api.md → SNMP trap listener, SNMP state, SNMP v3 users; 1.2) ----------
 

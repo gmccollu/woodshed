@@ -740,7 +740,10 @@ A PUT without `poll` (a 1.2 client) leaves it as it is.
   applies at once; the stored ID is kept for when the override is removed.
 - The file-only `listeners.snmp.v3_strict_time` (default `false`) isn't in `/api/settings` (SPEC §11.8 #28).
 
-`GET /api/storage/history` → `[{"time", "file", "device_id", "bytes", "reason": "age|cap|low_disk", "type": "syslog|trap"}]`
+`GET /api/storage/history` → `[{"time", "file", "device_id", "bytes", "reason": "age|cap|flow_budget|low_disk", "type": "syslog|trap|poll|flow"}]`
+
+`flow_budget` (2.0): a flow segment deleted because flows were over their own budget (`storage.flow_budget_bytes`), not
+the storage cap; `cap` is the storage cap (`storage.retention_bytes`). Flows are never deleted for `cap`.
 
 ## TLS syslog listener
 

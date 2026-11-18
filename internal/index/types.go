@@ -209,6 +209,12 @@ const (
 	ReasonAge     Reason = "age"
 	ReasonCap     Reason = "cap"
 	ReasonLowDisk Reason = "low_disk"
+	// ReasonFlowBudget: a flow segment deleted while flows were over their own
+	// budget (storage.flow_budget_bytes), not the storage cap. The deletions
+	// table stores it as "cap" (its CHECK predates flows); flows are never
+	// deleted for the cap itself, so Deletions reads a flow row's "cap" back as
+	// ReasonFlowBudget.
+	ReasonFlowBudget Reason = "flow_budget"
 )
 
 // Deletion is one entry of the storage history.

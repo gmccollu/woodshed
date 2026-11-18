@@ -746,27 +746,63 @@ func flowProtected(e *flowSeg, now time.Time) bool {
 }
 
 // enforceFlowRetention deletes flow segments past the age limit, then the
-// oldest, fair-shared between exporters, while flows exceed their budget.
+// oldest, fair-shared between exporters, while flows exceed their budget. A
+// budget pass that deletes anything says so in one event (and the service
+// log): "flows over their budget (12.0 GiB of 10.0 GiB): deleted 14 oldest
+// flow segments (2.1 GiB)". It's the flow budget, never the storage cap.
 func (s *Store) enforceFlowRetention(now time.Time) {
 	cutoff := now.Add(-time.Duration(s.retentionDays.Load()) * 24 * time.Hour)
 	for _, e := range s.sortedFlowSegs(func(e *flowSeg) bool { return e.last.Before(cutoff) && !flowProtected(e, now) }) {
 		s.deleteFlowSeg(e, index.ReasonAge, now)
 	}
 	budget := s.FlowBudget()
-	if s.FlowBytes() <= budget {
+	held := s.FlowBytes()
+	if held <= budget {
 		return
 	}
-	s.flowFairDelete(now, index.ReasonCap, func() bool { return s.FlowBytes() <= budget }, flowProtected)
+	n, freed := s.flowFairDelete(now, index.ReasonFlowBudget, func() bool { return s.FlowBytes() <= budget }, flowProtected)
+	if n == 0 {
+		return
+	}
+	text := flowBudgetText(held, budget, n, freed)
+	s.event(index.LevelInfo, index.KindDelete, "", text)
+	s.log.Info("store: "+text, "flow_bytes", held, "budget_bytes", budget, "segments", n, "freed_bytes", freed)
+}
+
+// flowBudgetText is a budget pass's event.
+func flowBudgetText(held, budget int64, n int, freed int64) string {
+	segs := "segments"
+	if n == 1 {
+		segs = "segment"
+	}
+	return fmt.Sprintf("flows over their budget (%s of %s): deleted %d oldest flow %s (%s)",
+		sizeText(held), sizeText(budget), n, segs, sizeText(freed))
+}
+
+// sizeText is a short binary-unit size ("1.5 GiB", "512 B").
+func sizeText(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit && exp < 5; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // flowFairDelete deletes closed segments until done: the exporter most over
 // its share first (shares split the budget by each exporter's 7-day average
 // of flow bytes, as §3.4 shares devices), oldest segment first, then the
-// oldest of anyone. protect keeps a segment.
-func (s *Store) flowFairDelete(now time.Time, reason index.Reason, done func() bool, protect func(*flowSeg, time.Time) bool) {
+// oldest of anyone. protect keeps a segment. It returns how many segments it
+// deleted and their bytes.
+func (s *Store) flowFairDelete(now time.Time, reason index.Reason, done func() bool,
+	protect func(*flowSeg, time.Time) bool) (deleted int, freed int64) {
 	segs := s.sortedFlowSegs(func(e *flowSeg) bool { return !protect(e, now) })
 	if len(segs) == 0 || done() {
-		return
+		return 0, 0
 	}
 	weights := s.flowWeights(now)
 	bytes := map[string]int64{}
@@ -809,15 +845,18 @@ func (s *Store) flowFairDelete(now time.Time, reason index.Reason, done func() b
 				}
 			}
 			if oldest == nil {
-				return
+				return deleted, freed
 			}
 		}
 		e := byDev[pick][0]
 		byDev[pick] = byDev[pick][1:]
 		if s.deleteFlowSeg(e, reason, now) {
 			bytes[pick] -= e.size
+			deleted++
+			freed += e.size
 		}
 	}
+	return deleted, freed
 }
 
 // flowWeights are each exporter's average flow bytes a day over the last

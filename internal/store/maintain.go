@@ -666,6 +666,8 @@ func reasonText(r index.Reason) string {
 		return "low disk space"
 	case index.ReasonCap:
 		return "over the storage cap"
+	case index.ReasonFlowBudget:
+		return "flows over their budget"
 	}
 	return "older than the retention period"
 }
