@@ -1179,8 +1179,12 @@ left room:
 4. The TLS banners show only while the listener is on. `tls_cert_names` (and `cert.missing_names`) apply to
    Woodshed's own certificate only. `tls_firewall` shows only for the installed Windows service: portable mode and
    `woodshed run` have no rule.
-5. The Windows rule's state is read with `netsh advfirewall firewall show rule name=… verbose` (English field
-   names), at most once a minute. Output it can't read (another display language) is `"unknown"`: no banner. `woodshed
+5. The Windows rule's state is read through the firewall's COM API (`HNetCfg.FwPolicy2`: each rule's `Name`,
+   `Enabled`, `LocalPorts`, …, in process; `fwrule.ListRules`), at most once a minute. Nothing it reads is localized,
+   so it's the same in every display language; only a firewall that can't be read is `"unknown"` (no banner). 1.x
+   parsed `netsh advfirewall firewall show rule … verbose`, whose field names and values are translated, so on a
+   non-English Windows every state was unknown and a missing rule was an error: the installers and `woodshed install`
+   never created the rules there. The rules are still changed with netsh, whose commands aren't translated. `woodshed
    tls on` points the rule at the running `woodshed.exe` and creates it (enabled) if it's missing.
 6. `listeners.tls.port` must differ from the TCP and UDP ports on an overlapping address (the same address, or either
    a wildcard) and from `ui.port`. A user's own key must be RSA of at least 2048 bits or ECDSA P-256, P-384 or P-521
@@ -1195,7 +1199,8 @@ left room:
 10. `woodshed send --proto tls` uses port 6514 unless `--port` is given and needs `--ca FILE` (PEM or DER) or
     `--insecure`; `woodshed bench --proto all` includes TLS.
 11. `internal/fwrule` joins §10.2's allowlist of packages that may use process APIs (`os/exec`): it runs only the host
-    firewall's own programs (netsh, ufw, firewall-cmd) and never opens a network connection.
+    firewall's own programs (netsh, ufw, firewall-cmd), reads the Windows rules through the firewall's COM API in
+    process (item 5), and never opens a network connection.
 
 **Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
 - The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.
@@ -3715,9 +3720,15 @@ the connection; present since 1.0):
     and ICMP replies are rate-limited, so far more datagrams are lost than reported (about 60 to 1 in the review's
     measurement). The same rule covers syslog over UDP, traps (sends and an inform's reply reader; SNMPv3 discovery
     still needs an answer) and flows (`woodshed send --proto flow-v5|flow-v9|ipfix`); every retry checks for an
-    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows a UDP refusal is never detected**:
-    Go turns off connection-reset reporting on Windows UDP sockets (`SIO_UDP_CONNRESET`), so a send there never stops
-    for one, before or after the grace, and the summary has none.
+    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows** Go turns off ICMP port-unreachable
+    reporting on every UDP socket (`SIO_UDP_CONNRESET` set to FALSE in `net/fd_windows.go`), so at first a refusal was
+    never detected there. The senders' own connected sockets turn it back on after the dial
+    (`loadgen.reportRefusals`, `WSAIoctl(SIO_UDP_CONNRESET, TRUE)`; a `Dialer.Control` runs before Go's own setting
+    and would be undone), and Windows then reports the ICMP message on a later send or receive as `WSAECONNRESET`
+    (documented for `WSASend` on a UDP socket), which counts as a refusal like `ECONNREFUSED` elsewhere. Whether the send that returns it
+    also drops its own datagram isn't documented; if it doesn't, the resend is a duplicate at the receiver (the lab
+    checks). The listeners' sockets keep Go's setting: there an ICMP error from one reply (an inform's Response to a
+    sender that's gone) would fail the next read for every sender.
 85. **An opt-in profiling listener, for CPU that only one machine shows.** A lab Windows Server VM runs the service at
     about 0.66 of a core at 1,000 syslog msg/s with light traps, flows and polls, 50 to 70 times what CI's Windows
     runner shows, and the 1.2 fast path (decision 70) didn't remove it. File scanning by security software, timer

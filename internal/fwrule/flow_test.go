@@ -10,6 +10,7 @@ import (
 
 func TestFlowWindowsRules(t *testing.T) {
 	f := &fakeWinRules{rules: map[string]*fakeWin{}}
+	useRules(t, f.list)
 	exe := `C:\Program Files\Woodshed\woodshed.exe`
 	if st := FlowWindowsStates(f.run, 2055, 4739); !slices.Equal(st, []FlowRuleState{{FlowPortRuleName, StateMissing},
 		{FlowIPFIXRuleName, StateMissing}}) {

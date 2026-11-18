@@ -13,8 +13,8 @@ import (
 	"github.com/gmccollu/woodshed/internal/tlscert"
 )
 
-// fakeFirewall records commands and answers like an active ufw, or netsh with
-// the rule present (disabled).
+// fakeFirewall records commands and answers like an active ufw, or a Windows
+// firewall (netsh changes, ListRules reads) with the rule present (disabled).
 type fakeFirewall struct {
 	calls   []string
 	enabled bool
@@ -34,12 +34,6 @@ func (f *fakeFirewall) run(name string, args ...string) (string, error) {
 		return "Rule added", nil
 	case name == "ufw":
 		return "Rule deleted", nil
-	case strings.HasSuffix(name, "netsh.exe") && args[2] == "show":
-		en := "No"
-		if f.enabled {
-			en = "Yes"
-		}
-		return "Rule Name: " + fwrule.RuleName + "\nEnabled: " + en + "\nLocalPort: 6514\n", nil
 	case strings.HasSuffix(name, "netsh.exe") && args[2] == "set":
 		f.enabled = strings.Contains(strings.Join(args, " "), "enable=yes")
 		return "Ok.", nil
@@ -47,11 +41,22 @@ func (f *fakeFirewall) run(name string, args ...string) (string, error) {
 	return "", errors.New("not installed")
 }
 
+// list is fwrule.ListRules: every rule asked for is present, on 6514.
+func (f *fakeFirewall) list(names ...string) ([]fwrule.WinRule, error) {
+	f.calls = append(f.calls, "ListRules "+strings.Join(names, ", "))
+	var out []fwrule.WinRule
+	for _, n := range names {
+		out = append(out, fwrule.WinRule{Name: n, LocalPorts: "6514", Direction: fwrule.RuleDirIn, Enabled: f.enabled,
+			Action: fwrule.RuleActionAllow})
+	}
+	return out, nil
+}
+
 func withFirewall(t *testing.T, goos string) *fakeFirewall {
 	f := &fakeFirewall{}
-	oldRun, oldOS := fwRun, fwOS
-	fwRun, fwOS = f.run, goos
-	t.Cleanup(func() { fwRun, fwOS = oldRun, oldOS })
+	oldRun, oldOS, oldList := fwRun, fwOS, fwrule.ListRules
+	fwRun, fwOS, fwrule.ListRules = f.run, goos, f.list
+	t.Cleanup(func() { fwRun, fwOS, fwrule.ListRules = oldRun, oldOS, oldList })
 	return f
 }
 

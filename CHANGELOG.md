@@ -86,11 +86,20 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - `woodshed send` over UDP (syslog, traps and flows) keeps sending when the receiver restarts: a refusal (ICMP port
   unreachable) after the first second is reported in the summary (when, and how many, a lower bound on the loss) and
   the datagram sent again. A port that refuses from the start still stops it at once ("nothing is listening"). On
-  Windows a UDP refusal is never detected, so a send there never stops for one.
+  Windows too: `woodshed send` turns the OS's UDP refusal reporting back on for its own sockets (Go turns it off on
+  every UDP socket there); the listeners' sockets keep it off.
 - `woodshed snmp status` and `woodshed tls status` check the config first, as `woodshed run`, `reindex` and `flow
   status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
 
 ### Fixed
+- Windows in a language other than English: the `tls_firewall`, `snmp_firewall` and `flow_firewall` banners appear
+  again when a rule is off (its state read as unknown before), and the installer and `woodshed install` create the TLS,
+  SNMP and flow rules there (netsh's answer for a missing rule is translated too, so it read as an error: the rules
+  were never made, and `woodshed tls on`, `snmp on` and `flow on` failed when one was missing). Rules are now read
+  through the firewall's COM API, which isn't translated, instead of netsh's output. Present since 1.1 (TLS), 1.2
+  (SNMP) and 2.0's flow rules.
+- The portable window's firewall note reads the rules the same way, so on a non-English Windows it no longer says no
+  rule lets the copy in when one does.
 - An octet-counted TCP or TLS message whose sender closed or reset the connection before its advertised length arrived
   was stored as if it were complete (`50 <13>short` then EOF looked exactly like `9 <13>short`); present since 1.0.
   What arrived is still kept, and now marked incomplete with both lengths: on its stored line

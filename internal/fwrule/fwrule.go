@@ -15,7 +15,11 @@
 // The SNMP rule (SNMPRuleName, inbound UDP 162, SNMPRecordFile) follows the
 // same pattern with `snmp on|off`.
 //
-// Every command goes through a Runner, so the logic is tested with fakes.
+// Windows rules are read through the firewall's COM API (ListRules), never by
+// parsing netsh's output, which is in the display language; they're changed
+// with netsh, whose commands and keywords aren't translated. Every command goes
+// through a Runner and every read through ListRules, so the logic is tested
+// with fakes.
 package fwrule
 
 import (
@@ -93,36 +97,47 @@ func Netsh() string {
 
 // ---- Windows ----
 
-// rule is the part of `netsh advfirewall firewall show rule ... verbose` we read.
-type rule struct {
-	enabled bool
-	port    string // LocalPort
-	program string
+// WinRule is one Windows firewall rule as the firewall's own COM API reports it:
+// the INetFwRule properties Woodshed reads, under their COM names (netfw.h;
+// https://learn.microsoft.com/en-us/windows/win32/api/netfw/nn-netfw-inetfwrule).
+// Nothing in it is localized, so it reads the same in every display language:
+// Name is the rule's own (Woodshed's are English whatever the language),
+// Protocol, Direction and Action are numbers, Enabled is a boolean. (netsh's
+// `show rule` output, which 1.x parsed, translates its field names and values.)
+type WinRule struct {
+	Name            string
+	ApplicationName string // the program's path; "" when the rule names none
+	Protocol        int32  // NET_FW_IP_PROTOCOL: 6 TCP, 17 UDP, 256 any
+	LocalPorts      string // "6514", a list ("80,443"), a range, or "*"
+	Direction       int32  // NET_FW_RULE_DIRECTION: RuleDirIn or 2 (out)
+	Enabled         bool
+	Action          int32 // NET_FW_ACTION: 0 block, RuleActionAllow
 }
 
-// parseRules reads netsh's verbose rule listing (English field names). It
-// returns nil when no block has a Rule Name field (no rule, or another
-// language).
-func parseRules(out string) []rule {
-	out = strings.ReplaceAll(out, "\r\n", "\n")
-	var rules []rule
-	for _, block := range strings.Split(out, "\n\n") {
-		f := map[string]string{}
-		for _, line := range strings.Split(block, "\n") {
-			if k, v, ok := strings.Cut(line, ":"); ok {
-				f[strings.TrimSpace(k)] = strings.TrimSpace(v)
-			}
+// The NET_FW_RULE_DIRECTION and NET_FW_ACTION values Woodshed checks
+// (icftypes.h; https://learn.microsoft.com/en-us/windows/win32/api/icftypes/ne-icftypes-net_fw_rule_direction
+// and .../ne-icftypes-net_fw_action).
+const (
+	RuleDirIn       = 1 // NET_FW_RULE_DIR_IN
+	RuleActionAllow = 1 // NET_FW_ACTION_ALLOW (NET_FW_ACTION_BLOCK is 0)
+)
+
+// ListRules reads the Windows firewall rules named one of names (any case, as
+// netsh's name= matches), or every rule when none is given. On Windows it's the
+// firewall's COM API, in process (rules_windows.go), which needs no
+// administrator rights; elsewhere it's an error. Tests replace it.
+var ListRules func(names ...string) ([]WinRule, error) = listRules
+
+// hasPort reports whether a LocalPorts value lists port on its own.
+func hasPort(ports string, port int) bool {
+	p := strconv.Itoa(port)
+	for _, f := range strings.Split(ports, ",") {
+		if strings.TrimSpace(f) == p {
+			return true
 		}
-		if _, ok := f["Rule Name"]; !ok {
-			continue
-		}
-		rules = append(rules, rule{enabled: strings.EqualFold(f["Enabled"], "Yes"), port: f["LocalPort"], program: f["Program"]})
 	}
-	return rules
+	return false
 }
-
-// noMatch is netsh's answer when no rule has the name (English).
-func noMatch(out string) bool { return strings.Contains(out, "No rules match") }
 
 // spec is one Woodshed firewall rule: the TLS syslog listener's or the SNMP
 // trap receiver's. The exported TLS functions keep their 1.1 names; the SNMP
@@ -142,30 +157,33 @@ var (
 		desc: "Lets devices send SNMP traps and informs to Woodshed. Turned on by `woodshed snmp on`."}
 )
 
-// WindowsState reads the rule's state for port. It needs no administrator
-// rights. Output it can't read (another language, an error) is StateUnknown.
+// WindowsState reads the rule's state for port (ListRules: no administrator
+// rights needed, the same in every display language). A rule it can't read is
+// StateUnknown. run isn't used for reading; it's kept for the callers' symmetry
+// with the changing functions.
 func WindowsState(run Runner, port int) string { return tlsSpec.windowsState(run, port) }
 
-func (sp spec) windowsState(run Runner, port int) string {
-	out, err := run(Netsh(), "advfirewall", "firewall", "show", "rule", "name="+sp.name, "verbose")
-	if noMatch(out) {
-		return StateMissing
-	}
-	rules := parseRules(out)
-	if err != nil || len(rules) == 0 {
+func (sp spec) windowsState(_ Runner, port int) string {
+	rules, err := ListRules(sp.name)
+	switch {
+	case err != nil:
 		return StateUnknown
+	case len(rules) == 0:
+		return StateMissing
 	}
 	return stateOf(rules, port)
 }
 
-func stateOf(rules []rule, port int) string {
-	p := strconv.Itoa(port)
+// stateOf: ok when an enabled rule of that name lists port, wrong_port when
+// enabled ones list only others, else disabled. (Direction, action and
+// protocol aren't checked: Woodshed's own commands set them, as before.)
+func stateOf(rules []WinRule, port int) string {
 	state := StateDisabled
 	for _, r := range rules {
-		if !r.enabled {
+		if !r.Enabled {
 			continue
 		}
-		if r.port == p {
+		if hasPort(r.LocalPorts, port) {
 			return StateOK
 		}
 		state = StateWrongPort
@@ -183,17 +201,16 @@ func (sp spec) addArgs(exe string, port int, enable bool) []string {
 		"description=" + sp.desc}
 }
 
-// exists reports whether the rule is there, and an error when netsh's answer
-// can't be read.
-func (sp spec) exists(run Runner) (bool, error) {
-	out, err := run(Netsh(), "advfirewall", "firewall", "show", "rule", "name="+sp.name)
-	if noMatch(out) {
-		return false, nil
-	}
+// exists reports whether the rule is there (ListRules), and an error when the
+// firewall can't be read. It never parses netsh's output, which is in the
+// display language: in 1.x a missing rule on a non-English Windows was an
+// error here, so the installers never created the rules there.
+func (sp spec) exists(Runner) (bool, error) {
+	rules, err := ListRules(sp.name)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read the firewall rule %q: %w", sp.name, err)
 	}
-	return true, nil
+	return len(rules) > 0, nil
 }
 
 // WindowsEnsure creates the rule, disabled on 6514, unless it exists (then it's
