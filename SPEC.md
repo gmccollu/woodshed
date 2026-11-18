@@ -3083,13 +3083,29 @@ the first bench, which records the measured numbers here:
       key of the page's last record), so a page whose stream is gone (dropped for room, after `StateTTL` unused,
       taken by a second request with the same cursor, or a restart) is read from the cursor's values: a stream
       started at the cursor, skipping what the stateless page skips, which saves its own for the page after. Bounds:
-      at most 8 saved (`MaxPageStates`, least recently used dropped first), each within 1/16 of the query pool (8
-      MiB of 128; trimmed to fit before it's saved), charged to the pool, and the pool drops them before top-N and
-      summary states, which can't be read again. A saved stream holds no open file (reopened from the footer it
-      read), so retention can delete its segments on every platform; their rows are then gone for the next page,
-      as for a stateless one. A stream over its budget even trimmed finishes the page with stateless pages from its
-      last record. A continued listing reads the store as its first page found it (an open segment's snapshot
-      then, as Stream and a continued top-N do); a stateless page planned again each time.
+      at most 8 saved (`MaxPageStates`, least recently used dropped first), each holding rows within 1/16 of the
+      query pool (8 MiB of 128; trimmed to fit before it's saved) plus its plan's loaded batch (as a saved top-N's
+      plan), all charged to the pool; the saved streams together stay under half the pool (the least recently used
+      dropped past it), the pool drops them before top-N and summary states (which can't be read again), and the
+      collector nudge leaves out their idle bytes. Expired ones are swept by any query and by a timer while any are
+      saved. A saved stream holds no open file (reopened from the footer it read, the file checked by its header's
+      identity), so retention can delete its segments on every platform. A stream over its budget even trimmed
+      finishes the page with stateless pages from its last record. An index read that fails while a listing goes on
+      is the page's (or Stream's) error, never a short listing.
+    - **The store changing between pages (independent review, 2026-11-18):** a continued page gives what a
+      stateless page gives at that moment. On resume a saved stream checks what it was planned against: if the
+      index's segment count for the window changed, or the set of segments holding raw sets to decode, or the open
+      segments (one started, closed or was deleted), or a segment it still reads or holds rows of is gone or was
+      written again under its name (another header identity: a part number reused), it's dropped and the page read
+      from the cursor. Blocks written since to the open segments it has loaded, a live store's every page, are read
+      as it resumes, keeping their rows after the last one given. And neither a page stream nor Stream gives a row
+      that isn't after the last one it gave: one that comes up behind (an index row the plan's bounds didn't cover,
+      as a segment with raw sets indexed mid-listing) is left out, as a page from the cursor leaves it out. Before:
+      such a segment indexed after page 3 of an oldest-first listing put its 09:05 records after a 10:49 one, and
+      after the stream was dropped the stateless pages from that cursor gave 3,155 of 3,615 records again; an index
+      error after a page ended a listing at 2,400 of 3,600 records with no error. `TestSearchPagesWhileTheStoreChanges`
+      runs both orders in lockstep with stateless pages through each kind of write (continued, dropped at the write,
+      and dropped a page after): the same pages, no record twice or out of order.
       - Over an hourly segment of 18 M records (5,000 a second, blocks of 5,000, 1 % ending up to 20 min early;
         `WOODSHED_PAGES_BIG=1 go test -run TestSearchPagesMeasure ./internal/flowquery`), 20 consecutive pages,
         bytes read in all, before → after: newest first, pages of 500 973 MB → 24 MB and of 5,000 1.20 GB → 26 MB
@@ -3098,8 +3114,9 @@ the first bench, which records the measured numbers here:
         and of 5,000 33.8 GB → 123 MB (14.6 s → 0.63 s), each block decoded once (13 of 1,201 again). Oldest first
         still reads ~660 blocks for 10,000 records: the oldest records are the outliers, a few in each of the first
         20 min's blocks.
-      - `BenchmarkFlowListing` (1,000,000 records): pages of 500 1.57 M records a second (30 k stateless), of 5,000
-        1.49 M (207 k); Stream 4.6 M. A search page's live heap over a week of 10 exporters 10.4 MiB (19.3
+      - `BenchmarkFlowListing` (1,000,000 records): pages of 500 0.64 M records a second (30 k stateless), of 5,000
+        0.90 M (207 k); Stream 4.6 M. The check on resume (two index queries, a header read for each segment it
+        holds, the open segments' snapshots) is about 0.45 ms a page; without it pages ran at 1.5–1.6 M a second. A search page's live heap over a week of 10 exporters 10.4 MiB (19.3
         stateless).
       - Guards: `TestFlowListingGolden` unchanged; `TestSearchPagesMatchStateless` (every page's hits, cursor and
         partial flag equal the stateless page's, over open and closed segments, raw sets, filters, devices, pages of
