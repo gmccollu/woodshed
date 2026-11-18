@@ -45,7 +45,7 @@ var allowed = map[string]string{
 	"internal/listen":             "OS helpers (who holds a port), and SNMP inform Responses and Reports on the trap socket",
 	"internal/service":            "OS helpers (the service manager)",
 	"internal/fwrule":             "OS helpers (the host firewall's own programs: netsh, ufw, firewall-cmd); no network",
-	"cmd/woodshed":                "the command line: OS helpers, and woodshed status asking the local server",
+	"cmd/woodshed":                "the command line: OS helpers, and woodshed status and profile asking the local server",
 }
 
 func moduleRoot(t *testing.T) string {
