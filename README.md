@@ -81,8 +81,8 @@ As of 2.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
 
 - The installers aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask once.
 - On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
-- On non-English Windows the "firewall rule is off" banners for TLS, SNMP traps and flows don't appear; `woodshed tls
-  on`, `snmp on` and `flow on` still turn the rules on.
+- On Windows, `woodshed send` over UDP can't tell when the receiver refuses (nothing listening), so it keeps sending
+  instead of stopping; check the receiving side's counts.
 - On some Windows machines, especially with endpoint protection, CPU use at moderate syslog rates is much higher than on
   other systems. Nothing is lost; the cause is being traced.
 
