@@ -63,6 +63,24 @@ type segRef struct {
 	wide                bool                   // holds raw sets an ordered plan reads first (their records' times are unknown)
 	start, end          int64                  // flow time, from the index (open: widened)
 	records             int64                  // the index's count (0: not indexed)
+	// id is the file snap was read from, when it was read from one (a page
+	// stream keeps snap between pages: a file written again under the same
+	// name isn't the one its offsets are for).
+	id flowseg.Identity
+}
+
+// errReplaced is a segment file that isn't the one its kept footer was read
+// from (deleted and written again under its name).
+var errReplaced = errors.New("flows: segment replaced since its footer was read")
+
+// openLoad is an open segment a plan has loaded: how much of it the plan
+// planned (its snapshot's blocks and raw chunks then), so a page stream
+// that resumes can read what's been written to it since.
+type openLoad struct {
+	ref    segRef // the segment (snap: the newest snapshot a page stream read blocks of)
+	blocks int
+	raw    int
+	cost   int64 // ref.snap's directory, charged to the page stream that keeps it (pages.go)
 }
 
 // openSeg opens a segment that has no snapshot: closed through its footer,
@@ -113,6 +131,14 @@ type plan struct {
 	// charged is the loaded batch's bytes, reserved in the engine's pool.
 	charged int64
 
+	// What the plan was made against, for a page stream that resumes
+	// (pages.go): the index's segment count for the window, the segments
+	// the index said hold raw sets to decode (ordered plans), and the open
+	// segments loaded so far.
+	segCount   int64
+	ntSet      map[string]bool
+	openLoaded map[string]*openLoad
+
 	// Progress.
 	recsEst      int64 // records: the index's for unloaded segments, exact for loaded ones
 	blocksLoaded int64
@@ -133,13 +159,14 @@ func (e *Engine) planOrdered(ctx context.Context, q *Query, asc bool) (*plan, er
 }
 
 func (e *Engine) newPlan(ctx context.Context, q *Query, asc, ordered bool) (*plan, error) {
+	e.sweepPages() // any query releases abandoned listings' page streams
 	p := &plan{e: e, devs: q.DeviceIDs, asc: asc, from: q.From.UnixMilli(), to: q.To.UnixMilli(), openSet: map[string]bool{},
 		ordered: ordered}
-	_, recs, err := e.o.Index.FlowSegmentsCount(ctx, q.DeviceIDs, q.From, q.To)
+	n, recs, err := e.o.Index.FlowSegmentsCount(ctx, q.DeviceIDs, q.From, q.To)
 	if err != nil {
 		return nil, err
 	}
-	p.recsEst = recs
+	p.recsEst, p.segCount = recs, n
 	if err := p.listWides(ctx, q); err != nil {
 		return nil, err
 	}
@@ -204,7 +231,10 @@ func (p *plan) listWides(ctx context.Context, q *Query) error {
 	if err != nil {
 		return err
 	}
-	p.wideSet = map[string]bool{}
+	p.wideSet, p.ntSet = map[string]bool{}, map[string]bool{}
+	for _, r := range rows {
+		p.ntSet[r.Path] = true
+	}
 	var open map[string]bool
 	if p.e.o.Open != nil {
 		open = map[string]bool{}
@@ -381,6 +411,16 @@ func (p *plan) load(ctx context.Context, rd *readers) {
 				continue // deleted by retention since
 			}
 			foot = r.Footer()
+		}
+		if r != nil {
+			ref.id = r.Identity()
+		}
+		if ref.open {
+			if p.openLoaded == nil {
+				p.openLoaded = map[string]*openLoad{}
+			}
+			p.openLoaded[ref.Rel] = &openLoad{ref: segRef{DeviceID: ref.DeviceID, Rel: ref.Rel, Path: ref.Path, id: ref.id, open: true},
+				blocks: len(foot.Blocks), raw: len(foot.RawChunks)}
 		}
 		si := len(p.segs)
 		p.segs = append(p.segs, ref)
@@ -605,6 +645,10 @@ func (r *readers) get(si int) (*flowseg.Reader, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if s.id != (flowseg.Identity{}) && rd.Identity() != s.id {
+		rd.Close()
+		return nil, errReplaced
 	}
 	if r.rds == nil {
 		r.rds = map[int]*flowseg.Reader{}

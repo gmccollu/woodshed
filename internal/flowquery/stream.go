@@ -148,9 +148,14 @@ type stream struct {
 	// copies of their footers, one for each page.)
 	again map[string]*againSeg
 
+	// skipTo: the blocks it reads keep only rows after this key (nil: all).
+	// A page stream's (set before each wave it reads, not while one runs):
+	// the later of the cursor it started at and the last record it gave.
+	skipTo *hitKey
+
 	// A search page's stream (pages.go) reads its waves itself and keeps
 	// them between pages: its plan, readers (nil while saved), merge, the
-	// last wave's bound, and the rows it skips (it started at a cursor).
+	// last wave's bound, and the cursor it started at.
 	p          *plan
 	rd         *readers
 	h          *heldHeap
@@ -380,14 +385,24 @@ func (s *stream) drain(ctx context.Context, h *heldHeap, bound int64, more bool)
 			continue
 		}
 		row := top.rows[top.next]
-		hit.DeviceID, hit.Rel, hit.Block, hit.Row = top.dev, top.rel, top.block, row
+		key := hitKey{End: end, Dev: top.dev, Rel: top.rel, Block: top.block, Row: row}
 		if top.pk != nil {
 			top.pk.Next(&hit.Record)
 		} else {
 			hit.Record = top.raw[top.next]
 		}
-		err := s.fn(&hit)
-		s.last, s.emitted = hitKey{End: end, Dev: top.dev, Rel: top.rel, Block: top.block, Row: row}, true
+		var err error
+		if !s.emitted || s.last.before(key, s.asc) {
+			hit.DeviceID, hit.Rel, hit.Block, hit.Row = top.dev, top.rel, top.block, row
+			err = s.fn(&hit)
+			s.last, s.emitted = key, true
+		} else {
+			// Not after the last record given: a segment indexed (or given
+			// raw sets) after the plan passed its place. The bounds didn't
+			// cover it, so it's left out, as a page from the cursor leaves
+			// it out; never given out of order or twice.
+			s.e.streamLate.Add(1)
+		}
 		switch top.next++; {
 		case top.next < len(top.rows):
 			heap.Fix(h, 0)
@@ -598,6 +613,7 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 			return fail(errStreamFull)
 		}
 		x.cost = n
+		x.src = &segRef{DeviceID: seg.DeviceID, Rel: seg.Rel, Path: seg.Path, id: r.Identity()} // its file, not read again
 		return x, re, nil
 	}
 	if !f.Empty() { // as Search's scan: a block the index rules out isn't read
@@ -614,22 +630,23 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 	if err := r.Decode(b.block, flowseg.ColAll, blk); err != nil {
 		return fail(err)
 	}
-	x.src = &segRef{DeviceID: seg.DeviceID, Rel: seg.Rel, Path: seg.Path, snap: r.Footer()}
+	x.src = &segRef{DeviceID: seg.DeviceID, Rel: seg.Rel, Path: seg.Path, snap: r.Footer(), id: r.Identity()}
 	re = s.selectRows(blk, &sl.rec, f, p.from, p.to, re)
 	s.packRows(x, blk, re[s.afterCut(x, len(re), func(i int) rowEnd { return re[i] }):])
 	return x, re, nil
 }
 
 // afterCut is how many of block x's n sorted rows (row(i) the i-th) come
-// at or before the cursor a page's stream started at (none without one):
-// within a block the result order is the rows' (end, row) order.
+// at or before s.skipTo (none without one): within a block the result order
+// is the rows' (end, row) order.
 func (s *stream) afterCut(x *heldBlock, n int, row func(i int) rowEnd) int {
-	if s.after == nil {
+	k := s.skipTo
+	if k == nil {
 		return 0
 	}
 	return sort.Search(n, func(i int) bool {
 		r := row(i)
-		return s.after.before(hitKey{End: r.end, Dev: x.dev, Rel: x.rel, Block: x.block, Row: r.row}, s.asc)
+		return k.before(hitKey{End: r.end, Dev: x.dev, Rel: x.rel, Block: x.block, Row: r.row}, s.asc)
 	})
 }
 
@@ -682,6 +699,10 @@ func (s *stream) readAgain(ctx context.Context, x *heldBlock) error {
 	a := s.again[x.src.Path]
 	if a.r == nil {
 		r, err := flowseg.OpenSnapshot(x.src.Path, x.src.snap) // the footer read before; only the block is read
+		if err == nil && r.Identity() != x.src.id {
+			r.Close()
+			r, err = nil, errReplaced
+		}
 		if err != nil {
 			s.e.o.Logger.Warn("flows: a block couldn't be read again; its rest is skipped", "file", x.rel, "err", err)
 			s.unwait(x)

@@ -86,8 +86,15 @@ type Engine struct {
 	// fillHook runs as a search page's second pass starts (tests).
 	fillHook func()
 	// Search pages started as a stream, continued from a saved one, and
-	// served by searchStateless after a stream ran over its budget (tests).
-	pageStarts, pageResumes, pageFallbacks atomic.Int64
+	// served by searchStateless after a stream ran over its budget; saved
+	// streams dropped on resume because the store changed under them; blocks
+	// they read as they resumed (written to open segments since); and rows a
+	// stream left out because they came up behind the last it gave (tests).
+	pageStarts, pageResumes, pageFallbacks, pageRebuilds, pageCatchUps, streamLate atomic.Int64
+	// The saved page streams' pool bytes (pageState.bytes), and the timer
+	// that sweeps them once expired.
+	savedPageBytes atomic.Int64
+	pageTimer      *time.Timer
 	// statelessPages makes every search page searchStateless's (tests).
 	statelessPages bool
 
@@ -108,7 +115,7 @@ const (
 var gcSamples = []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}, {Name: "/gc/cycles/total:gc-cycles"}}
 
 func (e *Engine) gcNudge() {
-	if e.pool.Used() < gcNudgePool {
+	if e.pool.Used()-e.savedPageBytes.Load() < gcNudgePool { // saved page streams sit idle: they make no garbage
 		return
 	}
 	e.gcMu.Lock()

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"math"
 	"time"
+
+	"github.com/gmccollu/woodshed/internal/flowseg"
 )
 
 // ---- search pages that continue (SPEC §13.6) ----
@@ -21,17 +23,31 @@ import (
 // whose stream is gone (dropped for room, expired, the engine restarted, or
 // taken by another request with the same cursor) is read from the cursor's
 // values alone: a new stream started at the cursor, which skips what the
-// stateless page skips and gives the same records. Saved streams hold no
-// open files (a file retention deletes is then just gone, as for any page).
+// stateless page skips and gives the same records.
+//
+// The store changes between pages, and a continued page gives what a
+// stateless page would then. A saved stream that resumes checks what it
+// was planned against (refresh): if the index has another segment count
+// for the window, another set of segments holding raw sets to decode, or
+// the open segments changed (one started, closed or was deleted), or a
+// segment it still reads or holds rows of was deleted or written again
+// under its name, it's dropped and the page read from the cursor. Blocks
+// written since to the open segments it has loaded (a live store's every
+// page) are read as it resumes. And a stream never gives a record that
+// isn't after the last one it gave: one that comes up behind it (an index
+// row its plan's bounds didn't cover) is left out, as a page from the
+// cursor leaves it out. Saved streams hold no open files.
 
 // MaxPageStates caps the saved page streams (least recently used dropped
 // first, and after StateTTL unused); the pool drops them before top-N and
 // summary states, since a page can always be read from its cursor.
 const MaxPageStates = 8
 
-// pageBudgetShare is the pool's share one page's stream may hold before it
-// trims (as Stream does with half the pool), and is saved within: eight
-// saved streams take half the pool at most, besides their plans' batches.
+// pageBudgetShare is the pool's share one page's stream may hold in rows
+// before it trims (as Stream does with half the pool), and is saved within.
+// Its plan's loaded batch is charged besides (as a saved top-N's plan is);
+// the saved streams' charges together, rows and batches, stay under half
+// the pool (the least recently used dropped past it).
 const pageBudgetShare = 16
 
 // errPageFull stops a page's drain at its limit.
@@ -39,9 +55,10 @@ var errPageFull = errors.New("flows: page full")
 
 // pageState is a saved page stream.
 type pageState struct {
-	qk   string
-	used time.Time
-	s    *stream
+	qk    string
+	used  time.Time
+	s     *stream
+	bytes int64 // its pool charge when saved: rows, bookkeeping and the plan's batch
 }
 
 // Search returns up to limit records, newest first by flow end (asc: oldest
@@ -57,9 +74,22 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 	if err != nil {
 		return SearchResult{}, err
 	}
+	e.sweepPages()
 	var s *stream
 	if cursor != "" {
 		s = e.takePage(cursor, qk)
+	}
+	if s != nil {
+		stale, err := s.refresh(ctx)
+		if err != nil {
+			s.discard()
+			return SearchResult{}, err
+		}
+		if stale {
+			s.discard()
+			s = nil
+			e.pageRebuilds.Add(1)
+		}
 	}
 	if s != nil {
 		e.pageResumes.Add(1)
@@ -124,6 +154,16 @@ func (e *Engine) startPage(ctx context.Context, q *Query, asc bool, after *hitKe
 	return s, nil
 }
 
+// setSkip makes the blocks read next keep only rows after both the cursor
+// the stream started at and the last record it gave.
+func (s *stream) setSkip() {
+	s.skipTo = s.after
+	if s.emitted && (s.skipTo == nil || s.skipTo.before(s.last, s.asc)) {
+		k := s.last
+		s.skipTo = &k
+	}
+}
+
 // page fills a page of limit hits from the stream, within the deadline
 // (one wave at least, as searchStateless reads), and gives the page as
 // searchStateless would: its cursor, whether partial. exhausted: nothing is
@@ -178,6 +218,7 @@ func (s *stream) page(ctx context.Context, q *Query, qk string, limit int, start
 			}
 		}
 		e.gcNudge()
+		s.setSkip()
 		w, ok := s.nextWave(ctx, s.p, s.rd, e.o.Workers)
 		if w.err != nil {
 			return SearchResult{}, false, w.err
@@ -227,9 +268,177 @@ func (s *stream) page(ctx context.Context, q *Query, qk string, limit int, start
 	return res, exhausted, nil
 }
 
+// refresh checks, as a saved page stream resumes, that the store is still
+// what it was planned against, and reads the blocks written since to the
+// open segments it has loaded (see the top of this file). stale: it can't
+// give what a stateless page would now; read the page from the cursor.
+func (s *stream) refresh(ctx context.Context) (stale bool, err error) {
+	p, e := s.p, s.e
+	from, to := time.UnixMilli(p.from).UTC(), time.UnixMilli(p.to).UTC()
+	n, _, err := e.o.Index.FlowSegmentsCount(ctx, p.devs, from, to)
+	if err != nil {
+		return false, err
+	}
+	if n != p.segCount {
+		return true, nil
+	}
+	nt, err := e.o.Index.FlowSegmentsNoTemplate(ctx, p.devs, from, to)
+	if err != nil {
+		return false, err
+	}
+	if len(nt) != len(p.ntSet) {
+		return true, nil
+	}
+	for i := range nt {
+		if !p.ntSet[nt[i].Path] {
+			return true, nil
+		}
+	}
+	cur := p.openNow()
+	if len(cur) != len(p.openSet) {
+		return true, nil
+	}
+	for rel := range cur {
+		if !p.openSet[rel] {
+			return true, nil
+		}
+	}
+	// The files it still reads or holds rows of are the ones it read.
+	ids := map[string]flowseg.Identity{}
+	add := func(path string, id flowseg.Identity) bool {
+		if old, ok := ids[path]; ok && old != id {
+			return false
+		}
+		ids[path] = id
+		return true
+	}
+	for _, x := range s.h.h {
+		if x.src != nil && !add(x.src.Path, x.src.id) {
+			return true, nil
+		}
+	}
+	for _, b := range p.blocks[p.done:] {
+		if sg := &p.segs[b.seg]; !add(sg.Path, sg.id) {
+			return true, nil
+		}
+	}
+	for _, ol := range p.openLoaded {
+		if !add(ol.ref.Path, ol.ref.id) {
+			return true, nil
+		}
+	}
+	for path, id := range ids {
+		if got, err := flowseg.ReadIdentity(path); err != nil || got != id {
+			return true, nil
+		}
+	}
+	// The open segments it has loaded: what's been written to them since.
+	type grown struct {
+		ol   *openLoad
+		foot *flowseg.Footer
+	}
+	var gs []grown
+	for rel, ol := range p.openLoaded {
+		os := cur[rel]
+		f := os.Footer
+		if f == nil && os.Snap != nil {
+			f = os.Snap()
+		}
+		if f == nil || len(f.RawChunks) != ol.raw || len(f.Blocks) < ol.blocks {
+			return true, nil // closed since, or its raw sets changed (they're read as one)
+		}
+		if len(f.Blocks) > ol.blocks {
+			gs = append(gs, grown{ol, f})
+		}
+	}
+	s.setSkip()
+	for _, g := range gs {
+		if err := s.catchUp(ctx, g.ol, g.foot); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// catchUp reads the blocks written to an open segment the stream has loaded
+// since it planned them (foot is its snapshot now), keeping their rows after
+// skipTo. The stream's blocks of the segment share the newest snapshot
+// (what they had is a prefix of it), charged while it's kept.
+func (s *stream) catchUp(ctx context.Context, ol *openLoad, foot *flowseg.Footer) error {
+	p := s.p
+	ref := ol.ref
+	ref.snap = foot
+	cp := &plan{e: s.e, asc: p.asc, from: p.from, to: p.to, segs: []segRef{ref}}
+	var blocks []planned
+	for i := ol.blocks; i < len(foot.Blocks); i++ {
+		b := &foot.Blocks[i]
+		if b.Rows == 0 || !b.Overlaps(p.from, p.to-1) {
+			continue
+		}
+		blocks = append(blocks, planned{block: i, rows: b.Rows, minStart: b.MinStart, maxStart: b.MaxStart, minEnd: b.MinEnd, maxEnd: b.MaxEnd})
+	}
+	ol.blocks = len(foot.Blocks)
+	shared := &segRef{DeviceID: ref.DeviceID, Rel: ref.Rel, Path: ref.Path, snap: foot, id: ref.id, open: true}
+	cost := int64(len(foot.Blocks)) * entryCost
+	s.release(ol.cost)
+	s.reserve(cost)
+	ol.ref.snap, ol.cost = foot, cost
+	for _, x := range s.h.h { // the blocks it holds of the segment: the newest snapshot (a superset)
+		if x.src != nil && x.src.snap != nil && x.src.Path == ref.Path {
+			x.src = shared
+		}
+	}
+	if len(blocks) == 0 {
+		return nil
+	}
+	rd := &readers{p: cp}
+	rd.track(blocks)
+	defer rd.close()
+	held, err := s.decode(ctx, cp, rd, blocks, s.f)
+	if err != nil {
+		for _, x := range held {
+			s.put(x)
+		}
+		return err
+	}
+	for _, x := range held {
+		if len(x.rows) == 0 {
+			s.put(x)
+			continue
+		}
+		if x.src != nil && x.src.snap != nil {
+			x.src = shared
+		}
+		heap.Push(s.h, x)
+	}
+	s.blocksDone += int64(len(blocks))
+	s.e.pageCatchUps.Add(int64(len(blocks)))
+	return nil
+}
+
+// openNow is the open segments of the plan's devices now, by rel (as
+// newPlan lists them).
+func (p *plan) openNow() map[string]OpenSegment {
+	out := map[string]OpenSegment{}
+	if p.e.o.Open == nil {
+		return out
+	}
+	want := map[string]bool{}
+	for _, d := range p.devs {
+		want[d] = true
+	}
+	for _, os := range p.e.o.Open(p.devs) {
+		if p.devs == nil || want[os.DeviceID] {
+			out[os.Rel] = os
+		}
+	}
+	return out
+}
+
 // park readies a page stream to be saved: it gives back its spare packed
 // buffers and closes its files (a reader is opened again from the footer
-// it read, so only the blocks are read again).
+// it read, so only the blocks are read again, and its file is checked to
+// be the one it read).
 func (s *stream) park() {
 	s.mu.Lock()
 	for _, f := range s.free {
@@ -243,16 +452,41 @@ func (s *stream) park() {
 			a.r = nil
 		}
 	}
+	p := s.p
 	if s.rd != nil {
 		s.rd.mu.Lock()
 		for si, r := range s.rd.rds {
-			if s.p.segs[si].snap == nil {
-				s.p.segs[si].snap = r.Footer() // the batch's charge counts its entries
+			if p.segs[si].snap == nil {
+				p.segs[si].snap = r.Footer() // the batch's charge counts its entries
 			}
+			p.segs[si].id = r.Identity()
 		}
 		s.rd.mu.Unlock()
 		s.rd.close()
 		s.rd = nil
+	}
+	// Segments it reads from a snapshot without having opened their file
+	// yet (open ones): which file it is now (unreadable: none, so stale on
+	// resume).
+	for _, b := range p.blocks[p.done:] {
+		if sg := &p.segs[b.seg]; sg.id == (flowseg.Identity{}) {
+			sg.id, _ = flowseg.ReadIdentity(sg.Path)
+		}
+	}
+	held := map[string]bool{}
+	for _, x := range s.h.h {
+		if x.src != nil {
+			held[x.src.Path] = true
+		}
+	}
+	for _, ol := range p.openLoaded {
+		if ol.ref.id == (flowseg.Identity{}) {
+			ol.ref.id, _ = flowseg.ReadIdentity(ol.ref.Path)
+		}
+		if ol.cost != 0 && !held[ol.ref.Path] { // no rows of it held: its snapshot isn't needed
+			s.release(ol.cost)
+			ol.ref.snap, ol.cost = nil, 0
+		}
 	}
 }
 
@@ -270,14 +504,21 @@ func (s *stream) discard() {
 		s.rd = nil
 	}
 	if s.p != nil {
+		for _, ol := range s.p.openLoaded {
+			s.release(ol.cost)
+			ol.ref.snap, ol.cost = nil, 0
+		}
 		s.p.release()
 		s.p = nil
 	}
 	s.out, s.fn = nil, nil
 }
 
+// pageBytes is a stream's pool charge: its own and its plan's batch.
+func (s *stream) pageBytes() int64 { return s.used.Load() + s.p.charged }
+
 // savePage keeps s under cursor, dropping expired ones and, past
-// MaxPageStates, the least recently used.
+// MaxPageStates or half the pool between them, the least recently used.
 func (e *Engine) savePage(cursor, qk string, s *stream) {
 	s.park()
 	var gone []*pageState
@@ -289,18 +530,20 @@ func (e *Engine) savePage(cursor, qk string, s *stream) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.o.Clock()
-	for c, ps := range e.pages {
-		if now.Sub(ps.used) > StateTTL {
-			delete(e.pages, c)
-			gone = append(gone, ps)
-		}
-	}
+	gone = e.expiredPagesLocked(now)
 	if old := e.pages[cursor]; old != nil { // two requests continued from one cursor
+		delete(e.pages, cursor)
+		e.savedPageBytes.Add(-old.bytes)
 		gone = append(gone, old)
 	}
-	e.pages[cursor] = &pageState{qk: qk, used: now, s: s}
-	for len(e.pages) > MaxPageStates {
+	ps := &pageState{qk: qk, used: now, s: s, bytes: s.pageBytes()}
+	e.pages[cursor] = ps
+	e.savedPageBytes.Add(ps.bytes)
+	for len(e.pages) > MaxPageStates || (len(e.pages) > 0 && e.savedPageBytes.Load() > e.pool.cap/2) {
 		gone = append(gone, e.oldestPageLocked())
+	}
+	if e.pageTimer == nil && len(e.pages) > 0 {
+		e.pageTimer = time.AfterFunc(StateTTL, e.pageTimerFired)
 	}
 }
 
@@ -311,6 +554,7 @@ func (e *Engine) takePage(cursor, qk string) *stream {
 	ps := e.pages[cursor]
 	if ps != nil {
 		delete(e.pages, cursor)
+		e.savedPageBytes.Add(-ps.bytes)
 	}
 	e.mu.Unlock()
 	switch {
@@ -323,17 +567,58 @@ func (e *Engine) takePage(cursor, qk string) *stream {
 	return ps.s
 }
 
-// evictPage drops the least recently used saved page stream and reports
-// whether there was one.
+// expiredPagesLocked removes and returns the saved page streams unused for
+// StateTTL. e.mu is held.
+func (e *Engine) expiredPagesLocked(now time.Time) []*pageState {
+	var gone []*pageState
+	for c, ps := range e.pages {
+		if now.Sub(ps.used) > StateTTL {
+			delete(e.pages, c)
+			e.savedPageBytes.Add(-ps.bytes)
+			gone = append(gone, ps)
+		}
+	}
+	return gone
+}
+
+// sweepPages drops the saved page streams unused for StateTTL (abandoned
+// listings'): on every search page, when the pool is full, and from a
+// timer while any are saved.
+func (e *Engine) sweepPages() {
+	e.mu.Lock()
+	gone := e.expiredPagesLocked(e.o.Clock())
+	e.mu.Unlock()
+	for _, g := range gone {
+		g.s.discard()
+	}
+}
+
+// pageTimerFired sweeps, and runs again while page streams are saved.
+func (e *Engine) pageTimerFired() {
+	e.sweepPages()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pageTimer = nil
+	if len(e.pages) > 0 {
+		e.pageTimer = time.AfterFunc(StateTTL/2, e.pageTimerFired)
+	}
+}
+
+// evictPage drops the saved page streams that expired, or else the least
+// recently used one, and reports whether there was one.
 func (e *Engine) evictPage() bool {
 	e.mu.Lock()
-	old := e.oldestPageLocked()
-	e.mu.Unlock()
-	if old == nil {
-		return false
+	gone := e.expiredPagesLocked(e.o.Clock())
+	if len(gone) == 0 {
+		if old := e.oldestPageLocked(); old != nil {
+			gone = append(gone, old)
+		}
 	}
-	old.s.discard()
-	return true
+	e.mu.Unlock()
+	for _, g := range gone {
+		g.s.discard()
+	}
+	return len(gone) > 0
 }
 
 // oldestPageLocked removes and returns the least recently used saved page
@@ -348,6 +633,7 @@ func (e *Engine) oldestPageLocked() *pageState {
 	}
 	if old != nil {
 		delete(e.pages, oc)
+		e.savedPageBytes.Add(-old.bytes)
 	}
 	return old
 }
