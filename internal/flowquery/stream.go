@@ -4,7 +4,9 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"math"
 	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,10 +37,16 @@ import (
 //
 // What it keeps is bounded: the rows it holds are charged to the engine's
 // pool (decision 51's shared budget), and it decodes in the workers' own
-// buffers. A window whose blocks overlap so much
-// in flow time that the pool can't hold them (or a pool other queries have
-// filled) makes it carry on from the last record it gave with Search's pages,
-// which hold at most a page.
+// buffers. Past half the pool (a block holding a few rows that end far from
+// the rest, so it can't be given back until the bound reaches them, while
+// every later block comes in) it trims: it keeps each block's rows up to an
+// end-time horizon chosen to fit a quarter of the pool, drops the rest with
+// the key to resume at, and reads such a block again when the merge reaches
+// that key, keeping only its rows from there on. So a block is read about
+// twice at most when a few of its rows end far from the others, not once per
+// page as a fall back to Search's pages read it. Only when the blocks waiting
+// to be read again can't fit (their bookkeeping alone) does it carry on from
+// the last record it gave with Search's pages.
 func (e *Engine) Stream(ctx context.Context, q Query, asc bool, fn func(h *Hit) error) error {
 	s := &stream{e: e, asc: asc, fn: fn}
 	err := s.run(ctx, q)
@@ -52,7 +60,7 @@ func (e *Engine) Stream(ctx context.Context, q Query, asc bool, fn func(h *Hit) 
 // streamPage is the page size Stream falls back to (the CLI's).
 const streamPage = 5000
 
-// errStreamFull is the pool refusing another held block.
+// errStreamFull is the stream still over its budget after trimming.
 var errStreamFull = errors.New("flows: stream: pool full")
 
 // heldBlock is one block's matching rows, sorted in result order and packed.
@@ -66,9 +74,21 @@ type heldBlock struct {
 	ends     []int64         // their effective ends
 	next     int
 	cost     int64 // pool bytes for rows, ends and raw
+
+	// A trimmed block's rows past rows[len-1] were dropped: when the merge
+	// reaches resume (its first dropped row's end and row), the block is read
+	// again from src. Not for raw sets.
+	src     *segRef // the segment, its footer as snap (read again without reading the footer)
+	resume  bool
+	rEnd    int64
+	rRow    int
+	resCost int64 // pool bytes for the bookkeeping while it waits
 }
 
 func (h *heldBlock) key() hitKey {
+	if h.next == len(h.rows) {
+		return hitKey{End: h.rEnd, Dev: h.dev, Rel: h.rel, Block: h.block, Row: h.rRow}
+	}
 	return hitKey{End: h.ends[h.next], Dev: h.dev, Rel: h.rel, Block: h.block, Row: h.rows[h.next]}
 }
 
@@ -109,6 +129,24 @@ type stream struct {
 	mu   sync.Mutex
 	free []freePacked // packed buffers to reuse, still charged
 	held atomic.Int64 // blocks read and not yet given back
+
+	used   atomic.Int64 // the stream's pool bytes
+	budget int64        // past it, the stream trims (half the pool)
+
+	// The reader's window and filter (set before its first wave), for
+	// blocks read again.
+	f        *Filter
+	from, to int64
+
+	// Segments with trimmed blocks waiting (the merge's own): their readers,
+	// opened from the footer on first use, and how many blocks wait.
+	again map[*flowseg.Footer]*againSeg
+}
+
+type againSeg struct {
+	r     *flowseg.Reader
+	waits int
+	cost  int64 // the footer's pool bytes
 }
 
 type freePacked struct {
@@ -121,18 +159,25 @@ type freePacked struct {
 // caller writing the rows is slower than half the workers decoding them.
 func (e *Engine) streamWave() int { return max(e.o.Workers/2, 1) }
 
-// reserve takes n bytes from the pool. Past the stream's first held block, a
-// pool that can't make room refuses (the first is always charged, as a
-// plan's first segment is).
+// reserve charges n bytes to the pool, past its cap if it must (the
+// consumer trims back under the budget after each wave).
 func (s *stream) reserve(n int64) bool {
-	if n <= 0 || s.e.pool.reserve(n) {
+	if n <= 0 {
 		return true
 	}
-	if s.held.Load() > 1 {
-		return false
+	if !s.e.pool.reserve(n) {
+		s.e.pool.used.Add(n)
 	}
-	s.e.pool.used.Add(n)
+	s.used.Add(n)
 	return true
+}
+
+// release returns n bytes reserve took.
+func (s *stream) release(n int64) {
+	if n != 0 {
+		s.e.pool.release(n)
+		s.used.Add(-n)
+	}
 }
 
 // getPacked is a packed buffer and its charge.
@@ -150,9 +195,15 @@ func (s *stream) getPacked() (*flowseg.Packed, int64) {
 // put gives a held block back: its rows' pool bytes, and its packed buffer
 // for reuse (a wave's worth kept, charged; the rest dropped).
 func (s *stream) put(h *heldBlock) {
-	s.e.pool.release(h.cost)
+	s.release(h.cost)
 	h.cost, h.raw = 0, nil
 	s.held.Add(-1)
+	s.unwait(h)
+	s.putPacked(h)
+}
+
+// putPacked gives back h's packed rows (h stays, without them).
+func (s *stream) putPacked(h *heldBlock) {
 	if h.pk == nil {
 		return
 	}
@@ -160,20 +211,71 @@ func (s *stream) put(h *heldBlock) {
 	if len(s.free) < s.e.streamWave() {
 		s.free = append(s.free, freePacked{h.pk, h.pkCost})
 	} else {
-		s.e.pool.release(h.pkCost)
+		s.release(h.pkCost)
 	}
 	s.mu.Unlock()
 	h.pk, h.pkCost = nil, 0
 }
 
-// close returns the free buffers' charge.
+// wait records that trimmed block h waits to be read again.
+func (s *stream) wait(h *heldBlock) {
+	if h.resume {
+		return
+	}
+	h.resume = true
+	h.resCost = heldWaitCost
+	s.reserve(h.resCost)
+	if s.again == nil {
+		s.again = map[*flowseg.Footer]*againSeg{}
+	}
+	a := s.again[h.src.snap]
+	if a == nil {
+		f := h.src.snap
+		a = &againSeg{cost: int64(len(f.Blocks))*entryCost + int64(len(f.RawChunks))*rawCost}
+		s.reserve(a.cost)
+		s.again[h.src.snap] = a
+	}
+	a.waits++
+}
+
+// unwait undoes wait (h read again, or given back).
+func (s *stream) unwait(h *heldBlock) {
+	if !h.resume {
+		return
+	}
+	h.resume = false
+	s.release(h.resCost)
+	h.resCost = 0
+	if a := s.again[h.src.snap]; a != nil {
+		if a.waits--; a.waits <= 0 {
+			if a.r != nil {
+				a.r.Close()
+			}
+			s.release(a.cost)
+			delete(s.again, h.src.snap)
+		}
+	}
+}
+
+// heldWaitCost is a waiting block's bookkeeping, about.
+const heldWaitCost = 256
+
+// close returns the free buffers' charge and closes the readers of blocks
+// that waited.
 func (s *stream) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, f := range s.free {
-		s.e.pool.release(f.cost)
+		s.release(f.cost)
 	}
 	s.free = nil
+	for k, a := range s.again {
+		if a.r != nil {
+			a.r.Close()
+		}
+		s.release(a.cost)
+		delete(s.again, k)
+	}
 }
 
 // run streams the window; errStreamFull when the pool can't hold what it must.
@@ -190,6 +292,7 @@ func (s *stream) run(ctx context.Context, q Query) error {
 		s.read(rctx, q, waves)
 	}()
 	h := &heldHeap{asc: s.asc}
+	s.budget = s.e.pool.cap / 2
 	finish := func(err error) error {
 		cancel()
 		for w := range waves { // the reader stops at its next wave
@@ -218,9 +321,22 @@ func (s *stream) run(ctx context.Context, q Query) error {
 		}
 		for h.Len() > 0 {
 			top := h.h[0]
-			end := top.ends[top.next]
+			k := top.key()
+			end := k.End
 			if w.more && ((!s.asc && end <= w.bound) || (s.asc && end >= w.bound)) {
 				break // something unread may still come first
+			}
+			if top.next == len(top.rows) { // a trimmed block's turn: read it again
+				if err := s.readAgain(ctx, top); err != nil {
+					return finish(err)
+				}
+				if len(top.rows) == 0 {
+					heap.Pop(h)
+					s.put(top)
+				} else {
+					heap.Fix(h, 0)
+				}
+				continue
 			}
 			row := top.rows[top.next]
 			hit.DeviceID, hit.Rel, hit.Block, hit.Row = top.dev, top.rel, top.block, row
@@ -233,15 +349,26 @@ func (s *stream) run(ctx context.Context, q Query) error {
 				return finish(err)
 			}
 			s.last, s.emitted = hitKey{End: end, Dev: top.dev, Rel: top.rel, Block: top.block, Row: row}, true
-			if top.next++; top.next == len(top.rows) {
+			switch top.next++; {
+			case top.next < len(top.rows):
+				heap.Fix(h, 0)
+			case top.resume:
+				s.putPacked(top) // its kept rows are given; it waits at its resume key
+				s.release(top.cost)
+				top.cost, top.rows, top.ends, top.next = 0, nil, nil, 0
+				heap.Fix(h, 0)
+			default:
 				heap.Pop(h)
 				s.put(top)
-			} else {
-				heap.Fix(h, 0)
 			}
 		}
 		if !w.more && h.Len() == 0 {
 			break
+		}
+		if s.used.Load() > s.budget {
+			if err := s.trim(h); err != nil {
+				return finish(err)
+			}
 		}
 		s.e.gcNudge() // a big pool share: keep the garbage from growing the heap past it
 	}
@@ -271,6 +398,7 @@ func (s *stream) read(ctx context.Context, q Query, waves chan<- wave) {
 	rd := newReaders(p)
 	defer rd.close()
 	f := q.filter()
+	s.f, s.from, s.to = f, p.from, p.to
 	for {
 		blocks := p.take(ctx, rd, e.streamWave())
 		if len(blocks) == 0 {
@@ -434,30 +562,44 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 			return x, re, nil
 		}
 	}
-	blk, rec := &sl.blk, &sl.rec
+	blk := &sl.blk
 	s.e.streamDecodes.Add(1)
 	if err := r.Decode(b.block, flowseg.ColAll, blk); err != nil {
 		return fail(err)
 	}
+	x.src = &segRef{DeviceID: seg.DeviceID, Rel: seg.Rel, Path: seg.Path, snap: r.Footer()}
+	re = s.selectRows(blk, &sl.rec, f, p.from, p.to, re)
+	s.packRows(x, blk, re)
+	return x, re, nil
+}
+
+// selectRows is a decoded block's rows in the window that pass f, sorted in
+// the result order (re is scratch).
+func (s *stream) selectRows(blk *flowseg.Block, rec *flow.Record, f *Filter, from, to int64, re []rowEnd) []rowEnd {
 	re = re[:0]
 	if f.Empty() { // the times alone decide
 		for row := 0; row < blk.Rows; row++ {
-			if st, en := blk.EffectiveTimes(row); en >= p.from && st < p.to {
+			if st, en := blk.EffectiveTimes(row); en >= from && st < to {
 				re = append(re, rowEnd{en, row})
 			}
 		}
 	} else {
 		for row := 0; row < blk.Rows; row++ {
 			blk.Record(row, rec)
-			if st, en := flowseg.EffectiveTimes(rec); en >= p.from && st < p.to && f.Match(rec) {
+			if st, en := flowseg.EffectiveTimes(rec); en >= from && st < to && f.Match(rec) {
 				re = append(re, rowEnd{en, row})
 			}
 		}
 	}
-	if len(re) == 0 {
-		return x, re, nil
-	}
 	slices.SortFunc(re, s.cmpRow)
+	return re
+}
+
+// packRows makes re (sorted) x's rows, packed from blk, and charges them.
+func (s *stream) packRows(x *heldBlock, blk *flowseg.Block, re []rowEnd) {
+	if len(re) == 0 {
+		return
+	}
 	pk, pkCost := s.getPacked()
 	x.pk, x.pkCost = pk, pkCost
 	pk.Reset(blk)
@@ -467,17 +609,181 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 		pk.Add(blk, re[i].row)
 	}
 	if d := pk.Bytes() - pkCost; d > 0 {
-		if !s.reserve(d) {
-			return fail(errStreamFull)
-		}
+		s.reserve(d)
 		x.pkCost += d
 	}
-	n := int64(len(re)) * 16
-	if !s.reserve(n) {
-		return fail(errStreamFull)
+	x.cost = int64(len(re)) * 16
+	s.reserve(x.cost)
+}
+
+// readAgain reads a trimmed block again when the merge reaches its resume
+// key, and keeps its rows from that key on.
+func (s *stream) readAgain(ctx context.Context, x *heldBlock) error {
+	a := s.again[x.src.snap]
+	if a.r == nil {
+		r, err := flowseg.OpenSnapshot(x.src.Path, x.src.snap) // the footer read before; only the block is read
+		if err != nil {
+			s.e.o.Logger.Warn("flows: a block couldn't be read again; its rest is skipped", "file", x.rel, "err", err)
+			s.unwait(x)
+			return nil
+		}
+		a.r = r
 	}
-	x.cost = n
-	return x, re, nil
+	var sl *slot
+	select {
+	case sl = <-s.e.slots:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { s.e.slots <- sl }()
+	s.e.streamDecodes.Add(1)
+	s.e.streamRereads.Add(1)
+	from := rowEnd{x.rEnd, x.rRow}
+	if err := a.r.Decode(x.block, flowseg.ColAll, &sl.blk); err != nil {
+		s.e.o.Logger.Warn("flows: a block couldn't be read again; its rest is skipped", "file", x.rel, "block", x.block, "err", err)
+		s.unwait(x)
+		return nil
+	}
+	re := s.selectRows(&sl.blk, &sl.rec, s.f, s.from, s.to, nil)
+	i, _ := slices.BinarySearchFunc(re, from, s.cmpRow)
+	s.unwait(x)
+	s.packRows(x, &sl.blk, re[i:])
+	x.next = 0
+	return nil
+}
+
+// trim keeps each held block's rows up to the end-time horizon that fits
+// a quarter of the pool, drops the rest (a block keeps the key to resume
+// at; see Stream), and is errStreamFull if what's left is still over the
+// budget.
+func (s *stream) trim(h *heldHeap) error {
+	type cand struct {
+		x     *heldBlock
+		per   int64 // bytes a row, about
+		dense int64 // where its dense run of ends starts (see below)
+	}
+	var cs []cand
+	var fixed int64 // what trimming can't drop
+	lo, hi := int64(math.MaxInt64), int64(math.MinInt64)
+	for _, x := range h.h {
+		if x.pk == nil || x.next >= len(x.rows) {
+			fixed += x.cost + x.pkCost + x.resCost
+			continue
+		}
+		cs = append(cs, cand{x: x, per: (x.pkCost+x.cost)/int64(len(x.rows)) + 1})
+		a, b := x.ends[x.next], x.ends[len(x.ends)-1]
+		lo, hi = min(lo, a, b), max(hi, a, b)
+	}
+	if len(cs) > 0 {
+		// The horizon t: ascending, rows ending at or before it are kept;
+		// descending, at or after it. t = lo+d (hi-d descending) keeps more
+		// as d grows: take the largest d that fits the target.
+		horizon := func(d int64) int64 {
+			if s.asc {
+				return lo + d
+			}
+			return hi - d
+		}
+		within := func(end, t int64) bool {
+			if s.asc {
+				return end <= t
+			}
+			return end >= t
+		}
+		cut := func(x *heldBlock, t int64) int {
+			return x.next + sort.Search(len(x.rows)-x.next, func(i int) bool { return !within(x.ends[x.next+i], t) })
+		}
+		// A block read early for a few rows that end far before the rest
+		// (the rest a dense run, a block's usual seconds of spread) keeps
+		// those few past the horizon and drops only the dense run, so it's
+		// read again once, when the merge reaches the run, not once per
+		// horizon (and a block trimmed before keeps all it kept). The run
+		// starts within twice the middle half's spread (and 2 s) of the
+		// median end.
+		for i := range cs {
+			x := cs[i].x
+			n := len(x.rows) - x.next
+			q1, q2, q3 := x.ends[x.next+n/4], x.ends[x.next+n/2], x.ends[x.next+3*n/4]
+			spread := 2*max(q3-q1, q1-q3) + 2000
+			if s.asc {
+				cs[i].dense = q2 - spread - 1
+			} else {
+				cs[i].dense = q2 + spread + 1
+			}
+		}
+		protect := true
+		horizonOf := func(c *cand, t int64) int64 {
+			switch {
+			case !protect:
+				return t
+			case c.x.resume && s.asc: // trimmed before: what it kept are the few rows
+				return math.MaxInt64
+			case c.x.resume:
+				return math.MinInt64
+			case s.asc:
+				return max(t, c.dense)
+			}
+			return min(t, c.dense)
+		}
+		kept := func(t int64) int64 {
+			n := fixed
+			for i := range cs {
+				n += int64(cut(cs[i].x, horizonOf(&cs[i], t))-cs[i].x.next) * cs[i].per
+			}
+			return n
+		}
+		target := s.budget / 2
+		if kept(horizon(0)) > target {
+			protect = false // the few rows aren't few: the horizon alone
+		}
+		d0, d1 := int64(0), hi-lo // the answer is in [d0, d1]
+		for d0 < d1 {
+			mid := d0 + (d1-d0+1)/2
+			if kept(horizon(mid)) <= target {
+				d0 = mid
+			} else {
+				d1 = mid - 1
+			}
+		}
+		t := horizon(d0)
+		for i := range cs {
+			c := &cs[i]
+			x := c.x
+			k := cut(x, horizonOf(c, t))
+			if k == len(x.rows) && x.next == 0 {
+				continue // all within the horizon, and nothing given yet
+			}
+			// What's kept is copied out (a block mostly given keeps only its
+			// rest), and what's past the horizon dropped, to read again.
+			if k < len(x.rows) {
+				s.e.streamTrims.Add(1)
+				x.rEnd, x.rRow = x.ends[k], x.rows[k]
+			}
+			n := k - x.next
+			var pk *flowseg.Packed
+			if n > 0 {
+				pk = &flowseg.Packed{}
+				x.pk.Take(n, pk)
+			}
+			trimmed := k < len(x.rows)
+			s.putPacked(x)
+			s.release(x.cost)
+			x.rows, x.ends = slices.Clone(x.rows[x.next:k]), slices.Clone(x.ends[x.next:k])
+			x.next, x.cost = 0, int64(n)*16
+			s.reserve(x.cost)
+			if pk != nil {
+				x.pk, x.pkCost = pk, pk.Bytes()
+				s.reserve(x.pkCost)
+			}
+			if trimmed {
+				s.wait(x)
+			}
+		}
+	}
+	if s.used.Load() > s.budget {
+		return errStreamFull
+	}
+	return nil
 }
 
 // cmpRow orders one block's rows: by end (descending unless asc), then row.

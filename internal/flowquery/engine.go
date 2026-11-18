@@ -80,6 +80,8 @@ type Engine struct {
 
 	// Stream's blocks decoded and its falls back to pages (tests).
 	streamDecodes, streamFallbacks atomic.Int64
+	// Stream's blocks trimmed and read again (tests).
+	streamTrims, streamRereads atomic.Int64
 	// fillHook runs as a search page's second pass starts (tests).
 	fillHook func()
 

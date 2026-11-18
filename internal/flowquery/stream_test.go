@@ -300,3 +300,120 @@ func BenchmarkFlowListing(b *testing.B) {
 		})
 	}
 }
+
+// outlierStore writes hours one-exporter segments of blocks of rows records
+// (one a second, received 1 ms apart), a hundredth of them ending up to
+// spanSec before they were received (an idle flow exported late), the rest
+// within 2 s: every block's end range reaches far back, so a merge reads
+// most blocks long before the bound reaches most of their rows. It returns
+// the engine (pool poolBytes), the window, the record count, and the
+// segments' bytes.
+func outlierStore(t *testing.T, hours, blocks, rows, spanSec int, poolBytes int64) (*Engine, Query, int, int64) {
+	t.Helper()
+	dir := t.TempDir()
+	idx, err := index.Open(filepath.Join(dir, index.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	dev := "192.0.2.20"
+	fdir := filepath.Join(dir, "logs", dev, "flows")
+	if err := os.MkdirAll(fdir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	h0 := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	rng := rand.New(rand.NewPCG(8, 9))
+	var size int64
+	n := 0
+	for hr := 0; hr < hours; hr++ {
+		hour := h0.Add(time.Duration(hr) * time.Hour)
+		name := flowseg.NameFor(hour)
+		path := filepath.Join(fdir, name.String())
+		w, err := flowseg.Create(path, dev, hour, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for b := 0; b < blocks; b++ {
+			for i := 0; i < rows; i++ {
+				ms := hour.UnixMilli() + int64(b)*1000 + int64(i)*1000/int64(rows)
+				end := ms - rng.Int64N(2000)
+				if rng.IntN(100) == 0 {
+					end = ms - rng.Int64N(int64(spanSec)*1000)
+				}
+				r := flow.Record{Has: flow.HasStart | flow.HasEnd | flow.HasSrc | flow.HasDst | flow.HasBytes | flow.HasSrcAS,
+					Received: ms, End: end, Start: end - rng.Int64N(30000), Src: netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)}),
+					Dst: netip.MustParseAddr("198.51.100.7"), Bytes: uint64(i), SrcAS: uint32(n)}
+				if err := w.Append(&r); err != nil {
+					t.Fatal(err)
+				}
+				n++
+			}
+			if err := w.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		foot, err := w.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		size += w.Size()
+		ff := index.FlowFile{DeviceID: dev, Name: name, Rel: "logs/" + dev + "/flows/" + name.String(), Path: path}
+		fr := index.FlowRowsOf(ff, foot, w.Size(), true)
+		if err := idx.Apply(bg, index.Batch{Files: []index.FileOp{{Kind: index.OpUpsert, File: fr.File, Flow: &fr.Segment}},
+			FlowMinutes: fr.Minutes}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := New(Options{DataDir: dir, Index: idx, Workers: 4, PoolBytes: poolBytes})
+	return e, Query{From: h0.Add(-time.Hour), To: h0.Add(time.Duration(hours+1) * time.Hour)}, n, size
+}
+
+// A full listing reads each block about once whatever the window's length,
+// the segments' size or how far a few rows end from the rest (the lab's
+// 250 M-record listing read 140 times its data and slowed as it went: blocks
+// with a few rows ending far back filled the pool, and the fall back to
+// Search's pages read every such block again for every page). With a pool
+// too small for the rows waiting (about 7 MiB here, ascending; the pool 4
+// MiB, so the stream's budget 2 MiB), Stream trims instead (keeping the few rows, dropping the dense run, reading it again
+// once): every record once and in order, the same records as with a big
+// pool, at most about twice the segments' bytes read, and no fall back.
+func TestStreamReadsEachBlockAboutOnce(t *testing.T) {
+	const hours, blocks, rows, span = 2, 300, 1000, 120
+	small, q, n, size := outlierStore(t, hours, blocks, rows, span, 4<<20)
+	big := New(Options{DataDir: small.o.DataDir, Index: small.o.Index, Workers: 4})
+	for _, asc := range []bool{true, false} {
+		what := fmt.Sprintf("asc %v", asc)
+		read0, dec0, tr0, rr0 := flowseg.ReadBytes(), small.streamDecodes.Load(), small.streamTrims.Load(), small.streamRereads.Load()
+		got := streamAll(t, small, q, asc)
+		read, dec := flowseg.ReadBytes()-read0, small.streamDecodes.Load()-dec0
+		if len(got) != n {
+			t.Fatalf("%s: %d of %d records", what, len(got), n)
+		}
+		seen := make([]bool, n)
+		for i := range got {
+			if as := got[i].Record.SrcAS; seen[as] {
+				t.Fatalf("%s: record %d twice", what, as)
+			} else {
+				seen[as] = true
+			}
+			if i > 0 && !keyOfHit(&got[i-1]).before(keyOfHit(&got[i]), asc) {
+				t.Fatalf("%s: out of order at %d", what, i)
+			}
+		}
+		t.Logf("%s: read %.2f× the segments' bytes, %d decodes of %d blocks, %d trims, %d read again", what, float64(read)/float64(size),
+			dec, hours*blocks, small.streamTrims.Load()-tr0, small.streamRereads.Load()-rr0)
+		if small.streamFallbacks.Load() != 0 {
+			t.Fatalf("%s: fell back to pages", what)
+		}
+		if asc && small.streamTrims.Load() == tr0 {
+			t.Fatalf("%s: never trimmed (the pool should be too small)", what)
+		}
+		if read > size*22/10 || dec > int64(hours*blocks)*22/10 {
+			t.Fatalf("%s: read %d bytes of %d (%.2f×), %d decodes of %d blocks", what, read, size, float64(read)/float64(size), dec, hours*blocks)
+		}
+		sameHits(t, what+" against a big pool", got, streamAll(t, big, q, asc))
+		if small.pool.Used() != 0 {
+			t.Fatalf("%s: %d bytes left charged", what, small.pool.Used())
+		}
+	}
+}
