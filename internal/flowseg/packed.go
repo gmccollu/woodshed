@@ -230,3 +230,21 @@ func (p *Packed) Next(r *flow.Record) {
 	p.pos = len(p.data) - len(d)
 	p.read++
 }
+
+// Take moves p's next n unread rows into dst (emptied first; p's buffers
+// aren't shared with it) and leaves p after them, for a caller that keeps
+// a few of a block's rows and drops the rest.
+func (p *Packed) Take(n int, dst *Packed) {
+	n = min(n, p.n-p.read)
+	start := p.pos
+	var r flow.Record
+	for range n {
+		p.Next(&r)
+	}
+	dst.cols, dst.base, dst.templates, dst.hasExt = p.cols, p.base, p.templates, p.hasExt
+	dst.data = append(dst.data[:0], p.data[start:p.pos]...)
+	clear(dst.strs)
+	dst.strs = append(dst.strs[:0], p.strs...)
+	clear(dst.strIdx)
+	dst.pos, dst.n, dst.read = 0, n, 0
+}

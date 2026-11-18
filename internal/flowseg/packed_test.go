@@ -51,13 +51,26 @@ func TestPackedMatchesRecord(t *testing.T) {
 							t.Fatalf("cols %x block %d row %d: times %d %d, want %d %d", cols, bi, row, gs, ge, ws, we)
 						}
 					}
-					for _, row := range rows {
-						b.Record(row, &want)
-						p.Next(&got)
-						if !reflect.DeepEqual(want, got) {
-							t.Fatalf("cols %x block %d row %d:\n got %+v\nwant %+v", cols, bi, row, got, want)
+					// The first third read, the next third moved to q (Take), the
+					// rest read from p after it: every row as Record gives it.
+					var q Packed
+					k := len(rows) / 3
+					check := func(pk *Packed, rs []int, what string) {
+						for _, row := range rs {
+							b.Record(row, &want)
+							pk.Next(&got)
+							if !reflect.DeepEqual(want, got) {
+								t.Fatalf("%s: cols %x block %d row %d:\n got %+v\nwant %+v", what, cols, bi, row, got, want)
+							}
 						}
 					}
+					check(&p, rows[:k], "read")
+					p.Take(k, &q)
+					if q.Len() != k {
+						t.Fatalf("took %d of %d", q.Len(), k)
+					}
+					check(&q, rows[k:2*k], "taken")
+					check(&p, rows[2*k:], "after the take")
 					if p.Bytes() <= 0 && len(rows) > 0 {
 						t.Fatal("no bytes")
 					}

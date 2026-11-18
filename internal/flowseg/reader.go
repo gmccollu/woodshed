@@ -4,6 +4,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
@@ -12,21 +13,40 @@ import (
 // Reader reads a segment: its footer (or a writer's snapshot) and blocks.
 // Safe for concurrent use: queries decode different blocks in parallel.
 type Reader struct {
-	f    *os.File
+	f    *countedFile
 	size int64
 	h    header
 	foot *Footer
 	mu   sync.Mutex // guards lazy loading of blocks' index
 }
 
+// readBytes counts the bytes every Reader has read from its file (ReadBytes).
+var readBytes atomic.Int64
+
+// ReadBytes is how many bytes Readers have read from segment files since the
+// process started: footers, block headers, blocks, raw sets and the scans of
+// segments without a footer. Queries' benches and tests use it to check how
+// often each block is read.
+func ReadBytes() int64 { return readBytes.Load() }
+
+// countedFile is a segment file whose reads count in ReadBytes.
+type countedFile struct{ *os.File }
+
+func (c *countedFile) ReadAt(p []byte, off int64) (int, error) {
+	n, err := c.File.ReadAt(p, off)
+	readBytes.Add(int64(n))
+	return n, err
+}
+
 // Open opens a closed segment. It returns ErrNoFooter for one still being
 // written or left by a crash (Recover closes it), ErrBadHeader for a file that
 // isn't a segment.
 func Open(path string) (*Reader, error) {
-	f, err := logfile.OpenFile(path) // shared: the store may delete it while it's read (Windows)
+	of, err := logfile.OpenFile(path) // shared: the store may delete it while it's read (Windows)
 	if err != nil {
 		return nil, err
 	}
+	f := &countedFile{of}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -54,10 +74,11 @@ func Open(path string) (*Reader, error) {
 // snapshot never lists a section that isn't complete on disk). Its blocks'
 // index is loaded on first use (Block).
 func OpenSnapshot(path string, snap *Footer) (*Reader, error) {
-	f, err := logfile.OpenFile(path)
+	of, err := logfile.OpenFile(path)
 	if err != nil {
 		return nil, err
 	}
+	f := &countedFile{of}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -196,10 +217,11 @@ func (r *Reader) Raw(fn func(*flow.RawSet) bool) error {
 // CLI beside the service); inside the writer's process, OpenSnapshot is
 // cheaper. Blocks' index loads on first use (Block).
 func OpenLive(path string) (*Reader, error) {
-	f, err := logfile.OpenFile(path)
+	of, err := logfile.OpenFile(path)
 	if err != nil {
 		return nil, err
 	}
+	f := &countedFile{of}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
