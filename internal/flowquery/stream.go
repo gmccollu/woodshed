@@ -464,6 +464,12 @@ func (s *stream) nextWave(ctx context.Context, p *plan, rd *readers, n int) (w w
 	}
 	w.held = held
 	w.bound, w.more = p.bound(ctx)
+	if p.err != nil { // the index failed as the plan read on: not the end of the window
+		for _, x := range held {
+			s.put(x)
+		}
+		return wave{err: p.err}, false
+	}
 	return w, true
 }
 

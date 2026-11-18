@@ -220,6 +220,9 @@ func (s *stream) page(ctx context.Context, q *Query, qk string, limit int, start
 		}
 		res.Cursor = encodeCursor(k, qk, q)
 	}
+	if err := s.p.err; err != nil { // an index read failed as the page went on: its bounds, and its end, aren't true
+		return SearchResult{}, false, err
+	}
 	ownExtras(res.Hits)
 	return res, exhausted, nil
 }
