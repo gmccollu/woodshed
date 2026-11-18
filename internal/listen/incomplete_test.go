@@ -11,15 +11,18 @@ import (
 	"github.com/gmccollu/woodshed/internal/model"
 )
 
-// waitInFrame waits until a connection in s's pool has a message in progress: its
-// bytes are in the server's reader, so a reset sent now can't discard them.
-func waitInFrame(t *testing.T, s *Server) {
+// waitInFrame waits until the server's end of cn has a message in progress: its
+// bytes are in the server's reader, so a reset or a cut now can't discard them.
+// Only cn's own connection counts: an earlier one the server has closed stays
+// in the pool, in its frame, until its goroutine untracks it.
+func waitInFrame(t *testing.T, s *Server, cn net.Conn) {
 	t.Helper()
+	local := cn.LocalAddr().String()
 	waitFor(t, "a message in progress", func() bool {
 		s.pool.mu.Lock()
 		defer s.pool.mu.Unlock()
 		for c := range s.pool.conns {
-			if c.inFrame.Load() {
+			if c.raw.RemoteAddr().String() == local && c.inFrame.Load() {
 				return true
 			}
 		}
@@ -76,7 +79,7 @@ func TestTCPIncompleteFrames(t *testing.T) {
 			t.Fatal(err)
 		}
 		if reset {
-			waitInFrame(t, s)
+			waitInFrame(t, s, cn)
 			cn.SetLinger(0) // the close sends a reset
 		}
 		cn.Close()
@@ -168,7 +171,7 @@ func TestTCPIncompleteOurCut(t *testing.T) {
 	}
 	defer cn2.Close()
 	cn2.Write([]byte("40 <13>at shutdown"))
-	waitInFrame(t, s)
+	waitInFrame(t, s, cn2)
 	s.Close() // no sink call after Close returns
 	got := c.wait(t, 3)
 	checkMsg(t, "shutdown", got[2], wantMsg{raw: "<13>at shutdown", inc: true, arrived: 15, length: 40})
@@ -189,7 +192,7 @@ func TestTCPIncompleteEvicted(t *testing.T) {
 	defer a.Close()
 	connected := time.Now()
 	a.Write([]byte("40 <13>evict me"))
-	waitInFrame(t, s)
+	waitInFrame(t, s, a)
 	waitFor(t, "A to be idle long enough to evict", func() bool { return time.Since(connected) > 3*evictIdle })
 	b, err := net.Dial("tcp", tcpAddr(t, s))
 	if err != nil {
