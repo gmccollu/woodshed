@@ -76,6 +76,9 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   minute in the stats tables). Downgrading to 1.x keeps every syslog, trap and poll file and loses access to flows. A
   2.0.0-rc1 binary can't open a schema-9 index ("newer than this build supports"): after running this version, don't
   go back to rc1 with the same data folder.
+- The first start after upgrading from a 2.0 release candidate builds a new index over the flow minute table (a few
+  seconds on a large flow store) and reads every flow segment's footer once (Events: "flow rows rebuilt …"); later
+  starts don't. The schema stays 9, so a release candidate from rc2 on still opens the index.
 - Each index schema step at startup is logged and recorded in Events (kind `migrate`, so bundles' `woodshed-events.log`
   have it too): "index migrated from schema 8 to 9 in 12 ms". Before, an upgrade logged only "store open took=…". A new
   index logs one "index created" line and no event.

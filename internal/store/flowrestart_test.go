@@ -537,6 +537,108 @@ func TestFlowStaleMarkerErrorLoggedOnce(t *testing.T) {
 		t.Fatalf("logged %d times:\n%s", n, buf.String())
 	}
 	e.s.qMu.Lock()
-	e.s.qOps = nil
+	e.s.qOps, e.s.qMins = nil, 0
 	e.s.qMu.Unlock()
+}
+
+// queuedMinutes checks the queue's minute count against its ops.
+func queuedMinutes(t *testing.T, s *Store) int {
+	t.Helper()
+	s.qMu.Lock()
+	defer s.qMu.Unlock()
+	n := 0
+	for _, op := range s.qOps {
+		n += len(op.FlowMinutes)
+	}
+	if n != s.qMins {
+		t.Fatalf("queue counts %d minute rows, its ops carry %d", s.qMins, n)
+	}
+	return n
+}
+
+// While the index fails, the flow minute rows the queued ops carry stay
+// under their own cap (the oldest ops go, and the stale marker is written);
+// after the index recovers and a restart, the minutes match a rebuild.
+func TestFlowQueuedMinutesCapped(t *testing.T) {
+	old := maxQueuedMinutes
+	maxQueuedMinutes = 25
+	t.Cleanup(func() { maxQueuedMinutes = old })
+	e := newEnv(t, nil)
+	a := ip(7)
+	seq := 0
+	// Each batch's records spread over 11 minutes: a flush's op carries 11
+	// minute rows.
+	write := func(n int) {
+		t.Helper()
+		recs := flowRecs(e.clock.Now(), n, seq)
+		seq += 100
+		for _, r := range recs {
+			r.Start = r.End - 10*time.Minute.Milliseconds()
+		}
+		if err := e.s.WriteFlows(a, FlowBatch{Received: e.clock.Now(), Size: 100, Records: recs}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.clock.Set(restartHour.Add(20 * time.Minute))
+	write(4)
+	if err := e.s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if n := queuedMinutes(t, e.s); n != 0 {
+		t.Fatalf("queued %d after a good flush", n)
+	}
+	marker := filepath.Join(e.dir, index.FlowRowsStaleFile)
+	for i := 0; i < 6; i++ {
+		e.clock.Add(time.Minute)
+		write(3)
+		if err := e.s.flushFlows(e.clock.Now(), false); err != nil {
+			t.Fatal(err)
+		}
+		e.s.qMu.Lock()
+		e.s.qOps = append([]index.FileOp{badOp}, e.s.qOps...) // the index keeps failing
+		e.s.qMu.Unlock()
+		if err := e.s.applyIndex(); err == nil {
+			t.Fatal("index update with the bad op succeeded")
+		}
+		if n := queuedMinutes(t, e.s); n > maxQueuedMinutes {
+			t.Fatalf("pass %d: %d minute rows queued, cap %d", i, n, maxQueuedMinutes)
+		}
+	}
+	if n := queuedMinutes(t, e.s); n == 0 {
+		t.Fatal("nothing queued")
+	}
+	if _, err := os.Lstat(marker); err != nil {
+		t.Fatalf("no marker after dropping ops for the minutes cap: %v", err)
+	}
+	// The index recovers; the hour ends and the close row commits.
+	e.s.qMu.Lock()
+	var keep []index.FileOp
+	for _, op := range e.s.qOps {
+		if op.Kind != badOp.Kind {
+			keep = append(keep, op)
+		}
+	}
+	e.s.qOps = keep
+	e.s.qMu.Unlock()
+	e.clock.Set(restartHour.Add(time.Hour + time.Second))
+	e.maintain()
+	if n := flowRecordsInIndex(t, e.idx, "192.0.2.7"); n >= 22 {
+		t.Fatalf("minutes before the restart: %d records, want fewer than the 22 stored", n)
+	}
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.open()
+	if n := flowRecordsInIndex(t, e.idx, "192.0.2.7"); n != 22 {
+		t.Fatalf("minutes after the restart: %d records, want 22", n)
+	}
+	if _, err := os.Lstat(marker); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("marker after the restart: %v", err)
+	}
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := flowDerived(t, e.idx), reindexed(t, e.dir); got != want {
+		t.Fatalf("rows differ from a rebuild\ngot:\n%s\nrebuild:\n%s", got, want)
+	}
 }

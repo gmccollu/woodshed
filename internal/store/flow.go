@@ -479,6 +479,7 @@ func (s *Store) queueFlowRows(st *flowStream, closed bool, foot *flowseg.Footer)
 	s.qMu.Lock()
 	s.qOps = append(s.qOps, index.FileOp{Kind: index.OpUpsert, File: rows.File, Flow: &rows.Segment,
 		FlowMinutes: index.FlowMinutesOf(st.rel, st.id, mins)})
+	s.qMins += len(mins)
 	s.qMu.Unlock()
 }
 

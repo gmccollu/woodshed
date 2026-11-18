@@ -210,6 +210,7 @@ type Store struct {
 
 	qMu     sync.Mutex
 	qOps    []index.FileOp
+	qMins   int // flow minute rows the ops in qOps carry (FileOp.FlowMinutes)
 	qAct    []index.Activity
 	qEvents []index.Event
 	applyMu sync.Mutex
@@ -1077,6 +1078,9 @@ func (s *Store) event(level index.Level, kind index.Kind, dev, text string) {
 func (s *Store) pushOps(ops ...index.FileOp) {
 	s.qMu.Lock()
 	s.qOps = append(s.qOps, ops...)
+	for i := range ops {
+		s.qMins += len(ops[i].FlowMinutes)
+	}
 	s.qMu.Unlock()
 }
 
@@ -1089,13 +1093,21 @@ func (s *Store) pushOps(ops ...index.FileOp) {
 // footer.
 var maxQueued = 1 << 20
 
+// maxQueuedMinutes bounds the flow minute rows the queued ops carry
+// together (a flush's op carries every minute its block's records spread
+// over, up to flowseg.MaxSpreadMinutes): past it, ops go from the front as
+// for maxQueued. It's the cap queued minutes had before they moved into the
+// ops (about 88 bytes a row).
+var maxQueuedMinutes = 1 << 20
+
 // applyIndex writes the queued file ops, activity and events in one transaction.
 func (s *Store) applyIndex() error {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
 	s.qMu.Lock()
 	b := index.Batch{Files: s.qOps, Activity: s.qAct, Events: s.qEvents}
-	s.qOps, s.qAct, s.qEvents = nil, nil, nil
+	bMins := s.qMins
+	s.qOps, s.qMins, s.qAct, s.qEvents = nil, 0, nil, nil
 	s.qMu.Unlock()
 	if b.Empty() {
 		return nil
@@ -1109,15 +1121,25 @@ func (s *Store) applyIndex() error {
 	s.log.Error("store: index update failed; will retry", "err", err)
 	s.qMu.Lock()
 	s.qOps = append(b.Files, s.qOps...)
+	s.qMins += bMins
 	s.qAct = append(b.Activity, s.qAct...)
 	s.qEvents = append(b.Events, s.qEvents...)
-	lostFlow := false
-	if len(s.qOps) > maxQueued {
-		for _, op := range s.qOps[:len(s.qOps)-maxQueued] {
-			lostFlow = lostFlow || op.Flow != nil || len(op.FlowMinutes) > 0 || op.File.Type == index.TypeFlow
-		}
-		s.qOps = s.qOps[len(s.qOps)-maxQueued:]
+	// Oldest ops go first: past the op cap, then while their minute rows
+	// are over the minutes cap.
+	drop := max(len(s.qOps)-maxQueued, 0)
+	mins := s.qMins
+	for _, op := range s.qOps[:drop] {
+		mins -= len(op.FlowMinutes)
 	}
+	for drop < len(s.qOps) && mins > maxQueuedMinutes {
+		mins -= len(s.qOps[drop].FlowMinutes)
+		drop++
+	}
+	lostFlow := false
+	for _, op := range s.qOps[:drop] {
+		lostFlow = lostFlow || op.Flow != nil || len(op.FlowMinutes) > 0 || op.File.Type == index.TypeFlow
+	}
+	s.qOps, s.qMins = s.qOps[drop:], mins
 	if len(s.qAct) > maxQueued {
 		s.qAct = s.qAct[len(s.qAct)-maxQueued:]
 	}
