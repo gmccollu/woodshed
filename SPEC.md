@@ -1179,8 +1179,12 @@ left room:
 4. The TLS banners show only while the listener is on. `tls_cert_names` (and `cert.missing_names`) apply to
    Woodshed's own certificate only. `tls_firewall` shows only for the installed Windows service: portable mode and
    `woodshed run` have no rule.
-5. The Windows rule's state is read with `netsh advfirewall firewall show rule name=… verbose` (English field
-   names), at most once a minute. Output it can't read (another display language) is `"unknown"`: no banner. `woodshed
+5. The Windows rule's state is read through the firewall's COM API (`HNetCfg.FwPolicy2`: each rule's `Name`,
+   `Enabled`, `LocalPorts`, …, in process; `fwrule.ListRules`), at most once a minute. Nothing it reads is localized,
+   so it's the same in every display language; only a firewall that can't be read is `"unknown"` (no banner). 1.x
+   parsed `netsh advfirewall firewall show rule … verbose`, whose field names and values are translated, so on a
+   non-English Windows every state was unknown and a missing rule was an error: the installers and `woodshed install`
+   never created the rules there. The rules are still changed with netsh, whose commands aren't translated. `woodshed
    tls on` points the rule at the running `woodshed.exe` and creates it (enabled) if it's missing.
 6. `listeners.tls.port` must differ from the TCP and UDP ports on an overlapping address (the same address, or either
    a wildcard) and from `ui.port`. A user's own key must be RSA of at least 2048 bits or ECDSA P-256, P-384 or P-521
@@ -1195,7 +1199,8 @@ left room:
 10. `woodshed send --proto tls` uses port 6514 unless `--port` is given and needs `--ca FILE` (PEM or DER) or
     `--insecure`; `woodshed bench --proto all` includes TLS.
 11. `internal/fwrule` joins §10.2's allowlist of packages that may use process APIs (`os/exec`): it runs only the host
-    firewall's own programs (netsh, ufw, firewall-cmd) and never opens a network connection.
+    firewall's own programs (netsh, ufw, firewall-cmd), reads the Windows rules through the firewall's COM API in
+    process (item 5), and never opens a network connection.
 
 **Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
 - The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.

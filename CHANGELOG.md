@@ -86,6 +86,12 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
 
 ### Fixed
+- Windows in a language other than English: the `tls_firewall`, `snmp_firewall` and `flow_firewall` banners appear
+  again when a rule is off (its state read as unknown before), and the installer and `woodshed install` create the TLS,
+  SNMP and flow rules there (netsh's answer for a missing rule is translated too, so it read as an error: the rules
+  were never made, and `woodshed tls on`, `snmp on` and `flow on` failed when one was missing). Rules are now read
+  through the firewall's COM API, which isn't translated, instead of netsh's output. Present since 1.1 (TLS), 1.2
+  (SNMP) and 2.0's flow rules.
 - An octet-counted TCP or TLS message whose sender closed or reset the connection before its advertised length arrived
   was stored as if it were complete (`50 <13>short` then EOF looked exactly like `9 <13>short`); present since 1.0.
   What arrived is still kept, and now marked incomplete with both lengths: on its stored line

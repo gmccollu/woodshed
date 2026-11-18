@@ -11,12 +11,16 @@ import (
 	"testing"
 )
 
-// fakeWin is a Windows firewall holding at most our one rule.
+// fakeWin is a Windows firewall holding at most our one rule. netsh changes it;
+// list reads it as ListRules (the COM API) would. netsh's own `show rule`
+// answers in German, as on a German Windows (the wording is illustrative), so
+// nothing may depend on it.
 type fakeWin struct {
 	present, enabled bool
 	port, program    string
+	proto            int32
 	calls            []string
-	unreadable       bool // another language
+	unreadable       bool // the firewall can't be read (its service stopped, say)
 }
 
 func (f *fakeWin) run(name string, args ...string) (string, error) {
@@ -33,22 +37,17 @@ func (f *fakeWin) run(name string, args ...string) (string, error) {
 	switch args[2] {
 	case "show":
 		if !f.present {
-			return "\r\nNo rules match the specified criteria.\r\n", errors.New("exit status 1")
+			return "\r\nKeine Regeln entsprechen den angegebenen Kriterien.\r\n", errors.New("exit status 1")
 		}
-		if f.unreadable {
-			return "Nom de la règle: " + RuleName + "\r\nActivé: Oui\r\n", nil
-		}
-		en := "No"
+		en := "Nein"
 		if f.enabled {
-			en = "Yes"
+			en = "Ja"
 		}
-		return "\r\nRule Name:                            " + RuleName + "\r\n" +
-			"----------------------------------------------------------------------\r\n" +
-			"Enabled:                              " + en + "\r\nDirection:                            In\r\n" +
-			"Profiles:                             Domain,Private,Public\r\nLocalPort:                            " + f.port + "\r\n" +
-			"Program:                              " + f.program + "\r\nAction:                               Allow\r\nOk.\r\n", nil
+		return "\r\nRegelname:                            " + RuleName + "\r\nAktiviert:                            " + en +
+			"\r\nLokaler Port:                         " + f.port + "\r\nOK.\r\n", nil
 	case "add":
 		f.present, f.enabled, f.port, f.program = true, kv["enable"] == "yes", kv["localport"], kv["program"]
+		f.proto = map[string]int32{"TCP": 6, "UDP": 17}[kv["protocol"]]
 	case "set":
 		if v, ok := kv["enable"]; ok {
 			f.enabled = v == "yes"
@@ -56,14 +55,47 @@ func (f *fakeWin) run(name string, args ...string) (string, error) {
 		if v, ok := kv["localport"]; ok {
 			f.port = v
 		}
+		if v, ok := kv["program"]; ok {
+			f.program = v
+		}
 	case "delete":
 		f.present = false
 	}
-	return "Ok.", nil
+	return "OK.", nil
+}
+
+// rules is the rule as ListRules returns it, named name: INetFwRule's
+// properties (the values netsh's add sets: dir=in is NET_FW_RULE_DIR_IN,
+// action=allow NET_FW_ACTION_ALLOW, protocol=TCP 6).
+func (f *fakeWin) rules(name string) []WinRule {
+	if !f.present {
+		return nil
+	}
+	return []WinRule{{Name: name, ApplicationName: f.program, Protocol: f.proto, LocalPorts: f.port,
+		Direction: RuleDirIn, Enabled: f.enabled, Action: RuleActionAllow}}
+}
+
+func (f *fakeWin) list(names ...string) ([]WinRule, error) {
+	if f.unreadable {
+		return nil, errors.New("fwrule: INetFwPolicy2.Rules: HRESULT 0x800706D9")
+	}
+	if len(names) == 0 || slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, RuleName) }) {
+		return f.rules(RuleName), nil
+	}
+	return nil, nil
+}
+
+// useRules points ListRules at a fake for the test.
+func useRules(t *testing.T, list func(...string) ([]WinRule, error)) {
+	t.Helper()
+	old := ListRules
+	ListRules = list
+	t.Cleanup(func() { ListRules = old })
 }
 
 func TestWindowsRule(t *testing.T) {
 	f := &fakeWin{}
+	useRules(t, f.list)
 	exe := `C:\Program Files\Woodshed\woodshed.exe`
 	if s := WindowsState(f.run, 6514); s != StateMissing {
 		t.Errorf("no rule: %s", s)
@@ -108,9 +140,68 @@ func TestWindowsRule(t *testing.T) {
 	if err := WindowsEnable(f.run, exe, 6514); err != nil || !f.enabled {
 		t.Errorf("enable without a rule: %v %+v", err, f)
 	}
+	// Nothing reads netsh's output, which is in the display language (here
+	// German: the old parser read every state as unknown and every missing
+	// rule as an error, so the installers never created the rules).
+	for _, c := range f.calls {
+		if strings.Contains(c, " show ") {
+			t.Errorf("ran %q", c)
+		}
+	}
+	// A firewall that can't be read: unknown, and nothing is changed.
 	f.unreadable = true
 	if s := WindowsState(f.run, 6514); s != StateUnknown {
 		t.Errorf("unreadable: %s", s)
+	}
+	f.calls = nil
+	if _, err := WindowsEnsure(f.run, exe); err == nil || !strings.Contains(err.Error(), RuleName) {
+		t.Errorf("ensure, unreadable: %v", err)
+	}
+	if err := WindowsEnable(f.run, exe, 6514); err == nil || len(f.calls) != 0 {
+		t.Errorf("enable, unreadable: %v %v", err, f.calls)
+	}
+}
+
+// The states from rules as the COM API gives them (INetFwRule's properties,
+// https://learn.microsoft.com/en-us/windows/win32/api/netfw/nn-netfw-inetfwrule:
+// LocalPorts is a comma-separated list, Enabled a VARIANT_BOOL). These
+// records are what a German or French Windows returns too: no field is
+// translated.
+func TestWindowsStateFromRules(t *testing.T) {
+	exe := `C:\Program Files\Woodshed\woodshed.exe`
+	on := WinRule{Name: RuleName, ApplicationName: exe, Protocol: 6, LocalPorts: "6514", Direction: RuleDirIn, Enabled: true,
+		Action: RuleActionAllow}
+	off := on
+	off.Enabled = false
+	other := on
+	other.LocalPorts = "7514"
+	list := on
+	list.LocalPorts = "514, 6514"
+	prefix := on
+	prefix.LocalPorts = "65140"
+	for name, c := range map[string]struct {
+		rules []WinRule
+		err   error
+		want  string
+	}{
+		"none":                  {nil, nil, StateMissing},
+		"enabled":               {[]WinRule{on}, nil, StateOK},
+		"disabled":              {[]WinRule{off}, nil, StateDisabled},
+		"other port":            {[]WinRule{other}, nil, StateWrongPort},
+		"a list with the port":  {[]WinRule{list}, nil, StateOK},
+		"a longer port":         {[]WinRule{prefix}, nil, StateWrongPort},
+		"two, one enabled here": {[]WinRule{off, other, on}, nil, StateOK},
+		"two, both disabled":    {[]WinRule{off, off}, nil, StateDisabled},
+		"unreadable":            {nil, errors.New("HRESULT 0x80070005"), StateUnknown},
+	} {
+		var asked []string
+		useRules(t, func(names ...string) ([]WinRule, error) { asked = names; return c.rules, c.err })
+		if got := WindowsState(nil, 6514); got != c.want {
+			t.Errorf("%s: %s, want %s", name, got, c.want)
+		}
+		if !slices.Equal(asked, []string{RuleName}) {
+			t.Errorf("%s: asked for %q", name, asked)
+		}
 	}
 }
 
