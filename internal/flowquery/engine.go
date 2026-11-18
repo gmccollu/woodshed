@@ -17,6 +17,7 @@ import (
 	"runtime/metrics"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,11 +72,36 @@ type Engine struct {
 	o      Options
 	mu     sync.Mutex
 	states map[string]*state
+	pages  map[string]*pageState        // search pages' continuations, by the cursor they were given under (pages.go)
 	rules  atomic.Pointer[[]flow.IEKey] // RuleIDIEs in effect (SetRuleIDIEs)
 	pool   *Pool
 	slots  chan *slot
 
+	// saves counts saved states and page streams (e.mu): their least
+	// recently used order. Not the clock, whose readings tie (Windows'
+	// resolution) and which tests move.
+	saves uint64
+
 	page, batch int // plan sizes, for tests (0: planPage, planBatch)
+
+	// Stream's blocks decoded and its falls back to pages (tests).
+	streamDecodes, streamFallbacks atomic.Int64
+	// Stream's blocks trimmed and read again (tests).
+	streamTrims, streamRereads atomic.Int64
+	// fillHook runs as a search page's second pass starts (tests).
+	fillHook func()
+	// Search pages started as a stream, continued from a saved one, and
+	// served by searchStateless after a stream ran over its budget; saved
+	// streams dropped on resume because the store changed under them; blocks
+	// they read as they resumed (written to open segments since); and rows a
+	// stream left out because they came up behind the last it gave (tests).
+	pageStarts, pageResumes, pageFallbacks, pageRebuilds, pageCatchUps, streamLate atomic.Int64
+	// The saved page streams' pool bytes (pageState.bytes), and the timer
+	// that sweeps them once expired.
+	savedPageBytes atomic.Int64
+	pageTimer      *time.Timer
+	// statelessPages makes every search page searchStateless's (tests).
+	statelessPages bool
 
 	gcMu                  sync.Mutex
 	gcCycles, gcAllocBase uint64
@@ -94,7 +120,7 @@ const (
 var gcSamples = []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}, {Name: "/gc/cycles/total:gc-cycles"}}
 
 func (e *Engine) gcNudge() {
-	if e.pool.Used() < gcNudgePool {
+	if e.pool.Used()-e.savedPageBytes.Load() < gcNudgePool { // saved page streams sit idle: they make no garbage
 		return
 	}
 	e.gcMu.Lock()
@@ -167,7 +193,7 @@ func New(o Options) *Engine {
 	if o.MaxExactKeys <= 0 {
 		o.MaxExactKeys = DefaultExactKeys
 	}
-	e := &Engine{o: o, states: map[string]*state{}, pool: NewPool(o.PoolBytes), slots: make(chan *slot, o.Workers)}
+	e := &Engine{o: o, states: map[string]*state{}, pages: map[string]*pageState{}, pool: NewPool(o.PoolBytes), slots: make(chan *slot, o.Workers)}
 	for range o.Workers {
 		e.slots <- &slot{}
 	}
@@ -296,11 +322,23 @@ func colsFor(f *Filter, extra flowseg.Cols) flowseg.Cols {
 // is w).
 type scanFn func(w int, b *planned, row int, r *flow.Record)
 
+// preFn, when a scan has one, sees each row of a block (not raw sets) in
+// the window, with its effective end, before its record is filled; false
+// skips the row. With an empty filter the record is then filled only for the
+// rows it passes (a search page's, which keeps few of the rows it reads).
+type preFn func(w int, b *planned, row int, end int64) bool
+
 // scan reads blocks [lo, hi) of p with the workers, calling fn for every
 // record that passes f and overlaps the window. It stops early when ctx is
 // done. It returns the number of records read (rows of blocks decoded or
 // ruled out by the index).
 func (e *Engine) scan(ctx context.Context, p *plan, rd *readers, blocks []planned, f *Filter, cols flowseg.Cols, fn scanFn) error {
+	return e.scanPre(ctx, p, rd, blocks, f, cols, nil, fn)
+}
+
+// scanPre is scan with a preFn (nil: none).
+func (e *Engine) scanPre(ctx context.Context, p *plan, rd *readers, blocks []planned, f *Filter, cols flowseg.Cols, pre preFn,
+	fn scanFn) error {
 	if len(blocks) == 0 {
 		return nil
 	}
@@ -338,7 +376,7 @@ more:
 			defer wg.Done()
 			blk, rec := &got[w].blk, &got[w].rec
 			for b := range jobs {
-				e.scanBlock(p, rd, b, w, blk, rec, useIndex, f, cols, fn, &errMu, &firstErr)
+				e.scanBlock(p, rd, b, w, blk, rec, useIndex, f, cols, pre, fn, &errMu, &firstErr)
 				rd.done(b.seg)
 			}
 		}(w)
@@ -359,7 +397,7 @@ more:
 
 // scanBlock reads one planned block for a scan's worker w.
 func (e *Engine) scanBlock(p *plan, rd *readers, b *planned, w int, blk *flowseg.Block, rec *flow.Record, useIndex bool,
-	f *Filter, cols flowseg.Cols, fn scanFn, errMu *sync.Mutex, firstErr *error) {
+	f *Filter, cols flowseg.Cols, pre preFn, fn scanFn, errMu *sync.Mutex, firstErr *error) {
 	fail := func(err error) {
 		errMu.Lock()
 		if *firstErr == nil {
@@ -393,10 +431,21 @@ func (e *Engine) scanBlock(p *plan, rd *readers, b *planned, w int, blk *flowseg
 		fail(fmt.Errorf("flows: %s block %d: %w", p.segs[b.seg].Rel, b.block, err))
 		return
 	}
+	if pre != nil && f.Empty() {
+		for row := 0; row < blk.Rows; row++ {
+			s, en := blk.EffectiveTimes(row)
+			if en < p.from || s >= p.to || !pre(w, b, row, en) {
+				continue
+			}
+			blk.Record(row, rec)
+			fn(w, b, row, rec)
+		}
+		return
+	}
 	for row := 0; row < blk.Rows; row++ {
 		blk.Record(row, rec)
 		s, en := flowseg.EffectiveTimes(rec)
-		if en < p.from || s >= p.to || !f.Match(rec) {
+		if en < p.from || s >= p.to || !f.Match(rec) || (pre != nil && !pre(w, b, row, en)) {
 			continue
 		}
 		fn(w, b, row, rec)
@@ -411,7 +460,8 @@ func (e *Engine) wave() int { return max(e.o.Workers*waveBlocksPerW, 4) }
 type state struct {
 	id       string
 	key      string
-	used     time.Time
+	used     time.Time // for StateTTL
+	seq      uint64    // e.saves when saved: the LRU order
 	plan     *plan
 	done     int // blocks done
 	recsDone int64
@@ -435,12 +485,16 @@ func (st *state) free() {
 }
 
 // evictOne drops the least recently used saved state (the pool's full
-// hook) and reports whether there was one.
+// hook), a search page's continuation before a top-N's or a summary's, and
+// reports whether there was one.
 func (e *Engine) evictOne() bool {
+	if e.evictPage() {
+		return true // a page continuation first: its page can be read from the cursor alone
+	}
 	e.mu.Lock()
 	var old *state
 	for _, s := range e.states {
-		if old == nil || s.used.Before(old.used) {
+		if old == nil || s.seq < old.seq {
 			old = s
 		}
 	}
@@ -471,7 +525,8 @@ func (e *Engine) saveState(st *state) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.o.Clock()
-	st.used = now
+	e.saves++
+	st.used, st.seq = now, e.saves
 	for id, s := range e.states {
 		if now.Sub(s.used) > StateTTL {
 			delete(e.states, id)
@@ -482,7 +537,7 @@ func (e *Engine) saveState(st *state) {
 	for len(e.states) > MaxStates {
 		var old *state
 		for _, s := range e.states {
-			if old == nil || s.used.Before(old.used) {
+			if old == nil || s.seq < old.seq {
 				old = s
 			}
 		}
@@ -513,9 +568,12 @@ func (e *Engine) takeState(cursor, key string) (*state, error) {
 
 // TopResult is a top-N answer.
 type TopResult struct {
-	Rows   []Row
-	Total  Sums
-	Approx bool
+	Rows  []Row
+	Total Sums
+	// ZeroOmitted counts the keys with none of the metric, which are never
+	// rows (SPEC §13.3); Total still counts their records.
+	ZeroOmitted int64
+	Approx      bool
 	// ErrorBound: a key in neither table has at most this of the metric (0
 	// while exact); any key not in Rows has at most the larger of it and the
 	// last row's. Each approximate row has its own Err.
@@ -595,7 +653,8 @@ func (e *Engine) Top(ctx context.Context, q Query, by, metric string, n int, bud
 		locals[i].flush()
 		st.total.merge(&totals[i])
 	}
-	res := TopResult{Rows: st.agg.rows(n), Total: st.total, Approx: st.agg.approx(), ErrorBound: st.agg.errorBound(),
+	rows, zero := st.agg.rows(n)
+	res := TopResult{Rows: rows, Total: st.total, ZeroOmitted: zero, Approx: st.agg.approx(), ErrorBound: st.agg.errorBound(),
 		Progress: st.plan.progress(ctx, int64(st.done), st.recsDone)}
 	if st.plan.more(ctx) {
 		res.Partial = true
@@ -615,11 +674,24 @@ type Hit struct {
 	Block    int
 	Row      int
 	Record   flow.Record
+
+	// src is the hit's segment while a search page still has to fill its
+	// record (it was read with the page's key and filter columns only).
+	src *segRef
 }
 
 // Ref is a hit's opaque reference.
-func (h *Hit) Ref() string {
-	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%s|%d|%d", h.Rel, h.Block, h.Row)))
+func (h *Hit) Ref() string { return string(h.AppendRef(nil)) }
+
+// AppendRef appends h.Ref() to dst.
+func (h *Hit) AppendRef(dst []byte) []byte {
+	var raw [96]byte
+	b := append(raw[:0], h.Rel...)
+	b = append(b, '|')
+	b = strconv.AppendInt(b, int64(h.Block), 10)
+	b = append(b, '|')
+	b = strconv.AppendInt(b, int64(h.Row), 10)
+	return base64.RawURLEncoding.AppendEncode(dst, b)
 }
 
 // order key: (end, then dev, rel, block, row) — descending end first.
@@ -693,36 +765,51 @@ type searchCursor struct {
 	To    int64  `json:"t,omitempty"`
 }
 
-// Search returns up to limit records, newest first by flow end (asc: oldest
-// first), after cursor.
-func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, cursor string, budget time.Duration) (SearchResult, error) {
-	qk := q.key("search", asc)
-	var after *hitKey
-	if cursor != "" {
-		b, err := base64.RawURLEncoding.DecodeString(cursor)
-		var c searchCursor
-		if err != nil || json.Unmarshal(b, &c) != nil || c.Query != hash(qk) {
-			return SearchResult{}, ErrCursor
-		}
-		after = &c.Key
-		if q.DefaultRange && c.To != 0 {
-			q.From, q.To = time.UnixMilli(c.From).UTC(), time.UnixMilli(c.To).UTC()
-		}
+// searchStateless is a page of Search from the cursor's values alone: up
+// to limit records, newest first by flow end (asc: oldest first), after
+// cursor. Search continues a page's saved stream instead when it has one
+// (pages.go); this is the page when it can't.
+//
+// A page reads in two passes (see search), so a segment retention deletes
+// between them would leave its hits out: the page is then read again, once,
+// without it (a second miss drops them, as an unreadable block's are). A
+// cancel during the second pass loses the page, as one during the first does.
+func (e *Engine) searchStateless(ctx context.Context, q Query, limit int, asc bool, cursor string, budget time.Duration) (SearchResult, error) {
+	res, err := e.search(ctx, q, limit, asc, cursor, budget, false)
+	if errors.Is(err, errRefill) {
+		res, err = e.search(ctx, q, limit, asc, cursor, budget, true)
 	}
-	p, err := e.planFor(ctx, &q, asc)
+	return res, err
+}
+
+// errRefill is a second pass that couldn't read a block of the first's.
+var errRefill = errors.New("flows: a block of the page is gone")
+
+// search is one try at a page; final drops the hits of a block the second
+// pass can't read, else that's errRefill.
+func (e *Engine) search(ctx context.Context, q Query, limit int, asc bool, cursor string, budget time.Duration,
+	final bool) (SearchResult, error) {
+	qk := q.key("search", asc)
+	after, err := parseCursor(&q, qk, cursor)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	p, err := e.planOrdered(ctx, &q, asc)
 	if err != nil {
 		return SearchResult{}, err
 	}
 	defer p.release()
-	// Skip segments and blocks wholly before the cursor.
-	if after != nil {
-		p.skip = func(b *planned) bool { return (!asc && b.minEnd > after.End) || (asc && b.maxEnd < after.End) }
-		p.skipSeg = func(s *segRef) bool { return !s.open && ((!asc && s.start > after.End) || (asc && s.end < after.End)) }
-	}
+	p.skipBefore(after)
 	f := q.filter()
-	cols := colsFor(f, flowseg.ColAll)
+	// Two passes: the page's blocks are read with the columns that order
+	// and filter them (a page reads several times the rows it keeps), and
+	// only the blocks holding the hits it returns are read again in full.
+	cols := colsFor(f, 0)
 	h := &hitHeap{asc: asc}
-	var mu sync.Mutex
+	local := make([]*hitHeap, e.o.Workers)
+	for i := range local {
+		local[i] = &hitHeap{asc: asc}
+	}
 	deadline := time.Now().Add(budget)
 	rd := newReaders(p)
 	defer rd.close()
@@ -762,23 +849,70 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		if len(blocks) == 0 {
 			break
 		}
-		err := e.scan(ctx, p, rd, blocks, f, cols, func(_ int, b *planned, row int, r *flow.Record) {
-			hit := &Hit{DeviceID: p.segs[b.seg].DeviceID, Rel: p.segs[b.seg].Rel, Block: b.block, Row: row, Record: *r}
-			k := keyOfHit(hit)
-			if after != nil && !after.before(k, asc) {
-				return
+		// Each worker keeps its own best limit hits (no lock, and a Hit only
+		// for a row that makes its cut: most rows a page reads don't), merged
+		// after the wave. h isn't written while the wave runs, so the workers
+		// also compare against what's already kept.
+		full := h.Len() >= limit
+		var worst hitKey
+		if full {
+			worst = h.k[0]
+		}
+		// keep reports whether a row with key k makes worker w's cut.
+		keep := func(w int, k *hitKey) bool {
+			if (after != nil && !after.before(*k, asc)) || (full && !k.before(worst, asc)) {
+				return false
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			if h.Len() < limit {
-				heap.Push(h, pair{hit, k})
-			} else if k.before(h.k[0], asc) {
-				h.h[0], h.k[0] = hit, k
-				heap.Fix(h, 0)
+			lh := local[w]
+			return lh.Len() < limit || k.before(lh.k[0], asc)
+		}
+		// The wave's segments, for the second pass (a batch's p.segs are
+		// reused when the next loads).
+		srcs := map[int]*segRef{}
+		for _, b := range blocks {
+			if !b.raw && srcs[b.seg] == nil {
+				ref := p.segs[b.seg]
+				srcs[b.seg] = &ref
+			}
+		}
+		pre := func(w int, b *planned, row int, end int64) bool {
+			seg := &p.segs[b.seg]
+			return keep(w, &hitKey{End: end, Dev: seg.DeviceID, Rel: seg.Rel, Block: b.block, Row: row})
+		}
+		err := e.scanPre(ctx, p, rd, blocks, f, cols, pre, func(w int, b *planned, row int, r *flow.Record) {
+			_, en := flowseg.EffectiveTimes(r)
+			seg := &p.segs[b.seg]
+			k := hitKey{End: en, Dev: seg.DeviceID, Rel: seg.Rel, Block: b.block, Row: row}
+			if !keep(w, &k) {
+				return // a raw set's (pre has seen the rest)
+			}
+			lh := local[w]
+			hit := &Hit{DeviceID: seg.DeviceID, Rel: seg.Rel, Block: b.block, Row: row, Record: *r}
+			if !b.raw {
+				hit.src = srcs[b.seg] // a raw set's record is whole already
+			}
+			if lh.Len() < limit {
+				heap.Push(lh, pair{hit, k})
+			} else {
+				lh.h[0], lh.k[0] = hit, k
+				heap.Fix(lh, 0)
 			}
 		})
 		if err != nil && ctx.Err() != nil {
 			return SearchResult{}, ctx.Err()
+		}
+		for _, lh := range local {
+			for i := range lh.h {
+				hit, k := lh.h[i], lh.k[i]
+				if h.Len() < limit {
+					heap.Push(h, pair{hit, k})
+				} else if k.before(h.k[0], asc) {
+					h.h[0], h.k[0] = hit, k
+					heap.Fix(h, 0)
+				}
+			}
+			clear(lh.h)
+			lh.h, lh.k = lh.h[:0], lh.k[:0]
 		}
 		for _, b := range blocks {
 			recs += int64(b.rows)
@@ -826,7 +960,227 @@ func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, curso
 		}
 		res.Cursor = encodeCursor(k, qk, &q)
 	}
+	if err := e.fill(ctx, &res, final); err != nil {
+		return SearchResult{}, err
+	}
 	return res, nil
+}
+
+// fill reads the blocks holding a page's hits again with every column and
+// fills their records (the second pass). A block that can no longer be read
+// (retention deleted its segment since) is errRefill, or with final drops
+// its hits, as an unreadable block's are skipped. The hits' extras are
+// copied into the page's own buffers: a decoded block's extras share a
+// copy of the whole column, which a page holding one row of each of many
+// blocks would otherwise keep alive (about 230 KiB a hit).
+func (e *Engine) fill(ctx context.Context, res *SearchResult, final bool) error {
+	if e.fillHook != nil {
+		e.fillHook()
+	}
+	type blockKey struct {
+		src   *segRef
+		block int
+	}
+	groups := map[blockKey][]int{}
+	var order []blockKey
+	for i := range res.Hits {
+		h := &res.Hits[i]
+		if h.src == nil {
+			continue
+		}
+		k := blockKey{h.src, h.Block}
+		if groups[k] == nil {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], i)
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	var got []*slot
+	select {
+	case sl := <-e.slots:
+		got = append(got, sl)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+more:
+	for len(got) < min(e.o.Workers, len(order)) {
+		select {
+		case sl := <-e.slots:
+			got = append(got, sl)
+		default:
+			break more
+		}
+	}
+	defer func() {
+		for _, sl := range got {
+			e.slots <- sl
+		}
+	}()
+	// One reader per segment, opened once; each worker takes whole blocks.
+	var mu sync.Mutex
+	rds := map[*segRef]*flowseg.Reader{}
+	failed := map[*segRef]error{}
+	open := func(s *segRef) (*flowseg.Reader, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r := rds[s]; r != nil {
+			return r, nil
+		}
+		if err := failed[s]; err != nil {
+			return nil, err
+		}
+		var r *flowseg.Reader
+		var err error
+		switch {
+		case s.snap != nil:
+			r, err = flowseg.OpenSnapshot(s.Path, s.snap)
+		case s.live:
+			r, err = flowseg.OpenLive(s.Path)
+		default:
+			r, err = openSegForFill(s.Path)
+		}
+		if err != nil {
+			failed[s] = err
+			return nil, err
+		}
+		rds[s] = r
+		return r, nil
+	}
+	defer func() {
+		for _, r := range rds {
+			r.Close()
+		}
+	}()
+	drop := make([]bool, len(res.Hits))
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	for w := range got {
+		wg.Add(1)
+		go func(sl *slot) {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(order) || ctx.Err() != nil {
+					return
+				}
+				k := order[i]
+				r, err := open(k.src)
+				if err == nil {
+					err = r.Decode(k.block, flowseg.ColAll, &sl.blk)
+				}
+				for _, j := range groups[k] {
+					h := &res.Hits[j]
+					if err != nil {
+						drop[j] = true
+						continue
+					}
+					sl.blk.Record(h.Row, &h.Record)
+				}
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("flows: %s block %d: %w", k.src.Rel, k.block, err)
+					}
+					errMu.Unlock()
+				}
+			}
+		}(got[w])
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if firstErr != nil {
+		if !final {
+			return errRefill
+		}
+		e.o.Logger.Warn("flows: a block couldn't be read again; its hits are left out", "err", firstErr)
+	}
+	out := res.Hits[:0]
+	for i := range res.Hits {
+		res.Hits[i].src = nil
+		if !drop[i] {
+			out = append(out, res.Hits[i])
+		}
+	}
+	res.Hits = out
+	ownExtras(res.Hits)
+	return nil
+}
+
+// ownExtras copies the hits' extras (lists and values) into two buffers of
+// the page's own, keeping nil and empty lists and values as they are.
+func ownExtras(hits []Hit) {
+	var nx, nv int
+	for i := range hits {
+		for _, x := range hits[i].Record.Extras {
+			nx++
+			nv += len(x.Value)
+		}
+	}
+	if nx == 0 {
+		return
+	}
+	xs := make([]flow.Extra, 0, nx)
+	vals := make([]byte, 0, nv)
+	for i := range hits {
+		r := &hits[i].Record
+		if len(r.Extras) == 0 {
+			continue // nil or empty: no shared memory
+		}
+		o := len(xs)
+		for _, x := range r.Extras {
+			if len(x.Value) > 0 {
+				v := len(vals)
+				vals = append(vals, x.Value...)
+				x.Value = vals[v:len(vals):len(vals)]
+			}
+			xs = append(xs, x)
+		}
+		r.Extras = xs[o:len(xs):len(xs)]
+	}
+}
+
+// openSegForFill opens a closed segment, or one another process has been
+// writing (read up to its last complete block), as the plan's first read did.
+func openSegForFill(path string) (*flowseg.Reader, error) {
+	r, _, err := openSeg(path)
+	return r, err
+}
+
+// parseCursor is a page cursor's key (nil without one), checked against
+// the query's key qk; with the default range the query takes the first
+// page's range from it.
+func parseCursor(q *Query, qk, cursor string) (*hitKey, error) {
+	if cursor == "" {
+		return nil, nil
+	}
+	b, err := base64.RawURLEncoding.DecodeString(cursor)
+	var c searchCursor
+	if err != nil || json.Unmarshal(b, &c) != nil || c.Query != hash(qk) {
+		return nil, ErrCursor
+	}
+	if q.DefaultRange && c.To != 0 {
+		q.From, q.To = time.UnixMilli(c.From).UTC(), time.UnixMilli(c.To).UTC()
+	}
+	return &c.Key, nil
+}
+
+// skipBefore skips the segments and blocks wholly before a page's cursor
+// key (nil: none).
+func (p *plan) skipBefore(after *hitKey) {
+	if after == nil {
+		return
+	}
+	asc := p.asc
+	p.skip = func(b *planned) bool { return (!asc && b.minEnd > after.End) || (asc && b.maxEnd < after.End) }
+	p.skipSeg = func(s *segRef) bool {
+		return !s.open && !s.wide && ((!asc && s.start > after.End) || (asc && s.end < after.End))
+	}
 }
 
 func encodeCursor(k hitKey, qk string, q *Query) string {

@@ -2357,6 +2357,17 @@ const SHOTS = [
       && document.body.innerText.includes('Counted every flow record in the window') && !document.getElementById('sq')
       && [...document.querySelectorAll('.fp h3')].some((h) => h.textContent.startsWith('Firewall event'))`,
   }),
+  {
+    // A top by bytes lists no key at 0 bytes and says how many it left out (decision 80; lab, 2.0.0-rc1).
+    name: 'flows-top-zero-omitted',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/events?type=flow&r=1h',
+    wait: 3500,
+    check: `(() => { const top = document.querySelector('[data-flow-top]'); const rows = [...top.querySelectorAll('[data-top-by] li .v')].map((v) => v.textContent.trim());
+      return rows.length > 0 && !rows.some((v) => /^0 B( |$)/.test(v)) && /[0-9]+ with 0 bytes not shown/.test(top.querySelector('[data-zero-omitted]')?.textContent ?? '')
+        && ![...top.querySelectorAll('[data-top-by] li .s')].some((s) => s.textContent.trim() === '0 %'); })()`,
+  },
   ...both({
     name: 'flows-top-denied',
     url: '/?mock_panel=0#/events?type=flow&r=1h&top=denied',
@@ -2451,7 +2462,9 @@ const SHOTS = [
     url: `/?mock_panel=0#/events?bundle=${new Date(Date.now() - 10 * 60_000).toISOString().slice(0, 19)}Z&bb=30m&ba=10m&type=flow`,
     wait: 6000,
     check: `document.querySelector('[data-flow-readme]')?.innerText.includes('top talkers by bytes:') && document.querySelector('[data-flow-readme]').innerText.includes('firewall events:')
-      && document.querySelector('[data-flow-readme]').innerText.includes('sampled 1 in 1,000 on domain 256')`,
+      && document.querySelector('[data-flow-readme]').innerText.includes('sampled 1 in 1,000 on domain 256')
+      && document.querySelector('[data-flow-readme]').innerText.includes('sequence gaps in this window are counted when the bundle is built')
+      && !/ 0 %/.test(document.querySelector('[data-flow-readme]').innerText)`,
     clip: '[data-flow-readme]',
   }),
   ...both({

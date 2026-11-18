@@ -34,10 +34,22 @@ ON CONFLICT (id) DO UPDATE SET
 	total_bytes = total_bytes + excluded.total_bytes`
 
 const upsertTypeStatsSQL = `
-INSERT INTO type_stats (device_id, type, minute, msgs, bytes, truncated, dropped) VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO type_stats (device_id, type, minute, msgs, bytes, truncated, dropped, late, no_template, malformed, seq_gaps,
+	seq_lost, duplicates, off_ahead, off_behind, off_max_ahead_ms, off_max_behind_ms, flow_counted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 ON CONFLICT (device_id, type, minute) DO UPDATE SET
 	msgs = msgs + excluded.msgs, bytes = bytes + excluded.bytes,
-	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped`
+	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped,` + flowCountsUpsert
+
+// flowCountsUpsert adds a stats row's flow counts (a row from before
+// they existed stays flow_counted = 0: that minute is only partly counted).
+const flowCountsUpsert = `
+	late = late + excluded.late, no_template = no_template + excluded.no_template, malformed = malformed + excluded.malformed,
+	seq_gaps = seq_gaps + excluded.seq_gaps, seq_lost = seq_lost + excluded.seq_lost, duplicates = duplicates + excluded.duplicates,
+	off_ahead = off_ahead + excluded.off_ahead, off_behind = off_behind + excluded.off_behind,
+	off_max_ahead_ms = max(off_max_ahead_ms, excluded.off_max_ahead_ms),
+	off_max_behind_ms = max(off_max_behind_ms, excluded.off_max_behind_ms),
+	flow_counted = min(flow_counted, excluded.flow_counted)`
 
 const insertEventSQL = `INSERT INTO events (time, level, kind, device_id, text, source) VALUES (?, ?, ?, ?, ?, ?)`
 
@@ -196,7 +208,7 @@ func (s *stmts) fileOp(op *FileOp) error {
 			}
 		}
 		if del := op.Deletion; del != nil {
-			if _, err := s.exec(insertDeletionSQL, ms(del.Time), del.File, del.DeviceID, del.Bytes, string(del.Reason), fileType(del.Type)); err != nil {
+			if _, err := s.exec(insertDeletionSQL, ms(del.Time), del.File, del.DeviceID, del.Bytes, storedReason(del.Reason), fileType(del.Type)); err != nil {
 				return fmt.Errorf("index: record deletion: %w", err)
 			}
 			text := fmt.Sprintf("deleted %s (%s, %d bytes)", del.File, reasonText(del.Reason), del.Bytes)
@@ -214,10 +226,28 @@ func reasonText(r Reason) string {
 		return "older than the retention period"
 	case ReasonCap:
 		return "over the storage cap"
+	case ReasonFlowBudget:
+		return "flows over their budget"
 	case ReasonLowDisk:
 		return "low disk space"
 	}
 	return string(r)
+}
+
+// storedReason is a reason as the deletions table holds it (see ReasonFlowBudget).
+func storedReason(r Reason) string {
+	if r == ReasonFlowBudget {
+		return string(ReasonCap)
+	}
+	return string(r)
+}
+
+// readReason is the Reason of a stored deletion row (see ReasonFlowBudget).
+func readReason(reason, typ string) Reason {
+	if Reason(reason) == ReasonCap && typ == TypeFlow {
+		return ReasonFlowBudget
+	}
+	return Reason(reason)
 }
 
 // fileType is the stored form of a type: "" is syslog.
@@ -234,7 +264,9 @@ func (s *stmts) activity(a Activity) error {
 		if _, err := s.exec(upsertStatsSQL, a.DeviceID, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
 			return err
 		}
-	} else if _, err := s.exec(upsertTypeStatsSQL, a.DeviceID, t, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
+	} else if _, err := s.exec(upsertTypeStatsSQL, a.DeviceID, t, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped,
+		a.Flow.Late, a.Flow.NoTemplate, a.Flow.Malformed, a.Flow.SeqGaps, a.Flow.SeqLost, a.Flow.Duplicates,
+		a.Flow.Ahead, a.Flow.Behind, a.Flow.MaxAheadMs, a.Flow.MaxBehindMs); err != nil {
 		return err
 	}
 	if a.DeviceID == RefusedDeviceID {
@@ -330,12 +362,15 @@ ON CONFLICT (device_id, hour) DO UPDATE SET
 	}
 	n, _ := res.RowsAffected()
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO type_stats_hourly (device_id, type, hour, msgs, bytes, truncated, dropped)
-SELECT device_id, type, (minute / 3600000) * 3600000, sum(msgs), sum(bytes), sum(truncated), sum(dropped)
+INSERT INTO type_stats_hourly (device_id, type, hour, msgs, bytes, truncated, dropped, late, no_template, malformed, seq_gaps,
+	seq_lost, duplicates, off_ahead, off_behind, off_max_ahead_ms, off_max_behind_ms, flow_counted)
+SELECT device_id, type, (minute / 3600000) * 3600000, sum(msgs), sum(bytes), sum(truncated), sum(dropped), sum(late),
+	sum(no_template), sum(malformed), sum(seq_gaps), sum(seq_lost), sum(duplicates), sum(off_ahead), sum(off_behind),
+	max(off_max_ahead_ms), max(off_max_behind_ms), min(flow_counted)
 FROM type_stats WHERE minute < ? GROUP BY device_id, type, minute / 3600000
 ON CONFLICT (device_id, type, hour) DO UPDATE SET
 	msgs = msgs + excluded.msgs, bytes = bytes + excluded.bytes,
-	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped`, b); err != nil {
+	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped,`+flowCountsUpsert, b); err != nil {
 		return 0, fmt.Errorf("index: type stats rollup: %w", err)
 	}
 	res, err = tx.ExecContext(ctx, `DELETE FROM type_stats WHERE minute < ?`, b)

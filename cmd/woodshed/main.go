@@ -43,6 +43,7 @@ commands:
   reset-password  remove the UI password and turn LAN mode off
   send            send test messages to a syslog server
   bench           measure sustained throughput
+  profile         profile the running server (CPU, memory, trace); off until "profile on"
   version         print the version
 
 Run "woodshed <command> --help" for a command's flags.
@@ -78,6 +79,7 @@ func init() {
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},
 		{"bench", cmdBench},
+		{"profile", cmdProfile},
 		{"version", cmdVersion},
 	}
 }

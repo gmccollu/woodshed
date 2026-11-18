@@ -166,6 +166,11 @@ type SearchLine struct {
 	Trap *datatype.TrapResult
 	// Flow is a flow result's record (Type "flow"; Raw is empty).
 	Flow *flow.Record
+	// A syslog line's marks (2.0), from its stored line: cut at the max message
+	// size, and a frame that ended before all of it arrived (with its lengths
+	// for an octet-counted frame). In the JSON only when set.
+	Truncated, Incomplete     bool
+	FrameArrived, FrameLength int64
 }
 
 // MarshalJSON gives the docs/api.md shape: received with millisecond
@@ -208,15 +213,19 @@ func (l SearchLine) MarshalJSON() ([]byte, error) {
 		sev = l.Severity
 	}
 	return json.Marshal(struct {
-		Received string `json:"received"`
-		DeviceID string `json:"device_id"`
-		Severity any    `json:"severity"`
-		Raw      string `json:"raw"`
-		Ref      string `json:"ref"`
-		App      string `json:"app"`
-		Host     string `json:"host"`
+		Received     string `json:"received"`
+		DeviceID     string `json:"device_id"`
+		Severity     any    `json:"severity"`
+		Raw          string `json:"raw"`
+		Ref          string `json:"ref"`
+		App          string `json:"app"`
+		Host         string `json:"host"`
+		Truncated    bool   `json:"truncated,omitempty"`
+		Incomplete   bool   `json:"incomplete,omitempty"`
+		FrameArrived int64  `json:"frame_arrived,omitempty"`
+		FrameLength  int64  `json:"frame_length,omitempty"`
 	}{l.Received.UTC().Format("2006-01-02T15:04:05.000Z07:00"), l.DeviceID, sev, string(bytes.ToValidUTF8(l.Raw, []byte("�"))), l.Ref,
-		strings.ToValidUTF8(l.App, "�"), strings.ToValidUTF8(l.Host, "�")})
+		strings.ToValidUTF8(l.App, "�"), strings.ToValidUTF8(l.Host, "�"), l.Truncated, l.Incomplete, l.FrameArrived, l.FrameLength})
 }
 
 // SearchPage is the body of GET /api/search.

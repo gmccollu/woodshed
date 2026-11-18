@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gmccollu/woodshed/internal/api"
+	"github.com/gmccollu/woodshed/internal/fwrule"
 	"github.com/gmccollu/woodshed/internal/server"
 )
 
@@ -197,23 +198,27 @@ func lockForTest(dir string) (func(), error) {
 
 func TestFirewallRuleState(t *testing.T) {
 	exe := `C:\Users\me\Downloads\woodshed.exe`
-	rule := func(name, enabled, action, program string) string {
-		return "Rule Name:                            " + name + "\r\n----------------------------------------------------------------------\r\n" +
-			"Enabled:                              " + enabled + "\r\nDirection:                            In\r\n" +
-			"Action:                               " + action + "\r\nProgram:                              " + program + "\r\n"
+	// Rules as fwrule.ListRules gives them (INetFwRule's properties).
+	rule := func(name string, enabled bool, action int32, program string) fwrule.WinRule {
+		return fwrule.WinRule{Name: name, ApplicationName: program, Protocol: 17, LocalPorts: "514", Direction: fwrule.RuleDirIn,
+			Enabled: enabled, Action: action}
 	}
-	other := rule("Core Networking", "Yes", "Allow", `C:\Windows\system32\svchost.exe`)
+	const allow, block = fwrule.RuleActionAllow, 0
+	other := rule("Core Networking", true, allow, `C:\Windows\system32\svchost.exe`)
+	out := rule("woodshed.exe", true, allow, exe)
+	out.Direction = 2 // outbound: doesn't let devices in
 	for name, c := range map[string]struct {
-		out  string
-		want ruleState
+		rules []fwrule.WinRule
+		want  ruleState
 	}{
-		"none":            {other, ruleUnknown},
-		"allowed":         {other + "\r\n" + rule("woodshed.exe", "Yes", "Allow", exe), ruleAllows},
-		"blocked":         {other + "\r\n" + rule("woodshed.exe", "Yes", "Block", exe), ruleBlocks},
-		"disabled allow":  {rule("woodshed.exe", "No", "Allow", exe), ruleBlocks},
-		"block and allow": {rule("woodshed.exe", "Yes", "Block", exe) + "\r\n" + rule("Woodshed (portable)", "Yes", "Allow", strings.ToUpper(exe)), ruleAllows},
+		"none":            {[]fwrule.WinRule{other}, ruleUnknown},
+		"allowed":         {[]fwrule.WinRule{other, rule("woodshed.exe", true, allow, exe)}, ruleAllows},
+		"blocked":         {[]fwrule.WinRule{other, rule("woodshed.exe", true, block, exe)}, ruleBlocks},
+		"disabled allow":  {[]fwrule.WinRule{rule("woodshed.exe", false, allow, exe)}, ruleBlocks},
+		"block and allow": {[]fwrule.WinRule{rule("woodshed.exe", true, block, exe), rule("Woodshed (portable)", true, allow, strings.ToUpper(exe))}, ruleAllows},
+		"outbound only":   {[]fwrule.WinRule{out}, ruleUnknown},
 	} {
-		if got := firewallRuleState(c.out, exe); got != c.want {
+		if got := firewallRuleState(c.rules, exe); got != c.want {
 			t.Errorf("%s: %v, want %v", name, got, c.want)
 		}
 	}

@@ -112,9 +112,12 @@ type domainState struct {
 	sysInitMs    int64
 	sampling     uint32            // the domain's own (options data without a sampler)
 	samplers     map[uint32]uint32 // sampler or selector ID -> rate
-	seq          seqState
-	seqMode      string  // seq.mode() for Stats (written under Collector.mu)
-	avgPerPkt    float64 // records per packet (v9 loss estimate)
+	// lastKnown is the rate the stored metadata had before a restart
+	// (Restore): shown (DomainStats.LastKnownSampling), never applied.
+	lastKnown uint32
+	seq       seqState
+	seqMode   string  // seq.mode() for Stats (written under Collector.mu)
+	avgPerPkt float64 // records per packet (v9 loss estimate)
 	// opts are the options records kept raw (options.go), by template and
 	// scope values, oldest version first.
 	opts map[string][]*OptionsData
@@ -785,6 +788,10 @@ type DomainStats struct {
 	SeqMode      string    `json:"seq_mode,omitempty"`
 	Templates    int       `json:"templates"`
 	LastTemplate time.Time `json:"last_template"`
+	// LastKnownSampling is the rate the domain had before a restart, from the
+	// stored metadata, while it has none of its own yet (SPEC §13.10
+	// decision 83): context for a reader, never applied to records.
+	LastKnownSampling uint32 `json:"last_known_sampling,omitempty"`
 }
 
 // ExporterStats is one exporter's state for GET /api/flows (records_per_sec
@@ -818,7 +825,10 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 	out := make([]ExporterStats, 0, len(c.exporters))
 	for _, e := range c.exporters {
 		st := ExporterStats{Addr: e.addr, PendingBytes: e.pending.Load(), ClockSkewMs: e.skewMs.Load(),
-			TimeSource: TimeExporter.String(), LastHeard: time.UnixMilli(e.lastHeard.Load()).UTC()}
+			TimeSource: TimeExporter.String()}
+		if lh := e.lastHeard.Load(); lh != 0 { // 0: restored with no stored datagram time
+			st.LastHeard = time.UnixMilli(lh).UTC()
+		}
 		if e.skewed.Load() {
 			st.TimeSource = TimeReceived.String()
 		}
@@ -849,6 +859,7 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 				}
 			}
 			ds.Sampling = max(ds.Sampling, r)
+			ds.LastKnownSampling = max(ds.LastKnownSampling, d.lastKnown)
 			// The scopes of one ID with different numberings: "after" wins
 			// (the one a reader needs to know about), whatever the map order.
 			if d.seqMode != "" && ds.SeqMode != "after" {
@@ -856,6 +867,9 @@ func (c *Collector) Stats(now time.Time) []ExporterStats {
 			}
 		}
 		for _, ds := range byID {
+			if ds.Sampling != 0 {
+				ds.LastKnownSampling = 0 // its own rate has come
+			}
 			st.Domains = append(st.Domains, *ds)
 		}
 		slices.SortFunc(st.Domains, func(a, b DomainStats) int { return int(int64(a.ID) - int64(b.ID)) })

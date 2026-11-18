@@ -25,7 +25,7 @@ import (
 //     isn't locked out by its own dead ones for the whole idle timeout;
 //   - once a message starts, all of it must arrive within tcp_frame_timeout, or
 //     the connection is closed and the part that arrived is stored, marked
-//     truncated;
+//     incomplete;
 //   - between messages, the idle timeout (tcp_idle_timeout, default 24 h) is
 //     renewed only by complete messages. It's long on purpose: some senders
 //     keep one connection for days without keepalives and notice it was closed
@@ -69,7 +69,8 @@ type tcpListener struct {
 
 	*connPool // shared with the other stream listener; its mu guards closing too
 
-	tls     *tlsState // nil for plain TCP
+	tls     *tlsState    // nil for plain TCP
+	frames  *frameCounts // this protocol's, on the Server (kept across rebinds)
 	closing bool
 	wg      sync.WaitGroup // the accept loop, every connection and (TLS) every handshake
 }
@@ -86,7 +87,7 @@ type tconn struct {
 	seq     uint64       // accept order; "oldest" goes by this, not connAt (Windows' clock can tie)
 	last    atomic.Int64 // UnixNano of the connect or the last complete message
 	inFrame atomic.Bool  // a message has started arriving and isn't complete yet
-	cut     atomic.Bool  // we closed it (eviction or shutdown): a partial message is truncated
+	cut     atomic.Bool  // we closed it (eviction or shutdown): a partial message is incomplete
 	blocked atomic.Bool  // closed because its sender was blocked: nothing more is stored
 }
 
@@ -111,6 +112,10 @@ func listenStream(s *Server, ln config.Listener, proto string, ts *tlsState) (*t
 		proto:    proto,
 		connPool: s.pool,
 		tls:      ts,
+		frames:   &s.tcpFrames,
+	}
+	if proto == "tls" {
+		t.frames = &s.tlsFrames
 	}
 	t.wg.Add(1)
 	go t.accept()
@@ -268,7 +273,7 @@ func (t *tcpListener) oldestOfBiggest(newcomer netip.Prefix) *tconn {
 
 // evictLocked closes victim to make room for a newcomer and frees its slot now
 // (its goroutine finishes on its own). A partial message it had is stored,
-// marked truncated (t.mu held).
+// marked incomplete (t.mu held).
 func (t *tcpListener) evictLocked(victim *tconn, why string) {
 	s := t.srv
 	victim.cut.Store(true)
@@ -350,19 +355,33 @@ func (t *tcpListener) serve(tc *tconn) {
 		msg, truncated, err := r.Next()
 		if err != nil {
 			if fr.frameCut {
-				t.srv.frameCuts.Add(1)
+				t.frames.timeouts.Add(1)
 			}
 			return // EOF, a deadline, reset, or closed by close() or an eviction
 		}
 		// A message returned by the call in which the connection ended is the
-		// unterminated last one. If we ended it (a deadline, an eviction), it's cut.
-		if fr.fails != fails && (fr.timedOut || tc.cut.Load()) {
-			truncated = true
+		// unterminated last one. An octet-counted frame shorter than its count is
+		// incomplete whoever ended the connection (the sender's EOF, a reset, a TLS
+		// close, our deadline or an eviction): the reader says so. A line is
+		// incomplete if we ended it or the sender reset the connection; a last
+		// line without its LF before a clean close (FIN, TLS close) is normal (RFC
+		// 6587 non-transparent framing can't tell).
+		var end frameEnd
+		if arrived, length, ok := r.Incomplete(); ok {
+			end = frameEnd{incomplete: true, arrived: arrived, length: length}
+		} else if fr.fails != fails && (fr.timedOut || tc.cut.Load() || fr.reset) {
+			end.incomplete = true
 		}
 		if tc.blocked.Load() {
 			return
 		}
-		if t.srv.deliver(msg, tc.from, truncated) == RejectBlocked {
+		if end.incomplete {
+			t.frames.incomplete.Add(1)
+		}
+		if len(msg) == 0 {
+			continue // only a frame's header arrived: counted, nothing to store; the stream has ended
+		}
+		if t.srv.deliver(msg, tc.from, truncated, end) == RejectBlocked {
 			return // blocked since it connected: close it
 		}
 		if t.tls != nil {
@@ -370,6 +389,18 @@ func (t *tcpListener) serve(tc *tconn) {
 		}
 		fr.frameDone(r.Buffered() > 0)
 	}
+}
+
+// frameEnd says how a TCP or TLS message's frame ended, when not whole.
+type frameEnd struct {
+	incomplete      bool  // it ended before all of it arrived
+	arrived, length int64 // an octet-counted frame's (0, 0 for a line)
+}
+
+// frameCounts are one stream protocol's frame counters since Start.
+type frameCounts struct {
+	incomplete atomic.Int64 // messages whose frame ended before all of it arrived
+	timeouts   atomic.Int64 // connections closed on tcp_frame_timeout
 }
 
 // closeBlocked closes the open TCP and TLS connections whose sender al blocks,
@@ -431,6 +462,7 @@ type frameReader struct {
 	fails      int  // errors returned to the StreamReader
 	timedOut   bool // the connection ended on one of our deadlines
 	frameCut   bool // ... on the frame deadline
+	reset      bool // the connection ended on the sender's reset
 }
 
 func (r *frameReader) Read(p []byte) (int, error) {
@@ -458,6 +490,7 @@ func (r *frameReader) Read(p []byte) (int, error) {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			r.timedOut, r.frameCut = true, frameBound
 		}
+		r.reset = isConnReset(err)
 		if n > 0 {
 			r.stashed = err
 			return n, nil

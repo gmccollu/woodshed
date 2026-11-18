@@ -24,6 +24,7 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 - [The "latest release" link gives a 404](#the-latest-release-link-gives-a-404)
 - [Can I run it in a container (LXC, Docker, Kubernetes)?](#can-i-run-it-in-a-container-lxc-docker-kubernetes)
 - [Can I put the UI behind a reverse proxy?](#can-i-put-the-ui-behind-a-reverse-proxy)
+- [Woodshed uses a lot of CPU on my machine](#woodshed-uses-a-lot-of-cpu-on-my-machine)
 
 ## Why not tcpdump, rsyslog, syslog-ng or Graylog?
 
@@ -187,7 +188,8 @@ As plain text files, one folder per device and one file per day (dates in UTC), 
 
 The installed folders are readable only by the service and administrators: open them as an administrator, or with
 `sudo`. Each line is the time Woodshed received the message, the sender's address and the message exactly as it
-arrived. Any text tool can read them; `.log.gz` files open with any unzip tool. To hand logs to someone, use
+arrived; a message cut short or cut at the size limit ends with a marker such as `\#incomplete=55/72`
+([what it means](docs/user-guide.md#4-find-the-log-files)). Any text tool can read them; `.log.gz` files open with any unzip tool. To hand logs to someone, use
 **Export** in the UI rather than copying files: the zip also says when Woodshed wasn't running.
 
 Woodshed's own log (start-up errors and the like): Windows Event Viewer → Windows Logs → Application, source
@@ -329,3 +331,20 @@ localhost, and add the proxy's public name to `ui.trusted_hosts`: otherwise Wood
 `403` naming the unexpected host. Or proxy to LAN mode from another machine. Examples:
 [Behind a reverse proxy](docs/install.md#behind-a-reverse-proxy-nginx-caddy).
 
+## Woodshed uses a lot of CPU on my machine
+
+For comparison, a plain Windows machine took about 1–2 % of one core at 500 syslog messages a second (see the 1.2.0
+known issues in the [CHANGELOG](CHANGELOG.md)). If Woodshed uses far more than that, something about the machine may
+be involved (software that scans every file write, say), and a profile shows where the time goes. On that machine, as
+an administrator:
+
+```sh
+woodshed profile on                                          # restarts the service
+woodshed profile cpu --seconds 60 --trace --out cpu.pprof    # wait for the high CPU first
+woodshed profile off
+```
+
+That writes `cpu.pprof` (which functions use the CPU) and `cpu.trace` (what the program waits on: system calls,
+timers, the scheduler). Both are safe to attach to an issue. Profiling is off by default, and while on it answers only
+on `127.0.0.1` to someone who can read the data folder. Heap profiles and goroutine dumps are possible too, but share
+those privately. See [Troubleshooting](docs/user-guide.md#profiling-cpu-or-memory-use) in the user guide.

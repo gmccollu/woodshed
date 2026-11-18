@@ -27,7 +27,9 @@ const (
 //     message is kept.
 //
 // Empty frames (blank lines, a stray LF after an octet-counted frame) are
-// skipped. A StreamReader is not safe for concurrent use.
+// skipped. An octet-counted frame the stream ends in before its advertised
+// length is kept, and Incomplete says so. A StreamReader is not safe for
+// concurrent use.
 type StreamReader struct {
 	r          io.Reader
 	buf        []byte
@@ -36,6 +38,11 @@ type StreamReader struct {
 	max        int
 	msg        []byte
 	octet      bool // this connection has sent an octet-counted frame
+
+	// The last message's frame, when it was an octet-counted frame the stream
+	// ended in: the bytes of it that arrived and its advertised length.
+	short           bool
+	arrived, length int64
 }
 
 // NewStreamReader returns a reader that yields messages of at most maxSize
@@ -56,7 +63,15 @@ func NewStreamReader(r io.Reader, maxSize int) *StreamReader {
 // octet-counted frame that arrived) is returned first, with a nil error. After
 // that Next returns io.EOF, or the reader's error if it failed. A reader that
 // keeps returning no data and no error gets io.ErrNoProgress.
+//
+// An octet-counted frame the stream ended in, whatever the cause (EOF, a reset,
+// a TLS close, a deadline), is returned with what arrived, and Incomplete
+// reports it. Such a frame is the only message that can be empty: its header
+// arrived and none of its bytes did, or, once the connection has used octet
+// counting, a frame the stream ended in while its count ("50", "50 ") was
+// arriving (Incomplete then gives a length of 0: the count isn't known).
 func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
+	s.short, s.arrived, s.length = false, 0, 0
 	for {
 		for s.start < s.end && isFrameJunk(s.buf[s.start]) {
 			s.start++
@@ -68,11 +83,33 @@ func (s *StreamReader) Next() (msg []byte, truncated bool, err error) {
 			return nil, false, s.err
 		}
 	}
-	if n, hdr, ok := s.octetHeader(); ok {
+	n, hdr, ok, cut := s.octetHeader()
+	if ok {
 		s.octet = true
 		return s.readCounted(n, hdr)
 	}
+	if cut {
+		// On a connection already counting octets, the stream ended inside the
+		// next frame's count: nothing of the message arrived. (A connection's
+		// first frame stays ambiguous: "50" then EOF is a line.)
+		s.start = s.end
+		s.msg = s.msg[:0]
+		s.short = true
+		return s.msg, false, nil
+	}
 	return s.readLine()
+}
+
+// Incomplete reports whether the message the last Next returned is an
+// octet-counted frame the stream ended in before its advertised length: arrived
+// of its length bytes came (arrived counts bytes past the max size too, so a
+// frame can be both truncated and incomplete). A length of 0 means the stream
+// ended inside the count itself (the message is then empty). A newline-framed
+// message is never incomplete here: RFC 6587 non-transparent framing can't tell
+// a last line without its LF from a complete one (the caller may know more, such
+// as a reset).
+func (s *StreamReader) Incomplete() (arrived, length int64, ok bool) {
+	return s.arrived, s.length, s.short
 }
 
 // Buffered returns how many bytes of messages not yet returned the reader already
@@ -142,28 +179,30 @@ func (s *StreamReader) ensure(n int) bool {
 
 // octetHeader checks for "<digits> " at the start of the unread data, peeking
 // one byte at a time so an idle connection after a short line can't block it.
-func (s *StreamReader) octetHeader() (n int64, hdr int, ok bool) {
+// cut reports that the connection already counts octets and the stream ended
+// while only digits of a count had arrived.
+func (s *StreamReader) octetHeader() (n int64, hdr int, ok, cut bool) {
 	for i := 0; ; i++ {
 		if !s.ensure(i + 1) {
-			return 0, 0, false
+			return 0, 0, false, s.octet && i > 0
 		}
 		c := s.buf[s.start+i]
 		switch {
 		case c >= '0' && c <= '9':
 			if (i == 0 && c == '0') || i == maxCountDigits {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
 			n = n*10 + int64(c-'0')
 		case c == ' ' && i > 0:
 			if s.octet {
-				return n, i + 1, true
+				return n, i + 1, true, false
 			}
 			if s.ensure(i+2) && s.buf[s.start+i+1] == '<' {
-				return n, i + 1, true
+				return n, i + 1, true, false
 			}
-			return 0, 0, false
+			return 0, 0, false, false
 		default:
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 	}
 }
@@ -173,9 +212,12 @@ func (s *StreamReader) readCounted(n int64, hdr int) ([]byte, bool, error) {
 	s.start += hdr
 	s.msg = s.msg[:0]
 	truncated := false
+	length := n
 	for n > 0 {
 		if s.start == s.end && !s.fill() {
-			break // stream ended mid-frame: return what arrived
+			// The stream ended mid-frame: return what arrived, flagged.
+			s.short, s.arrived, s.length = true, length-n, length
+			return s.msg, truncated, nil
 		}
 		take := s.end - s.start
 		if int64(take) > n {
@@ -188,9 +230,6 @@ func (s *StreamReader) readCounted(n int64, hdr int) ([]byte, bool, error) {
 		s.msg = append(s.msg, chunk...)
 		s.start += take
 		n -= int64(take)
-	}
-	if len(s.msg) == 0 && !truncated {
-		return nil, false, s.err
 	}
 	return s.msg, truncated, nil
 }

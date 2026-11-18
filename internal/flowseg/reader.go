@@ -4,6 +4,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/store/logfile"
@@ -12,21 +13,40 @@ import (
 // Reader reads a segment: its footer (or a writer's snapshot) and blocks.
 // Safe for concurrent use: queries decode different blocks in parallel.
 type Reader struct {
-	f    *os.File
+	f    *countedFile
 	size int64
 	h    header
 	foot *Footer
 	mu   sync.Mutex // guards lazy loading of blocks' index
 }
 
+// readBytes counts the bytes every Reader has read from its file (ReadBytes).
+var readBytes atomic.Int64
+
+// ReadBytes is how many bytes Readers have read from segment files since the
+// process started: footers, block headers, blocks, raw sets and the scans of
+// segments without a footer. Queries' benches and tests use it to check how
+// often each block is read.
+func ReadBytes() int64 { return readBytes.Load() }
+
+// countedFile is a segment file whose reads count in ReadBytes.
+type countedFile struct{ *os.File }
+
+func (c *countedFile) ReadAt(p []byte, off int64) (int, error) {
+	n, err := c.File.ReadAt(p, off)
+	readBytes.Add(int64(n))
+	return n, err
+}
+
 // Open opens a closed segment. It returns ErrNoFooter for one still being
 // written or left by a crash (Recover closes it), ErrBadHeader for a file that
 // isn't a segment.
 func Open(path string) (*Reader, error) {
-	f, err := logfile.OpenFile(path) // shared: the store may delete it while it's read (Windows)
+	of, err := logfile.OpenFile(path) // shared: the store may delete it while it's read (Windows)
 	if err != nil {
 		return nil, err
 	}
+	f := &countedFile{of}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -54,10 +74,11 @@ func Open(path string) (*Reader, error) {
 // snapshot never lists a section that isn't complete on disk). Its blocks'
 // index is loaded on first use (Block).
 func OpenSnapshot(path string, snap *Footer) (*Reader, error) {
-	f, err := logfile.OpenFile(path)
+	of, err := logfile.OpenFile(path)
 	if err != nil {
 		return nil, err
 	}
+	f := &countedFile{of}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -68,12 +89,60 @@ func OpenSnapshot(path string, snap *Footer) (*Reader, error) {
 		f.Close()
 		return nil, err
 	}
+	// Sections are appended in order: a file shorter than the snapshot's
+	// last block or raw chunk isn't the file the snapshot is of.
+	var end int64
+	if n := len(snap.Blocks); n > 0 {
+		end = snap.Blocks[n-1].Offset + snap.Blocks[n-1].Length
+	}
+	if n := len(snap.RawChunks); n > 0 {
+		end = max(end, snap.RawChunks[n-1].Offset+snap.RawChunks[n-1].Length)
+	}
+	if st.Size() < end {
+		f.Close()
+		return nil, ErrCorrupt
+	}
 	foot := *snap // the blocks are shared: a reader never changes them (Block doesn't cache)
 	return &Reader{f: f, size: st.Size(), h: h, foot: &foot}, nil
 }
 
 // Close closes the file.
 func (r *Reader) Close() error { return r.f.Close() }
+
+// Identity is which file a segment is: its header's exporter, hour and
+// creation time. A file deleted (retention, low disk) and written again
+// under the same name is another identity, so a caller that kept a
+// segment's footer between reads can tell its offsets no longer apply.
+type Identity struct {
+	DeviceID string
+	Hour     int64 // unix ms
+	Created  int64 // unix ms
+}
+
+// Identity is the segment file's identity.
+func (r *Reader) Identity() Identity {
+	return Identity{DeviceID: r.h.deviceID, Hour: r.h.hour, Created: r.h.created}
+}
+
+// ReadIdentity reads the identity of the segment file at path (its header
+// only).
+func ReadIdentity(path string) (Identity, error) {
+	of, err := logfile.OpenFile(path)
+	if err != nil {
+		return Identity{}, err
+	}
+	f := &countedFile{of}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return Identity{}, err
+	}
+	h, err := readHeaderAt(f, st.Size())
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{DeviceID: h.deviceID, Hour: h.hour, Created: h.created}, nil
+}
 
 // Footer returns the segment's footer (shared; don't modify it). Its blocks
 // carry their directory fields only; Block loads one's index.
@@ -196,10 +265,11 @@ func (r *Reader) Raw(fn func(*flow.RawSet) bool) error {
 // CLI beside the service); inside the writer's process, OpenSnapshot is
 // cheaper. Blocks' index loads on first use (Block).
 func OpenLive(path string) (*Reader, error) {
-	f, err := logfile.OpenFile(path)
+	of, err := logfile.OpenFile(path)
 	if err != nil {
 		return nil, err
 	}
+	f := &countedFile{of}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()

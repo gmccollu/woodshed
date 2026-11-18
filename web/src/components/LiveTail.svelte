@@ -9,6 +9,7 @@
   import Icon from './Icon.svelte';
   import SeverityChips from './SeverityChips.svelte';
   import LogText from './LogText.svelte';
+  import Marks from './Marks.svelte';
   import { openMenu } from '../lib/block.svelte';
   import { tip } from '../lib/logtext';
 
@@ -239,7 +240,7 @@
       <div class="logline" title={tip(r.raw)} oncontextmenu={(e) => { e.preventDefault(); openMenu(r.device_id, e.clientX, e.clientY); }}>
         <span class="c t" title={r.received}>{clock(r.received, prefs.utc)}</span><span class="c h" title={r.device_id}>{deviceName(r.device_id)}</span><span
           class="c s {sevClass(r.severity)}">{sevLabel(r.severity)}</span
-        ><span class="m">{#if showRaw}<span class="text-log-dim"><LogText text={r.pri + r.header} raw /></span>{/if}<LogText text={r.body} raw={showRaw} /></span>
+        ><span class="m">{#if showRaw}<span class="text-log-dim"><LogText text={r.pri + r.header} raw /></span>{/if}<LogText text={r.body} raw={showRaw} /><Marks line={r} /></span>
       </div>
     {/each}
   </div>

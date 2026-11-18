@@ -289,7 +289,11 @@ upgrade opens no new port.
 2. On each exporter (a router, a switch, a firewall, or `softflowd` on a Linux host), set the flow exporter or
    collector to this computer and the port, flow v9 or IPFIX if it offers them, v5 otherwise.
 3. Open **Events → Flows**. Exporters usually send templates every few minutes, so the first records of a v9 or IPFIX
-   exporter can take that long to decode (they wait, and are decoded when the template arrives).
+   exporter can take that long to decode (they wait, and are decoded when the template arrives). The same happens after
+   Woodshed restarts: templates aren't kept across a restart (one the exporter changed meanwhile must never decode with
+   the old layout), and neither are sampling rates and interface names: records say "sampling unknown" until the
+   exporter's next options data (`GET /api/flows` gives the rate it had before as `last_known_sampling`, for context).
+   Each exporter's last 24 hours' counts are kept.
 
 **What's kept.** Each record's addresses, ports, protocol, TCP flags, packets and bytes, interfaces (with names when
 the exporter sends them as options data), AS numbers, next hop, VLAN, its flow start and end, and for event-style
@@ -337,7 +341,9 @@ comes, the data is kept undecoded (`status=no_template`), and so are malformed p
 dropped silently. When the template turns up later in the same hour, searches, Top and exports decode the kept data
 on read (marked `late`), and `woodshed reindex --flows-redecode` (with the service stopped) rewrites the segments with
 it decoded. Sequence numbers show loss between the exporter and Woodshed: **Settings → Flows** and
-`woodshed flow status` give each exporter's gaps, duplicates, late and undecoded counts.
+`woodshed flow status` give each exporter's gaps, duplicates, late and undecoded counts for the last 24 hours, and a
+bundle's README the gaps counted in its own window ("sequence gaps 3 (≈ 90 records lost before Woodshed) in this
+window"), kept per minute for a day and per hour for 7 days.
 
 **Where it's kept.** Flows are a fourth kind of data, stored as compact columnar segments, one per device per hour
 (`logs/<device>/flows/<YYYY-MM-DD>T<HH>.wsf`), at about 20 bytes a record (an exporter sending 1,000 records a second
@@ -414,6 +420,25 @@ decoded trap, for example
 
 with the version, the PDU, the community hash or v3 user, the status, the trap, one `vb=` per value (OID, name,
 type, value), and `raw=`, the whole packet in base64 (the community masked).
+
+A syslog message that couldn't be stored whole is still kept, and its line ends with a marker (since 2.0):
+
+```
+2026-11-17T10:00:00.000Z 192.0.2.1 <13>Nov 17 10:00:00 edge-fw-01 app: interface 3 went do \#incomplete=55/72
+```
+
+- `\#incomplete=55/72`: the message came over TCP or TLS with its length in front (octet counting) and the
+  connection ended after 55 of its 72 bytes, because the device closed or reset it, or Woodshed closed it (a message
+  that took longer than the frame timeout, a connection evicted to make room, a shutdown). `\#incomplete` without
+  numbers is a newline-framed message Woodshed cut that way, or whose connection the device reset.
+- `\#truncated`: longer than the max message size (64 KiB); the rest was discarded.
+
+Events and the live tail show the same as `[incomplete: 55 of 72 bytes]` or `[truncated]` after the message, and
+**About** counts incomplete messages per TCP and TLS listener. The marker isn't part of the message: searches don't
+match it. A device that frames TCP messages by newline and closes normally in the middle of one can't be caught,
+since the last part looks like a whole message; use octet counting on devices that offer it. A line torn by a crash
+or power loss is kept and marked `\#incomplete` too. Lines written before 2.0 have no marker, and an older Woodshed
+shows one as text at the end of the message.
 
 | | Installer | Portable |
 |---|---|---|
@@ -680,3 +705,56 @@ new installer from the releases page and run it, and your settings and logs are 
 
 Other machines can't open this page unless you turn on **LAN mode** (Settings → UI access), which needs a password
 and uses HTTPS. See the [FAQ](../FAQ.md#can-i-open-the-ui-from-another-computer).
+
+## 9. Troubleshooting
+
+### Profiling CPU or memory use
+
+If Woodshed uses more CPU or memory on your machine than you'd expect for the traffic it gets, a profile shows where it
+goes. `woodshed profile` captures one from the running service, on that machine. Profiling is **off** until you turn it
+on, and while it's on it can only be used from the machine itself, by an administrator:
+
+- It listens on `127.0.0.1` only (`::1` where there's no IPv4 loopback), on a port the OS picks, never on the network,
+  whatever LAN mode says. The UI's port has no profiling routes at all.
+- It answers only requests that carry a random token, which it writes into the data folder (`woodshed.pprof.json`,
+  readable only by the service and administrators), and only from a loopback address. A new token is made at each
+  start, and the file is removed when Woodshed stops.
+- While it's on, the UI shows a banner saying so, and the event log records when it started.
+
+Turn it on, capture, and turn it off again. Run these as an administrator (from an administrator PowerShell on Windows,
+with `sudo` on Linux and macOS):
+
+```sh
+woodshed profile on                                  # sets debug.pprof = true and restarts the service
+woodshed profile cpu --seconds 60 --out cpu.pprof    # which functions use the CPU, over 60 s
+woodshed profile cpu --seconds 60 --trace --out cpu.pprof   # the same, plus a 5 s runtime trace (cpu.trace)
+woodshed profile trace --seconds 5 --out woodshed.trace     # scheduler, syscall, timer and GC waits
+woodshed profile heap --out heap.pprof               # where the memory in use was allocated
+woodshed profile goroutine --out goroutines.txt      # every goroutine's stack, as text
+woodshed profile off                                 # and restart the service again
+```
+
+`profile on` restarts the service, so wait until the problem shows again before you capture. Instead of `profile on`,
+you can add these two lines to the end of the config file yourself (if it has no `[debug]` table yet) and restart the
+service, or set `WOODSHED_PPROF=1` in the service's environment (then remove it again to turn profiling off: `profile
+off` can't change the service's environment):
+
+```toml
+[debug]
+pprof = true
+```
+
+A CPU profile runs for 1 to 300 s (default 30), a trace for 1 to 60 s (default 5); one of each kind can run at a time.
+Without `--out`, the file is `woodshed-<kind>-<date>-<time>` in the current folder. The exit status is 0 when the file
+is written, 1 when Woodshed isn't running, profiling is off or the capture failed (nothing is written then), and 2 for a
+usage error.
+
+Read the files with Go's own tools, on any machine with Go installed (the machine Woodshed runs on doesn't need Go):
+`go tool pprof -top cpu.pprof`, `go tool pprof -sample_index=inuse_space -top heap.pprof`, or `go tool trace
+woodshed.trace` (it opens a browser). The profiles name the functions themselves, so the Woodshed binary isn't needed.
+
+**What's in them.** CPU profiles and traces hold function names, the source file paths of the build, call stacks,
+times and counts: they're safe to attach to a public issue. A heap profile records where memory was allocated and how
+much, not what the memory holds, so it doesn't contain your log messages either; but it, and a goroutine dump (which
+shows argument values such as sizes and addresses), says more about the running process than you may want to post.
+**Don't share heap profiles or goroutine dumps publicly**; send them privately to whoever asked for them.

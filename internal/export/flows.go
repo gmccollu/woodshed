@@ -1,6 +1,7 @@
 package export
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/datatype"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
+	"github.com/gmccollu/woodshed/internal/index"
 )
 
 // Flows in exports and bundles (SPEC §13.4). Per device, under flows/:
@@ -290,7 +292,8 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 	for i, format := range formats {
 		var hw *hashWriter
 		var mf ManifestFile
-		var cw *csv.Writer
+		var cw *bufio.Writer // flows.csv
+		var row []byte
 		var fw *flow.FileWriter
 		var n int64
 		open := func(first int64) error {
@@ -304,9 +307,14 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 			hw = &hashWriter{zw: zw, sum: sha256.New()}
 			mf = ManifestFile{Path: name, DeviceID: dev, First: time.UnixMilli(first).UTC()}
 			if format == FlowCSV {
-				cw = csv.NewWriter(hw)
-				cw.UseCRLF = true
-				return cw.Write(FlowCSVColumns)
+				cw = bufio.NewWriterSize(hw, 64<<10)
+				hdr := csv.NewWriter(cw)
+				hdr.UseCRLF = true
+				if err := hdr.Write(FlowCSVColumns); err != nil {
+					return err
+				}
+				hdr.Flush()
+				return hdr.Error()
 			}
 			fw = flow.NewFileWriter(hw, flow.FileOptions{Version: b.version, ExportTime: exportedAt})
 			return nil
@@ -325,7 +333,8 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 			}
 			var err error
 			if cw != nil {
-				err = cw.Write(FlowCSVRow(r))
+				row = AppendFlowCSVRow(row[:0], r)
+				_, err = cw.Write(row)
 			} else {
 				err = fw.Write(r)
 			}
@@ -350,8 +359,7 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 		})
 		if err == nil && hw != nil {
 			if cw != nil {
-				cw.Flush()
-				err = cw.Error()
+				err = cw.Flush()
 			} else {
 				err = fw.Close()
 			}
@@ -406,9 +414,11 @@ func (b *builder) writeFlows(ctx context.Context, zw *zipWriter, dev string, req
 
 // ---- the bundle's flow summary ----
 
-// FlowStats are what only the running collector knows about an exporter:
-// its sequence gaps and the records they stand for, and the records whose
-// flow time was far from when they arrived (the last 24 h).
+// FlowStats are the running collector's counts for an exporter over the
+// last 24 h: its sequence gaps and the records they stand for, and the
+// records whose flow time was far from when they arrived. They aren't
+// limited to a bundle's window (its own gaps come from the index:
+// FlowSummary.SequenceGaps).
 type FlowStats struct {
 	SequenceGaps, LostEstimate int64
 	TimeOffsets                flow.TimeOffsets
@@ -418,6 +428,31 @@ type FlowStats struct {
 type KeyShare struct {
 	Key   string  `json:"key"`
 	Share float64 `json:"share"`
+}
+
+// TopZeroOmitted is FlowSummary.ZeroOmitted: each top list's keys left out
+// for having 0 of its metric (bytes for the share lists, flow records for
+// the denied ones, NAT create events for post-NAT sources).
+type TopZeroOmitted struct {
+	TopTalkers        int64 `json:"top_talkers"`
+	TopDstPorts       int64 `json:"top_dst_ports"`
+	TopConversations  int64 `json:"top_conversations"`
+	TopDeniedSources  int64 `json:"top_denied_sources"`
+	TopDeniedPorts    int64 `json:"top_denied_ports"`
+	TopPostNATSources int64 `json:"top_post_nat_sources"`
+	// Approx: some list was counted approximately (too many keys), so its
+	// count is a lower bound ("at least N").
+	Approx bool `json:"approx"`
+}
+
+// GapSpan is the span a bundle's sequence gaps cover (FlowSummary).
+type GapSpan struct {
+	From   time.Time `json:"from"`
+	To     time.Time `json:"to"`
+	ByHour bool      `json:"by_hour"` // the start widened to the hour: hourly buckets in it
+	// Partial: the window starts before the 7 days the counts are kept, so
+	// they cover only From onward.
+	Partial bool `json:"partial"`
 }
 
 // KeyCount is a top-N entry with its count.
@@ -458,12 +493,28 @@ type FlowSummary struct {
 	TopDeniedPorts    []KeyCount       `json:"top_denied_ports"`
 	NATConnections    int64            `json:"nat_connections"`
 	TopPostNATSources []KeyShare       `json:"top_post_nat_sources"`
-	// SequenceGaps and LostEstimate are the running collector's (the last
-	// 24 h); null when the bundle was built without it (woodshed bundle).
-	SequenceGaps *int64 `json:"sequence_gaps"`
-	LostEstimate *int64 `json:"lost_estimate"`
-	NoTemplate   int64  `json:"no_template"`
-	Malformed    int64  `json:"malformed"`
+	// ZeroOmitted counts, per list, the keys with none of its metric, which
+	// are never listed (a denied-only source has 0 bytes).
+	ZeroOmitted TopZeroOmitted `json:"zero_omitted"`
+	// SequenceGaps and LostEstimate are the window's: the gaps the collector
+	// counted in datagrams received in it, per minute from the index
+	// (SPEC §13.10 decision 82), over SequenceGapsSpan (the window in whole
+	// minutes, its start widened to the hour past a day, or from the 7-day
+	// retention cutoff for a window that starts earlier). Null when they
+	// aren't known; SequenceGapsUnknown says why: "not_kept" (the window is
+	// older than the 7 days counts are kept), "nothing_received" (no datagram
+	// arrived in it) or "not_counted" (part of it stored by 2.0.0-rc1).
+	SequenceGaps        *int64   `json:"sequence_gaps"`
+	LostEstimate        *int64   `json:"lost_estimate"`
+	SequenceGapsSpan    *GapSpan `json:"sequence_gaps_span"`
+	SequenceGapsUnknown string   `json:"sequence_gaps_unknown,omitempty"`
+	// SequenceGaps24h and LostEstimate24h are the running collector's over
+	// the 24 h before the bundle was made, not limited to the window; null
+	// when it wasn't running (woodshed bundle).
+	SequenceGaps24h *int64 `json:"sequence_gaps_24h"`
+	LostEstimate24h *int64 `json:"lost_estimate_24h"`
+	NoTemplate      int64  `json:"no_template"`
+	Malformed       int64  `json:"malformed"`
 	// TimeOffsets counts the window's records whose end was more than 1 h
 	// after they arrived or more than 24 h before (SPEC §13.10 decision 70);
 	// TimeOffsets24h is the running collector's count over the last 24 h,
@@ -551,37 +602,52 @@ func (c *flowCount) raw(rs *flow.RawSet) {
 	}
 }
 
-func shares(t *flowquery.Top, metric string) []KeyShare {
+// shares is a top list with each key's share of the metric, and how many
+// keys were left out for having none of it.
+func shares(t *flowquery.Top, metric string) ([]KeyShare, int64) {
 	out := []KeyShare{}
+	rows, zero := t.RowsZero(topN)
 	tot := t.Total.Metric(metric)
 	if tot <= 0 {
-		return out
+		return out, zero
 	}
-	for _, r := range t.Rows(topN) {
-		if r.Metric(metric) <= 0 {
-			break // rows are by the metric: the rest are 0 too
-		}
-		out = append(out, KeyShare{Key: r.Key, Share: math.Round(float64(r.Metric(metric))/float64(tot)*1e4) / 1e4})
+	for _, r := range rows {
+		// Rounded to 0.01 %, but never to 0: rows have some of the metric,
+		// and a share that reads "0 %" says it has none.
+		sh := max(math.Round(float64(r.Metric(metric))/float64(tot)*1e4)/1e4, 1e-4)
+		out = append(out, KeyShare{Key: r.Key, Share: sh})
 	}
-	return out
+	return out, zero
 }
 
-func counts(t *flowquery.Top) []KeyCount {
+// counts is a top list by flow records, and how many keys had none.
+func counts(t *flowquery.Top) ([]KeyCount, int64) {
 	out := []KeyCount{}
-	for _, r := range t.Rows(topN) {
+	rows, zero := t.RowsZero(topN)
+	for _, r := range rows {
 		out = append(out, KeyCount{Key: r.Key, Count: r.Flows})
 	}
-	return out
+	return out, zero
 }
 
-// summary is the accumulated FlowSummary; stats may be nil (not known).
-func (c *flowCount) summary(stats *FlowStats) *FlowSummary {
+// summary is the accumulated FlowSummary, with the window's sequence gaps
+// from the index (win) and the collector's 24 h counts (stats; nil when not
+// known).
+func (c *flowCount) summary(stats *FlowStats, win index.FlowWindowCounts) *FlowSummary {
 	tot := c.talkers.Total
 	s := &FlowSummary{Records: c.records, Domains: len(c.domains), Sampling: []DomainSampling{}, Bytes: tot.Bytes,
 		BytesScaled: tot.BytesScaled, Packets: tot.Packets, PacketsScaled: tot.PacketsScaled, ScaledComplete: tot.Unknown == 0,
-		TopTalkers: shares(c.talkers, "bytes"), TopDstPorts: shares(c.ports, "bytes"), TopConversations: shares(c.convs, "bytes"),
-		FwEvents: c.fw, TopDeniedSources: counts(c.denSrc), TopDeniedPorts: counts(c.denPort), NATConnections: c.nat.Total.Flows,
-		TopPostNATSources: shares(c.nat, "flows"), NoTemplate: c.noTemplate, Malformed: c.malformed, TimeOffsets: c.off}
+		FwEvents: c.fw, NATConnections: c.nat.Total.Flows, NoTemplate: c.noTemplate, Malformed: c.malformed, TimeOffsets: c.off}
+	z := &s.ZeroOmitted
+	s.TopTalkers, z.TopTalkers = shares(c.talkers, "bytes")
+	s.TopDstPorts, z.TopDstPorts = shares(c.ports, "bytes")
+	s.TopConversations, z.TopConversations = shares(c.convs, "bytes")
+	s.TopDeniedSources, z.TopDeniedSources = counts(c.denSrc)
+	s.TopDeniedPorts, z.TopDeniedPorts = counts(c.denPort)
+	s.TopPostNATSources, z.TopPostNATSources = shares(c.nat, "flows")
+	for _, t := range []*flowquery.Top{c.talkers, c.ports, c.convs, c.denSrc, c.denPort, c.nat} {
+		z.Approx = z.Approx || t.Approx()
+	}
 	for d, rates := range c.domains {
 		ds := DomainSampling{Domain: d}
 		for r := range rates {
@@ -591,9 +657,16 @@ func (c *flowCount) summary(stats *FlowStats) *FlowSummary {
 		s.Sampling = append(s.Sampling, ds)
 	}
 	sort.Slice(s.Sampling, func(i, j int) bool { return s.Sampling[i].Domain < s.Sampling[j].Domain })
+	if win.Known {
+		g, l := win.SeqGaps, win.SeqLost
+		s.SequenceGaps, s.LostEstimate = &g, &l
+		s.SequenceGapsSpan = &GapSpan{From: win.From.UTC(), To: win.To.UTC(), ByHour: win.ByHour, Partial: win.Partial}
+	} else {
+		s.SequenceGapsUnknown = win.Reason
+	}
 	if stats != nil {
 		g, l := stats.SequenceGaps, stats.LostEstimate
-		s.SequenceGaps, s.LostEstimate = &g, &l
+		s.SequenceGaps24h, s.LostEstimate24h = &g, &l
 		o := stats.TimeOffsets
 		s.TimeOffsets24h = &o
 	}
@@ -629,14 +702,35 @@ func humanUnits(n int64, units []string) string {
 	return strconv.FormatFloat(v, 'f', 1, 64) + units[i]
 }
 
-func pct(share float64) string {
-	return strconv.FormatInt(int64(math.Round(share*100)), 10) + " %"
+// ShareText is a share as the README and the UI's Top panel show it
+// (shareText in web/src/lib/flows.ts): whole percents from 10 %, one decimal
+// under that ("4.2 %", "0.3 %"), and "<0.1 %" for a non-zero share under
+// 0.1 %, so a small share never reads as "0 %" (SPEC §13.10 decision 81).
+// Exported for the end-to-end tests, which check the README with it.
+func ShareText(share float64) string {
+	p := share * 100
+	switch {
+	case p > 0 && p < 0.1:
+		return "<0.1 %"
+	case p < 10:
+		return strings.TrimSuffix(strconv.FormatFloat(math.Round(p*10)/10, 'f', 1, 64), ".0") + " %"
+	}
+	return strconv.FormatInt(int64(math.Round(p)), 10) + " %"
+}
+
+// zeroNote is a list's " (4 with 0 bytes not shown)" ("" for none; "at
+// least" when counted approximately).
+func zeroNote(n int64, metric string, approx bool) string {
+	if t := flowquery.ZeroOmittedText(n, metric, approx); t != "" {
+		return " (" + t + ")"
+	}
+	return ""
 }
 
 func joinShares(ks []KeyShare) string {
 	var p []string
 	for _, k := range ks {
-		p = append(p, k.Key+" "+pct(k.Share))
+		p = append(p, k.Key+" "+ShareText(k.Share))
 	}
 	return strings.Join(p, ", ")
 }
@@ -709,15 +803,21 @@ func flowReadme(s *FlowSummary) []string {
 	}
 	lines = append(lines, fmt.Sprintf("bytes %s exported%s, packets %s%s", humanBytes(s.Bytes), approx(s.BytesScaled, humanBytes),
 		humanCount(s.Packets), approx(s.PacketsScaled, humanCount)))
-	if len(s.TopTalkers) > 0 {
-		lines = append(lines, "top talkers by bytes: "+joinShares(s.TopTalkers))
+	// A share list leaves out keys with 0 bytes and says how many; with
+	// only those, it says "none" (an event-only exporter's records carry no
+	// bytes).
+	z := s.ZeroOmitted
+	shareLine := func(label string, ks []KeyShare, zero int64) {
+		switch {
+		case len(ks) > 0:
+			lines = append(lines, label+joinShares(ks)+zeroNote(zero, "bytes", z.Approx))
+		case zero > 0:
+			lines = append(lines, label+"none"+zeroNote(zero, "bytes", z.Approx))
+		}
 	}
-	if len(s.TopDstPorts) > 0 {
-		lines = append(lines, "top destination ports: "+joinShares(s.TopDstPorts))
-	}
-	if len(s.TopConversations) > 0 {
-		lines = append(lines, "top conversations: "+joinShares(s.TopConversations[:1]))
-	}
+	shareLine("top talkers by bytes: ", s.TopTalkers, z.TopTalkers)
+	shareLine("top destination ports: ", s.TopDstPorts, z.TopDstPorts)
+	shareLine("top conversations: ", s.TopConversations[:min(1, len(s.TopConversations))], z.TopConversations)
 	if fw := s.FwEvents; fw.Created+fw.Deleted+fw.Denied > 0 {
 		lines = append(lines, fmt.Sprintf("firewall events: %s created, %s deleted, %s denied", datatype.Thousands(fw.Created),
 			datatype.Thousands(fw.Deleted), datatype.Thousands(fw.Denied)))
@@ -739,14 +839,50 @@ func flowReadme(s *FlowSummary) []string {
 	if l := timeOffLine(s); l != "" {
 		lines = append(lines, l)
 	}
-	gaps := "sequence gaps not known (only the running service counts them)"
-	if s.SequenceGaps != nil {
-		gaps = fmt.Sprintf("sequence gaps %s (≈ %s records lost before Woodshed, last 24 h)", datatype.Thousands(*s.SequenceGaps),
-			datatype.Thousands(*s.LostEstimate))
-	}
-	lines = append(lines, fmt.Sprintf("%s; waiting for a template %s; malformed %s", gaps, datatype.Thousands(s.NoTemplate),
+	lines = append(lines, fmt.Sprintf("%s; waiting for a template %s; malformed %s", seqGapWords(s), datatype.Thousands(s.NoTemplate),
 		datatype.Thousands(s.Malformed)))
+	// The collector's last 24 h only stands in when the window's own count
+	// isn't known, and says it's not the window's (SPEC §13.10 decision 82).
+	if s.SequenceGaps == nil && s.SequenceGaps24h != nil && *s.SequenceGaps24h > 0 {
+		lines = append(lines, fmt.Sprintf("collector sequence gaps in the 24 h before this bundle was made (not limited to this window): %s "+
+			"(≈ %s records lost)", datatype.Thousands(*s.SequenceGaps24h), datatype.Thousands(*s.LostEstimate24h)))
+	}
 	return lines
+}
+
+// seqGapWords is the README's sequence gaps for the window: "sequence gaps 3
+// (≈ 90 records lost before Woodshed) in this window", over a span widened
+// to the hour past a day, from the retention cutoff for a window that starts
+// before it, or why they aren't known.
+func seqGapWords(s *FlowSummary) string {
+	if s.SequenceGaps == nil {
+		why := "Woodshed keeps them 7 days"
+		switch s.SequenceGapsUnknown {
+		case index.FlowGapsNotCounted:
+			why = "part of it was stored by a Woodshed that didn't count them"
+		case index.FlowGapsNothingReceived:
+			why = "no flow datagram arrived in it: gaps are counted by arrival, and its records are here by their own times"
+		}
+		return "sequence gaps in this window not known (" + why + ")"
+	}
+	w := "sequence gaps " + datatype.Thousands(*s.SequenceGaps)
+	if *s.SequenceGaps > 0 && s.LostEstimate != nil {
+		w += " (≈ " + datatype.Thousands(*s.LostEstimate) + " records lost before Woodshed)"
+	}
+	sp := s.SequenceGapsSpan
+	if sp == nil || (!sp.ByHour && !sp.Partial) {
+		return w + " in this window"
+	}
+	from, to := sp.From.UTC(), sp.To.UTC()
+	toText := to.Format("15:04")
+	if to.Add(-time.Nanosecond).Format(time.DateOnly) != from.Format(time.DateOnly) {
+		toText = to.Format("2006-01-02 15:04")
+	}
+	span := from.Format("2006-01-02 15:04") + "–" + toText + " UTC"
+	if sp.Partial {
+		return w + " in " + span + " only (Woodshed keeps the counts 7 days, and this window starts earlier)"
+	}
+	return w + " in " + span + " (from the hour: counts older than a day are kept by the hour)"
 }
 
 // timeOffLine is the README's line for records whose flow time was far from
@@ -837,14 +973,3 @@ func flowReadmeFiles(info Info) string {
 // FlowCSVHeader is flows.csv's header row's columns (`woodshed search
 // --type flow` prints the same).
 func FlowCSVHeader() []string { return slices.Clone(FlowCSVColumns) }
-
-// AppendFlowCSVRow appends a record's flows.csv row to dst: RFC 4180 quoting,
-// CRLF at the end.
-func AppendFlowCSVRow(dst []byte, r *flow.Record) []byte {
-	var b bytes.Buffer
-	cw := csv.NewWriter(&b)
-	cw.UseCRLF = true
-	_ = cw.Write(FlowCSVRow(r))
-	cw.Flush()
-	return append(dst, b.Bytes()...)
-}

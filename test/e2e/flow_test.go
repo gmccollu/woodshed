@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/config"
+	"github.com/gmccollu/woodshed/internal/export"
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/loadgen"
 )
@@ -258,15 +260,44 @@ func TestFlowsEndToEnd(t *testing.T) {
 	if rows := bytes.Count(csv, []byte("\r\n")) - 1; rows != len(want) {
 		t.Fatalf("flows.csv: %d rows, want %d", rows, len(want))
 	}
-	readme := string(files["README.txt"])
-	pct := func(v uint64) string {
-		var tot uint64
-		for _, x := range tops {
-			tot += x.v
-		}
-		return fmt.Sprintf("%s %.0f %%", tops[0].k, 100*float64(v)/float64(tot))
+	// The top talker's share: the manifest's is the generator's (to its
+	// 0.01 % rounding), and the README shows it as export.ShareText does. The
+	// share depends on the generated data, so it's never a fixed string (a
+	// hard-coded "10 %" failed when it came out 9.7 %).
+	var tot uint64
+	for _, x := range tops {
+		tot += x.v
 	}
-	for _, s := range []string{"\n  Flows        ", "top talkers by bytes: " + pct(tops[0].v), "sampled 1 in 100 on domain",
+	share := float64(tops[0].v) / float64(tot)
+	var man struct {
+		Summary []struct {
+			IP   string
+			Flow *struct {
+				TopTalkers []struct {
+					Key   string
+					Share float64
+				} `json:"top_talkers"`
+			}
+		}
+	}
+	if err := json.Unmarshal(files["manifest.json"], &man); err != nil {
+		t.Fatalf("manifest.json: %v", err)
+	}
+	var talker string
+	for _, d := range man.Summary {
+		if d.IP != "127.0.0.1" || d.Flow == nil {
+			continue
+		}
+		if tt := d.Flow.TopTalkers; len(tt) == 0 || tt[0].Key != tops[0].k || math.Abs(tt[0].Share-share) > 1e-4 {
+			t.Fatalf("manifest top talkers %+v, want %s with %.4f", tt, tops[0].k, share)
+		}
+		talker = d.Flow.TopTalkers[0].Key + " " + export.ShareText(d.Flow.TopTalkers[0].Share)
+	}
+	if talker == "" {
+		t.Fatalf("no flow summary for 127.0.0.1 in manifest.json:\n%s", files["manifest.json"])
+	}
+	readme := string(files["README.txt"])
+	for _, s := range []string{"\n  Flows        ", "top talkers by bytes: " + talker, "sampled 1 in 100 on domain",
 		"firewall events: ", "denied"} {
 		if !strings.Contains(readme, s) {
 			t.Errorf("README lacks %q:\n%s", s, readme)

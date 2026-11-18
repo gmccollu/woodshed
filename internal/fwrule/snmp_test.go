@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -37,12 +38,23 @@ func (f *fakeWinRules) run(name string, args ...string) (string, error) {
 		}
 		r.calls = append(r.calls, "protocol="+kv["protocol"])
 	}
-	out, err := r.run(name, args...)
-	return strings.ReplaceAll(out, RuleName, kv["name"]), err
+	return r.run(name, args...)
+}
+
+// list is ListRules over every rule present.
+func (f *fakeWinRules) list(names ...string) ([]WinRule, error) {
+	var out []WinRule
+	for name, r := range f.rules {
+		if len(names) == 0 || slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, name) }) {
+			out = append(out, r.rules(name)...)
+		}
+	}
+	return out, nil
 }
 
 func TestSNMPWindowsRule(t *testing.T) {
 	f := &fakeWinRules{rules: map[string]*fakeWin{}}
+	useRules(t, f.list)
 	exe := `C:\Program Files\Woodshed\woodshed.exe`
 	if s := SNMPWindowsState(f.run, 162); s != StateMissing {
 		t.Errorf("no rule: %s", s)

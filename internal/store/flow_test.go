@@ -6,9 +6,12 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/metrics"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +110,43 @@ func TestWriteFlowsSegmentsAndIndex(t *testing.T) {
 	}
 }
 
+// The collector's counts go to type_stats with the batch they came with
+// (SPEC §13.10 decision 82): sequence gaps, duplicates, late records, raw
+// sets by status and times off arrival, also from a batch with nothing to
+// store (which opens no segment); they survive
+// a restart of the store.
+func TestFlowCountsStored(t *testing.T) {
+	e := newEnv(t, nil)
+	a := ip(8)
+	h := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	e.clock.Set(h.Add(10 * time.Minute))
+	recs := flowRecs(e.clock.Now(), 3, 0)
+	recs[0].Status = flow.StatusLate
+	recs[1].End = recs[1].Received + 2*time.Hour.Milliseconds() // ahead
+	raws := []*flow.RawSet{{Received: recs[0].Received, Exporter: a, Status: flow.StatusNoTemplate, Data: []byte{1}},
+		{Received: recs[0].Received, Exporter: a, Status: flow.StatusMalformed, Data: []byte{2}}}
+	if err := e.s.WriteFlows(a, FlowBatch{Received: e.clock.Now(), Size: 900, Records: recs, Raw: raws, SeqGaps: 2, SeqLost: 60, Duplicates: 1}); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Add(time.Minute)
+	if err := e.s.WriteFlows(ip(9), FlowBatch{Received: e.clock.Now(), SeqGaps: 1, SeqLost: 30}); err != nil {
+		t.Fatal(err)
+	}
+	e.maintain()
+	if got := e.flowFiles(ip(9)); len(got) != 0 {
+		t.Fatalf("a counts-only batch opened %v", got)
+	}
+	e.reopen()
+	w, err := e.idx.FlowCountsIn(bg, "192.0.2.8", h, h.Add(time.Hour), time.Time{})
+	if err != nil || !w.Known || w.SeqGaps != 2 || w.SeqLost != 60 || w.Duplicates != 1 || w.Late != 1 || w.NoTemplate != 1 ||
+		w.Malformed != 1 || w.Ahead != 1 || w.MaxAheadMs != 2*time.Hour.Milliseconds() || w.Records != 3 {
+		t.Fatalf("counts %+v %v", w, err)
+	}
+	if w, _ := e.idx.FlowCountsIn(bg, "192.0.2.9", h, h.Add(time.Hour), time.Time{}); !w.Known || w.SeqGaps != 1 || w.Records != 0 {
+		t.Fatalf("counts only %+v", w)
+	}
+}
+
 // A crash leaves the open segment without a footer: the next start keeps its
 // complete blocks, writes the footer, records the cut, and indexes it.
 func TestFlowCrashRecovery(t *testing.T) {
@@ -195,12 +235,34 @@ func TestFlowBudget(t *testing.T) {
 	dels, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 100)
 	n := 0
 	for _, d := range dels {
-		if d.Type == index.TypeFlow && d.Reason == index.ReasonCap {
-			n++
+		if d.Type != index.TypeFlow || d.Reason != index.ReasonFlowBudget {
+			t.Fatalf("deletion %+v: want a flow-budget flow deletion", d)
 		}
+		n++
 	}
 	if n != 4 {
 		t.Fatalf("flow deletions %d: %+v", n, dels)
+	}
+	// The events name the flow budget, never the storage cap: one per segment
+	// and one per budget pass that deleted any.
+	size := `(?:\d+ B|\d+\.\d [KMGTPE]iB)`
+	passRe := regexp.MustCompile(`^flows over their budget \(` + size + ` of 1 B\): deleted (\d+) oldest flow segments? \(` + size + `\)$`)
+	perSeg, inPasses := 0, 0
+	for _, ev := range eventsOf(t, e.idx, index.KindDelete) {
+		switch {
+		case strings.Contains(ev.Text, "storage cap"):
+			t.Fatalf("flow budget event says storage cap: %q", ev.Text)
+		case strings.HasPrefix(ev.Text, "deleted logs/192.0.2.9/flows/") && strings.Contains(ev.Text, "(flows over their budget, "):
+			perSeg++
+		case passRe.MatchString(ev.Text):
+			k, _ := strconv.Atoi(passRe.FindStringSubmatch(ev.Text)[1])
+			inPasses += k
+		default:
+			t.Fatalf("unexpected delete event %q", ev.Text)
+		}
+	}
+	if perSeg != 4 || inPasses != 4 {
+		t.Fatalf("per-segment events %d, segments in pass events %d", perSeg, inPasses)
 	}
 	if b := e.s.FlowBudget(); b != 1 {
 		t.Fatalf("budget %d", b)

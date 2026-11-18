@@ -41,6 +41,25 @@ type Block struct {
 	inf       [64][]byte // inflated columns, reused from block to block
 }
 
+// EffectiveTimes is EffectiveTimes of the row's record (as Record would fill
+// it), from the decoded columns.
+func (b *Block) EffectiveTimes(row int) (start, end int64) {
+	const st, en, ev = 0, 1, 2 // the Has* bits' column IDs
+	switch {
+	case b.cols&Cols(flow.HasEnd) != 0 && len(b.pres[en]) > 0 && b.pres[en][row]:
+		end = b.t[en][row]
+	case b.cols&Cols(flow.HasEventTime) != 0 && len(b.pres[ev]) > 0 && b.pres[ev][row]:
+		end = b.t[ev][row]
+	case b.cols&ColReceived != 0:
+		end = b.received[row]
+	}
+	start = end
+	if b.cols&Cols(flow.HasStart) != 0 && len(b.pres[st]) > 0 && b.pres[st][row] && b.t[st][row] < end {
+		start = b.t[st][row]
+	}
+	return start, end
+}
+
 // Decoded reports which columns the last Decode filled.
 func (b *Block) Decoded() Cols { return b.cols }
 
@@ -399,19 +418,36 @@ func (b *Block) decodeCol(id int, r []byte, n int) error {
 			i += int(run)
 		}
 	case ColExtras:
+		// The rows' lists and values are their records' own (Record's
+		// contract), but not one allocation each: the lists are cut from
+		// shared chunks and the values from one copy of the column.
+		d.b = slices.Clone(d.b)
 		b.xpres, _ = readPresence(d, n, b.xpres)
-		b.extras = make([][]flow.Extra, n)
+		var arena []flow.Extra
 		for i := 0; i < n && d.err == nil; i++ {
 			if !b.xpres[i] {
 				continue
 			}
+			if b.extras == nil { // only a block with extras pays for the rows' slices
+				b.extras = make([][]flow.Extra, n)
+			}
 			k := d.count(3)
-			xs := make([]flow.Extra, 0, k)
+			if k == 0 {
+				b.extras[i] = []flow.Extra{} // present and empty, as stored
+				continue
+			}
+			if cap(arena)-len(arena) < k {
+				arena = make([]flow.Extra, 0, max(k, min(n-i, 4096)))
+			}
+			xs := arena[len(arena) : len(arena) : len(arena)+k]
 			for j := 0; j < k && d.err == nil; j++ {
 				x := flow.Extra{PEN: uint32(d.limit(math.MaxUint32)), ID: uint16(d.limit(65535))}
-				x.Value = append([]byte(nil), d.bytes()...)
+				if v := d.bytes(); len(v) > 0 {
+					x.Value = v[:len(v):len(v)]
+				}
 				xs = append(xs, x)
 			}
+			arena = arena[:len(arena)+len(xs)]
 			b.extras[i] = xs
 		}
 	default:

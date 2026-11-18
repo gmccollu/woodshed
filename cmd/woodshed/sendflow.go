@@ -73,6 +73,13 @@ digits). With --events each record also carries a rule ID: IPFIX IE 32473:3,
 v9 field type 40003 (listeners.flow.rule_id_ies "32473:3" or "0:40003" fills
 rule_id from it). Addresses are from 10/8 and the documentation ranges.
 
+If the port refuses (ICMP port unreachable) before a second of sending, it
+stops: nothing is listening. A refusal after that is the collector going away
+for a while (a restart): the packet is sent again and sending goes on, as an
+exporter's would; the summary gives when the refusals came and how many were
+reported, a lower bound on what was lost. On Windows a refusal is never
+detected (Go doesn't report them for UDP there), so it never stops for one.
+
 Examples:
   woodshed send --proto ipfix --count 1000                1,000 IPFIX records to 127.0.0.1:4739
   woodshed send --proto flow-v9 --port 12055 --rate 5000 --duration 60s
@@ -195,6 +202,9 @@ Examples:
 		}
 		fmt.Fprintf(stdout, "Sent %d %s record%s in %d packets to %s in %v (%.0f records/s), run %s.\n", res.Records,
 			strings.ToUpper(*proto), plural, res.Packets, o.Addr, res.Elapsed.Round(time.Millisecond), res.Rate, res.RunID)
+		if t := loadgen.RefusedText(res.Refused); t != "" {
+			fmt.Fprintf(stdout, "%s.\n", t)
+		}
 		fmt.Fprintln(stdout, "(UDP has no delivery confirmation: check the collector to see that they arrived.)")
 	}
 	if logErr != nil {

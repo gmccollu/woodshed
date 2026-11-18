@@ -98,7 +98,18 @@ frontend install.
   message. A frame counts as octet-counted when it starts with up to 10 digits, a space and `<`. After a
   connection's first octet frame, the `<` check is dropped for that connection. This keeps a newline-framed line
   starting with "123 " from being read as a count.
-- Max message size is 64 KiB. Anything longer is truncated and counted (`truncated` counter), never dropped.
+- **Incomplete frames (2.0, decision 79):** an octet-counted frame that ends before its advertised length is kept as
+  far as it arrived and marked incomplete, with both lengths (`\#incomplete=9/50` on its line, §3.3), whoever ended
+  the connection: the sender's close, a reset, a TLS close, the frame timeout, an eviction or shutdown. Each TCP and
+  TLS listener counts them (`/api/stats` `tcp_frames`). A frame of which only the count arrived has nothing to keep and
+  is only counted, and so is one cut inside its count (`50`, `5`) once the connection has used octet counting (a
+  connection's first frame stays ambiguous: `50` then a close is a line). A newline-framed message is marked
+  incomplete (with no lengths) when Woodshed closed the connection mid-line or the sender reset it; a sender's last
+  line without its LF before a clean close (FIN, or a TLS close) is a complete message, because non-transparent
+  framing (RFC 6587 §3.4.2) can't tell it from one that was cut. From 1.0 to 1.3 a frame its sender cut short was
+  stored with nothing to say so, and one Woodshed cut was counted as truncated.
+- Max message size is 64 KiB. Anything longer is truncated and counted (`truncated` counter), never dropped; from 2.0
+  its line is marked `\#truncated` too. `truncated` counts only this: an incomplete frame isn't in it.
 - TCP idle timeout: a connection with no complete message for 24 h is closed (`tcp_idle_timeout`, 1 min to 7 days).
   It was 10 min in 1.0.0, but some senders keep one connection without keepalives, notice it was closed only when a
   later write fails, and lose what they send until they reconnect. Eviction doesn't wait for it: when all connection
@@ -141,8 +152,17 @@ frontend install.
 - Default data dirs: Windows `C:\ProgramData\Woodshed`, macOS `/Library/Application Support/Woodshed`, Linux
   `/var/lib/woodshed`.
 - **Line format:** `<received UTC, RFC 3339 with ms> <sender IP> <raw message>`, one line per message. Embedded
-  CR/LF in a message is escaped as `\r` / `\n` so one message is always one line. Example:
+  CR/LF in a message is escaped as `\r` / `\n`, and a backslash as `\\`, so one message is always one line. Example:
   `2026-11-10T20:41:07.112Z 10.1.0.1 <134>Nov 10 20:41:07 edge-fw-01 conn opened tcp ...`
+- **Marker (2.0, decision 79):** a message that wasn't stored whole ends its line with a blank, `\#` and its flags,
+  comma-separated: `truncated` (cut at the max message size), then `incomplete=A/L` (an octet-counted frame that
+  ended with A of its advertised L bytes; A counts bytes past the max size too) or `incomplete` (a line Woodshed cut;
+  the length isn't known). For example `... <13>short \#incomplete=9/50` or `... \#truncated,incomplete=70000/100000`.
+  The escaping writes a backslash after a blank only as `\\`, `\n` or `\r`, so ` \#` can't come from a message; the
+  marker isn't part of the raw message, and readers ignore flags they don't know. Lengths that can't be right (A not
+  below L) are dropped and the flag kept, and a torn flag name (`\#incompl`) still counts. Recovery marks a torn last
+  line it keeps `incomplete`. A reader before 2.0 shows the marker as text at the end of the message. A whole message
+  has no marker, so its line is exactly as in 1.x.
 - Files use the received time in UTC, because device clocks are often wrong or in local time. The device's own
   timestamp stays inside the raw message.
 - Writes are buffered per device and flushed every 1 s or 1 MiB, whichever comes first; fsync every 5 s. If the
@@ -905,7 +925,8 @@ by it. Devices import the **CA**, so a renewed leaf needs no change on any devic
 
 #### 10.3.5 Framing and connections
 - **Framing** is exactly the TCP listener's: octet counting or LF per message, auto-detected; CRLF and NUL tolerated,
-  and a missing final LF at close kept as a message; `max_message_bytes` and `tcp_frame_timeout` as for TCP.
+  and a missing final LF at close kept as a message; `max_message_bytes` and `tcp_frame_timeout` as for TCP. An
+  octet-counted frame cut short by a TLS close (with or without `close_notify`) is incomplete, as for TCP (§3.1).
 - **Connections** share the TCP listener's pool and limits: `MaxConns`, `tcp_max_conns_per_source` (default 32; at
   least 4 parallel connections per sender are needed) and `tcp_max_conns_per_prefix` count TCP and TLS together, and
   eviction works the same way. Order across a sender's connections isn't assumed.
@@ -1158,8 +1179,12 @@ left room:
 4. The TLS banners show only while the listener is on. `tls_cert_names` (and `cert.missing_names`) apply to
    Woodshed's own certificate only. `tls_firewall` shows only for the installed Windows service: portable mode and
    `woodshed run` have no rule.
-5. The Windows rule's state is read with `netsh advfirewall firewall show rule name=… verbose` (English field
-   names), at most once a minute. Output it can't read (another display language) is `"unknown"`: no banner. `woodshed
+5. The Windows rule's state is read through the firewall's COM API (`HNetCfg.FwPolicy2`: each rule's `Name`,
+   `Enabled`, `LocalPorts`, …, in process; `fwrule.ListRules`), at most once a minute. Nothing it reads is localized,
+   so it's the same in every display language; only a firewall that can't be read is `"unknown"` (no banner). 1.x
+   parsed `netsh advfirewall firewall show rule … verbose`, whose field names and values are translated, so on a
+   non-English Windows every state was unknown and a missing rule was an error: the installers and `woodshed install`
+   never created the rules there. The rules are still changed with netsh, whose commands aren't translated. `woodshed
    tls on` points the rule at the running `woodshed.exe` and creates it (enabled) if it's missing.
 6. `listeners.tls.port` must differ from the TCP and UDP ports on an overlapping address (the same address, or either
    a wildcard) and from `ui.port`. A user's own key must be RSA of at least 2048 bits or ECDSA P-256, P-384 or P-521
@@ -1174,7 +1199,8 @@ left room:
 10. `woodshed send --proto tls` uses port 6514 unless `--port` is given and needs `--ca FILE` (PEM or DER) or
     `--insecure`; `woodshed bench --proto all` includes TLS.
 11. `internal/fwrule` joins §10.2's allowlist of packages that may use process APIs (`os/exec`): it runs only the host
-    firewall's own programs (netsh, ufw, firewall-cmd) and never opens a network connection.
+    firewall's own programs (netsh, ufw, firewall-cmd), reads the Windows rules through the firewall's COM API in
+    process (item 5), and never opens a network connection.
 
 **Acceptance items for the 1.1 build** (the install smoke tests confirm each, or the design changes before release):
 - The WiX firewall extension in use can ship the TLS 6514 rule present but disabled, and an upgrade keeps its state.
@@ -2768,7 +2794,9 @@ templates that use the same field type numbers are read the same way.
 - A new `flow_minute` table (device, minute, records, bytes, packets, and scaled bytes and packets where sampling is
   known): each record's bytes and packets spread evenly over the minutes its `[start, end]` covers. It serves the
   unfiltered flow histogram and the timeline strip without reading segments, and lives as long as its segments.
-- `type_stats` counts flow records by received minute like any type (rates, totals, fair-share weights).
+- `type_stats` counts flow records by received minute like any type (rates, totals, fair-share weights), and keeps
+  the collector's counts per exporter beside them: sequence gaps, lost records, duplicates, late, `no_template`,
+  `malformed` and times off arrival (§13.10 decisions 82 and 83).
 - **Reindex** reads each segment's footer (or recovers it, as above) and rebuilds `files`, `flow_segments` and
   `flow_minute` from it. `--flows-redecode` also re-reads raw sections with the segment's templates.
 
@@ -2824,6 +2852,9 @@ rule_id, time_source, status, extras}}`. There's no `raw`: a record isn't a line
 - each row has the exported count, the scaled count (when every record behind it has a known sampling rate; with
   some unknown, the scaled value is a lower bound marked `≥`), its share of the window's total, and `first`/`last`
   flow times.
+- **A key with none of the metric is never a row** (§13.10 decision 80): a top by bytes doesn't end with denied-only
+  sources, rule IDs or ports at 0 bytes. `zero_omitted` counts them, and every top list (the CLI, the Top and Denied
+  views, the bundle README) says "4 with 0 bytes not shown" when there are any. Totals still count their records.
 - **Exact vs sampled:** exported counts are exact (what the exporter reported); scaled counts multiply each record by
   its own sampling rate. Both are shown whenever any record was sampled: "312 MB exported (≈ 312 GB at 1:1000)".
   Nothing is scaled silently, and `sampling: 0` records are never scaled.
@@ -2888,7 +2919,7 @@ for a plain export stays `["syslog"]` (§13.9). One zip, one manifest, one folde
                  firewall events: 48,210 created, 47,902 deleted, 3,114 denied
                  top denied sources: 203.0.113.50 1,920, 198.51.100.23 411; top denied ports: tcp/23 1,204, tcp/445 870
                  NAT: 41,377 translated connections; top post-NAT sources: 192.0.2.10 88 %
-                 sequence gaps 3 (≈ 90 records lost before Woodshed); waiting for a template 0; malformed 0
+                 sequence gaps 3 (≈ 90 records lost before Woodshed) in this window; waiting for a template 0; malformed 0
 ```
 and the manifest's summary gains the same numbers as JSON. When any record is far from its arrival time (decision
 70), a line before the sequence gaps says so: `times off arrival: 1 ahead (up to 1.2 h) in this window; 3,600 ahead
@@ -2988,6 +3019,125 @@ the first bench, which records the measured numbers here:
     source ports weigh more in smaller blocks).
   - The format alone: encoding about 440 ns a record (2.2 % of a core at 50,000/s); decoding the source and bytes
     columns 38–40 M records/s on one core, every column about 5.4 M/s.
+  - **Listing every record (build, 2026-11-17;** the lab's `woodshed search --type flow --json` ran at about 14,000
+    records/s on the 4-vCPU box, 32,000,000 records in 37 min, against 62,000/s for a syslog `--count`): measured on
+    the build machine (14 cores, also with GOMAXPROCS 4) over a `woodshed bench` store of 5,000,000 IPFIX records
+    (100,000/s for 50 s, one exporter, blocks of up to 65,536 records with about 2.5 s of flow-end spread each), output
+    to /dev/null, before → after, with byte-identical output (SHA-256 of every listing and of the bundle's flows.csv):
+
+    | Path (5,000,000 records) | Before (GOMAXPROCS 14 / 4) | After (14 / 4) | Peak RSS, MiB (14 / 4) |
+    |---|---|---|---|
+    | `search --type flow --json` | 84.9 / 89.6 s (59 k / 56 k a second) | 4.0 / 4.0 s (1.25 M / 1.25 M) | 256 / 278 → 237 / 227 |
+    | `search --type flow` (CSV rows) | 65.4 / 74.3 s (76 k / 67 k) | 2.9 / 2.9 s (1.71 M / 1.75 M) | 252 / 268 → 218 / 221 |
+    | `search --type flow --count` | 60.4 / 63.5 s (83 k / 79 k) | 2.3 / 2.3 s (2.14 M / 2.18 M) | 247 / 286 → 243 / 230 |
+    | `/api/search` pages of 5,000 (the newest 500,000, the server's encoding) | 57 k a second | 130 k | |
+    | `/api/search` pages of 500 (the same) | 8.8 k a second | 22 k | |
+    | bundle `flows.csv` (5,000,000 rows, zipped) | 10.2 s (491 k a second) | 7.9 s (633 k) | 211 → 202 |
+
+    Over a 20,000,000-record store (the same rate for 200 s, GOMAXPROCS 4): `--json` 375 s → 16.4 s (53 k → 1.22 M a
+    second; peak RSS 287 → 229 MiB), CSV rows 11.3 s, `--count` 8.5 s (221 and 223 MiB), the same SHA-256 before and
+    after. The lab's 32,000,000 records would take about 26 s here; the reference box has slower cores.
+    - Where the time went (CPU and allocation profiles): the CLI listed the window with Search's pages of 5,000, and
+      each page planned the window again and decoded every block overlapping its span of flow ends, so each block
+      was decoded 30 to 50 times (the overlapping blocks a page of 5,000 must read to be certain); every row read
+      past the cursor was copied into a Hit under one lock; and each record's JSON took 4.3 µs and 50 allocations
+      through reflection (a CSV row 1.1 µs and 14). Decoding the extras column took three allocations a row.
+    - The fixes: `Engine.Stream` reads the plan once and decodes each block once, keeps each block's matching rows
+      sorted and packed (`flowseg.Packed`, 60–110 bytes a record) while an unread block could still come before them,
+      and merges them under the same bound a page uses, so the order is the pages' exactly; what it keeps is charged
+      to the query pool, and past the pool it carries on with pages from the last record given; it nudges the
+      collector after each wave, as the top-N scans do (without, the 20,000,000-record listing peaked at 324 MiB).
+      JSON and CSV rows are appended by hand (0.40 and 0.34 µs, the same bytes; anything that needs escaping or
+      quoting still goes through encoding/json or encoding/csv). Search pages read in two passes (the ordering and filter columns,
+      then every column only for the blocks holding the page's hits), each worker keeping its own cut. Extras
+      decode into shared arenas.
+    - Guards: `TestFlowListingGolden` (cmd/woodshed: 16 outputs of a fixed store against SHA-256s taken before the
+      change), `TestStreamMatchesSearchPages` and `TestStreamDecodesEachBlockOnce` (flowquery), the encoders' tests
+      against encoding/json and encoding/csv, and `BenchmarkFlowListing` (1,000,000 records: Stream 4.7 M/s, pages
+      of 5,000 206 k/s, of 500 30 k/s, against 69 k/s and 8.2 k/s before).
+    - API pages stayed far below a stream: each read again every block overlapping it, a cost of the stateless
+      cursor. Closed 2026-11-18 (below, "Search pages keep their stream").
+    - Fixed after the independent review (2026-11-17): a page's hits own their extras (the shared arenas had pinned
+      about 230 KiB a hit; a 40-hit page from 40 blocks now holds 34 KiB, `TestSearchPageExtrasNotPinned`); and raw
+      sets decoded on read are found and ordered wherever their records end (`TestRawSetsAheadOfReceived`): search
+      pages and Stream read the segments holding raw sets to decode first and bound them by nothing, where a
+      bound from the received times had let a cursor pass them (an exporter's clock 29 min ahead lost all 40 such
+      records to pages of 137, a bug older than this work).
+    - The two passes and retention, decided (build, 2026-11-17): a segment deleted between a page's passes makes
+      the page read again, once, without it (`TestSearchPageRereadsAfterDeletion`); a second miss leaves those hits
+      out, logged, as an unreadable block's are. A cancel during the second pass loses the page, as one during the
+      first does: the caller has gone. Both accepted. Each, Count, top-N and summaries read raw sets at their
+      received-time position (their results don't depend on the order), and an open segment whose first raw set
+      arrived after its index row was written is ordered by its blocks until the row catches up; also accepted.
+    - **Rows ending far from the rest (lab, rc2, 2026-11-17; fixed 2026-11-18):** a 7-day listing (~250 M records,
+      hourly segments of ~18 M) read 140 times its data and slowed to 6.5 k records/s. A block was held whole until its
+      last row was given, and a block with a few rows ending long before the rest (late-exported idle flows) is read
+      long before the bound reaches the rest, so the pool filled and Stream fell back to Search's pages, which read
+      every such block again for every page. Now, past half the pool, Stream copies out what each block still holds,
+      keeps rows up to an end-time horizon that fits a quarter of the pool (a block's few far rows kept, its dense run
+      dropped) and reads a dropped block again once when the merge reaches it. Over 54 M records (3 h at 5,000/s, 1 %
+      ending up to 20 min early): newest first 12.0 s and 1.05× the segments' bytes read (before: 4.5 M records in
+      178 s, 465 GB read and slowing), oldest first 34.3 s and 1.96×; `woodshed search --type flow --json` 67 s
+      (803 k/s, 178 MiB peak RSS) against 2.7 M records in its first 300 s before. `TestStreamReadsEachBlockAboutOnce`
+      holds it to 2.2× with a pool smaller than the rows waiting. Search pages (the API) still read such blocks again
+      for every page they overlap; closed the same day, next.
+    - **Search pages keep their stream (build, 2026-11-18):** a search page (`/api/search`, the Flows tab) is now read
+      by a stream like Stream's (plan read once, each block decoded once, its rows held packed, trimmed past its
+      budget), and a page that ends with a cursor keeps that stream under the cursor's own string, so the next page
+      carries on without planning again or reading again what it has read. The cursor's bytes don't change (still the
+      key of the page's last record), so a page whose stream is gone (dropped for room, after `StateTTL` unused,
+      taken by a second request with the same cursor, or a restart) is read from the cursor's values: a stream
+      started at the cursor, skipping what the stateless page skips, which saves its own for the page after. Bounds:
+      at most 8 saved (`MaxPageStates`, least recently used dropped first), each holding rows within 1/16 of the
+      query pool (8 MiB of 128; trimmed to fit before it's saved) plus its plan's loaded batch (as a saved top-N's
+      plan), all charged to the pool; the saved streams together stay under half the pool (the least recently used
+      dropped past it), the pool drops them before top-N and summary states (which can't be read again), and the
+      collector nudge leaves out their idle bytes. Expired ones are swept by any query and by a timer while any are
+      saved. A saved stream holds no open file (reopened from the footer it read, the file checked by its header's
+      identity), so retention can delete its segments on every platform. A stream over its budget even trimmed
+      finishes the page with stateless pages from its last record. An index read that fails while a listing goes on
+      is the page's (or Stream's) error, never a short listing.
+    - **The store changing between pages (independent review, 2026-11-18):** a continued page gives what a
+      stateless page gives at that moment. On resume a saved stream checks what it was planned against: if the
+      index's segment count for the window changed, or the set of segments holding raw sets to decode, or the open
+      segments (one started, closed or was deleted), or a segment it still reads or holds rows of is gone or was
+      written again under its name (another header identity: a part number reused), it's dropped and the page read
+      from the cursor. Blocks written since to the open segments it has loaded, a live store's every page, are read
+      as it resumes, keeping their rows after the last one given, a wave at a time and trimmed between waves past
+      the stream's budget (re-review: 400 new blocks read at once had held 22.6 MiB against a 1 MiB budget in a 16
+      MiB pool; now 1.1 MiB, `TestSearchPageCatchUpBounded`); if trimming can't fit them, the page is read from the
+      cursor. A snapshot reopened against a file shorter than its last section is refused. And neither a page
+      stream nor Stream gives a row that isn't after the last one it gave: one that comes up behind (an index row the
+      plan's bounds didn't cover, as a segment with raw sets indexed mid-listing) is left out, as a page from the
+      cursor leaves it out. Before:
+      such a segment indexed after page 3 of an oldest-first listing put its 09:05 records after a 10:49 one, and
+      after the stream was dropped the stateless pages from that cursor gave 3,155 of 3,615 records again; an index
+      error after a page ended a listing at 2,400 of 3,600 records with no error. `TestSearchPagesWhileTheStoreChanges`
+      runs both orders in lockstep with stateless pages through each kind of write (continued, dropped at the write,
+      and dropped a page after): the same pages, no record twice or out of order.
+      - Over an hourly segment of 18 M records (5,000 a second, blocks of 5,000, 1 % ending up to 20 min early;
+        `WOODSHED_PAGES_BIG=1 go test -run TestSearchPagesMeasure ./internal/flowquery`), 20 consecutive pages,
+        bytes read in all, before → after: newest first, pages of 500 973 MB → 24 MB and of 5,000 1.20 GB → 26 MB
+        (the first page reads the 24 MB footer once, where a stateless page read it twice, for its plan and its
+        second pass; pages 2–20 read 0 and 1.7 MB); oldest first, pages of 500 29.0 GB → 77 MB (12.1 s → 0.33 s)
+        and of 5,000 33.8 GB → 123 MB (14.6 s → 0.63 s), each block decoded once (13 of 1,201 again). Oldest first
+        still reads ~660 blocks for 10,000 records: the oldest records are the outliers, a few in each of the first
+        20 min's blocks.
+      - `BenchmarkFlowListing` (1,000,000 records): pages of 500 0.64 M records a second (30 k stateless), of 5,000
+        0.90 M (207 k); Stream 4.6 M. The check on resume (two index queries, a header read for each segment it
+        holds, the open segments' snapshots) is about 0.45 ms a page; without it pages ran at 1.5–1.6 M a second. A search page's live heap over a week of 10 exporters 10.4 MiB (19.3
+        stateless).
+      - Guards: `TestFlowListingGolden` unchanged; `TestSearchPagesMatchStateless` (every page's hits, cursor and
+        partial flag equal the stateless page's, over open and closed segments, raw sets, filters, devices, pages of
+        1 to 100,000), `TestSearchPageStateGone` (dropped, expired, restarted, a cursor used twice),
+        `TestSearchPageAfterDeletion`, `TestSearchPageStatesBounded`, `TestSearchPageOverBudget`, and
+        `TestSearchPagesReadOnlyNewData`: over a store whose every block holds rows ending 120 s early (a stateless
+        page read 63–626 times the records it returned), pages 2–20 of 500 and 5,000 read at most 2.2 times their
+        records' bytes plus a wave of blocks (0.84–1.68× with the default pool; 2.06–2.38× with 1 MiB a stream,
+        trimming), each continuing the saved stream. Found on the way: Stream's blocks waiting to be read again were
+        keyed by footer, and a page's stream reopens its segments from a copy for each page, so each page charged
+        the segment's directory again (pages of 5,000 oldest first read 25× their records at 1 MiB a stream);
+        they're keyed by path now.
 - **Queries:** top talkers (`by=src`, bytes) over 1 h at 5,000 records/s (18 million records) in under 3 s,
   complete in one response; at 50,000/s (180 million) partial within the 10 s budget and complete within 60 s.
   A filtered search for one address over 1 h at 5,000/s returns its first page in under 1 s.
@@ -3001,6 +3151,8 @@ the first bench, which records the measured numbers here:
   templates, sampling, sequence gaps and pending data.
 - `woodshed bundle` includes flows (`--types`, `--flow-formats csv,ipfix`).
 - `woodshed status` gains a Flows row: exporters, records a second, budget used.
+- `woodshed profile on|off|cpu|trace|heap|goroutine` (decision 85): an opt-in, local-only profile of the running
+  server, written to `--out`.
 
 ### 13.8 Testing plan
 - **Unit and fuzz:** the v5, v9 and IPFIX decoders against hand-built and captured packets (every IE type and length,
@@ -3052,7 +3204,10 @@ the first bench, which records the measured numbers here:
 ### 13.9 Compatibility and the major version
 - **Config:** a 1.3 `woodshed.toml` loads unchanged; `[listeners.flow]` is off and `storage.flow_budget_bytes`
   defaults to 40 % of the cap, which changes nothing while there are no flows.
-- **Data:** syslog, trap and poll files are unchanged. The index migrates once (`flow_segments`, `flow_minute`).
+- **Data:** syslog, trap and poll files are unchanged, except that a syslog message that wasn't stored whole ends its
+  line with a marker (§3.3, decision 79); a 1.x reader shows it as text. Two side effects there: a message cut inside
+  its header gets a wrong field in 1.x (an RFC 5424 message cut after its hostname shows the marker as its app), and
+  a 1.x regex anchored with `$` doesn't match a marked line. The index migrates once (`flow_segments`, `flow_minute`).
   Segments appear only under `logs/<device>/flows/`. A 1.x `reindex` ignores them (its listing skips subfolders), so
   the path back is the usual one (§11.7).
 - **API:** additive. `type=flow`, the flow routes and filters, `flow_formats` and the new banner kinds are new; every
@@ -3184,10 +3339,12 @@ Made while building it, each **decided (build, 2026-11-16)**:
 40. `raw.txt` lines: `<received, RFC 3339 UTC ms> <status> v<version> domain=<id> template=<id> <base64 of the set>`.
 41. The estimate's bytes are 225 B a record for the CSV and 95 B for the IPFIX file, uncompressed (measured 205–242
     and 92–95 on the fixtures). The 20,000,000 cap is checked at create, when a bundle resolves, and while writing.
-42. The bundle README's sequence gaps are the collector's last-24-hour counts and say so (only the running collector
-    keeps them; `woodshed bundle` says they aren't known). The firewall-event, denied and NAT lines appear only with
+42. The bundle README's sequence gaps are the window's own, from the per-minute counts in the index, and say so
+    ("… in this window"); **decided (build, 2026-11-17)**, replacing "the collector's last-24-hour counts" (decision
+    82). The firewall-event, denied and NAT lines appear only with
     something to count; scaled figures only when a rate above 1 is known, with "≥" when some sampling is unknown;
-    top lists hold 3 entries; "translated connections" count NAT create events.
+    top lists hold 3 entries, none with 0 of the list's metric (decision 80), with shares as decision 81 writes
+    them; "translated connections" count NAT create events.
 43. `flows.ipfix` writes columns as their IANA IEs at fixed lengths (the received time as
     collectionTimeMilliseconds, 258), extras as they came, interface names as options data before the records that
     use them, and opens each domain with an options record whose observationDomainName says "Written by Woodshed
@@ -3502,6 +3659,161 @@ RFC check saw 64 as reordered and 84 as a gap of 19, so every export of more tha
     - v5 and v9 don't learn: v5 counts records and v9 packets, as decision 23 says.
     - `/api/flows` shows the decided timing per domain as `seq_mode` (`"rfc"` or `"after"`, absent while undecided);
       `woodshed flow status` notes an `after` domain.
+
+**Incomplete TCP frames, decided (build, 2026-11-17)** (a public report: "`50 <13>short` followed by EOF returned the
+same nine-byte payload and truncated=false as `9 <13>short`". The reader returned what arrived of an octet-counted
+frame as if it were complete, and the listener marked the last message truncated only when Woodshed itself had closed
+the connection; present since 1.0):
+79. **Keep the bytes, flag the frame.** An octet-counted frame that ends before its count is stored as far as it
+    arrived and flagged incomplete with its arrived and advertised lengths, whatever ended it (§3.1). Options weighed:
+    - Reuse `truncated`: it already means "cut at the max message size" in the counters, the stats buckets, the
+      dashboard and the bundle's losses, so a sender's early close would read as our size limit, and a frame can be
+      both (cut at 64 KiB of an advertised 100 KiB, 70 KiB arrived). Rejected: a distinct `incomplete` flag, and our own
+      cuts (frame timeout, eviction, shutdown), which 1.0–1.3 counted as truncated, move to it.
+    - Drop the partial frame: loses evidence, and the project never drops what arrived. Rejected.
+    - **Where a reader sees it.** Before 2.0, `truncated` was only a counter: no stored line said a message was cut.
+      Lines now end with a marker (§3.3). Options weighed: a prefix before the message (a 1.x reader would then parse
+      no PRI, so severity and the fields break on downgrade), a sidecar or index column (the files are the source of
+      truth and `reindex` rebuilds the index from them), and a suffix. The suffix keeps a 1.x reader's PRI, header and
+      search working and only shows the marker as trailing text; ` \#` can't come from the escaping, so 2.0 readers
+      find it exactly. Chosen. Search, context, the live tail, `woodshed search --json` and the UI show the flags
+      (`truncated`, `incomplete`, `frame_arrived`, `frame_length`, absent when unset); text matching never sees the
+      marker; exports and bundles copy lines as stored, so the marker travels with them.
+    - **Counting.** Per stream listener since start (`/api/stats` `tcp_frames`: `incomplete`, `frame_timeouts`, also on
+      About), not merged with the frame-timeout counter: a timeout is one of several causes. Incomplete messages aren't
+      added to the per-device stats buckets (that would mean an index migration); the marked lines are the per-device
+      record.
+    - **Newline framing** can't tell a sender's last line without its LF from a clean close's, so that line stays
+      complete; a line Woodshed cut, or one the sender's reset ended, is incomplete (no lengths).
+    - **Cut inside the count** (independent review): on a connection already counting octets, `50` or `5` then the end
+      was stored as a complete message of digits. It's now an incomplete frame with no lengths, counted, not stored.
+      A connection's first frame stays ambiguous (it may be a line starting with digits).
+    - **Torn markers:** a reader drops lengths that can't be right and takes a torn flag name as its flag, so a later
+      flag's name must not be the start of an earlier one's; recovery finishes a torn last line with ` \#incomplete`.
+
+**From the 2.0.0-rc1 lab run, decided (build, 2026-11-17):**
+80. **Top lists leave out keys with 0 of their metric.** A top by bytes listed denied-only rule IDs, firewall-event
+    values and ports at 0 bytes after the non-zero rows, which reads as data where there's none. A top-N by a metric
+    now ranks only keys with some of it; `/api/flows/top` gives `zero_omitted` (how many keys had 0), `woodshed flows
+    top` ends its last line with "; 4 with 0 bytes not shown", the Top and Denied views add it to the total line, and
+    the bundle manifest's summary has `zero_omitted` per list, which the README puts after the list ("… (4 with 0
+    bytes not shown)", or "none (…)" when every key had 0). Totals are unchanged; `other` now holds the left-out keys,
+    which adds to its flow count but nothing to the ranked metric. The count covers the keys counted exactly or held in
+    the approximate table; a key the approximate table never held isn't known, so with `approx` it's a lower bound and
+    every surface says "at least N". `woodshed flows top` exits 0 when records matched but every key had 0 of the
+    metric (the note says so), 1 only when nothing matched, since scripts read the exit code as "found anything".
+81. **Small shares never read "0 %".** The README rounded every share to a whole percent, so a 0.31 % conversation
+    read "0 %". Options: "<1 %" under 0.5 %, or a decimal under 1 %. Chosen: the rule the UI's Top panel already used,
+    now the README's too (and the bundle preview's): whole percents from 10 %, one decimal under that ("4.2 %",
+    "0.3 %"), and "<0.1 %" for a non-zero share under 0.1 %. It keeps the README and the UI identical and the UI's
+    existing strings unchanged, and a decimal says more than "<1 %" where small shares are the point (a scan's share
+    of a window). The manifest's shares are rounded to 0.01 % and never below it for a listed key
+    (review, 2026-11-17: 1 byte in a million rounded to 0 and read "0 %").
+82. **Sequence gaps in a bundle are the window's.** The README said "sequence gaps 849 (≈ 37,498 lost, last 24 h)"
+    for a window with none: the collector's 24-hour ring counted a burst hours earlier, which in an incident bundle
+    reads as loss inside the window. Options weighed: label the 24-hour count unmistakably (honest, but the number
+    stays the wrong one for the question a bundle answers); add gap counts to the segment footer (a format change,
+    and a crash's recovered footer would lose them); a `flow_minute` column (that table is rebuilt from the footers
+    at every start, so the counts would vanish); **the per-minute stats rows**. Chosen: `type_stats` (and its hourly
+    rollup) gain the collector's counts per exporter and minute by arrival (index migration 8 -> 9): sequence gaps,
+    the records they stand for, duplicates, late records, raw sets by status, and times off arrival (counts and
+    maxima). They're what the collector saw, written with the minute's records (a datagram with only a gap counts
+    too and opens no segment), bounded like the other stats (per minute for 24 h, per hour for 7 days), and kept by
+    `reindex`, which can't derive them. A `flow_counted` flag tells "no gaps" from "not counted" (2.0.0-rc1 rows).
+    - The README's line: "sequence gaps 3 (≈ 90 records lost before Woodshed) in this window"; for a window partly
+      older than a day, "… in 2026-11-15 14:00–16:23 UTC (from the hour: counts older than a day are kept by the
+      hour)"; for a window that starts before the 7 days the counts are kept, "… in <cutoff hour>–<end> UTC only
+      (Woodshed keeps the counts 7 days, and this window starts earlier)", counted from the cutoff only (review,
+      2026-11-17: a pruned burst left a 10-day window reading as a known 1). When not known it says why, one of
+      three: the window ends before the 7 days ("Woodshed keeps them 7 days"), no flow datagram arrived in it, or
+      part was stored by 2.0.0-rc1. Only then does it add "collector sequence gaps in the 24 h before this bundle was
+      made (not limited to this window): …".
+    - The manifest: `sequence_gaps` and `lost_estimate` are the window's (`null` when not known), with
+      `sequence_gaps_span` (`from`, `to`, `by_hour`, `partial`) and `sequence_gaps_unknown` (`not_kept`,
+      `nothing_received`, `not_counted`); the collector's are `sequence_gaps_24h` and `lost_estimate_24h`. `woodshed
+      bundle` now has the window's gaps too.
+    - A minute counts when it starts in the window (the dropped and truncated counts' rule): gaps are by when the
+      datagram arrived, records by their own flow time, so a record far from its arrival (decision 70) can be in a
+      window whose gaps don't cover its datagram.
+83. **A restart keeps the collector's last 24 hours, never the templates or the sampling.** The collector's per-exporter state lived
+    in memory only (lab phase 8): after a restart `/api/flows` listed no exporters, and `woodshed flow status` and the
+    bundle's 24-hour numbers started from 0. At start the collector now restores, for every exporter with stored
+    counts in the last 24 hours:
+    - its counts by hour (records stored, late, `no_template`, `malformed`, sequence gaps, lost, duplicates) and its
+      times off arrival (by hour, and by 5 minutes for the last hour, the `flow_time` banner's window), from the
+      per-minute counts of decision 82. The since-start counts stay 0;
+    - "last seen": when its newest flow segment last stored a datagram (not the device's `last_heard`, which syslog
+      and traps move too);
+    - from that segment's footer, each domain's last sampling rate, **shown, never applied**: `/api/flows`
+      `domains[].last_known_sampling` while the domain has no rate of its own (`sampling: 0`), gone once the
+      exporter's options data gives one. Records after a restart say sampling unknown (0) until then, as on 2.0.0-rc1,
+      so their scaled totals read as "≥" lower bounds. Decided (coordinator, 2026-11-17): a rate the exporter changed
+      while Woodshed was down would otherwise scale its new records wrongly, with no sign of it, the same class of
+      risk as the templates below. The first version of this decision applied the stored rates.
+    - Nothing else from the footer is applied either. System init times convert uptime-relative flow times into the
+      stored start and end, and interface names are stored on each record (`in_if_name`, `out_if_name`), so both
+      shape stored values and follow the same rule: the exporter's next options data sets them. Options records kept
+      raw aren't restored: the segments keep them.
+
+    **Templates are never restored into the decoder**, decided (review, 2026-11-17), reversing this decision's first
+    version, which loaded the newest segment's templates. A template the exporter changed while Woodshed was down
+    would have decoded the next data with the old layout (a shorter remainder reads as padding), stored for good as
+    decoded records with nothing to catch it; and the footer has no template's last refresh time, only the
+    segment's last datagram. Correctness beats a faster start: data after a restart waits for the exporter's own
+    template as it always did (pending, then kept raw, with decode-on-read later), and "last template" stays unset
+    until it arrives. Sequence state isn't restored either: the first message after a restart sets the baseline, so
+    the downtime isn't counted as a gap (Woodshed's own downtime shows in the bundle's gaps instead). The index
+    queries and one footer read per exporter heard in the last day run before the listener starts, within a 10 s
+    budget; an exporter past it is restored without its last known rates.
+84. **`woodshed send` keeps going through a receiver's restart.** Over UDP a refusal is the OS reporting, on a later
+    send, an ICMP port unreachable for an earlier datagram. The sender treated every one as fatal ("nothing is
+    listening"), so a run stopped whenever the receiver restarted, which a real exporter doesn't do. Options: a
+    `--keep-going` flag (one more thing to know, and the default would still stop at a restart), or telling the two
+    cases apart. Chosen: a refusal before the sender has gone 1 s (`loadgen.RefusedGrace`) without one still stops it
+    at once, since nothing has answered (an ICMP reply on a LAN takes milliseconds, so a closed port is caught well
+    within it); after that the receiver had been listening, so the refusal is counted, the datagram is sent again
+    (the OS returned the error instead of sending it), and sending goes on. The summary line gives when the refusals
+    came (first to last) and how many were reported, called a lower bound: the OS keeps one pending error per socket
+    and ICMP replies are rate-limited, so far more datagrams are lost than reported (about 60 to 1 in the review's
+    measurement). The same rule covers syslog over UDP, traps (sends and an inform's reply reader; SNMPv3 discovery
+    still needs an answer) and flows (`woodshed send --proto flow-v5|flow-v9|ipfix`); every retry checks for an
+    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows a UDP refusal is never detected**:
+    Go turns off connection-reset reporting on Windows UDP sockets (`SIO_UDP_CONNRESET`), so a send there never stops
+    for one, before or after the grace, and the summary has none. Turning it back on for the senders' own sockets
+    (`WSAIoctl(SIO_UDP_CONNRESET, TRUE)` after the dial) was tried for 2.0 and reverted: on CI's windows-latest and
+    windows-11-arm runners 200 sends over 1 s to a closed loopback port all succeeded, and the restart test counted 0
+    refusals in 1,200 sends for syslog, traps and flows (run 44303973938). Windows delivers the ICMP error to the next
+    receive on the socket (`recvfrom`/`WSARecv`; Microsoft KB 263823, go.dev/issue/5834, where Go's `ReadFrom` failed
+    after a `WriteTo` to a closed port), not to a send, whatever `WSASend`'s error list says, and the senders never read
+    (an inform's reply reader is the one exception). Seeing it would take a reader goroutine on every sender's socket
+    turning a receive error into a refusal, whose error code through Go's overlapped I/O can only be checked on Windows;
+    it's left for later, as a test tool's limit.
+85. **An opt-in profiling listener, for CPU that only one machine shows.** A lab Windows Server VM runs the service at
+    about 0.66 of a core at 1,000 syslog msg/s with light traps, flows and polls, 50 to 70 times what CI's Windows
+    runner shows, and the 1.2 fast path (decision 70) didn't remove it. File scanning by security software, timer
+    resolution, the UDP receive path, fsync frequency and GC are all candidates, and only a profile from that machine
+    can tell them apart. Options: a route on the UI's API (reachable from the network in LAN mode, and behind a login
+    the CLI doesn't have), Go's `net/http/pprof` (it registers on `http.DefaultServeMux` for every server built with a
+    nil handler), or a separate listener. Chosen: a separate listener (`internal/pprofsrv`), **off by default**, on
+    only with `debug.pprof = true` in the config (file-only, `json:"-"`, so neither the UI nor the API can turn it on;
+    `woodshed profile on|off` sets it and restarts the service) or `WOODSHED_PPROF=1` in the server's environment. It
+    binds 127.0.0.1 (`::1` without IPv4 loopback) on a port the OS picks, so it can't clash with a configured port,
+    and answers only GETs from a loopback address with `Authorization: Bearer <token>`: a random 256-bit token made at
+    each start and written with the address to `woodshed.pprof.json` in the data folder (0600; on Windows the data
+    folder's protected ACL), removed at stop, and removed at start when profiling is off (a crash leaves it). Reading
+    the data folder already means reading every log, so the token adds no new reader; a browser on the machine can't
+    send the header cross-origin. `woodshed profile cpu|trace|heap|goroutine` reads the file, refuses an address
+    that isn't loopback, and writes the body through a `.part` file (0600). A CPU profile runs 1 to 300 s (default
+    30), a trace 1 to 60 s (default 5), one of each at a time (409 for a second; a trace may overlap a CPU profile,
+    which is what `cpu --trace` does); the server's shutdown ends a capture in progress. A banner (`profiling_on`,
+    info) and a service event say it's on. The CLI only writes the files: `github.com/google/pprof` isn't a
+    dependency, and the formats read with `go tool pprof` and `go tool trace` on any machine with Go. CPU profiles,
+    traces and goroutine dumps hold stacks, counts and times, and a heap profile allocation sites and sizes, never
+    memory contents, so none holds message text; the docs still ask for heap profiles and goroutine dumps to be sent
+    privately, as they say more about the process. Tests: off by default (no listener, file, banner or route on the
+    UI port, the env var only for `1`/`true`/`on`/`yes`), on by config and by env, loopback-only binding, every
+    route refusing a missing or wrong token and a non-loopback peer, all four kinds through the CLI, and no package
+    importing `net/http/pprof` or `expvar`.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

@@ -159,6 +159,10 @@ func (b *backend) openFlows(cfg config.Config) {
 			return out
 		}})
 	fs.fwCheck = func(nf, ix int) []fwrule.FlowRuleState { return fwrule.FlowWindowsStates(fwrule.Exec, nf, ix) }
+	// What the stored data says about recent exporters: their last 24 hours'
+	// counts and the metadata they sent before the restart, never their
+	// templates (SPEC §13.10 decision 83).
+	fs.coll.Restore(b.flowRestore(cfg.Storage.DataDir))
 	b.flows = fs
 	go fs.expireLoop(b)
 }
@@ -215,13 +219,18 @@ func (b *backend) flowHandle(p *listen.FlowPacket) {
 	var recs []*flow.Record
 	var raws []*flow.RawSet
 	fs.mu.Lock()
-	fs.coll.Decode(flow.Packet{Data: p.Data, From: p.From, Received: p.Received}, func(r *flow.Record) {
+	cnt := fs.coll.Decode(flow.Packet{Data: p.Data, From: p.From, Received: p.Received}, func(r *flow.Record) {
 		c := *r
 		recs = append(recs, &c)
 	}, func(rs *flow.RawSet) { raws = append(raws, rs) })
 	fs.expireLocked(b, p.Received, false)
 	fs.mu.Unlock()
-	if len(recs) == 0 && len(raws) == 0 {
+	// The sequence counts are stored with the records (type_stats), so the
+	// bundle and a restarted collector have them (SPEC §13.10 decisions 82
+	// and 83); a datagram with nothing else (templates after a gap) still
+	// stores them.
+	seq := cnt.SequenceGaps != 0 || cnt.Duplicates != 0
+	if len(recs) == 0 && len(raws) == 0 && !seq {
 		return
 	}
 	// Raw sets name their exporter; a datagram's are its sender's.
@@ -233,11 +242,15 @@ func (b *backend) flowHandle(p *listen.FlowPacket) {
 		}
 		mine = append(mine, rs)
 	}
-	batch := store.FlowBatch{Received: p.Received, Size: len(p.Data), Records: recs, Raw: mine}
+	batch := store.FlowBatch{Received: p.Received, Size: len(p.Data), Records: recs, Raw: mine, SeqGaps: cnt.SequenceGaps,
+		SeqLost: cnt.LostEstimate, Duplicates: cnt.Duplicates}
 	// The exporter's metadata (sampling, interface names, options kept raw)
-	// goes into its segment's template table when it changed.
-	if blob, v := fs.coll.Metadata(addr); v != 0 && fs.metaVersion(addr, v) {
-		batch.Meta = blob
+	// goes into its segment's template table when it changed (with data to
+	// store: a counts-only batch opens no segment).
+	if len(recs)+len(mine) > 0 {
+		if blob, v := fs.coll.Metadata(addr); v != 0 && fs.metaVersion(addr, v) {
+			batch.Meta = blob
+		}
 	}
 	err := b.store.WriteFlows(addr, batch)
 	if err == nil {
@@ -293,7 +306,7 @@ func (b *backend) FlowState(ctx context.Context) (api.FlowState, error) {
 			e.LastSeen = &t
 		}
 		for _, d := range es.Domains {
-			fd := api.FlowDomain{ID: d.ID, Sampling: d.Sampling, Templates: d.Templates, SeqMode: d.SeqMode}
+			fd := api.FlowDomain{ID: d.ID, Sampling: d.Sampling, Templates: d.Templates, SeqMode: d.SeqMode, LastKnownSampling: d.LastKnownSampling}
 			if !d.LastTemplate.IsZero() {
 				t := d.LastTemplate.UTC()
 				fd.LastTemplate = &t
@@ -430,7 +443,7 @@ func (b *backend) FlowTop(ctx context.Context, r api.FlowTopRequest) (api.FlowTo
 func ToAPITop(by, metric string, q flowquery.Query, res flowquery.TopResult, took time.Duration) api.FlowTopPage {
 	t := res.Total
 	page := api.FlowTopPage{By: by, Metric: metric, From: q.From, To: q.To, Approx: res.Approx, ErrorBound: res.ErrorBound,
-		Partial:    res.Partial,
+		ZeroOmitted: res.ZeroOmitted, Partial: res.Partial,
 		NextCursor: res.Cursor, Progress: toAPIProgress(res.Progress), ElapsedMS: took.Milliseconds(),
 		Total: api.FlowTopTotal{Flows: t.Flows, Connections: t.Connections, Bytes: t.Bytes, Packets: t.Packets,
 			BytesScaled: t.BytesScaled, PacketsScaled: t.PacketsScaled, ScaledComplete: t.Unknown == 0}}

@@ -14,6 +14,15 @@ import (
 type frame struct {
 	msg       string
 	truncated bool
+	short     string // "arrived/length" when Incomplete reported the frame, else ""
+}
+
+// shortOf is Incomplete's report as frame.short.
+func shortOf(sr *StreamReader) string {
+	if arrived, length, ok := sr.Incomplete(); ok {
+		return fmt.Sprintf("%d/%d", arrived, length)
+	}
+	return ""
 }
 
 // readAll drains a StreamReader, copying each message, and returns the frames
@@ -27,23 +36,33 @@ func readAll(t testing.TB, sr *StreamReader, limit int) ([]frame, error) {
 			if msg != nil || tr {
 				t.Fatalf("Next returned data with error %v", err)
 			}
+			if _, _, ok := sr.Incomplete(); ok {
+				t.Fatalf("Incomplete set with error %v", err)
+			}
 			return out, err
 		}
-		out = append(out, frame{string(msg), tr})
+		out = append(out, frame{string(msg), tr, shortOf(sr)})
 	}
 	t.Fatalf("reader did not finish within %d calls", limit)
 	return nil, nil
 }
 
 func (fr frame) String() string {
+	s := fmt.Sprintf("%q", fr.msg)
 	if fr.truncated {
-		return fmt.Sprintf("%q(truncated)", fr.msg)
+		s += "(truncated)"
 	}
-	return fmt.Sprintf("%q", fr.msg)
+	if fr.short != "" {
+		s += "(incomplete " + fr.short + ")"
+	}
+	return s
 }
 
 func f(s string) frame  { return frame{msg: s} }
 func ft(s string) frame { return frame{msg: s, truncated: true} }
+
+// fi is a frame the stream ended in: short is "arrived/length".
+func fi(s, short string) frame { return frame{msg: s, short: short} }
 
 func TestStreamReader(t *testing.T) {
 	long := strings.Repeat("x", 100)
@@ -76,8 +95,21 @@ func TestStreamReader(t *testing.T) {
 		{"11-digit count is text", "12345678901 <13>a\n", 0, []frame{f("12345678901 <13>a")}},
 		{"digits only at EOF", "12345", 0, []frame{f("12345")}},
 		{"digits and space at EOF", "12 ", 0, []frame{f("12 ")}},
-		{"octet frame cut by EOF", "50 <13>short", 0, []frame{f("<13>short")}},
-		{"huge octet count at EOF", "9999999999 <13>x", 0, []frame{f("<13>x")}},
+		{"octet frame cut by EOF", "50 <13>short", 0, []frame{fi("<13>short", "9/50")}},
+		{"octet frame exactly its count at EOF", "9 <13>short", 0, []frame{f("<13>short")}},
+		{"complete frames, then one cut by EOF", "6 <13>ab6 <13>cd50 <13>ef", 0,
+			[]frame{f("<13>ab"), f("<13>cd"), fi("<13>ef", "6/50")}},
+		{"later frame's header only at EOF", "6 <13>ab50 ", 0, []frame{f("<13>ab"), fi("", "0/50")}},
+		{"later frame's count cut at EOF", "6 <13>ab50", 0, []frame{f("<13>ab"), fi("", "0/0")}},
+		{"later frame's one-digit count cut at EOF", "6 <13>ab5", 0, []frame{f("<13>ab"), fi("", "0/0")}},
+		{"later frame's header and '<' at EOF", "6 <13>ab50 <", 0, []frame{f("<13>ab"), fi("<", "1/50")}},
+		{"first frame's digits at EOF stay a line", "50", 0, []frame{f("50")}},
+		{"first frame's header and '<' at EOF", "50 <", 0, []frame{fi("<", "1/50")}},
+		{"huge octet count at EOF", "9999999999 <13>x", 0, []frame{fi("<13>x", "5/9999999999")}},
+		{"incomplete and over the max", "50 <13>abcdefgh", 5,
+			[]frame{{msg: "<13>a", truncated: true, short: "12/50"}}},
+		{"over the max, complete", "12 <13>abcdefgh", 5, []frame{ft("<13>a")}},
+		{"unterminated last line is not incomplete", "<13>a\n<13>b", 0, []frame{f("<13>a"), f("<13>b")}},
 		{"truncate LF", "abcdefgh\nij\n", 5, []frame{ft("abcde"), f("ij")}},
 		{"truncate final unterminated", "abcdefgh", 5, []frame{ft("abcde")}},
 		{"exactly max", "abcde\nf\n", 5, []frame{f("abcde"), f("f")}},
@@ -152,7 +184,7 @@ func TestStreamReaderIdleConnection(t *testing.T) {
 		done := make(chan frame, 1)
 		go func() {
 			msg, tr, _ := sr.Next()
-			done <- frame{string(msg), tr}
+			done <- frame{msg: string(msg), truncated: tr}
 		}()
 		select {
 		case got := <-done:

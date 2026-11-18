@@ -395,6 +395,34 @@ func TestIPFIXFileV9VendorFields(t *testing.T) {
 	}
 }
 
+// An IANA or reverse IE kept as an extra (it came variable length) whose
+// value renders as the record's rule_id stays an extra: the rule's own form
+// is written at its length, the look-alikes as variable length, so none is
+// read back as a column (FuzzIPFIXFile, CI 2026-11-18: a reverse
+// octetDeltaCount 9dfd beside the rule 00009dfd came back as rev_bytes 40445).
+func TestIPFIXFileRuleIDLookalikeExtras(t *testing.T) {
+	c := NewCollector(Options{RuleIDIEs: fileRules})
+	var s sink
+	b := NewBuilder(IPFIX)
+	v := []byte{0x9d, 0xfd}
+	b.Template(300, []TemplateField{{ID: ieSrcV4, Length: 4}, {PEN: PENReverse, ID: ieOctetDelta, Length: Varlen},
+		{PEN: PENReverse, ID: iePacketDelta, Length: Varlen}, {ID: ieSrcPort, Length: Varlen},
+		{PEN: PENDocumentation, ID: 3, Length: 4}})
+	b.Data(300, Values{}.Addr(ip("10.1.1.1")).Var(v).Var(v[1:]).Var(v).U32(0x9dfd))
+	s.decode(c, b.Message(Header{ExportTime: uint32(t0.Unix()), Domain: 1}), exp2, t0)
+	if len(s.recs) != 1 {
+		t.Fatalf("setup: %d records, %d raw", len(s.recs), len(s.raws))
+	}
+	r := s.recs[0]
+	if r.RuleID != "40445" || r.Has&(HasRevBytes|HasRevPackets|HasSrcPort) != 0 || len(r.Extras) != 4 {
+		t.Fatalf("setup: %+v", r)
+	}
+	roundTrip(t, s.recs)
+	// As the fuzzer had it: a reverse IE and an IANA one beside the rule.
+	r.Extras = []Extra{{PENReverse, ieOctetDelta, v}, {0, 400, v}, {PENDocumentation, 3, []byte{0, 0, 0x9d, 0xfd}}}
+	roundTrip(t, []Record{r})
+}
+
 // An IPFIX template field with the enterprise bit and enterprise number 0 is
 // a v9 vendor-range type: the same key as flow v9's, so a rule_id_ies entry
 // "0:40003" names it either way, and the builder writes it that way.

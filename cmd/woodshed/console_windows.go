@@ -4,11 +4,12 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/gmccollu/woodshed/internal/fwrule"
 )
 
 var procGetConsoleProcessList = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleProcessList")
@@ -32,10 +33,9 @@ func windowsFirewallNotes(port int) string {
 	if err != nil {
 		return s.String()
 	}
-	out, err := exec.Command("netsh", "advfirewall", "firewall", "show", "rule", "name=all", "dir=in", "verbose").Output()
 	state := ruleUnknown
-	if err == nil {
-		state = firewallRuleState(string(out), exe)
+	if rules, err := fwrule.ListRules(); err == nil {
+		state = firewallRuleState(rules, exe)
 	}
 	switch state {
 	case ruleAllows:

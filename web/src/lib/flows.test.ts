@@ -28,6 +28,7 @@ import {
   ruleIeOk,
   samplingText,
   shareText,
+  zeroOmittedText,
   short,
   TIME_BANNER_MIN,
   timeOffNow,
@@ -77,6 +78,9 @@ test('exported and scaled are both shown, never one silently for the other', () 
   assert.equal(shareText(0.31), '31 %');
   assert.equal(shareText(0.042), '4.2 %');
   assert.equal(shareText(0.0004), '<0.1 %');
+  // The README's rule too (internal/export TestFlowShareText).
+  for (const [x, want] of [[0.0031, '0.3 %'], [0.04, '4 %'], [0.0999, '10 %'], [0.001, '0.1 %'], [0.0009, '<0.1 %'], [1, '100 %']] as const)
+    assert.equal(shareText(x), want);
 });
 
 test('Top rows become filters; denied defaults to the flows metric', () => {
@@ -121,7 +125,7 @@ test('the README Flows block matches SPEC §13.4', () => {
     bytes_scaled: 1.9e12,
     packets: 21.4e6,
     packets_scaled: 2.1e9,
-    top_talkers: [{ key: '10.20.0.5', share: 0.31 }, { key: '10.20.0.9', share: 0.12 }, { key: '192.0.2.44', share: 0.07 }],
+    top_talkers: [{ key: '10.20.0.5', share: 0.31 }, { key: '10.20.0.9', share: 0.12 }, { key: '192.0.2.44', share: 0.074 }],
     top_dst_ports: [{ key: 'tcp/443', share: 0.54 }, { key: 'udp/53', share: 0.09 }, { key: 'tcp/22', share: 0.04 }],
     top_conversations: [{ key: '10.20.0.5 ↔ 198.51.100.7', share: 0.22 }],
     fw_events: { created: 48_210, deleted: 47_902, denied: 3_114 },
@@ -137,15 +141,47 @@ test('the README Flows block matches SPEC §13.4', () => {
   const want = [
     '    Flows        1,204,332 records from 2 observation domains; sampled 1 in 1,000 on domain 1, unsampled on domain 2',
     '                 bytes 18.2 GB exported (≈ 1.9 TB scaled), packets 21.4 M (≈ 2.1 G scaled)',
-    '                 top talkers by bytes: 10.20.0.5 31 %, 10.20.0.9 12 %, 192.0.2.44 7 %',
+    '                 top talkers by bytes: 10.20.0.5 31 %, 10.20.0.9 12 %, 192.0.2.44 7.4 %',
     '                 top destination ports: tcp/443 54 %, udp/53 9 %, tcp/22 4 %',
     '                 top conversations: 10.20.0.5 ↔ 198.51.100.7 22 %',
     '                 firewall events: 48,210 created, 47,902 deleted, 3,114 denied',
     '                 top denied sources: 203.0.113.50 1,920, 198.51.100.23 411; top denied ports: tcp/23 1,204, tcp/445 870',
     '                 NAT: 41,377 translated connections; top post-NAT sources: 192.0.2.10 88 %',
-    '                 sequence gaps 3 (≈ 90 records lost before Woodshed); waiting for a template 0; malformed 0',
+    '                 sequence gaps 3 (≈ 90 records lost before Woodshed) in this window; waiting for a template 0; malformed 0',
   ].join('\n');
   assert.equal(flowReadme(s), want);
+  // Keys with 0 bytes are left out and counted; a list of only those says "none"; small shares never read "0 %"
+  // (the Go README's TestFlowReadmeZeroOmitted and TestFlowShareText).
+  const z = flowReadme({ ...s, top_conversations: [{ key: '10.20.0.5 ↔ 198.51.100.7', share: 0.0031 }], top_dst_ports: [],
+    zero_omitted: { top_talkers: 3, top_dst_ports: 2 } }).split('\n');
+  assert.equal(z[2], '                 top talkers by bytes: 10.20.0.5 31 %, 10.20.0.9 12 %, 192.0.2.44 7.4 % (3 with 0 bytes not shown)');
+  assert.equal(z[3], '                 top destination ports: none (2 with 0 bytes not shown)');
+  assert.equal(z[4], '                 top conversations: 10.20.0.5 ↔ 198.51.100.7 0.3 %');
+  assert.equal(zeroOmittedText(1234, 'bytes'), '1,234 with 0 bytes not shown');
+  assert.equal(zeroOmittedText(2, 'flows'), '2 with 0 flow records not shown');
+  assert.equal(zeroOmittedText(0, 'bytes'), '');
+  assert.equal(zeroOmittedText(4, 'bytes', true), 'at least 4 with 0 bytes not shown');
+  assert.ok(flowReadme({ ...s, zero_omitted: { top_talkers: 3, approx: true } }).includes('(at least 3 with 0 bytes not shown)'));
+  // Sequence gaps (decision 82): the window's; by the hour past a day; not known, and only then the collector's 24 h.
+  const last = (x: Partial<FlowBundleSummary>) => flowReadme({ ...s, ...x }).split('\n').slice(-2);
+  assert.equal(last({ sequence_gaps: 0, lost_estimate: 0, sequence_gaps_24h: 849 })[1], '                 sequence gaps 0 in this window; waiting for a template 0; malformed 0');
+  assert.equal(
+    last({ sequence_gaps: 1234, lost_estimate: 5000, sequence_gaps_span: { from: '2026-11-15T14:00:00Z', to: '2026-11-15T16:00:00Z', by_hour: true } })[1],
+    '                 sequence gaps 1,234 (≈ 5,000 records lost before Woodshed) in 2026-11-15 14:00–16:00 UTC (from the hour: counts older than a day are kept by the hour); waiting for a template 0; malformed 0',
+  );
+  assert.equal(
+    last({ sequence_gaps: 1, lost_estimate: 30, sequence_gaps_span: { from: '2026-11-15T14:00:00Z', to: '2026-11-22T14:20:00Z', by_hour: false, partial: true } })[1],
+    '                 sequence gaps 1 (≈ 30 records lost before Woodshed) in 2026-11-15 14:00–2026-11-22 14:20 UTC only (Woodshed keeps the counts 7 days, and this window starts earlier); waiting for a template 0; malformed 0',
+  );
+  assert.ok(last({ sequence_gaps: null, lost_estimate: null, sequence_gaps_unknown: 'nothing_received' })[1].includes('not known (no flow datagram arrived in it'));
+  assert.deepEqual(last({ sequence_gaps: null, lost_estimate: null, sequence_gaps_unknown: 'not_kept', sequence_gaps_24h: 849, lost_estimate_24h: 37_498 }), [
+    '                 sequence gaps in this window not known (Woodshed keeps them 7 days); waiting for a template 0; malformed 0',
+    '                 collector sequence gaps in the 24 h before this bundle was made (not limited to this window): 849 (≈ 37,498 records lost)',
+  ]);
+  assert.deepEqual(last({ sequence_gaps: null, lost_estimate: null, sequence_gaps_unknown: 'preview', sequence_gaps_24h: 3, lost_estimate_24h: null }), [
+    '                 sequence gaps in this window are counted when the bundle is built; waiting for a template 0; malformed 0',
+    '                 collector sequence gaps in the last 24 h (not limited to this window): 3',
+  ]);
   // A plain-flow exporter: no event or NAT lines, no scaled values.
   const plain = flowReadme({ ...s, domains: 1, sampling: [{ domain: 0, sampling: 1 }], bytes_scaled: null, packets_scaled: null, fw_events: { created: 0, deleted: 0, denied: 0 },
     top_denied_sources: [], top_denied_ports: [], nat_connections: 0, top_post_nat_sources: [], sequence_gaps: 0 });

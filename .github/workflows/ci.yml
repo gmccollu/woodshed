@@ -37,12 +37,16 @@ jobs:
         include:
           - os: ubuntu-latest
             race: -race
+          # macOS runs without -race: with the 2.0 flow tests its race run reached
+          # 15 min and the runner cancelled it (runs 44155348780, 44326927290).
+          # -race still runs on ubuntu-latest and ubuntu-24.04-arm.
           - os: macos-latest
-            race: -race
+            race: ""
           # -race needs cgo and a C toolchain; the Windows runners make that slow and flaky.
           - os: windows-latest
             race: ""
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -79,6 +83,13 @@ jobs:
       # finish in a small part of it.
       - name: go test
         run: go test ${{ matrix.race }} -timeout 20m ./...
+
+      # The Windows firewall rules read through COM against netsh's own listing,
+      # printed: in the run above a skip (firewall unreadable, netsh not English)
+      # looks the same as a pass.
+      - name: Firewall rules, COM against netsh (printed)
+        if: runner.os == 'Windows'
+        run: go test -count=1 -run '^TestListRulesMatchesNetsh$' -v ./internal/fwrule/
 
       # The heavy variants at full size, once, without -race: internal/search's,
       # the flow writer's full hour of ingest, a week's query plan over 50
@@ -160,6 +171,13 @@ jobs:
 
       - name: go test
         run: go test ${{ matrix.race }} -timeout 20m ./...
+
+      # The Windows firewall rules read through COM against netsh's own listing,
+      # printed: in the run above a skip (firewall unreadable, netsh not English)
+      # looks the same as a pass.
+      - name: Firewall rules, COM against netsh (printed)
+        if: runner.os == 'Windows'
+        run: go test -count=1 -run '^TestListRulesMatchesNetsh$' -v ./internal/fwrule/
 
       - name: go build
         run: |

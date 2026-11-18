@@ -61,6 +61,7 @@ type rec struct {
 	dev netip.Addr
 	typ string
 	raw []byte
+	fl  logfile.Flags // the line's marker
 }
 
 type bundleEnv struct {
@@ -130,7 +131,7 @@ func newBundleEnv(t *testing.T) *bundleEnv {
 		if err != nil {
 			t.Fatal(err)
 		}
-		be.recs = append(be.recs, rec{at: at.Truncate(time.Millisecond), dev: dev, typ: typ, raw: raw})
+		be.recs = append(be.recs, rec{at: at.Truncate(time.Millisecond), dev: dev, typ: typ, raw: raw, fl: logfile.Flags{Truncated: truncated}})
 	}
 	type item struct {
 		at        time.Time
@@ -242,7 +243,7 @@ func (be *bundleEnv) expectedFiles(devs []netip.Addr, from, to time.Time) map[st
 			continue
 		}
 		name := FolderOf(r.typ) + "/" + model.DeviceID(r.dev) + "/" + logfile.DayOf(r.at) + ".log"
-		out[name] = logfile.AppendLine(out[name], r.at, r.dev, r.raw)
+		out[name] = logfile.AppendLineFlags(out[name], r.at, r.dev, r.raw, r.fl)
 	}
 	return out
 }

@@ -1,6 +1,7 @@
 package flowseg
 
 import (
+	"io"
 	"os"
 )
 
@@ -51,7 +52,7 @@ func Recover(path string) (RecoverResult, error) {
 
 // blocksCheck verifies every section a footer lists (a footer can be intact
 // over a block that a crash or a disk error damaged).
-func blocksCheck(f *os.File, size int64, foot *Footer) bool {
+func blocksCheck(f io.ReaderAt, size int64, foot *Footer) bool {
 	var buf []byte
 	for _, b := range foot.Blocks {
 		m, body, ok := readSection(f, b.Offset, size, buf)
@@ -73,7 +74,7 @@ func blocksCheck(f *os.File, size int64, foot *Footer) bool {
 // scan reads the complete sections after the header, stopping at the first
 // that's cut short, fails its CRC or doesn't parse, or at a template table or
 // footer (written only at close: a valid footer would have been used).
-func scan(f *os.File, size int64, h header) *segState {
+func scan(f io.ReaderAt, size int64, h header) *segState {
 	s := newSegState(h)
 	var buf []byte
 	for {

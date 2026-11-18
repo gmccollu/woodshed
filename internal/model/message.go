@@ -17,6 +17,13 @@ type Message struct {
 	Raw       []byte     // exact bytes as received (no trailing newline)
 	Truncated bool       // Raw was cut at the max message size
 
+	// Incomplete: the message's frame ended before all of it arrived (2.0). An
+	// octet-counted TCP or TLS frame shorter than its count, whatever closed the
+	// connection (FrameArrived of FrameLength bytes came), or a line Woodshed cut
+	// by closing the connection itself (lengths 0: not known). Raw is what arrived.
+	Incomplete                bool
+	FrameArrived, FrameLength int64
+
 	// Parsed metadata (zero values when absent).
 	Facility  int       // 0-23, or Unknown if no PRI
 	Severity  int       // 0-7, or Unknown if no PRI

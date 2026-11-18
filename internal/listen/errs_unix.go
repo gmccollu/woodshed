@@ -9,6 +9,9 @@ import (
 
 func isAddrInUse(err error) bool { return errors.Is(err, syscall.EADDRINUSE) }
 
+// isConnReset reports whether a read failed because the peer reset the connection.
+func isConnReset(err error) bool { return errors.Is(err, syscall.ECONNRESET) }
+
 // commonErrText returns the OS-independent text for the common bind failures, or
 // "" for anything else.
 func commonErrText(err error) string {

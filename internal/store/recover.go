@@ -221,8 +221,9 @@ func (s *Store) parkFromDisk(ctx context.Context, e logfile.Entry, row index.Fil
 
 // repairTail fixes a file whose last line has no newline (a write torn by a crash or
 // power loss). If the partial line still starts with a valid timestamp and sender it
-// is kept and terminated (the message itself may be cut short); otherwise the
-// partial bytes are removed. It returns how many bytes were kept or cut.
+// is kept and terminated, marked incomplete (the message itself may be cut short;
+// tornEnd); otherwise the partial bytes are removed. It returns how many bytes of
+// the partial line were kept or cut.
 func repairTail(path string) (kept, cut int64, err error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
@@ -266,8 +267,14 @@ func repairTail(path string) (kept, cut int64, err error) {
 			return 0, 0, err
 		}
 		if _, perr := logfile.ParseLine(tail); perr == nil && bytes.IndexByte(tail, 0) < 0 {
-			if _, err := f.WriteAt([]byte{'\n'}, size); err != nil {
+			keep, end := tornEnd(tail)
+			if _, err := f.WriteAt(end, tailStart+int64(keep)); err != nil {
 				return 0, 0, err
+			}
+			if n := tailStart + int64(keep) + int64(len(end)); n < size {
+				if err := f.Truncate(n); err != nil {
+					return 0, 0, err
+				}
 			}
 			return tailLen, 0, syncFile(f)
 		}
@@ -276,6 +283,26 @@ func repairTail(path string) (kept, cut int64, err error) {
 		return 0, 0, err
 	}
 	return 0, tailLen, syncFile(f)
+}
+
+// tornEnd is how a torn last line (no '\n') is finished: its first keep bytes
+// stay, then end, the line's marker with incomplete set and a '\n'. A marker
+// the tear cut into is replaced (a truncated flag it shows is kept, lengths
+// aren't: they may be torn too), and a lone backslash the tear left at the end
+// of the escaped message is dropped, so the line reads back as the message that
+// was written, marked incomplete.
+func tornEnd(tail []byte) (keep int, end []byte) {
+	esc, f := logfile.SplitFlags(tail)
+	keep = len(esc)
+	n := 0
+	for n < keep && tail[keep-1-n] == '\\' {
+		n++
+	}
+	if n%2 == 1 {
+		keep--
+	}
+	end = logfile.AppendFlags(nil, logfile.Flags{Truncated: f.Truncated, Incomplete: true})
+	return keep, append(end, '\n')
 }
 
 // sameContent reports whether a plain file and a gzip hold the same bytes.

@@ -36,6 +36,7 @@
 package search
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -209,6 +210,9 @@ type Line struct {
 	// Type is the line's data type ("syslog", "trap"). For a trap, Raw is the
 	// record and Severity, App and Host are unset.
 	Type string
+	// Flags is the line's marker (2.0): whether the message was truncated or its
+	// frame incomplete.
+	Flags logfile.Flags
 }
 
 // Page is one /api/search response.
@@ -525,6 +529,7 @@ func (e *Engine) line(dev string, h hit) Line {
 			Ref: encodeRef(h.file.ID, h.off, h.ms), Type: t}
 	}
 	app, host := Fields(raw)
+	_, flags := logfile.SplitFlags(bytes.TrimSuffix(h.line, []byte{'\r'}))
 	return Line{
 		Received: time.UnixMilli(h.ms).UTC(),
 		DeviceID: dev,
@@ -534,6 +539,7 @@ func (e *Engine) line(dev string, h hit) Line {
 		App:      app,
 		Host:     host,
 		Type:     TypeSyslog,
+		Flags:    flags,
 	}
 }
 

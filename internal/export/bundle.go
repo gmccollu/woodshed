@@ -343,7 +343,10 @@ const SummaryNote = "Per device: lines, first and last are the records in this z
 	"minutes are one reboot naming both sources. poll sums up the device's polls (null: not measured). gaps " +
 	"are the bundle's (see gaps_note), the same for every device. dropped and truncated are Woodshed's own counts from " +
 	"its statistics, per minute (per hour past 24 hours), for the buckets that start inside the window, so a bucket " +
-	"that straddles an edge counts whole."
+	"that straddles an edge counts whole. A flow exporter's sequence_gaps and lost_estimate come from the same " +
+	"buckets, by when the datagrams arrived (sequence_gaps_span is the span counted; null when not known, with " +
+	"sequence_gaps_unknown saying why); sequence_gaps_24h is the running collector's last 24 hours, not limited to " +
+	"the window."
 
 // TypeSummary is one device's records of one type in a bundle.
 type TypeSummary struct {
@@ -533,7 +536,11 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 				if b.flowStats != nil {
 					st = b.flowStats(d.ID)
 				}
-				ds.Flow = fc.summary(st)
+				win, err := b.idx.FlowCountsIn(ctx, d.ID, info.From, info.To, b.now().Add(-index.StatsRetention))
+				if err != nil {
+					return nil, err
+				}
+				ds.Flow = fc.summary(st, win)
 				ds.Types[t] = ts
 				continue
 			}

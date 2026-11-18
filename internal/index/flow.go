@@ -179,6 +179,16 @@ func (d *DB) FlowSegments(ctx context.Context, deviceIDs []string, from, to time
 	return d.queryFlowSegments(ctx, `SELECT `+flowSegCols+` FROM flow_segments WHERE `+where+` ORDER BY end DESC, path DESC`, args...)
 }
 
+// FlowSegmentsNoTemplate returns FlowSegments' rows that hold raw sets kept
+// for lack of a template (no_template > 0), by path.
+func (d *DB) FlowSegmentsNoTemplate(ctx context.Context, deviceIDs []string, from, to time.Time) ([]FlowSegment, error) {
+	where, args, ok := flowSegWhere(deviceIDs, from, to)
+	if !ok {
+		return nil, nil
+	}
+	return d.queryFlowSegments(ctx, `SELECT `+flowSegCols+` FROM flow_segments WHERE `+where+` AND no_template > 0 ORDER BY path`, args...)
+}
+
 // flowSegWhere is FlowSegments' condition; ok is false for an empty device
 // list (no rows).
 func flowSegWhere(deviceIDs []string, from, to time.Time) (string, []any, bool) {

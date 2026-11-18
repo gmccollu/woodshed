@@ -848,7 +848,8 @@ func (o *searchOut) line(r *search.Result, isMatch bool) {
 	o.printed = true
 	if o.f.json {
 		b, err := api.SearchLine{Received: r.Received, DeviceID: r.DeviceID, Severity: r.Severity, Raw: r.Raw, Ref: r.Ref,
-			App: r.App, Host: r.Host, Type: r.Type}.MarshalJSON()
+			App: r.App, Host: r.Host, Type: r.Type, Truncated: r.Flags.Truncated, Incomplete: r.Flags.Incomplete,
+			FrameArrived: r.Flags.Arrived, FrameLength: r.Flags.Length}.MarshalJSON()
 		if err != nil {
 			o.err = err
 			return

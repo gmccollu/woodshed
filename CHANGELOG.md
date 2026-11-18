@@ -43,7 +43,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   `flows.ipfix` (an RFC 5655 IPFIX file; flow v9 vendor-range fields are in it as enterprise fields under enterprise
   number 0, and it reads back record for record) and, when there are undecoded sets, `raw.txt`. The bundle README
   gains a Flows block per device (top talkers, ports, conversations, firewall events, top denied sources and ports, NAT,
-  sequence gaps). **Leave flows out** is offered before building, pre-selected for a long window with large flows; a
+  and the sequence gaps counted in the window, by when the datagrams arrived). **Leave flows out** is offered before building, pre-selected for a long window with large flows; a
   zip holds at most 20 million flow records per device.
 - **Set up a device** (**Connect** in the menu): the configuration a device needs to send Woodshed its syslog (UDP,
   TCP or TLS), SNMP traps (v2c or v3) or flows, or to let Woodshed poll it, filled in with this server's addresses,
@@ -55,6 +55,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - `woodshed setup families` and `woodshed setup snippet --family … --what …` print the same from a terminal.
 - API: `GET /api/setup/families` and `POST /api/setup/snippet` (or `GET` with query parameters); see docs/api.md
   "Device setup helper".
+- `woodshed profile cpu|trace|heap|goroutine` captures a CPU profile, a runtime trace, a heap profile or a goroutine
+  dump of the running server, for tracing high CPU or memory use on one machine; `--trace` adds a short trace to a CPU
+  profile, and the files read with `go tool pprof` and `go tool trace` anywhere. Off until `woodshed profile on` (or
+  `debug.pprof = true` in the config, or `WOODSHED_PPROF=1` in the service's environment); `woodshed profile off`
+  turns it off. See [docs/user-guide.md](docs/user-guide.md#profiling-cpu-or-memory-use).
 
 ### Changed
 - Woodshed now has a second, binary on-disk format beside its plain text files: flows are stored as compact columnar
@@ -63,8 +68,32 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - Retention: flows have their own budget, `storage.flow_budget_bytes`, 40 % of the storage cap by default. While they
   exceed it the oldest flows are deleted first, fair-shared between exporters, before any other data; the low-disk
   guard deletes flows first too. With no flows nothing changes.
-- The index migrates once (schema 8: `flow_segments`, `flow_minute`). Downgrading to 1.x keeps every syslog, trap and
-  poll file and loses access to flows.
+- Flow-budget deletions say so: each budget pass that deletes flows records one event, "flows over their budget (12.0
+  GiB of 10.0 GiB): deleted 14 oldest flow segments (2.1 GiB)", and each segment's event reads "(flows over their
+  budget, … bytes)" instead of "over the storage cap". `GET /api/storage/history` gives them `reason: "flow_budget"`
+  and **Settings → Storage history** shows "flows over their budget"; real storage-cap deletions keep their wording.
+- The index migrates once (schema 9: `flow_segments`, `flow_minute`, and the flow collector's counts per exporter and
+  minute in the stats tables). Downgrading to 1.x keeps every syslog, trap and poll file and loses access to flows. A
+  2.0.0-rc1 binary can't open a schema-9 index ("newer than this build supports"): after running this version, don't
+  go back to rc1 with the same data folder.
+- Each index schema step at startup is logged and recorded in Events (kind `migrate`, so bundles' `woodshed-events.log`
+  have it too): "index migrated from schema 8 to 9 in 12 ms". Before, an upgrade logged only "store open took=…". A new
+  index logs one "index created" line and no event.
+- A restart keeps each flow exporter's last 24 hours (records, late, without a template, malformed, sequence gaps,
+  duplicates, times off arrival) and its last-seen time in `GET /api/flows`, `woodshed flow status` and the device page.
+  Templates, sampling rates, interface names and system init times aren't applied from before the restart: records
+  wait for the exporter's next template and say sampling unknown until its next options data, as before, so a layout
+  or rate changed while Woodshed was down is never written into new records. `GET /api/flows` shows the rate a domain
+  had before the restart as `last_known_sampling` until then.
+- Top lists by bytes (or any metric) leave out keys with none of it, such as denied-only sources and rule IDs at 0
+  bytes, and say how many: `zero_omitted` in `GET /api/flows/top`, "4 with 0 bytes not shown" in `woodshed flows top`,
+  the Top and Denied views and the bundle README ("at least N" when counting was approximate); `woodshed flows top`
+  exits 0 when records matched but every key had 0. Shares under 10 % in the README get a decimal and tiny ones read
+  "<0.1 %", as in the Top view, instead of "0 %".
+- `woodshed send` over UDP (syslog, traps and flows) keeps sending when the receiver restarts: a refusal (ICMP port
+  unreachable) after the first second is reported in the summary (when, and how many, a lower bound on the loss) and
+  the datagram sent again. A port that refuses from the start still stops it at once ("nothing is listening"). On
+  Windows a UDP refusal is never detected, so a send there never stops for one.
 - `woodshed snmp status` and `woodshed tls status` check the config first, as `woodshed run`, `reindex` and `flow
   status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
 - Woodshed describes itself as a "syslog, SNMP and flow collector", not a "syslog server": in the package descriptions
@@ -72,9 +101,39 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   systemd unit, the web UI header and the site. The service names don't change. New service accounts get the comment
   "Woodshed service"; existing ones keep theirs.
 
+### Fixed
+- Windows in a language other than English: the `tls_firewall`, `snmp_firewall` and `flow_firewall` banners appear
+  again when a rule is off (its state read as unknown before), and the installer and `woodshed install` create the TLS,
+  SNMP and flow rules there (netsh's answer for a missing rule is translated too, so it read as an error: the rules
+  were never made, and `woodshed tls on`, `snmp on` and `flow on` failed when one was missing). Rules are now read
+  through the firewall's COM API, which isn't translated, instead of netsh's output. Present since 1.1 (TLS), 1.2
+  (SNMP) and 2.0's flow rules.
+- The portable window's firewall note reads the rules the same way, so on a non-English Windows it no longer says no
+  rule lets the copy in when one does.
+- An octet-counted TCP or TLS message whose sender closed or reset the connection before its advertised length arrived
+  was stored as if it were complete (`50 <13>short` then EOF looked exactly like `9 <13>short`); present since 1.0.
+  What arrived is still kept, and now marked incomplete with both lengths: on its stored line
+  (`<13>short \#incomplete=9/50`), in search results, the live tail and `woodshed search --json` (`incomplete`,
+  `frame_arrived`, `frame_length`), and in Events, so exports and bundles carry it too. The same goes for a message
+  Woodshed cut by closing the connection (the frame timeout, an eviction, shutdown), which was counted as truncated
+  instead. A frame of which only the count arrived, or only part of its count, is counted (before, `6 <13>ab50` then
+  a close stored "50" as a message). A newline-framed last line the sender's reset ended is incomplete too; one without
+  its LF before a clean close stays a complete message, since newline framing can't tell it from a cut one. A torn
+  last line kept after a crash is marked incomplete.
+- `truncated` (the dashboard, the per-device stats, the bundle's losses) now counts only messages cut at the max
+  message size, and such a line is marked `\#truncated`. Each TCP and TLS listener counts incomplete frames and frame
+  timeouts in `/api/stats` (`tcp_frames`) and on **About**. Older Woodshed versions show a marker as text at the end of
+  the message, so there a message cut inside its header can show a wrong app or host, and a regex anchored with `$`
+  doesn't match a marked line; lines stored before 2.0 have none.
+
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The
   sender allowlist, blocklist and new-sender limits apply to exporters as to any sender.
+- The profiling listener is off by default and can't be turned on from the UI or the API (`debug.pprof` is a
+  file-only setting). When on, it listens on 127.0.0.1 only, on a port the OS picks, and answers only requests from
+  loopback that carry a per-start random token kept in the data folder (mode 0600), so only an administrator of the
+  machine can use it; the UI shows a banner while it's on. It doesn't use Go's `net/http/pprof` package, which
+  registers its routes globally, and a test fails if any package imports it.
 
 ### Performance
 - IPFIX at 50,000 records a second for 10 minutes (30 records a packet, 2 domains) with UDP syslog at 5,000 msg/s
@@ -83,6 +142,12 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   records took under 0.8 s, and a one-address search's first page 0.1 s. Measured in-process with `woodshed bench
   --proto ipfix --rate 50000 --duration 10m --syslog-rate 5000` (the sender in a child process) on a 14-core
   laptop; the reference-spec (4 vCPU) runner and the lab's 24-hour run will replace these before release.
+- Listing flow records is many times faster, with the same output byte for byte: `woodshed search --type flow`
+  reads each block of the window once instead of once per page of 5,000 that overlapped it (5,000,000 records:
+  `--json` 85 s → 4 s, CSV rows 65 s → 3 s, `--count` 60 s → 2.3 s, and a lower peak RSS), flow results' JSON and
+  `flows.csv` rows are written without reflection (the bundle's flows.csv 10.2 s → 7.9 s), and `/api/search` flow
+  pages read only the ordering and filter columns until they know their hits (57 k → 130 k records/s at 5,000 a
+  page). SPEC §13.6 has the numbers.
 
 ### Known issues
 - On Windows in a language other than English, the flow rules' "firewall rule is off" banner doesn't appear, as for

@@ -43,7 +43,7 @@ func TestWriteFormatAndIndex(t *testing.T) {
 	want := "2026-11-10T12:00:00.000Z 192.0.2.1 <134>Nov 10 12:00:00 host app: hello\n" +
 		"2026-11-10T12:00:00.001Z 192.0.2.1 multi\\nline\\r\\nwith \\\\ backslash\n" +
 		"2026-11-10T12:00:00.003Z 192.0.2.1 \n" +
-		"2026-11-10T12:00:00.004Z 192.0.2.1 mapped, zero time\n"
+		"2026-11-10T12:00:00.004Z 192.0.2.1 mapped, zero time \\#truncated\n"
 	if string(data) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", data, want)
 	}
@@ -69,6 +69,45 @@ func TestWriteFormatAndIndex(t *testing.T) {
 	u := e.s.Usage()
 	if u.Written != 5 || u.Files != 2 || u.DaysKept != 1 || u.BytesOnDisk != duLogs(e.dir) {
 		t.Fatalf("usage %+v (du %d)", u, duLogs(e.dir))
+	}
+}
+
+// An incomplete frame's line carries the marker (2.0), its raw comes back
+// without it, and it isn't counted as truncated.
+func TestWriteIncomplete(t *testing.T) {
+	e := newEnv(t, nil)
+	a := ip(1)
+	for _, m := range []model.Message{
+		{Sender: a, Raw: []byte("<13>short"), Incomplete: true, FrameArrived: 9, FrameLength: 50},
+		{Sender: a, Raw: []byte("<13>short")},
+		{Sender: a, Raw: []byte("<13>cut line"), Incomplete: true},
+		{Sender: a, Raw: []byte("<13>abcd"), Truncated: true, Incomplete: true, FrameArrived: 70000, FrameLength: 100000},
+	} {
+		if err := e.s.Write(m); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.Add(time.Millisecond)
+	}
+	if err := e.s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(e.dir, "logs/192.0.2.1/2026-11-10.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "2026-11-10T12:00:00.000Z 192.0.2.1 <13>short \\#incomplete=9/50\n" +
+		"2026-11-10T12:00:00.001Z 192.0.2.1 <13>short\n" +
+		"2026-11-10T12:00:00.002Z 192.0.2.1 <13>cut line \\#incomplete\n" +
+		"2026-11-10T12:00:00.003Z 192.0.2.1 <13>abcd \\#truncated,incomplete=70000/100000\n"
+	if string(data) != want {
+		t.Fatalf("file:\n%s\nwant:\n%s", data, want)
+	}
+	if got := rawStrings(readLines(t, e.dir, "192.0.2.1")); strings.Join(got, "|") != "<13>short|<13>short|<13>cut line|<13>abcd" {
+		t.Fatalf("raws %q", got)
+	}
+	tot, _ := e.idx.TotalCounts(bg, day0.Add(-time.Hour), day0.Add(time.Hour))
+	if tot.Msgs != 4 || tot.Truncated != 1 {
+		t.Fatalf("stats %+v", tot)
 	}
 }
 
@@ -591,6 +630,10 @@ func TestCrashRecovery(t *testing.T) {
 	if lines[len(lines)-2] != "torn mess" || lines[len(lines)-1] != "after restart" {
 		t.Fatalf("tail %q", lines[len(lines)-3:])
 	}
+	// The torn line was kept, marked incomplete (2.0).
+	if data, _ := os.ReadFile(active); !strings.Contains(string(data), "\n2026-11-10T12:00:01.000Z 192.0.2.1 torn mess \\#incomplete\n") {
+		t.Errorf("torn line not marked:\n%s", data[max(0, len(data)-300):])
+	}
 	if got := rawStrings(readLines(t, e.dir, "192.0.2.2")); strings.Join(got, "|") != "b before|b after" {
 		t.Fatalf("device b %q", got)
 	}
@@ -806,5 +849,56 @@ func TestReserveRule(t *testing.T) {
 	// A cap below the floor leaves the floor in charge.
 	if got := reserveFor(4e12, 2*GiB, 5, 1*GiB); got != 2*GiB {
 		t.Fatalf("floor over cap: %d", got)
+	}
+}
+
+// tornEnd finishes a torn last line: marked incomplete, a marker the tear cut
+// into replaced, a lone backslash from a torn escape dropped.
+func TestTornEnd(t *testing.T) {
+	const pre = "2026-11-10T12:00:01.000Z 192.0.2.1 "
+	for in, want := range map[string]string{
+		pre + "torn mess":                        pre + `torn mess \#incomplete`,
+		pre + `<13>short \#incompl`:              pre + `<13>short \#incomplete`,
+		pre + `<13>short \#incomplete=9/5`:       pre + `<13>short \#incomplete`,
+		pre + `<13>abc \#truncated,incomplete=7`: pre + `<13>abc \#truncated,incomplete`,
+		pre + `<13>abc \#trunc`:                  pre + `<13>abc \#truncated,incomplete`,
+		pre + `path C:\\`:                        pre + `path C:\\ \#incomplete`,
+		pre + `path C:\`:                         pre + `path C: \#incomplete`,
+		pre:                                      pre + ` \#incomplete`,
+	} {
+		keep, end := tornEnd([]byte(in))
+		got := in[:keep] + string(end)
+		if got != want+"\n" {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+		l, err := ParseLine([]byte(got))
+		if err != nil || !l.Flags.Incomplete {
+			t.Errorf("%q: reads back as %+v %v", got, l, err)
+		}
+	}
+}
+
+// Recovery of a file whose last line tore inside its marker: the line is kept
+// with a whole marker, and the next write starts a new line.
+func TestRecoverTornMarkedLine(t *testing.T) {
+	e := newEnv(t, nil)
+	a := ip(1)
+	e.write(a, "first")
+	e.s.Flush()
+	e.crash()
+	active := filepath.Join(e.dir, "logs/192.0.2.1/2026-11-10.log")
+	f, _ := os.OpenFile(active, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString(`2026-11-10T12:00:01.000Z 192.0.2.1 <13>cut off \#incomplete=9/5`)
+	f.Close()
+	e.open()
+	e.write(a, "after restart")
+	e.maintain()
+	data, _ := os.ReadFile(active)
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != 3 || lines[1] != `2026-11-10T12:00:01.000Z 192.0.2.1 <13>cut off \#incomplete` || !strings.HasSuffix(lines[2], " after restart") {
+		t.Fatalf("file:\n%s", data)
+	}
+	if got := rawStrings(readLines(t, e.dir, "192.0.2.1")); strings.Join(got, "|") != "first|<13>cut off|after restart" {
+		t.Fatalf("raws %q", got)
 	}
 }

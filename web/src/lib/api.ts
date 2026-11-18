@@ -145,6 +145,18 @@ export interface Stats {
   udp_queue: UdpQueue[];
   /** Flow segments closed early to keep flow memory bounded, since the server started (2.0). */
   flow_parts_early: number;
+  /** One per enabled TCP and TLS listener (2.0), counted since the server started. */
+  tcp_frames: TcpFrames[];
+}
+
+/** A TCP or TLS listener's frame counters (docs/api.md → Incomplete TCP frames). */
+export interface TcpFrames {
+  listener: 'tcp' | 'tls' | (string & {});
+  port: number;
+  /** Messages whose frame ended before all of it arrived; stored and marked incomplete. */
+  incomplete: number;
+  /** Connections closed on tcp_frame_timeout (their message is among incomplete). */
+  frame_timeouts: number;
 }
 
 export interface DroppedByReason {
@@ -231,6 +243,13 @@ export interface LogLine {
   /** 0 emerg … 7 debug, or null when the message had no parseable PRI. */
   severity: number | null;
   raw: string;
+  /** 2.0: cut at the max message size. Absent when it wasn't. */
+  truncated?: boolean;
+  /** 2.0: its TCP or TLS frame ended before all of it arrived; raw is what arrived. Absent when it didn't. */
+  incomplete?: boolean;
+  /** 2.0, an incomplete octet-counted frame: the bytes that arrived and the length it advertised. */
+  frame_arrived?: number;
+  frame_length?: number;
 }
 
 export interface SampledNotice {
@@ -616,7 +635,7 @@ export interface TlsFailure {
   device_id: string;
 }
 
-export type DeletionReason = 'age' | 'cap' | 'low_disk';
+export type DeletionReason = 'age' | 'cap' | 'flow_budget' | 'low_disk';
 
 // ---------- SNMP traps (docs/api.md → SNMP trap listener, SNMP state, SNMP v3 users; 1.2) ----------
 

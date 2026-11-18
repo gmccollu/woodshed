@@ -44,8 +44,8 @@ var allowed = map[string]string{
 	"internal/peer":               "loopback to another Woodshed on this machine",
 	"internal/listen":             "OS helpers (who holds a port), and SNMP inform Responses and Reports on the trap socket",
 	"internal/service":            "OS helpers (the service manager)",
-	"internal/fwrule":             "OS helpers (the host firewall's own programs: netsh, ufw, firewall-cmd); no network",
-	"cmd/woodshed":                "the command line: OS helpers, and woodshed status asking the local server",
+	"internal/fwrule":             "OS helpers (the host firewall's own programs: netsh, ufw, firewall-cmd; its COM API on Windows); no network",
+	"cmd/woodshed":                "the command line: OS helpers, and woodshed status and profile asking the local server",
 }
 
 func moduleRoot(t *testing.T) string {

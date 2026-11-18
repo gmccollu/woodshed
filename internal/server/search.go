@@ -70,7 +70,7 @@ func toAPILines(ls []search.Line) []api.SearchLine {
 	out := make([]api.SearchLine, len(ls))
 	for i, l := range ls {
 		out[i] = api.SearchLine{Received: l.Received, DeviceID: l.DeviceID, Severity: l.Severity, Raw: l.Raw, Ref: l.Ref, App: l.App, Host: l.Host,
-			Type: l.Type}
+			Type: l.Type, Truncated: l.Flags.Truncated, Incomplete: l.Flags.Incomplete, FrameArrived: l.Flags.Arrived, FrameLength: l.Flags.Length}
 	}
 	return out
 }

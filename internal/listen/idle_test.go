@@ -272,9 +272,10 @@ func TestPerPrefixLimitEvictsOwnIdle(t *testing.T) {
 // The same over real sockets: a sender at its per-address limit (2 here) whose
 // connections went quiet reconnects, and its new connection gets in.
 func TestPerSourceLimitEvictsOverSockets(t *testing.T) {
+	const evictIdle = 300 * time.Millisecond
 	cfg := loopback(0, 0)
 	cfg.TCPMaxConnsPerSource = 2
-	s, c, _ := start(t, cfg, func(o *Options) { o.EvictIdle = 300 * time.Millisecond })
+	s, c, _ := start(t, cfg, func(o *Options) { o.EvictIdle = evictIdle })
 	addr := tcpAddr(t, s)
 	dial := func(msg string) net.Conn {
 		cn, err := net.Dial("tcp", addr)
@@ -285,11 +286,43 @@ func TestPerSourceLimitEvictsOverSockets(t *testing.T) {
 		fmt.Fprintf(cn, "%s\n", msg)
 		return cn
 	}
+	// lastOf waits until the server is done with cn's message and returns the
+	// connection's last-activity time. The collector has a message before its
+	// connection records it (serve delivers, then frameDone), so waiting for
+	// the message alone let a's time land after b's on a busy runner, and b
+	// was evicted as the idlest (CI, 3df7ecb). inFrame is set from the
+	// message's first byte, so once it's delivered, false means frameDone ran.
+	lastOf := func(cn net.Conn) int64 {
+		t.Helper()
+		var at int64
+		waitFor(t, "the connection's message recorded", func() bool {
+			s.pool.mu.Lock()
+			defer s.pool.mu.Unlock()
+			for tc := range s.pool.conns {
+				if tc.raw.RemoteAddr().String() == cn.LocalAddr().String() {
+					at = tc.last.Load()
+					return !tc.inFrame.Load()
+				}
+			}
+			return false
+		})
+		return at
+	}
 	a := dial("<13>a")
 	c.wait(t, 1)
+	aLast := lastOf(a)
+	for time.Now().UnixNano() <= aLast { // b's time strictly after a's, on any clock resolution
+		time.Sleep(time.Millisecond)
+	}
 	b := dial("<13>b")
 	c.wait(t, 2)
-	time.Sleep(500 * time.Millisecond) // both idle past EvictIdle: the sender "rebooted"
+	bLast := lastOf(b)
+	if bLast <= aLast {
+		t.Fatalf("b's last activity %d isn't after a's %d", bLast, aLast)
+	}
+	for time.Since(time.Unix(0, bLast)) <= evictIdle { // both idle past EvictIdle: the sender "rebooted"
+		time.Sleep(10 * time.Millisecond)
+	}
 	dial("<13>after the reboot")
 	if got := c.wait(t, 3); string(got[2].Raw) != "<13>after the reboot" {
 		t.Errorf("got %q", got[2].Raw)

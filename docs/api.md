@@ -32,7 +32,8 @@ Change this file first if the contract changes.
                                                // tls_cert_names, tls_firewall (see "TLS syslog listener"), udp_queue_full
                                                // (see "UDP receive queue"), snmp_firewall, snmp_credentials, snmp_mibs
                                                // (see "SNMP trap receiver"), poll_unreachable, poll_overrun
-                                               // (see "SNMP poller"); an optional "url" on any banner
+                                               // (see "SNMP poller"), profiling_on (see "Profiling listener");
+                                               // an optional "url" on any banner
 }
 ```
 A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
@@ -63,7 +64,8 @@ because this copy holds the UI port.
                  "high_water_by_hour": [120, 3210, 88]},   // oldest first, the last 24 hours
                 {"listener": "snmp", "port": 162, "capacity_messages": 100000, "capacity_bytes": 67108864,
                  "depth": 0, "high_water_24h": 40, "dropped_24h": 0, "high_water_by_hour": [12, 40]}],  // while listeners.snmp.enabled
-  "flow_parts_early": 0                       // flow segments started early to keep flow memory bounded (2.0, below)
+  "flow_parts_early": 0,                      // flow segments started early to keep flow memory bounded (2.0, below)
+  "tcp_frames": [{"listener": "tcp", "port": 514, "incomplete": 0, "frame_timeouts": 0}]  // per TCP and TLS listener (2.0, below)
 }
 ```
 **Drops by reason** (since 1.2): `dropped_by_reason` splits `dropped_24h`: `paused` (the low-disk guard had paused
@@ -77,6 +79,20 @@ the server started, because every exporter's open segment together had reached t
 exporter's next records go on in the hour's next part (`…T09.001.wsf`), so nothing is lost and searches read both; it
 only means more, smaller files. At one block a second per exporter, an hour stays one part up to about 43 exporters;
 300 exporters make about 4 parts an exporter-hour.
+
+**Incomplete TCP frames** (since 2.0, SPEC §3.1): `tcp_frames` has one entry per enabled TCP and TLS listener
+(`"tcp"`, `"tls"`), with its bound port (the configured one while it's down), counted since the server started:
+- `incomplete`: messages whose frame ended before all of it arrived. That is an octet-counted frame shorter than the
+  count it advertised, whoever ended the connection (the sender's close, a reset, a TLS close, the frame timeout, an
+  eviction, shutdown), or a newline-framed message Woodshed cut by closing the connection or the sender's reset ended.
+  They're counted when the frame ends, and stored as far as they arrived, marked incomplete (search results, below),
+  unless refused or dropped like any message. A frame of which only the count, or part of it, arrived has nothing to
+  store and is only counted. A sender's last line without its LF before a clean close is complete: newline framing
+  (RFC 6587 non-transparent framing) can't tell it from one that was cut, so it isn't counted.
+- `frame_timeouts`: connections closed because a message didn't complete within `tcp_frame_timeout`; their message is
+  among `incomplete`.
+- These aren't in `truncated_24h`, which counts only messages cut at the max message size. Before 2.0 a message cut by
+  the frame timeout or an eviction was counted there, and a frame the sender cut short wasn't marked at all (since 1.0).
 
 **UDP receive queue** (since 1.2, SPEC §11.5): each UDP socket's reader only reads, stamps, applies the blocklist and
 allowlist and queues; one drainer parses and stores in arrival order, so a slow disk fills the queue instead of the OS
@@ -181,7 +197,8 @@ and export are unaffected; its `status` is `blocked`, and it isn't counted as on
 ## Live tail
 
 `GET /api/live?devices=10.1.0.1,10.1.0.2&group=HQ&ungrouped=true&severities=3,4,unknown&q=text` → `text/event-stream`.
-- `event: message` `data: {"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "<134>..."}`
+- `event: message` `data: {"received": "...", "device_id": "10.1.0.1", "severity": 6, "raw": "<134>..."}`, plus
+  `truncated`, `incomplete`, `frame_arrived` and `frame_length` when set, as in search results (since 2.0).
 - `event: sampled` `data: {"rate": 1284.2, "shown": 50}`: sent once a second while the server is sampling.
 - `group` and `ungrouped=true` are alternatives; `ungrouped=true` matches devices with no group.
 - Hidden devices are left out of the live tail unless they're named in `devices`, the same rule as search.
@@ -218,7 +235,13 @@ An invalid value (not 0–7 or `unknown`) is a `400 {"error": ...}`.
   `400 {"error": "type: unknown data type \"x\"."}`. Without `type`, everything means what it meant in 1.1.
 - `syntax`: `text` (the default: `q` and `exclude` mean exactly what they meant in 1.0) or `terms` (below). Anything
   else is a `400`.
-- `q` is matched against the raw message as received (unescaped), not the stored line prefix.
+- `q` is matched against the raw message as received (unescaped), not the stored line prefix or its marker.
+- **Marks** (since 2.0): a syslog result whose message wasn't stored whole has `"truncated": true` (cut at
+  `max_message_bytes`) and/or `"incomplete": true` (its TCP or TLS frame ended before all of it arrived; see
+  `tcp_frames` above). For an incomplete octet-counted frame, `frame_arrived` and `frame_length` are the bytes that
+  arrived and the length it advertised: `"incomplete": true, "frame_arrived": 9, "frame_length": 50`. Without a mark the
+  keys are absent, so a result looks exactly as before 2.0. `raw` never includes the marker. The same keys are on
+  context lines and in `woodshed search --json`. Messages stored before 2.0 have no marks.
 - `exclude`: lines whose raw message matches it are left out. It's matched like `q`: a substring by default, an RE2
   regular expression with `regex=true`, and `case` applies. An invalid one is a `400` (the message starts
   `exclude: `). Empty means nothing is excluded.
@@ -718,7 +741,10 @@ A PUT without `poll` (a 1.2 client) leaves it as it is.
   applies at once; the stored ID is kept for when the override is removed.
 - The file-only `listeners.snmp.v3_strict_time` (default `false`) isn't in `/api/settings` (SPEC §11.8 #28).
 
-`GET /api/storage/history` → `[{"time", "file", "device_id", "bytes", "reason": "age|cap|low_disk", "type": "syslog|trap"}]`
+`GET /api/storage/history` → `[{"time", "file", "device_id", "bytes", "reason": "age|cap|flow_budget|low_disk", "type": "syslog|trap|poll|flow"}]`
+
+`flow_budget` (2.0): a flow segment deleted because flows were over their own budget (`storage.flow_budget_bytes`), not
+the storage cap; `cap` is the storage cap (`storage.retention_bytes`). Flows are never deleted for `cap`.
 
 ## TLS syslog listener
 
@@ -1249,6 +1275,28 @@ is on (or a v3 user is set, or a trap was received), an `snmp` object gives `ena
 SNMP poll target is configured (since 1.3), a `poll` object gives `targets`, `answering`, `not_answering` (each
 `device_id`, `address`, `since`) and `last_cycle`, for `woodshed status`'s Polling row.
 
+## Profiling listener
+
+Not the UI's API: a separate HTTP listener for `woodshed profile` (SPEC §13.10 decision 85), off unless `debug.pprof
+= true` is in the config file or `WOODSHED_PPROF=1` (also `true`, `on`, `yes`) is in the server's environment. It
+binds `127.0.0.1` (or `::1`) on a port the OS picks and writes `woodshed.pprof.json` into the data folder (mode 0600,
+deleted at a clean stop):
+```json
+{"pid": 4242, "addr": "127.0.0.1:53911", "token": "<64 hex digits>", "source": "config", "started_at": "..."}
+```
+Every request must come from a loopback address with `Authorization: Bearer <token>` (401 without it, 403 from
+anywhere else), and every route is GET:
+
+| Route | Body |
+|---|---|
+| `/debug/pprof/cpu?seconds=N` | a CPU profile over N s (1–300, default 30), pprof format (gzipped protobuf) |
+| `/debug/pprof/trace?seconds=N` | a runtime trace over N s (1–60, default 5), for `go tool trace` |
+| `/debug/pprof/heap` | a heap profile after a GC, pprof format |
+| `/debug/pprof/goroutine` | every goroutine's stack, as text |
+
+A second CPU profile or trace while one runs gets 409 (a trace may run during a CPU profile); a bad `seconds` gets 400.
+Errors are plain text, not JSON. While the listener is on, `/api/status` has an info banner `profiling_on`.
+
 ## Errors
 
 Any non-2xx returns `{"error": "human-readable message"}`.
@@ -1295,6 +1343,15 @@ exports, and the flow routes. Everything is additive (SPEC §13.9).
   its stream: `"rfc"` (RFC 7011 §3.1: the data records sent before the message) or `"after"` (counting the message's
   own records too). Absent while undecided (messages of equal size don't tell them apart) and for v5 and v9.
   `counts_24h.sequence_gaps` counts a jump only when the conventions still in play can't explain it.
+- `counts_24h`, `time_offsets_24h` and `time_offsets_1h` survive a restart (SPEC §13.10 decision 83): at start the
+  collector reloads them, for every exporter with stored counts in the last 24 hours, from the per-minute counts in
+  the index (`counts_24h.records` is then the records stored), with `last_seen` from its newest flow segment, so such
+  an exporter is listed before it sends again. Nothing that shapes a stored record is restored: `templates` is 0 and
+  `last_template` null until the exporter sends one (its data waits as usual), and `sampling` is 0 (records say
+  sampling unknown) until its options data gives a rate. Meanwhile `domains[].last_known_sampling` shows the rate the
+  newest segment's metadata had before the restart, for context only: it's never applied, and it's absent once the
+  domain has a rate of its own or when nothing was stored. Interface names and system init times come back only from
+  the exporter's options data too.
 - `time_offsets_24h` and `time_offsets_1h` (since 2.0, SPEC §13.10 decision 70): the exporter's records, over the last
   24 hours (by hour) and the last hour (by 5 minutes), whose flow end was more than 1 h after the datagram arrived
   (`ahead`) or more than 24 h before it (`behind`), and the largest offset each way in ms (`0` when none). Such records
@@ -1363,7 +1420,7 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
  "rows": [{"key": "10.20.0.5", "label": "10.20.0.5", "flows": 40211, "bytes": 5642000000, "packets": 4100000,
            "bytes_scaled": 564200000000, "packets_scaled": 410000000, "scaled_lower_bound": false, "connections": 40000,
            "share": 0.31, "first": "2026-11-16T09:00:02Z", "last": "2026-11-16T09:59:58Z", "approx": false, "max_error": 0}],
- "other": {"flows": 1000000, "bytes": 9000000000},
+ "other": {"flows": 1000000, "bytes": 9000000000}, "zero_omitted": 4,
  "approx": false, "error_bound": 0,
  "progress": {"blocks_done": 1800, "blocks_total": 1800, "records_done": 1204332, "records_total": 1204332,
               "complete_from": "2026-11-16T09:00:00Z"},
@@ -1371,6 +1428,10 @@ default, or `flows` with `fw_event=denied`; `packets`, `flows`, `connections`), 
 ```
 - `key` for `conversation` is `"a ↔ b"` with the lower address first (both directions summed); for ports
   `"tcp/443"`; for interfaces the index, with the name as `label`.
+- A key with none of the metric is never a row: a top by bytes doesn't list denied-only sources, rule IDs or ports at
+  0 bytes after the others. `zero_omitted` counts those keys (the CLI, the Top panel and the bundle README say "4 with 0
+  bytes not shown"); with `approx: true` it's a lower bound ("at least 4"). `total` is unchanged; `other` now holds the
+  left-out keys too, which adds to its `flows` but nothing to the ranked metric. Decided (build, 2026-11-17).
 - `share` is of the metric's exported total. `scaled_complete` is false when some records had unknown sampling; a row
   whose records include any is a lower bound (`scaled_lower_bound: true`, shown with "≥").
 - "Top denied sources" is `by=src&fw_event=denied`. Totals follow SPEC §13.2.1's no-double-count rule for event
@@ -1424,13 +1485,25 @@ v9 vendor-range field type is `{"pen": 0, "id": 40003, …}` (the whole type), t
   "packets", "packets_scaled", "top_talkers": [{"key", "share"}], "top_dst_ports": [...], "top_conversations": [...],
   "fw_events": {"created", "deleted", "denied"}, "top_denied_sources": [{"key", "count"}], "top_denied_ports": [...],
   "nat_connections", "top_post_nat_sources": [...],
-  "sequence_gaps", "lost_estimate", "no_template", "malformed",
-  "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps`,
-  `lost_estimate` and `time_offsets_24h` are the collector's last 24 hours (`null` from `woodshed bundle`, which has no
-  collector); `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
+  "zero_omitted": {"top_talkers", "top_dst_ports", "top_conversations", "top_denied_sources", "top_denied_ports",
+  "top_post_nat_sources"},
+  "sequence_gaps", "lost_estimate", "sequence_gaps_span": {"from", "to", "by_hour", "partial"}, "sequence_gaps_unknown",
+  "sequence_gaps_24h", "lost_estimate_24h", "no_template", "malformed",
+  "time_offsets": {"ahead", "behind", "max_ahead_ms", "max_behind_ms"}, "time_offsets_24h": {…}}`. `sequence_gaps` and
+  `lost_estimate` are the window's: the gaps counted in datagrams that arrived in it, from the per-minute counts
+  (SPEC §13.10 decision 82), over `sequence_gaps_span`: the window in whole minutes, its start widened to the hour
+  (`by_hour`) when part of it is older than a day, and with `partial` from the 7-day retention cutoff when the window
+  starts before it. They're `null` when not known, with `sequence_gaps_unknown` `"not_kept"` (the window ends before
+  the 7 days the counts are kept), `"nothing_received"` (no flow datagram arrived in it) or `"not_counted"` (part of
+  it was stored by 2.0.0-rc1). `woodshed bundle` gives them too. `sequence_gaps_24h`, `lost_estimate_24h` and
+  `time_offsets_24h` are the running collector's last 24 hours before the bundle was made, not limited to the window
+  (`null` from `woodshed bundle`); the README shows the 24-hour gaps only when the window's aren't known, labelled as
+  such. `time_offsets` counts the window's own records whose time was far from their arrival (as `/api/flows`
   defines it). `time_offsets_24h` can count records the window doesn't hold: they're at their own times. The README's
   Flows block gets a "times off arrival" line when either is non-zero. Entries whose count is 0 are left out of the top
-  lists, which hold at most 3.
+  lists, which hold at most 3; `zero_omitted` says how many keys each list left out that way (bytes for the share lists,
+  flow records for the denied ones; `approx`: some list was counted approximately, so the counts are lower bounds), and
+  the README adds "(4 with 0 bytes not shown)" (or "at least 4") after the list.
 
 ### Banners
 - `flow_budget` (info, action `""`): flows hold less than 24 h within their budget at the current rate; the text gives

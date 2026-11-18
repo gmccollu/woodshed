@@ -17,6 +17,8 @@
     return () => clearInterval(t);
   });
   const reasons = $derived(stats?.dropped_by_reason);
+  // A TCP or TLS listener's frame counters (2.0), by protocol.
+  const framesOf = (proto: string) => stats?.tcp_frames?.find((f) => f.listener === proto);
   const anyReason = $derived(!!reasons && reasons.paused + reasons.write_error + reasons.refused + reasons.queue_full > 0);
   const queueName = (l: string) => (l === 'udp' ? 'Syslog over UDP' : l === 'snmp' ? 'SNMP traps' : l === 'flow' ? 'Flows (flow and IPFIX ports)' : l === 'ipfix' ? 'Flows (IPFIX)' : l.toUpperCase());
   const pct = (a: number, b: number) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
@@ -141,6 +143,16 @@
             <span class="inline-block size-[9px] rounded-full" style:background={l.ok ? 'var(--ok)' : 'var(--bad)'} aria-hidden="true"></span>
             <span class="font-mono text-[13.5px]">{protoLabel(l.proto)} {l.addr}:{l.port}</span>
             <span class:text-ok-fg={l.ok} class:text-bad-fg={!l.ok}>{l.ok ? 'listening' : l.error}</span>
+            {#if framesOf(l.proto)}
+              {@const f = framesOf(l.proto)!}
+              <span
+                class="text-[13px]"
+                class:text-muted={!f.incomplete}
+                class:text-warn-fg={f.incomplete > 0}
+                title="Messages whose frame ended before all of it arrived (the sender closed or reset the connection mid-message, or Woodshed cut it), since Woodshed started. They're stored and marked incomplete."
+                >· {num(f.incomplete)} incomplete {f.incomplete === 1 ? 'message' : 'messages'}{#if f.frame_timeouts}, {num(f.frame_timeouts)} cut by the frame timeout{/if}</span
+              >
+            {/if}
           </li>
         {/each}
       </ul>

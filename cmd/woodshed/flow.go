@@ -372,7 +372,10 @@ func cmdFlows(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("flows top", "", `
 The top-N of stored flows for a window, from the data folder (read-only), as
 the Events Top panel and /api/flows/top: exported and scaled counts, each
-row's share of the window.
+row's share of the window. Keys with none of the metric (a denied-only source
+has 0 bytes) aren't rows; the last line says how many were left out ("at
+least" when counting was approximate). Exit 0 when any record matched, even
+if every key had 0 of the metric; 1 when none did.
 
 Examples:
   woodshed flows top --by src --last 1h                         top talkers by bytes
@@ -489,7 +492,9 @@ Examples:
 	} else {
 		printTop(stdout, page)
 	}
-	if len(page.Rows) == 0 {
+	// Records that matched but had none of the metric are a match: the last
+	// line says how many keys were left out (exit 1 only when no record did).
+	if len(page.Rows) == 0 && page.ZeroOmitted == 0 {
 		return exitNoMatch
 	}
 	return exitMatch
@@ -524,6 +529,9 @@ func printTop(w io.Writer, p api.FlowTopPage) {
 	}
 	tw.Flush()
 	note := fmt.Sprintf("%d flows, %d bytes, %d packets in the window", p.Total.Flows, p.Total.Bytes, p.Total.Packets)
+	if z := flowquery.ZeroOmittedText(p.ZeroOmitted, p.Metric, p.Approx); z != "" {
+		note += "; " + z
+	}
 	if p.Approx {
 		note += fmt.Sprintf(" (too many keys to count exactly: approximate; a key not listed has at most %d %s, and a row marked ~ is at most its error over)",
 			p.ErrorBound, p.Metric)

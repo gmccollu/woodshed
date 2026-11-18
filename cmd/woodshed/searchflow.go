@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -90,6 +91,9 @@ func flowRange(r api.SearchRequest) (time.Time, time.Time) {
 	return from, to
 }
 
+// errFlowStop ends a flow listing early (the limit, or a write error).
+var errFlowStop = errors.New("stop")
+
 func flowSearch(stdout, stderr io.Writer, f *searchFlags, req api.SearchRequest, dataDir string, idx *index.DB, indexPath string,
 	before index.FileState) int {
 	if f.context > 0 {
@@ -124,52 +128,46 @@ func flowSearch(stdout, stderr io.Writer, f *searchFlags, req api.SearchRequest,
 	start := time.Now()
 	var n int64
 	headerDone := f.json || f.count
-	cursor := ""
 	interrupted := false
 	writeErr := error(nil)
-	for {
-		res, err := fe.Search(ctx, q, 5000, req.Asc, cursor, time.Minute)
-		if err != nil {
-			if ctx.Err() != nil {
-				interrupted = true
-				break
-			}
-			fmt.Fprintf(stderr, "woodshed search: %v\n", err)
-			return exitUsage
-		}
-		for i := range res.Hits {
-			h := &res.Hits[i]
-			n++
-			if f.count {
-				continue
-			}
+	var line []byte
+	// Every record in order, each block decoded once (Engine.Stream gives
+	// what Search's pages would, one after another).
+	err = fe.Stream(ctx, q, req.Asc, func(h *flowquery.Hit) error {
+		n++
+		if !f.count {
+			line = line[:0]
 			if !headerDone {
-				w.WriteString("device," + strings.Join(export.FlowCSVHeader(), ",") + "\r\n")
+				line = append(line, "device,"+strings.Join(export.FlowCSVHeader(), ",")+"\r\n"...)
 				headerDone = true
 			}
 			if f.json {
-				rec := h.Record
-				b, err := json.Marshal(api.SearchLine{Received: time.UnixMilli(rec.Received).UTC(), DeviceID: h.DeviceID,
-					Type: datatype.Flow, Ref: h.Ref(), Flow: &rec})
-				if err != nil {
-					writeErr = err
-					break
-				}
-				w.Write(b)
-				w.WriteByte('\n')
+				rec := &h.Record
+				line = api.AppendFlowLineJSON(line, &api.SearchLine{Received: time.UnixMilli(rec.Received).UTC(),
+					DeviceID: h.DeviceID, Type: datatype.Flow, Ref: h.Ref(), Flow: rec})
+				line = append(line, '\n')
 			} else {
-				w.WriteString(h.DeviceID)
-				w.WriteByte(',')
-				w.Write(export.AppendFlowCSVRow(nil, &h.Record))
+				line = append(line, h.DeviceID...)
+				line = append(line, ',')
+				line = export.AppendFlowCSVRow(line, &h.Record)
 			}
-			if f.limit > 0 && n >= int64(f.limit) {
-				break
+			if _, err := w.Write(line); err != nil {
+				writeErr = err
+				return errFlowStop
 			}
 		}
-		if res.Cursor == "" || (f.limit > 0 && n >= int64(f.limit)) || writeErr != nil {
-			break
+		if f.limit > 0 && n >= int64(f.limit) {
+			return errFlowStop
 		}
-		cursor = res.Cursor
+		return nil
+	})
+	switch {
+	case err == nil, errors.Is(err, errFlowStop):
+	case ctx.Err() != nil:
+		interrupted = true
+	default:
+		fmt.Fprintf(stderr, "woodshed search: %v\n", err)
+		return exitUsage
 	}
 	if err := w.Flush(); err != nil && writeErr == nil {
 		writeErr = err

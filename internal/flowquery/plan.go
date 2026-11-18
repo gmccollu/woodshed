@@ -60,8 +60,27 @@ type segRef struct {
 	lazy                func() *flowseg.Footer // takes the snapshot when the batch loads
 	live                bool                   // another process is writing it (OpenLive)
 	open                bool                   // being written: its bounds aren't final
+	wide                bool                   // holds raw sets an ordered plan reads first (their records' times are unknown)
 	start, end          int64                  // flow time, from the index (open: widened)
 	records             int64                  // the index's count (0: not indexed)
+	// id is the file snap was read from, when it was read from one (a page
+	// stream keeps snap between pages: a file written again under the same
+	// name isn't the one its offsets are for).
+	id flowseg.Identity
+}
+
+// errReplaced is a segment file that isn't the one its kept footer was read
+// from (deleted and written again under its name).
+var errReplaced = errors.New("flows: segment replaced since its footer was read")
+
+// openLoad is an open segment a plan has loaded: how much of it the plan
+// planned (its snapshot's blocks and raw chunks then), so a page stream
+// that resumes can read what's been written to it since.
+type openLoad struct {
+	ref    segRef // the segment (snap: the newest snapshot a page stream read blocks of)
+	blocks int
+	raw    int
+	cost   int64 // ref.snap's directory, charged to the page stream that keeps it (pages.go)
 }
 
 // openSeg opens a segment that has no snapshot: closed through its footer,
@@ -90,9 +109,17 @@ type plan struct {
 	// Segments not loaded yet: the open segments, listed once when the plan
 	// starts and keyed then (their index rows change while the plan pages,
 	// so the pages skip them), merged with the index pages by key.
-	opens     []segRef        // unread open segments, in key order
-	openSet   map[string]bool // every open segment's rel (the pages skip them)
-	pending   []segRef        // the current index page's rest
+	opens   []segRef        // unread open segments, in key order
+	openSet map[string]bool // every open segment's rel (the pages skip them)
+	// An ordered plan's (Search, Stream) closed segments holding raw sets
+	// still to decode: loaded before the rest, in rel order, since the
+	// records decoded from them may end anywhere (an exporter's clock ahead
+	// of Woodshed's puts them after their received time), so no bound but
+	// the widest is true until they're read.
+	ordered   bool
+	wides     []segRef
+	wideSet   map[string]bool
+	pending   []segRef // the current index page's rest
 	cur       *index.FlowSegCursor
 	indexDone bool
 
@@ -104,6 +131,14 @@ type plan struct {
 	// charged is the loaded batch's bytes, reserved in the engine's pool.
 	charged int64
 
+	// What the plan was made against, for a page stream that resumes
+	// (pages.go): the index's segment count for the window, the segments
+	// the index said hold raw sets to decode (ordered plans), and the open
+	// segments loaded so far.
+	segCount   int64
+	ntSet      map[string]bool
+	openLoaded map[string]*openLoad
+
 	// Progress.
 	recsEst      int64 // records: the index's for unloaded segments, exact for loaded ones
 	blocksLoaded int64
@@ -113,12 +148,28 @@ type plan struct {
 
 // planFor starts the window's plan.
 func (e *Engine) planFor(ctx context.Context, q *Query, asc bool) (*plan, error) {
-	p := &plan{e: e, devs: q.DeviceIDs, asc: asc, from: q.From.UnixMilli(), to: q.To.UnixMilli(), openSet: map[string]bool{}}
-	_, recs, err := e.o.Index.FlowSegmentsCount(ctx, q.DeviceIDs, q.From, q.To)
+	return e.newPlan(ctx, q, asc, false)
+}
+
+// planOrdered starts a plan whose bounds must hold for every record, raw
+// sets' included: a search page's or Stream's, which give records in order
+// and call them certain from the bounds.
+func (e *Engine) planOrdered(ctx context.Context, q *Query, asc bool) (*plan, error) {
+	return e.newPlan(ctx, q, asc, true)
+}
+
+func (e *Engine) newPlan(ctx context.Context, q *Query, asc, ordered bool) (*plan, error) {
+	e.sweepPages() // any query releases abandoned listings' page streams
+	p := &plan{e: e, devs: q.DeviceIDs, asc: asc, from: q.From.UnixMilli(), to: q.To.UnixMilli(), openSet: map[string]bool{},
+		ordered: ordered}
+	n, recs, err := e.o.Index.FlowSegmentsCount(ctx, q.DeviceIDs, q.From, q.To)
 	if err != nil {
 		return nil, err
 	}
-	p.recsEst = recs
+	p.recsEst, p.segCount = recs, n
+	if err := p.listWides(ctx, q); err != nil {
+		return nil, err
+	}
 	if e.o.Open == nil {
 		return p, ctx.Err()
 	}
@@ -138,13 +189,15 @@ func (e *Engine) planFor(ctx context.Context, q *Query, asc bool) (*plan, error)
 	// Their keys: any end (descending: they hold the newest flows), or the
 	// indexed start less openMargin (ascending; none indexed yet: first).
 	starts := map[string]int64{}
-	if asc && len(rels) > 0 {
+	wideRaw := map[string]bool{} // open segments the index says hold raw sets to decode
+	if (asc || ordered) && len(rels) > 0 {
 		rows, err := e.o.Index.FlowSegmentsByPath(ctx, rels)
 		if err != nil {
 			return nil, err
 		}
 		for _, r := range rows {
 			starts[r.Path] = r.Start
+			wideRaw[r.Path] = r.NoTemplate > 0
 		}
 	}
 	for _, rel := range rels {
@@ -152,6 +205,9 @@ func (e *Engine) planFor(ctx context.Context, q *Query, asc bool) (*plan, error)
 			lazy: byRel[rel].Snap, open: true, start: math.MinInt64, end: math.MaxInt64}
 		if st, ok := starts[rel]; ok && st-openMargin.Milliseconds() > math.MinInt64 {
 			ref.start = st - openMargin.Milliseconds()
+		}
+		if p.ordered && wideRaw[rel] {
+			ref.start = math.MinInt64 // its raw sets: first ascending too
 		}
 		p.opens = append(p.opens, ref)
 	}
@@ -163,6 +219,40 @@ func (e *Engine) planFor(ctx context.Context, q *Query, asc bool) (*plan, error)
 		return a.Rel < b.Rel
 	})
 	return p, ctx.Err()
+}
+
+// listWides lists an ordered plan's closed segments with raw sets to
+// decode (the index's no_template count), in rel order.
+func (p *plan) listWides(ctx context.Context, q *Query) error {
+	if !p.ordered {
+		return nil
+	}
+	rows, err := p.e.o.Index.FlowSegmentsNoTemplate(ctx, q.DeviceIDs, q.From, q.To)
+	if err != nil {
+		return err
+	}
+	p.wideSet, p.ntSet = map[string]bool{}, map[string]bool{}
+	for _, r := range rows {
+		p.ntSet[r.Path] = true
+	}
+	var open map[string]bool
+	if p.e.o.Open != nil {
+		open = map[string]bool{}
+		for _, os := range p.e.o.Open(q.DeviceIDs) {
+			open[os.Rel] = true
+		}
+	}
+	for _, r := range rows {
+		if open[r.Path] {
+			continue // listed with the open segments
+		}
+		p.wideSet[r.Path] = true
+		p.wides = append(p.wides, segRef{DeviceID: r.DeviceID, Rel: r.Path,
+			Path: filepath.Join(p.e.o.DataDir, filepath.FromSlash(r.Path)), wide: true, start: math.MinInt64, end: math.MaxInt64,
+			records: r.Records})
+	}
+	sort.Slice(p.wides, func(i, j int) bool { return p.wides[i].Rel < p.wides[j].Rel })
+	return nil
 }
 
 // openFirst reports whether the next open segment comes before the index's
@@ -202,6 +292,9 @@ func (p *plan) fill(ctx context.Context) {
 				p.recsEst -= r.Records // counted when it loads
 				continue
 			}
+			if p.wideSet[r.Path] {
+				continue // loaded first (listWides)
+			}
 			p.pending = append(p.pending, segRef{DeviceID: r.DeviceID, Rel: r.Path,
 				Path: filepath.Join(p.e.o.DataDir, filepath.FromSlash(r.Path)), start: r.Start, end: r.End, records: r.Records})
 		}
@@ -210,6 +303,11 @@ func (p *plan) fill(ctx context.Context) {
 
 // nextSeg pops the next segment to load, or false when none is left.
 func (p *plan) nextSeg(ctx context.Context) (segRef, bool) {
+	if len(p.wides) > 0 {
+		s := p.wides[0]
+		p.wides = p.wides[1:]
+		return s, true
+	}
 	for {
 		if !p.asc && len(p.opens) > 0 {
 			break // descending, the open segments go first: no page needed
@@ -237,6 +335,12 @@ func (p *plan) nextSeg(ctx context.Context) (segRef, bool) {
 // peekKey is the next unloaded segment's bound: its end (desc) or start
 // (asc); ok false when none is left. Skipped segments are dropped on the way.
 func (p *plan) peekKey(ctx context.Context) (int64, bool) {
+	if len(p.wides) > 0 {
+		if p.asc {
+			return math.MinInt64, true
+		}
+		return math.MaxInt64, true
+	}
 	if !p.asc && len(p.opens) > 0 {
 		return math.MaxInt64, true
 	}
@@ -308,6 +412,16 @@ func (p *plan) load(ctx context.Context, rd *readers) {
 			}
 			foot = r.Footer()
 		}
+		if r != nil {
+			ref.id = r.Identity()
+		}
+		if ref.open {
+			if p.openLoaded == nil {
+				p.openLoaded = map[string]*openLoad{}
+			}
+			p.openLoaded[ref.Rel] = &openLoad{ref: segRef{DeviceID: ref.DeviceID, Rel: ref.Rel, Path: ref.Path, id: ref.id, open: true},
+				blocks: len(foot.Blocks), raw: len(foot.RawChunks)}
+		}
 		si := len(p.segs)
 		p.segs = append(p.segs, ref)
 		planned0 := len(p.blocks)
@@ -330,10 +444,17 @@ func (p *plan) load(ctx context.Context, rd *readers) {
 		}
 		p.recsEst += rows - ref.records
 		if foot.RawStatus[flow.StatusNoTemplate] > 0 || (foot.Raw > 0 && foot.RawStatus == [4]int64{}) {
+			// The records decoded from raw sets are matched against the
+			// window one by one, so the sets are always read: their records'
+			// times needn't be near their received times. An ordered plan
+			// bounds them by nothing (read first; they hold no rows to
+			// count); the others keep the received times as the position
+			// they read them at.
 			lo, hi := foot.MinReceived-rawSpan.Milliseconds(), foot.MaxReceived
-			if hi >= p.from && lo < p.to {
-				p.blocks = append(p.blocks, planned{seg: si, block: -1, raw: true, minStart: lo, maxStart: hi, minEnd: lo, maxEnd: hi})
+			if p.ordered {
+				lo, hi = math.MinInt64, math.MaxInt64
 			}
+			p.blocks = append(p.blocks, planned{seg: si, block: -1, raw: true, minStart: lo, maxStart: hi, minEnd: lo, maxEnd: hi})
 		}
 		if r != nil {
 			if len(p.blocks) > planned0 {
@@ -524,6 +645,10 @@ func (r *readers) get(si int) (*flowseg.Reader, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if s.id != (flowseg.Identity{}) && rd.Identity() != s.id {
+		rd.Close()
+		return nil, errReplaced
 	}
 	if r.rds == nil {
 		r.rds = map[int]*flowseg.Reader{}

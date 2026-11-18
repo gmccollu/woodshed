@@ -150,9 +150,15 @@ func TestEngineTopMatchesBruteForce(t *testing.T) {
 			for _, r := range fx.brute(q) {
 				want.Add(&r)
 			}
-			wr := want.Rows(5)
-			if res.Partial || res.Total != want.Total || len(res.Rows) != len(wr) {
-				t.Fatalf("%s by %s: total %+v want %+v (partial %v)", fq, by, res.Total, want.Total, res.Partial)
+			wr, wz := want.RowsZero(5)
+			if res.Partial || res.Total != want.Total || len(res.Rows) != len(wr) || res.ZeroOmitted != wz {
+				t.Fatalf("%s by %s: total %+v want %+v (partial %v, zero %d want %d)", fq, by, res.Total, want.Total, res.Partial,
+					res.ZeroOmitted, wz)
+			}
+			for _, row := range res.Rows {
+				if row.Bytes == 0 {
+					t.Fatalf("%s by %s: a row with 0 bytes: %+v", fq, by, row)
+				}
 			}
 			for i := range wr {
 				if res.Rows[i].Key != wr[i].Key || res.Rows[i].Sums != wr[i].Sums {
@@ -326,5 +332,50 @@ func TestEngineSearchCursorKeepsDefaultRange(t *testing.T) {
 	// (later) range would allow.
 	if _, e := flowseg.EffectiveTimes(&res2.Hits[0].Record); len(res2.Hits) != 10 || e <= fx.h.Add(90*time.Minute).UnixMilli() {
 		t.Fatalf("second page %d hits, first end %d", len(res2.Hits), e)
+	}
+}
+
+// The saved states and page streams leave least recently saved first even
+// when the clock reads the same for all of them (Windows' resolution: CI's
+// "an older stream kept over a newer one"), or runs backwards.
+func TestSavedLRUClockTies(t *testing.T) {
+	frozen := time.Now()
+	e := &Engine{o: Options{Clock: func() time.Time { return frozen }}, states: map[string]*state{},
+		pages: map[string]*pageState{}, pool: NewPool(1 << 30)}
+	t.Cleanup(func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.pageTimer != nil {
+			e.pageTimer.Stop()
+		}
+	})
+	for i := range MaxPageStates + 3 {
+		if i == MaxPageStates {
+			frozen = frozen.Add(-time.Second) // the clock stepped back: still saved after
+		}
+		e.savePage(fmt.Sprintf("c%d", i), "q", &stream{e: e, p: &plan{e: e}, h: &heldHeap{}})
+	}
+	for i := range MaxPageStates + 3 {
+		if got, want := e.pages[fmt.Sprintf("c%d", i)] != nil, i >= 3; got != want {
+			t.Fatalf("page c%d saved %v, want %v", i, got, want)
+		}
+	}
+	for i := 3; e.evictPage(); i++ {
+		if e.pages[fmt.Sprintf("c%d", i)] != nil {
+			t.Fatalf("evicted another before c%d", i)
+		}
+	}
+	for i := range MaxStates + 3 {
+		e.saveState(&state{id: fmt.Sprintf("s%d", i)})
+	}
+	for i := range MaxStates + 3 {
+		if got, want := e.states[fmt.Sprintf("s%d", i)] != nil, i >= 3; got != want {
+			t.Fatalf("state s%d saved %v, want %v", i, got, want)
+		}
+	}
+	for i := 3; e.evictOne(); i++ {
+		if e.states[fmt.Sprintf("s%d", i)] != nil {
+			t.Fatalf("evicted another before s%d", i)
+		}
 	}
 }

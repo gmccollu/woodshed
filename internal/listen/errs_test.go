@@ -2,6 +2,7 @@ package listen
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 	"runtime"
@@ -37,5 +38,21 @@ func TestOsErrorCommon(t *testing.T) {
 	other := errors.New("some other failure")
 	if got := osError(listenErr(other)); got != "bind: some other failure" {
 		t.Errorf("unrecognised: %q", got)
+	}
+}
+
+// A read failing on the peer's reset, as net.Conn.Read wraps it, is a reset; a
+// clean EOF, a deadline and other errors aren't.
+func TestIsConnReset(t *testing.T) {
+	readErr := func(errno error) error {
+		return &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", errno)}
+	}
+	if !isConnReset(readErr(errConnReset)) {
+		t.Errorf("isConnReset missed %v", errConnReset)
+	}
+	for _, err := range []error{io.EOF, os.ErrDeadlineExceeded, readErr(errAccess), errors.New("x")} {
+		if isConnReset(err) {
+			t.Errorf("isConnReset(%v) = true", err)
+		}
 	}
 }

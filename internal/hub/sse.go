@@ -13,9 +13,10 @@ import (
 const timeLayout = "2006-01-02T15:04:05.000Z"
 
 // MarshalJSON gives the API shape of a live-tail line (docs/api.md):
-// {"received", "device_id", "severity" (null when unknown), "raw"}. received has
-// millisecond precision, like the log files. Bytes of raw that aren't valid UTF-8
-// become U+FFFD.
+// {"received", "device_id", "severity" (null when unknown), "raw"}, plus
+// "truncated", "incomplete", "frame_arrived" and "frame_length" only when set
+// (2.0). received has millisecond precision, like the log files. Bytes of raw
+// that aren't valid UTF-8 become U+FFFD.
 func (e Entry) MarshalJSON() ([]byte, error) {
 	var sev *int
 	if e.Severity != model.Unknown {
@@ -23,11 +24,15 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		sev = &s
 	}
 	return json.Marshal(struct {
-		Received string `json:"received"`
-		DeviceID string `json:"device_id"`
-		Severity *int   `json:"severity"`
-		Raw      string `json:"raw"`
-	}{e.Received.UTC().Format(timeLayout), e.DeviceID, sev, string(e.Raw)})
+		Received     string `json:"received"`
+		DeviceID     string `json:"device_id"`
+		Severity     *int   `json:"severity"`
+		Raw          string `json:"raw"`
+		Truncated    bool   `json:"truncated,omitempty"`
+		Incomplete   bool   `json:"incomplete,omitempty"`
+		FrameArrived int64  `json:"frame_arrived,omitempty"`
+		FrameLength  int64  `json:"frame_length,omitempty"`
+	}{e.Received.UTC().Format(timeLayout), e.DeviceID, sev, string(e.Raw), e.Truncated, e.Incomplete, e.FrameArrived, e.FrameLength})
 }
 
 // maxBatch bounds how many queued items are written before a flush.

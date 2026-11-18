@@ -213,7 +213,8 @@ type Options struct {
 	Location *time.Location
 	// Flows is the flow query engine, for zips with flows (SPEC §13.4); a
 	// Manager can get it later through SetFlows. FlowStats gives the running
-	// collector's sequence-gap counts for a bundle's summary (nil: not known).
+	// collector's last-24-hour counts for a bundle's summary (nil: not known);
+	// the window's own sequence gaps come from the index.
 	Flows     *flowquery.Engine
 	FlowStats func(deviceID string) *FlowStats
 	// zip64Limit lowers the zip64 threshold, for tests.
@@ -250,7 +251,7 @@ type Manager struct {
 func (m *Manager) SetFlows(e *flowquery.Engine) { m.flows.Store(e) }
 
 // SetFlowStats gives the manager the collector's per-exporter counts for
-// bundle summaries (sequence gaps; Options.FlowStats). Call it before Start.
+// bundle summaries (the last 24 hours; Options.FlowStats). Call it before Start.
 func (m *Manager) SetFlowStats(fn func(deviceID string) *FlowStats) { m.builder.flowStats = fn }
 
 type entry struct {
