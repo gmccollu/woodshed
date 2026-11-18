@@ -92,6 +92,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   were never made, and `woodshed tls on`, `snmp on` and `flow on` failed when one was missing). Rules are now read
   through the firewall's COM API, which isn't translated, instead of netsh's output. Present since 1.1 (TLS), 1.2
   (SNMP) and 2.0's flow rules.
+- The portable window's firewall note reads the rules the same way, so on a non-English Windows it no longer says no
+  rule lets the copy in when one does.
 - An octet-counted TCP or TLS message whose sender closed or reset the connection before its advertised length arrived
   was stored as if it were complete (`50 <13>short` then EOF looked exactly like `9 <13>short`); present since 1.0.
   What arrived is still kept, and now marked incomplete with both lengths: on its stored line

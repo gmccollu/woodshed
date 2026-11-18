@@ -3,34 +3,27 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/gmccollu/woodshed/internal/fwrule"
 )
 
 type ruleState int
 
 const (
-	ruleUnknown ruleState = iota // no rule names this program (or the output wasn't readable)
+	ruleUnknown ruleState = iota // no rule names this program (or the firewall couldn't be read)
 	ruleAllows                   // an enabled inbound rule allows it
 	ruleBlocks                   // only block (or disabled) rules name it
 )
 
-// firewallRuleState reads `netsh advfirewall firewall show rule name=all dir=in
-// verbose` (English output; anything else reads as ruleUnknown) for the rules
-// whose Program is exe.
-func firewallRuleState(netsh, exe string) ruleState {
-	netsh = strings.ReplaceAll(netsh, "\r\n", "\n")
+// firewallRuleState reads the inbound rules whose program is exe from the
+// firewall's rules (fwrule.ListRules: the same in every display language).
+func firewallRuleState(rules []fwrule.WinRule, exe string) ruleState {
 	state := ruleUnknown
-	for _, block := range strings.Split(netsh, "\n\n") {
-		fields := map[string]string{}
-		for _, line := range strings.Split(block, "\n") {
-			k, v, ok := strings.Cut(line, ":")
-			if ok {
-				fields[strings.TrimSpace(k)] = strings.TrimSpace(v)
-			}
-		}
-		if !strings.EqualFold(fields["Program"], exe) {
+	for _, r := range rules {
+		if r.Direction != fwrule.RuleDirIn || !strings.EqualFold(r.ApplicationName, exe) {
 			continue
 		}
-		if strings.EqualFold(fields["Enabled"], "Yes") && strings.EqualFold(fields["Action"], "Allow") {
+		if r.Enabled && r.Action == fwrule.RuleActionAllow {
 			return ruleAllows
 		}
 		state = ruleBlocks
