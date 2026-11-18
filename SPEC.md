@@ -3064,6 +3064,18 @@ the first bench, which records the measured numbers here:
       first does: the caller has gone. Both accepted. Each, Count, top-N and summaries read raw sets at their
       received-time position (their results don't depend on the order), and an open segment whose first raw set
       arrived after its index row was written is ordered by its blocks until the row catches up; also accepted.
+    - **Rows ending far from the rest (lab, rc2, 2026-11-17; fixed 2026-11-18):** a 7-day listing (~250 M records,
+      hourly segments of ~18 M) read 140 times its data and slowed to 6.5 k records/s. A block was held whole until its
+      last row was given, and a block with a few rows ending long before the rest (late-exported idle flows) is read
+      long before the bound reaches the rest, so the pool filled and Stream fell back to Search's pages, which read
+      every such block again for every page. Now, past half the pool, Stream copies out what each block still holds,
+      keeps rows up to an end-time horizon that fits a quarter of the pool (a block's few far rows kept, its dense run
+      dropped) and reads a dropped block again once when the merge reaches it. Over 54 M records (3 h at 5,000/s, 1 %
+      ending up to 20 min early): newest first 12.0 s and 1.05× the segments' bytes read (before: 4.5 M records in
+      178 s, 465 GB read and slowing), oldest first 34.3 s and 1.96×; `woodshed search --type flow --json` 67 s
+      (803 k/s, 178 MiB peak RSS) against 2.7 M records in its first 300 s before. `TestStreamReadsEachBlockAboutOnce`
+      holds it to 2.2× with a pool smaller than the rows waiting. Search pages (the API) still read such blocks again
+      for every page they overlap; open, with the stateless-cursor note above.
 - **Queries:** top talkers (`by=src`, bytes) over 1 h at 5,000 records/s (18 million records) in under 3 s,
   complete in one response; at 50,000/s (180 million) partial within the 10 s budget and complete within 60 s.
   A filtered search for one address over 1 h at 5,000/s returns its first page in under 1 s.
