@@ -32,7 +32,8 @@ Change this file first if the contract changes.
                                                // tls_cert_names, tls_firewall (see "TLS syslog listener"), udp_queue_full
                                                // (see "UDP receive queue"), snmp_firewall, snmp_credentials, snmp_mibs
                                                // (see "SNMP trap receiver"), poll_unreachable, poll_overrun
-                                               // (see "SNMP poller"); an optional "url" on any banner
+                                               // (see "SNMP poller"), profiling_on (see "Profiling listener");
+                                               // an optional "url" on any banner
 }
 ```
 A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
@@ -1270,6 +1271,28 @@ is on (or a v3 user is set, or a trap was received), an `snmp` object gives `ena
 `ip`, `count_24h`, `status`, `detail`, `last_seen`), for `woodshed status` and `woodshed snmp status`. While any
 SNMP poll target is configured (since 1.3), a `poll` object gives `targets`, `answering`, `not_answering` (each
 `device_id`, `address`, `since`) and `last_cycle`, for `woodshed status`'s Polling row.
+
+## Profiling listener
+
+Not the UI's API: a separate HTTP listener for `woodshed profile` (SPEC §13.10 decision 85), off unless `debug.pprof
+= true` is in the config file or `WOODSHED_PPROF=1` (also `true`, `on`, `yes`) is in the server's environment. It
+binds `127.0.0.1` (or `::1`) on a port the OS picks and writes `woodshed.pprof.json` into the data folder (mode 0600,
+deleted at a clean stop):
+```json
+{"pid": 4242, "addr": "127.0.0.1:53911", "token": "<64 hex digits>", "source": "config", "started_at": "..."}
+```
+Every request must come from a loopback address with `Authorization: Bearer <token>` (401 without it, 403 from
+anywhere else), and every route is GET:
+
+| Route | Body |
+|---|---|
+| `/debug/pprof/cpu?seconds=N` | a CPU profile over N s (1–300, default 30), pprof format (gzipped protobuf) |
+| `/debug/pprof/trace?seconds=N` | a runtime trace over N s (1–60, default 5), for `go tool trace` |
+| `/debug/pprof/heap` | a heap profile after a GC, pprof format |
+| `/debug/pprof/goroutine` | every goroutine's stack, as text |
+
+A second CPU profile or trace while one runs gets 409 (a trace may run during a CPU profile); a bad `seconds` gets 400.
+Errors are plain text, not JSON. While the listener is on, `/api/status` has an info banner `profiling_on`.
 
 ## Errors
 

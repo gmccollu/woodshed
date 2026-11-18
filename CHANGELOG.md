@@ -55,6 +55,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - `woodshed setup families` and `woodshed setup snippet --family … --what …` print the same from a terminal.
 - API: `GET /api/setup/families` and `POST /api/setup/snippet` (or `GET` with query parameters); see docs/api.md
   "Device setup helper".
+- `woodshed profile cpu|trace|heap|goroutine` captures a CPU profile, a runtime trace, a heap profile or a goroutine
+  dump of the running server, for tracing high CPU or memory use on one machine; `--trace` adds a short trace to a CPU
+  profile, and the files read with `go tool pprof` and `go tool trace` anywhere. Off until `woodshed profile on` (or
+  `debug.pprof = true` in the config, or `WOODSHED_PPROF=1` in the service's environment); `woodshed profile off`
+  turns it off. See [docs/user-guide.md](docs/user-guide.md#profiling-cpu-or-memory-use).
 
 ### Changed
 - Woodshed now has a second, binary on-disk format beside its plain text files: flows are stored as compact columnar
@@ -105,6 +110,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The
   sender allowlist, blocklist and new-sender limits apply to exporters as to any sender.
+- The profiling listener is off by default and can't be turned on from the UI or the API (`debug.pprof` is a
+  file-only setting). When on, it listens on 127.0.0.1 only, on a port the OS picks, and answers only requests from
+  loopback that carry a per-start random token kept in the data folder (mode 0600), so only an administrator of the
+  machine can use it; the UI shows a banner while it's on. It doesn't use Go's `net/http/pprof` package, which
+  registers its routes globally, and a test fails if any package imports it.
 
 ### Performance
 - IPFIX at 50,000 records a second for 10 minutes (30 records a packet, 2 domains) with UDP syslog at 5,000 msg/s
