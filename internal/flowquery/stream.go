@@ -24,16 +24,18 @@ import (
 // another, without a budget. The hit (and its record) is fn's only for the
 // call. An error from fn stops the stream and is returned.
 //
-// Search pages: each page plans the window again and decodes every block
-// that overlaps the page's end-time span, so a listing of the whole window
-// decodes each block about as many times as pages fit in its span (with a
-// few seconds of end-time spread per block and 5,000 hits a page, 30 to 50
-// times). Stream decodes each block once: it keeps each block's matching
-// rows, sorted and packed (flowseg.Packed, about a sixth of a decoded
-// block), while they aren't certain yet (an unread block could still come
-// before them), merges the blocks it keeps and gives a row once it's beyond
-// the bound of everything unread. A reader decodes the next wave (half the
-// workers' blocks) while the caller writes the current one.
+// Stateless search pages (searchStateless): each page plans the window
+// again and decodes every block that overlaps the page's end-time span, so
+// a listing of the whole window decodes each block about as many times as
+// pages fit in its span (with a few seconds of end-time spread per block
+// and 5,000 hits a page, 30 to 50 times). Stream decodes each block once
+// (and Search's pages are such a stream, saved between pages: pages.go):
+// it keeps each block's matching rows, sorted and packed (flowseg.Packed,
+// about a sixth of a decoded block), while they aren't certain yet (an
+// unread block could still come before them), merges the blocks it keeps
+// and gives a row once it's beyond the bound of everything unread. A
+// reader decodes the next wave (half the workers' blocks) while the caller
+// writes the current one.
 //
 // What it keeps is bounded: the rows it holds are charged to the engine's
 // pool (decision 51's shared budget), and it decodes in the workers' own
@@ -46,7 +48,7 @@ import (
 // twice at most when a few of its rows end far from the others, not once per
 // page as a fall back to Search's pages read it. Only when the blocks waiting
 // to be read again can't fit (their bookkeeping alone) does it carry on from
-// the last record it gave with Search's pages.
+// the last record it gave with stateless pages.
 func (e *Engine) Stream(ctx context.Context, q Query, asc bool, fn func(h *Hit) error) error {
 	s := &stream{e: e, asc: asc, fn: fn}
 	err := s.run(ctx, q)
@@ -112,10 +114,12 @@ func (m *heldHeap) Pop() any {
 
 // wave is a batch of read blocks and the bound of what's unread after it.
 type wave struct {
-	held  []*heldBlock
-	bound int64
-	more  bool
-	err   error
+	held   []*heldBlock
+	bound  int64
+	more   bool
+	err    error
+	blocks int   // blocks taken
+	rows   int64 // their rows
 }
 
 type stream struct {
@@ -138,9 +142,30 @@ type stream struct {
 	f        *Filter
 	from, to int64
 
-	// Segments with trimmed blocks waiting (the merge's own): their readers,
-	// opened from the footer on first use, and how many blocks wait.
-	again map[*flowseg.Footer]*againSeg
+	// Segments with trimmed blocks waiting (the merge's own), by path: their
+	// readers, opened from the footer on first use, and how many blocks
+	// wait. (By path, not footer: a page's stream reopens its segments from
+	// copies of their footers, one for each page.)
+	again map[string]*againSeg
+
+	// skipTo: the blocks it reads keep only rows after this key (nil: all).
+	// A page stream's (set before each wave it reads, not while one runs):
+	// the later of the cursor it started at and the last record it gave.
+	skipTo *hitKey
+
+	// A search page's stream (pages.go) reads its waves itself and keeps
+	// them between pages: its plan, readers (nil while saved), merge, the
+	// last wave's bound, and the cursor it started at.
+	p          *plan
+	rd         *readers
+	h          *heldHeap
+	bound      int64
+	more       bool
+	after      *hitKey
+	blocksDone int64
+	recsDone   int64
+	out        []Hit // the page being filled
+	limit      int
 }
 
 type againSeg struct {
@@ -226,14 +251,14 @@ func (s *stream) wait(h *heldBlock) {
 	h.resCost = heldWaitCost
 	s.reserve(h.resCost)
 	if s.again == nil {
-		s.again = map[*flowseg.Footer]*againSeg{}
+		s.again = map[string]*againSeg{}
 	}
-	a := s.again[h.src.snap]
+	a := s.again[h.src.Path]
 	if a == nil {
 		f := h.src.snap
 		a = &againSeg{cost: int64(len(f.Blocks))*entryCost + int64(len(f.RawChunks))*rawCost}
 		s.reserve(a.cost)
-		s.again[h.src.snap] = a
+		s.again[h.src.Path] = a
 	}
 	a.waits++
 }
@@ -246,13 +271,13 @@ func (s *stream) unwait(h *heldBlock) {
 	h.resume = false
 	s.release(h.resCost)
 	h.resCost = 0
-	if a := s.again[h.src.snap]; a != nil {
+	if a := s.again[h.src.Path]; a != nil {
 		if a.waits--; a.waits <= 0 {
 			if a.r != nil {
 				a.r.Close()
 			}
 			s.release(a.cost)
-			delete(s.again, h.src.snap)
+			delete(s.again, h.src.Path)
 		}
 	}
 }
@@ -307,7 +332,6 @@ func (s *stream) run(ctx context.Context, q Query) error {
 		h.h = nil
 		return err
 	}
-	var hit Hit
 	for w := range waves {
 		if w.err != nil {
 			return finish(w.err)
@@ -319,48 +343,8 @@ func (s *stream) run(ctx context.Context, q Query) error {
 			}
 			heap.Push(h, x)
 		}
-		for h.Len() > 0 {
-			top := h.h[0]
-			k := top.key()
-			end := k.End
-			if w.more && ((!s.asc && end <= w.bound) || (s.asc && end >= w.bound)) {
-				break // something unread may still come first
-			}
-			if top.next == len(top.rows) { // a trimmed block's turn: read it again
-				if err := s.readAgain(ctx, top); err != nil {
-					return finish(err)
-				}
-				if len(top.rows) == 0 {
-					heap.Pop(h)
-					s.put(top)
-				} else {
-					heap.Fix(h, 0)
-				}
-				continue
-			}
-			row := top.rows[top.next]
-			hit.DeviceID, hit.Rel, hit.Block, hit.Row = top.dev, top.rel, top.block, row
-			if top.pk != nil {
-				top.pk.Next(&hit.Record)
-			} else {
-				hit.Record = top.raw[top.next]
-			}
-			if err := s.fn(&hit); err != nil {
-				return finish(err)
-			}
-			s.last, s.emitted = hitKey{End: end, Dev: top.dev, Rel: top.rel, Block: top.block, Row: row}, true
-			switch top.next++; {
-			case top.next < len(top.rows):
-				heap.Fix(h, 0)
-			case top.resume:
-				s.putPacked(top) // its kept rows are given; it waits at its resume key
-				s.release(top.cost)
-				top.cost, top.rows, top.ends, top.next = 0, nil, nil, 0
-				heap.Fix(h, 0)
-			default:
-				heap.Pop(h)
-				s.put(top)
-			}
+		if err := s.drain(ctx, h, w.bound, w.more); err != nil {
+			return finish(err)
 		}
 		if !w.more && h.Len() == 0 {
 			break
@@ -373,6 +357,69 @@ func (s *stream) run(ctx context.Context, q Query) error {
 		s.e.gcNudge() // a big pool share: keep the garbage from growing the heap past it
 	}
 	return finish(ctx.Err())
+}
+
+// drain gives the held rows that are certain after a wave whose bound and
+// more are given (all of them once nothing is left), in order, reading a
+// trimmed block again when its turn comes. An error from fn is returned
+// once its row counts as given (a page's errPageFull stops it there).
+func (s *stream) drain(ctx context.Context, h *heldHeap, bound int64, more bool) error {
+	var hit Hit
+	for h.Len() > 0 {
+		top := h.h[0]
+		k := top.key()
+		end := k.End
+		if more && ((!s.asc && end <= bound) || (s.asc && end >= bound)) {
+			return nil // something unread may still come first
+		}
+		if top.next == len(top.rows) { // a trimmed block's turn: read it again
+			if err := s.readAgain(ctx, top); err != nil {
+				return err
+			}
+			if len(top.rows) == 0 {
+				heap.Pop(h)
+				s.put(top)
+			} else {
+				heap.Fix(h, 0)
+			}
+			continue
+		}
+		row := top.rows[top.next]
+		key := hitKey{End: end, Dev: top.dev, Rel: top.rel, Block: top.block, Row: row}
+		if top.pk != nil {
+			top.pk.Next(&hit.Record)
+		} else {
+			hit.Record = top.raw[top.next]
+		}
+		var err error
+		if !s.emitted || s.last.before(key, s.asc) {
+			hit.DeviceID, hit.Rel, hit.Block, hit.Row = top.dev, top.rel, top.block, row
+			err = s.fn(&hit)
+			s.last, s.emitted = key, true
+		} else {
+			// Not after the last record given: a segment indexed (or given
+			// raw sets) after the plan passed its place. The bounds didn't
+			// cover it, so it's left out, as a page from the cursor leaves
+			// it out; never given out of order or twice.
+			s.e.streamLate.Add(1)
+		}
+		switch top.next++; {
+		case top.next < len(top.rows):
+			heap.Fix(h, 0)
+		case top.resume:
+			s.putPacked(top) // its kept rows are given; it waits at its resume key
+			s.release(top.cost)
+			top.cost, top.rows, top.ends, top.next = 0, nil, nil, 0
+			heap.Fix(h, 0)
+		default:
+			heap.Pop(h)
+			s.put(top)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // read plans the window and sends its blocks, read, a wave at a time.
@@ -397,34 +444,48 @@ func (s *stream) read(ctx context.Context, q Query, waves chan<- wave) {
 	defer p.release()
 	rd := newReaders(p)
 	defer rd.close()
-	f := q.filter()
-	s.f, s.from, s.to = f, p.from, p.to
+	s.f, s.from, s.to = q.filter(), p.from, p.to
 	for {
-		blocks := p.take(ctx, rd, e.streamWave())
-		if len(blocks) == 0 {
-			break
-		}
-		held, err := s.decode(ctx, p, rd, blocks, f)
-		if err != nil {
-			for _, x := range held {
-				s.put(x)
-			}
-			send(wave{err: err})
-			return
-		}
-		bound, more := p.bound(ctx)
-		if !send(wave{held: held, bound: bound, more: more}) {
+		w, ok := s.nextWave(ctx, p, rd, e.streamWave())
+		if !send(w) || !ok {
 			return
 		}
 	}
-	switch {
-	case p.err != nil:
-		send(wave{err: p.err})
-	case ctx.Err() != nil:
-		send(wave{err: ctx.Err()})
-	default:
-		send(wave{})
+}
+
+// nextWave reads the plan's next n blocks; ok is false after the last
+// (the wave then carries the plan's or ctx's error, or nothing).
+func (s *stream) nextWave(ctx context.Context, p *plan, rd *readers, n int) (w wave, ok bool) {
+	blocks := p.take(ctx, rd, n)
+	if len(blocks) == 0 {
+		switch {
+		case p.err != nil:
+			return wave{err: p.err}, false
+		case ctx.Err() != nil:
+			return wave{err: ctx.Err()}, false
+		}
+		return wave{}, false
 	}
+	w.blocks = len(blocks)
+	for i := range blocks {
+		w.rows += int64(blocks[i].rows)
+	}
+	held, err := s.decode(ctx, p, rd, blocks, s.f)
+	if err != nil {
+		for _, x := range held {
+			s.put(x)
+		}
+		return wave{err: err}, false
+	}
+	w.held = held
+	w.bound, w.more = p.bound(ctx)
+	if p.err != nil { // the index failed as the plan read on: not the end of the window
+		for _, x := range held {
+			s.put(x)
+		}
+		return wave{err: p.err}, false
+	}
+	return w, true
 }
 
 // decode reads a wave's blocks with the engine's workers (their slots'
@@ -542,6 +603,7 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 			return fail(err)
 		}
 		slices.SortFunc(rows, func(a, b rawRow) int { return s.cmpRow(a.rowEnd, b.rowEnd) })
+		rows = rows[s.afterCut(x, len(rows), func(i int) rowEnd { return rows[i].rowEnd }):]
 		x.rows, x.ends, x.raw = make([]int, len(rows)), make([]int64, len(rows)), make([]flow.Record, len(rows))
 		for i := range rows {
 			x.rows[i], x.ends[i], x.raw[i] = rows[i].row, rows[i].end, rows[i].rec
@@ -551,6 +613,7 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 			return fail(errStreamFull)
 		}
 		x.cost = n
+		x.src = &segRef{DeviceID: seg.DeviceID, Rel: seg.Rel, Path: seg.Path, id: r.Identity()} // its file, not read again
 		return x, re, nil
 	}
 	if !f.Empty() { // as Search's scan: a block the index rules out isn't read
@@ -567,10 +630,24 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 	if err := r.Decode(b.block, flowseg.ColAll, blk); err != nil {
 		return fail(err)
 	}
-	x.src = &segRef{DeviceID: seg.DeviceID, Rel: seg.Rel, Path: seg.Path, snap: r.Footer()}
+	x.src = &segRef{DeviceID: seg.DeviceID, Rel: seg.Rel, Path: seg.Path, snap: r.Footer(), id: r.Identity()}
 	re = s.selectRows(blk, &sl.rec, f, p.from, p.to, re)
-	s.packRows(x, blk, re)
+	s.packRows(x, blk, re[s.afterCut(x, len(re), func(i int) rowEnd { return re[i] }):])
 	return x, re, nil
+}
+
+// afterCut is how many of block x's n sorted rows (row(i) the i-th) come
+// at or before s.skipTo (none without one): within a block the result order
+// is the rows' (end, row) order.
+func (s *stream) afterCut(x *heldBlock, n int, row func(i int) rowEnd) int {
+	k := s.skipTo
+	if k == nil {
+		return 0
+	}
+	return sort.Search(n, func(i int) bool {
+		r := row(i)
+		return k.before(hitKey{End: r.end, Dev: x.dev, Rel: x.rel, Block: x.block, Row: r.row}, s.asc)
+	})
 }
 
 // selectRows is a decoded block's rows in the window that pass f, sorted in
@@ -619,9 +696,13 @@ func (s *stream) packRows(x *heldBlock, blk *flowseg.Block, re []rowEnd) {
 // readAgain reads a trimmed block again when the merge reaches its resume
 // key, and keeps its rows from that key on.
 func (s *stream) readAgain(ctx context.Context, x *heldBlock) error {
-	a := s.again[x.src.snap]
+	a := s.again[x.src.Path]
 	if a.r == nil {
 		r, err := flowseg.OpenSnapshot(x.src.Path, x.src.snap) // the footer read before; only the block is read
+		if err == nil && r.Identity() != x.src.id {
+			r.Close()
+			r, err = nil, errReplaced
+		}
 		if err != nil {
 			s.e.o.Logger.Warn("flows: a block couldn't be read again; its rest is skipped", "file", x.rel, "err", err)
 			s.unwait(x)
@@ -805,7 +886,7 @@ func (s *stream) pages(ctx context.Context, q Query) error {
 		cursor = encodeCursor(s.last, qk, &q)
 	}
 	for {
-		res, err := s.e.Search(ctx, q, streamPage, s.asc, cursor, time.Minute)
+		res, err := s.e.searchStateless(ctx, q, streamPage, s.asc, cursor, time.Minute)
 		if err != nil {
 			return err
 		}

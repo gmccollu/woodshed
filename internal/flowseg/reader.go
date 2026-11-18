@@ -89,12 +89,60 @@ func OpenSnapshot(path string, snap *Footer) (*Reader, error) {
 		f.Close()
 		return nil, err
 	}
+	// Sections are appended in order: a file shorter than the snapshot's
+	// last block or raw chunk isn't the file the snapshot is of.
+	var end int64
+	if n := len(snap.Blocks); n > 0 {
+		end = snap.Blocks[n-1].Offset + snap.Blocks[n-1].Length
+	}
+	if n := len(snap.RawChunks); n > 0 {
+		end = max(end, snap.RawChunks[n-1].Offset+snap.RawChunks[n-1].Length)
+	}
+	if st.Size() < end {
+		f.Close()
+		return nil, ErrCorrupt
+	}
 	foot := *snap // the blocks are shared: a reader never changes them (Block doesn't cache)
 	return &Reader{f: f, size: st.Size(), h: h, foot: &foot}, nil
 }
 
 // Close closes the file.
 func (r *Reader) Close() error { return r.f.Close() }
+
+// Identity is which file a segment is: its header's exporter, hour and
+// creation time. A file deleted (retention, low disk) and written again
+// under the same name is another identity, so a caller that kept a
+// segment's footer between reads can tell its offsets no longer apply.
+type Identity struct {
+	DeviceID string
+	Hour     int64 // unix ms
+	Created  int64 // unix ms
+}
+
+// Identity is the segment file's identity.
+func (r *Reader) Identity() Identity {
+	return Identity{DeviceID: r.h.deviceID, Hour: r.h.hour, Created: r.h.created}
+}
+
+// ReadIdentity reads the identity of the segment file at path (its header
+// only).
+func ReadIdentity(path string) (Identity, error) {
+	of, err := logfile.OpenFile(path)
+	if err != nil {
+		return Identity{}, err
+	}
+	f := &countedFile{of}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return Identity{}, err
+	}
+	h, err := readHeaderAt(f, st.Size())
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{DeviceID: h.deviceID, Hour: h.hour, Created: h.created}, nil
+}
 
 // Footer returns the segment's footer (shared; don't modify it). Its blocks
 // carry their directory fields only; Block loads one's index.

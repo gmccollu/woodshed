@@ -72,6 +72,7 @@ type Engine struct {
 	o      Options
 	mu     sync.Mutex
 	states map[string]*state
+	pages  map[string]*pageState        // search pages' continuations, by the cursor they were given under (pages.go)
 	rules  atomic.Pointer[[]flow.IEKey] // RuleIDIEs in effect (SetRuleIDIEs)
 	pool   *Pool
 	slots  chan *slot
@@ -84,6 +85,18 @@ type Engine struct {
 	streamTrims, streamRereads atomic.Int64
 	// fillHook runs as a search page's second pass starts (tests).
 	fillHook func()
+	// Search pages started as a stream, continued from a saved one, and
+	// served by searchStateless after a stream ran over its budget; saved
+	// streams dropped on resume because the store changed under them; blocks
+	// they read as they resumed (written to open segments since); and rows a
+	// stream left out because they came up behind the last it gave (tests).
+	pageStarts, pageResumes, pageFallbacks, pageRebuilds, pageCatchUps, streamLate atomic.Int64
+	// The saved page streams' pool bytes (pageState.bytes), and the timer
+	// that sweeps them once expired.
+	savedPageBytes atomic.Int64
+	pageTimer      *time.Timer
+	// statelessPages makes every search page searchStateless's (tests).
+	statelessPages bool
 
 	gcMu                  sync.Mutex
 	gcCycles, gcAllocBase uint64
@@ -102,7 +115,7 @@ const (
 var gcSamples = []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}, {Name: "/gc/cycles/total:gc-cycles"}}
 
 func (e *Engine) gcNudge() {
-	if e.pool.Used() < gcNudgePool {
+	if e.pool.Used()-e.savedPageBytes.Load() < gcNudgePool { // saved page streams sit idle: they make no garbage
 		return
 	}
 	e.gcMu.Lock()
@@ -175,7 +188,7 @@ func New(o Options) *Engine {
 	if o.MaxExactKeys <= 0 {
 		o.MaxExactKeys = DefaultExactKeys
 	}
-	e := &Engine{o: o, states: map[string]*state{}, pool: NewPool(o.PoolBytes), slots: make(chan *slot, o.Workers)}
+	e := &Engine{o: o, states: map[string]*state{}, pages: map[string]*pageState{}, pool: NewPool(o.PoolBytes), slots: make(chan *slot, o.Workers)}
 	for range o.Workers {
 		e.slots <- &slot{}
 	}
@@ -466,8 +479,12 @@ func (st *state) free() {
 }
 
 // evictOne drops the least recently used saved state (the pool's full
-// hook) and reports whether there was one.
+// hook), a search page's continuation before a top-N's or a summary's, and
+// reports whether there was one.
 func (e *Engine) evictOne() bool {
+	if e.evictPage() {
+		return true // a page continuation first: its page can be read from the cursor alone
+	}
 	e.mu.Lock()
 	var old *state
 	for _, s := range e.states {
@@ -741,14 +758,16 @@ type searchCursor struct {
 	To    int64  `json:"t,omitempty"`
 }
 
-// Search returns up to limit records, newest first by flow end (asc: oldest
-// first), after cursor.
+// searchStateless is a page of Search from the cursor's values alone: up
+// to limit records, newest first by flow end (asc: oldest first), after
+// cursor. Search continues a page's saved stream instead when it has one
+// (pages.go); this is the page when it can't.
 //
 // A page reads in two passes (see search), so a segment retention deletes
 // between them would leave its hits out: the page is then read again, once,
 // without it (a second miss drops them, as an unreadable block's are). A
 // cancel during the second pass loses the page, as one during the first does.
-func (e *Engine) Search(ctx context.Context, q Query, limit int, asc bool, cursor string, budget time.Duration) (SearchResult, error) {
+func (e *Engine) searchStateless(ctx context.Context, q Query, limit int, asc bool, cursor string, budget time.Duration) (SearchResult, error) {
 	res, err := e.search(ctx, q, limit, asc, cursor, budget, false)
 	if errors.Is(err, errRefill) {
 		res, err = e.search(ctx, q, limit, asc, cursor, budget, true)
@@ -764,30 +783,16 @@ var errRefill = errors.New("flows: a block of the page is gone")
 func (e *Engine) search(ctx context.Context, q Query, limit int, asc bool, cursor string, budget time.Duration,
 	final bool) (SearchResult, error) {
 	qk := q.key("search", asc)
-	var after *hitKey
-	if cursor != "" {
-		b, err := base64.RawURLEncoding.DecodeString(cursor)
-		var c searchCursor
-		if err != nil || json.Unmarshal(b, &c) != nil || c.Query != hash(qk) {
-			return SearchResult{}, ErrCursor
-		}
-		after = &c.Key
-		if q.DefaultRange && c.To != 0 {
-			q.From, q.To = time.UnixMilli(c.From).UTC(), time.UnixMilli(c.To).UTC()
-		}
+	after, err := parseCursor(&q, qk, cursor)
+	if err != nil {
+		return SearchResult{}, err
 	}
 	p, err := e.planOrdered(ctx, &q, asc)
 	if err != nil {
 		return SearchResult{}, err
 	}
 	defer p.release()
-	// Skip segments and blocks wholly before the cursor.
-	if after != nil {
-		p.skip = func(b *planned) bool { return (!asc && b.minEnd > after.End) || (asc && b.maxEnd < after.End) }
-		p.skipSeg = func(s *segRef) bool {
-			return !s.open && !s.wide && ((!asc && s.start > after.End) || (asc && s.end < after.End))
-		}
-	}
+	p.skipBefore(after)
 	f := q.filter()
 	// Two passes: the page's blocks are read with the columns that order
 	// and filter them (a page reads several times the rows it keeps), and
@@ -1138,6 +1143,37 @@ func ownExtras(hits []Hit) {
 func openSegForFill(path string) (*flowseg.Reader, error) {
 	r, _, err := openSeg(path)
 	return r, err
+}
+
+// parseCursor is a page cursor's key (nil without one), checked against
+// the query's key qk; with the default range the query takes the first
+// page's range from it.
+func parseCursor(q *Query, qk, cursor string) (*hitKey, error) {
+	if cursor == "" {
+		return nil, nil
+	}
+	b, err := base64.RawURLEncoding.DecodeString(cursor)
+	var c searchCursor
+	if err != nil || json.Unmarshal(b, &c) != nil || c.Query != hash(qk) {
+		return nil, ErrCursor
+	}
+	if q.DefaultRange && c.To != 0 {
+		q.From, q.To = time.UnixMilli(c.From).UTC(), time.UnixMilli(c.To).UTC()
+	}
+	return &c.Key, nil
+}
+
+// skipBefore skips the segments and blocks wholly before a page's cursor
+// key (nil: none).
+func (p *plan) skipBefore(after *hitKey) {
+	if after == nil {
+		return
+	}
+	asc := p.asc
+	p.skip = func(b *planned) bool { return (!asc && b.minEnd > after.End) || (asc && b.maxEnd < after.End) }
+	p.skipSeg = func(s *segRef) bool {
+		return !s.open && !s.wide && ((!asc && s.start > after.End) || (asc && s.end < after.End))
+	}
 }
 
 func encodeCursor(k hitKey, qk string, q *Query) string {
