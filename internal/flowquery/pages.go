@@ -56,7 +56,8 @@ var errPageFull = errors.New("flows: page full")
 // pageState is a saved page stream.
 type pageState struct {
 	qk    string
-	used  time.Time
+	used  time.Time // for StateTTL
+	seq   uint64    // e.saves when saved: the LRU order (the clock ties)
 	s     *stream
 	bytes int64 // its pool charge when saved: rows, bookkeeping and the plan's batch
 }
@@ -551,7 +552,8 @@ func (e *Engine) savePage(cursor, qk string, s *stream) {
 		e.savedPageBytes.Add(-old.bytes)
 		gone = append(gone, old)
 	}
-	ps := &pageState{qk: qk, used: now, s: s, bytes: s.pageBytes()}
+	e.saves++
+	ps := &pageState{qk: qk, used: now, seq: e.saves, s: s, bytes: s.pageBytes()}
 	e.pages[cursor] = ps
 	e.savedPageBytes.Add(ps.bytes)
 	for len(e.pages) > MaxPageStates || (len(e.pages) > 0 && e.savedPageBytes.Load() > e.pool.cap/2) {
@@ -642,7 +644,7 @@ func (e *Engine) oldestPageLocked() *pageState {
 	var oc string
 	var old *pageState
 	for c, ps := range e.pages {
-		if old == nil || ps.used.Before(old.used) {
+		if old == nil || ps.seq < old.seq {
 			oc, old = c, ps
 		}
 	}
