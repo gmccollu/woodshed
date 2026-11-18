@@ -37,12 +37,16 @@ jobs:
         include:
           - os: ubuntu-latest
             race: -race
+          # macOS runs without -race: with the 2.0 flow tests its race run reached
+          # 15 min and the runner cancelled it (runs 44155348780, 44326927290).
+          # -race still runs on ubuntu-latest and ubuntu-24.04-arm.
           - os: macos-latest
-            race: -race
+            race: ""
           # -race needs cgo and a C toolchain; the Windows runners make that slow and flaky.
           - os: windows-latest
             race: ""
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
