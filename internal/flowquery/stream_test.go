@@ -265,11 +265,13 @@ func benchStore(t testing.TB, n int, rate float64) (*Engine, Query) {
 }
 
 // BenchmarkFlowListing lists 1,000,000 records at 100,000 a second: the
-// CLI's path (Stream) and the API's (Search pages of 5,000 and 500), in
-// records a second. On the build machine (SPEC §13.6): Stream 4.7 M/s (the
-// CLI's pages of 5,000 were 69 k/s before it); pages of 5,000 206 k/s
-// (69 k/s before the two-pass pages) and of 500 30 k/s (8.2 k/s). Pages stay
-// far slower than Stream: each reads again every block overlapping it.
+// CLI's path (Stream) and the API's (Search pages of 5,000 and 500, each
+// continuing the stream the page before saved; and stateless, as when it's
+// gone), in records a second. On the build machine (SPEC §13.6): Stream
+// 4.4–4.7 M/s (the CLI's pages of 5,000 were 69 k/s before it); pages of
+// 5,000 and 500 1.4–1.5 M/s; stateless pages of 5,000 206 k/s (69 k/s before
+// the two-pass pages) and of 500 30 k/s (8.2 k/s): each reads again every
+// block overlapping it.
 func BenchmarkFlowListing(b *testing.B) {
 	const n = 1_000_000
 	e, q := benchStore(b, n, 100_000)
@@ -282,8 +284,18 @@ func BenchmarkFlowListing(b *testing.B) {
 		}
 		b.ReportMetric(float64(n)*float64(b.N)/b.Elapsed().Seconds(), "records/s")
 	})
-	for _, limit := range []int{5000, 500} {
-		b.Run(fmt.Sprintf("pages-%d", limit), func(b *testing.B) {
+	for _, c := range []struct {
+		limit     int
+		stateless bool
+	}{{5000, false}, {500, false}, {5000, true}, {500, true}} {
+		name := fmt.Sprintf("pages-%d", c.limit)
+		if c.stateless {
+			name += "-stateless"
+		}
+		limit := c.limit
+		b.Run(name, func(b *testing.B) {
+			e.statelessPages = c.stateless
+			defer func() { e.statelessPages = false }()
 			const max = 200_000 // the newest; every page costs about the same
 			for b.Loop() {
 				got, cursor := 0, ""
