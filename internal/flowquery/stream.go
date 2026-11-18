@@ -112,10 +112,12 @@ func (m *heldHeap) Pop() any {
 
 // wave is a batch of read blocks and the bound of what's unread after it.
 type wave struct {
-	held  []*heldBlock
-	bound int64
-	more  bool
-	err   error
+	held   []*heldBlock
+	bound  int64
+	more   bool
+	err    error
+	blocks int   // blocks taken
+	rows   int64 // their rows
 }
 
 type stream struct {
@@ -138,9 +140,10 @@ type stream struct {
 	f        *Filter
 	from, to int64
 
-	// Segments with trimmed blocks waiting (the merge's own): their readers,
-	// opened from the footer on first use, and how many blocks wait.
-	again map[*flowseg.Footer]*againSeg
+	// Segments with trimmed blocks waiting (the merge's own), by path: their
+	// readers, opened from the footer on first use, and how many blocks
+	// wait. (By path: a segment reopened gives a copy of its footer.)
+	again map[string]*againSeg
 }
 
 type againSeg struct {
@@ -226,14 +229,14 @@ func (s *stream) wait(h *heldBlock) {
 	h.resCost = heldWaitCost
 	s.reserve(h.resCost)
 	if s.again == nil {
-		s.again = map[*flowseg.Footer]*againSeg{}
+		s.again = map[string]*againSeg{}
 	}
-	a := s.again[h.src.snap]
+	a := s.again[h.src.Path]
 	if a == nil {
 		f := h.src.snap
 		a = &againSeg{cost: int64(len(f.Blocks))*entryCost + int64(len(f.RawChunks))*rawCost}
 		s.reserve(a.cost)
-		s.again[h.src.snap] = a
+		s.again[h.src.Path] = a
 	}
 	a.waits++
 }
@@ -246,13 +249,13 @@ func (s *stream) unwait(h *heldBlock) {
 	h.resume = false
 	s.release(h.resCost)
 	h.resCost = 0
-	if a := s.again[h.src.snap]; a != nil {
+	if a := s.again[h.src.Path]; a != nil {
 		if a.waits--; a.waits <= 0 {
 			if a.r != nil {
 				a.r.Close()
 			}
 			s.release(a.cost)
-			delete(s.again, h.src.snap)
+			delete(s.again, h.src.Path)
 		}
 	}
 }
@@ -307,7 +310,6 @@ func (s *stream) run(ctx context.Context, q Query) error {
 		h.h = nil
 		return err
 	}
-	var hit Hit
 	for w := range waves {
 		if w.err != nil {
 			return finish(w.err)
@@ -319,48 +321,8 @@ func (s *stream) run(ctx context.Context, q Query) error {
 			}
 			heap.Push(h, x)
 		}
-		for h.Len() > 0 {
-			top := h.h[0]
-			k := top.key()
-			end := k.End
-			if w.more && ((!s.asc && end <= w.bound) || (s.asc && end >= w.bound)) {
-				break // something unread may still come first
-			}
-			if top.next == len(top.rows) { // a trimmed block's turn: read it again
-				if err := s.readAgain(ctx, top); err != nil {
-					return finish(err)
-				}
-				if len(top.rows) == 0 {
-					heap.Pop(h)
-					s.put(top)
-				} else {
-					heap.Fix(h, 0)
-				}
-				continue
-			}
-			row := top.rows[top.next]
-			hit.DeviceID, hit.Rel, hit.Block, hit.Row = top.dev, top.rel, top.block, row
-			if top.pk != nil {
-				top.pk.Next(&hit.Record)
-			} else {
-				hit.Record = top.raw[top.next]
-			}
-			if err := s.fn(&hit); err != nil {
-				return finish(err)
-			}
-			s.last, s.emitted = hitKey{End: end, Dev: top.dev, Rel: top.rel, Block: top.block, Row: row}, true
-			switch top.next++; {
-			case top.next < len(top.rows):
-				heap.Fix(h, 0)
-			case top.resume:
-				s.putPacked(top) // its kept rows are given; it waits at its resume key
-				s.release(top.cost)
-				top.cost, top.rows, top.ends, top.next = 0, nil, nil, 0
-				heap.Fix(h, 0)
-			default:
-				heap.Pop(h)
-				s.put(top)
-			}
+		if err := s.drain(ctx, h, w.bound, w.more); err != nil {
+			return finish(err)
 		}
 		if !w.more && h.Len() == 0 {
 			break
@@ -373,6 +335,59 @@ func (s *stream) run(ctx context.Context, q Query) error {
 		s.e.gcNudge() // a big pool share: keep the garbage from growing the heap past it
 	}
 	return finish(ctx.Err())
+}
+
+// drain gives the held rows that are certain after a wave whose bound and
+// more are given (all of them once nothing is left), in order, reading a
+// trimmed block again when its turn comes. An error from fn is returned
+// once its row counts as given (a page's errPageFull stops it there).
+func (s *stream) drain(ctx context.Context, h *heldHeap, bound int64, more bool) error {
+	var hit Hit
+	for h.Len() > 0 {
+		top := h.h[0]
+		k := top.key()
+		end := k.End
+		if more && ((!s.asc && end <= bound) || (s.asc && end >= bound)) {
+			return nil // something unread may still come first
+		}
+		if top.next == len(top.rows) { // a trimmed block's turn: read it again
+			if err := s.readAgain(ctx, top); err != nil {
+				return err
+			}
+			if len(top.rows) == 0 {
+				heap.Pop(h)
+				s.put(top)
+			} else {
+				heap.Fix(h, 0)
+			}
+			continue
+		}
+		row := top.rows[top.next]
+		hit.DeviceID, hit.Rel, hit.Block, hit.Row = top.dev, top.rel, top.block, row
+		if top.pk != nil {
+			top.pk.Next(&hit.Record)
+		} else {
+			hit.Record = top.raw[top.next]
+		}
+		err := s.fn(&hit)
+		s.last, s.emitted = hitKey{End: end, Dev: top.dev, Rel: top.rel, Block: top.block, Row: row}, true
+		switch top.next++; {
+		case top.next < len(top.rows):
+			heap.Fix(h, 0)
+		case top.resume:
+			s.putPacked(top) // its kept rows are given; it waits at its resume key
+			s.release(top.cost)
+			top.cost, top.rows, top.ends, top.next = 0, nil, nil, 0
+			heap.Fix(h, 0)
+		default:
+			heap.Pop(h)
+			s.put(top)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // read plans the window and sends its blocks, read, a wave at a time.
@@ -397,34 +412,42 @@ func (s *stream) read(ctx context.Context, q Query, waves chan<- wave) {
 	defer p.release()
 	rd := newReaders(p)
 	defer rd.close()
-	f := q.filter()
-	s.f, s.from, s.to = f, p.from, p.to
+	s.f, s.from, s.to = q.filter(), p.from, p.to
 	for {
-		blocks := p.take(ctx, rd, e.streamWave())
-		if len(blocks) == 0 {
-			break
-		}
-		held, err := s.decode(ctx, p, rd, blocks, f)
-		if err != nil {
-			for _, x := range held {
-				s.put(x)
-			}
-			send(wave{err: err})
-			return
-		}
-		bound, more := p.bound(ctx)
-		if !send(wave{held: held, bound: bound, more: more}) {
+		w, ok := s.nextWave(ctx, p, rd, e.streamWave())
+		if !send(w) || !ok {
 			return
 		}
 	}
-	switch {
-	case p.err != nil:
-		send(wave{err: p.err})
-	case ctx.Err() != nil:
-		send(wave{err: ctx.Err()})
-	default:
-		send(wave{})
+}
+
+// nextWave reads the plan's next n blocks; ok is false after the last
+// (the wave then carries the plan's or ctx's error, or nothing).
+func (s *stream) nextWave(ctx context.Context, p *plan, rd *readers, n int) (w wave, ok bool) {
+	blocks := p.take(ctx, rd, n)
+	if len(blocks) == 0 {
+		switch {
+		case p.err != nil:
+			return wave{err: p.err}, false
+		case ctx.Err() != nil:
+			return wave{err: ctx.Err()}, false
+		}
+		return wave{}, false
 	}
+	w.blocks = len(blocks)
+	for i := range blocks {
+		w.rows += int64(blocks[i].rows)
+	}
+	held, err := s.decode(ctx, p, rd, blocks, s.f)
+	if err != nil {
+		for _, x := range held {
+			s.put(x)
+		}
+		return wave{err: err}, false
+	}
+	w.held = held
+	w.bound, w.more = p.bound(ctx)
+	return w, true
 }
 
 // decode reads a wave's blocks with the engine's workers (their slots'
@@ -619,7 +642,7 @@ func (s *stream) packRows(x *heldBlock, blk *flowseg.Block, re []rowEnd) {
 // readAgain reads a trimmed block again when the merge reaches its resume
 // key, and keeps its rows from that key on.
 func (s *stream) readAgain(ctx context.Context, x *heldBlock) error {
-	a := s.again[x.src.snap]
+	a := s.again[x.src.Path]
 	if a.r == nil {
 		r, err := flowseg.OpenSnapshot(x.src.Path, x.src.snap) // the footer read before; only the block is read
 		if err != nil {
