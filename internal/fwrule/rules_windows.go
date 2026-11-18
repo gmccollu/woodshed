@@ -212,7 +212,12 @@ var (
 type comObject struct{ vtbl *[64]uintptr }
 
 // call calls the method in slot with the object as its first argument and
-// returns its HRESULT.
+// returns its HRESULT. Out-params are passed as uintptr(unsafe.Pointer(&x)),
+// so like x/sys/windows' Proc.Call it's marked uintptrescapes: their
+// variables move to the heap and stay put until the call returns (on an
+// ordinary function a stack move could leave COM writing to the old frame).
+//
+//go:uintptrescapes
 func (o *comObject) call(slot int, args ...uintptr) uint32 {
 	r, _, _ := syscall.SyscallN(o.vtbl[slot], append([]uintptr{uintptr(unsafe.Pointer(o))}, args...)...)
 	return uint32(r)

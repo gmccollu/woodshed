@@ -22,8 +22,8 @@ import (
 // https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls.)
 //
 // It's set after the dial: a Dialer's Control runs before the socket's init,
-// which sets it back to FALSE (net/sock_posix.go: dial, then fd.connect, then
-// fd.init). If it fails the sender goes on as before, never seeing a refusal.
+// which sets it back to FALSE (net/sock_posix.go: dial runs Control, then
+// fd.connect, which starts with fd.init). If it fails the sender goes on as before, never seeing a refusal.
 func reportRefusals(c net.Conn) {
 	uc, ok := c.(*net.UDPConn)
 	if !ok {
