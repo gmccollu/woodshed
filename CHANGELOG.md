@@ -96,6 +96,10 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   Windows a UDP refusal is never detected, so a send there never stops for one.
 - `woodshed snmp status` and `woodshed tls status` check the config first, as `woodshed run`, `reindex` and `flow
   status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
+- Woodshed describes itself as a "syslog, SNMP and flow collector", not a "syslog server": in the package descriptions
+  (deb, rpm, cask, scoop), the Windows service's display name and description (the MSI updates them on upgrade), the
+  systemd unit, the web UI header and the site. The service names don't change. New service accounts get the comment
+  "Woodshed service"; existing ones keep theirs.
 
 ### Fixed
 - Windows in a language other than English: the `tls_firewall`, `snmp_firewall` and `flow_firewall` banners appear
@@ -144,6 +148,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   `flows.csv` rows are written without reflection (the bundle's flows.csv 10.2 s → 7.9 s), and `/api/search` flow
   pages read only the ordering and filter columns until they know their hits (57 k → 130 k records/s at 5,000 a
   page). SPEC §13.6 has the numbers.
+
+### Known issues
+- On Windows in a language other than English, the flow rules' "firewall rule is off" banner doesn't appear, as for
+  TLS (1.1.0) and SNMP traps: netsh's output is read in English only, so the rules' state reads as unknown. `woodshed
+  flow on` still turns the rules on.
 
 ## [1.3.0] - 2026-11-17
 

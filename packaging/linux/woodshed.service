@@ -1,5 +1,5 @@
 [Unit]
-Description=Woodshed syslog server
+Description=Woodshed syslog, SNMP and flow collector
 After=network.target
 
 [Service]
@@ -24,7 +24,7 @@ ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=/var/lib/woodshed /etc/woodshed
 
-# Further hardening that a syslog server never needs to relax.
+# Further hardening that Woodshed never needs to relax.
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

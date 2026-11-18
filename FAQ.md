@@ -8,6 +8,9 @@ New to Woodshed? Start with the [user guide](docs/user-guide.md). Installer deta
 - [Devices can't reach Woodshed](#devices-cant-reach-woodshed)
 - [What does the installer change in the firewall?](#what-does-the-installer-change-in-the-firewall)
 - [Does Woodshed receive SNMP traps?](#does-woodshed-receive-snmp-traps)
+- [Does Woodshed collect flows (flow v5, v9, IPFIX)?](#does-woodshed-collect-flows-flow-v5-v9-ipfix)
+- [Does Woodshed replace a flow analyzer?](#does-woodshed-replace-a-flow-analyzer)
+- [Why no vendor-specific instructions?](#why-no-vendor-specific-instructions)
 - [Why does a polled rate jump around a little?](#why-does-a-polled-rate-jump-around-a-little)
 - [Windows or macOS warns me about the download](#windows-or-macos-warns-me-about-the-download)
 - [Where are the logs?](#where-are-the-logs)
@@ -62,8 +65,9 @@ shows a red banner saying which program has the port. Stop that program, or move
 
 ## What does the installer change in the firewall?
 
-- **Windows:** the MSI (and `woodshed install`) adds two inbound rules for `woodshed.exe`, **Woodshed syslog (UDP
-  514)** and **Woodshed syslog (TCP 514)**, and nothing else. The UI port (8514) is never opened.
+- **Windows:** the MSI (and `woodshed install`) turns on two inbound rules for `woodshed.exe`, **Woodshed syslog (UDP
+  514)** and **Woodshed syslog (TCP 514)**, and adds the TLS, trap and flow rules below turned off. The UI port (8514)
+  is never opened.
   The rules apply to all network profiles, including Public: Windows often calls a network "Public" just because
   it hasn't been told otherwise, and devices on such a network would otherwise be silently blocked. To allow syslog
   only on Domain and Private networks, run this in an administrator PowerShell:
@@ -83,7 +87,8 @@ shows a red banner saying which program has the port. Stop that program, or move
   commands open the port in ufw or firewalld when one is active. See
   [the install guide](docs/install.md#snmp-traps-firewall).
 - **Flows** (off by default, since 2.0): on Windows the installer adds **Woodshed flows (UDP 2055)** and **Woodshed
-  flows (UDP 4739)**, turned off; `woodshed flow on` turns them on. See [the install guide](docs/install.md#flows-firewall).
+  flows (UDP 4739)**, turned off; `woodshed flow on` turns them on. On Linux it opens UDP 2055 and 4739 in ufw or
+  firewalld when one is active. See [the install guide](docs/install.md#flows-firewall).
 
 ## Does Woodshed receive SNMP traps?
 
@@ -115,9 +120,7 @@ Yes, since 2.0, when you turn it on in **Settings → Flows** (flow v5 and v9 on
 v9 (RFC 3954) and IPFIX (RFC 7011), firewall-event and NAT records included. See
 [Collecting flows](docs/user-guide.md#collecting-flows).
 
-- **Is it a traffic analytics tool?** No. It keeps the flows around an incident, searchable and exportable beside
-  the syslog: who talked to whom, on which ports, how much, and what was denied, for a window of time. There are no
-  long-term baselines, dashboards of trends or anomaly detection.
+- **Is it a traffic analytics tool?** No: see [Does Woodshed replace a flow analyzer?](#does-woodshed-replace-a-flow-analyzer)
 - **Why aren't flows plain text like the logs?** Volume: a small site's firewall sends about 1,000 records a second,
   86 million a day. As text lines that's about 21 GB a day; Woodshed's columnar segments take about 20 bytes a record
   (about 1.7 GB a day) and let a top-talkers query read only the columns it needs. Exports and bundles give you
@@ -129,6 +132,19 @@ v9 (RFC 3954) and IPFIX (RFC 7011), firewall-event and NAT records included. See
 - **Why do softflowd's counts trail the traffic?** softflowd exports a flow when it ends or times out (its `-t`
   timeouts), so Woodshed's counts can trail what's on the wire until then.
 - **What about sFlow?** Not in 2.0; it's a candidate for a later release.
+
+## Does Woodshed replace a flow analyzer?
+
+No. It collects evidence around an incident; it isn't long-term traffic analytics. It keeps the flows from around the
+time something broke next to the device's logs, traps and polled counters: who talked to whom, on which ports, how
+much, and what the firewall denied, for a window you pick, in **Events → Flows**, `woodshed flows top` and the
+incident bundle.
+
+It has no long-term baselines, trend dashboards, capacity reports, anomaly detection or alerts. And it keeps flows
+only as long as their share of the disk budget lasts: 40 % of 20 GB by default, about five days of an exporter
+sending 1,000 records a second (**Settings → Flows** shows how many days it holds at the current rate, and you can
+raise it). If you already run a flow analyzer, keep it: where an exporter can send to two collectors, point it at
+both, and the bundle's `flows.ipfix` is an RFC 5655 file other flow tools read.
 
 ## Why no vendor-specific instructions?
 

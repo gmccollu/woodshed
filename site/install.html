@@ -64,7 +64,7 @@
           <h3>Installer</h3>
           <ol class="steps">
             <li>Download <code>woodshed_X.Y.Z_windows_amd64.msi</code> (<code>_arm64</code> for ARM PCs) and double-click it. Approve the administrator prompt.</li>
-            <li>It installs the <b>Woodshed</b> service, which starts with the computer, and opens Windows Firewall for UDP and TCP 514 only.</li>
+            <li>It installs the <b>Woodshed</b> service, which starts with the computer, and opens Windows Firewall for UDP and TCP 514 only. The rules for TLS (TCP 6514), SNMP traps (UDP 162) and flows (UDP 2055 and 4739) are added turned off; <code>woodshed tls on</code>, <code>snmp on</code> and <code>flow on</code> in an administrator prompt turn them on.</li>
             <li>Open <code>http://localhost:8514/</code>, or the <b>Woodshed</b> shortcut in the Start menu.</li>
           </ol>
           <p class="small muted">Silent install from an administrator prompt: <code>msiexec /i woodshed_X.Y.Z_windows_amd64.msi /qn</code></p>
@@ -107,6 +107,11 @@ sudo zypper install ./woodshed-X.Y.Z-1.x86_64.rpm  <span class="c"># openSUSE</s
           </p>
           <pre><code>sudo ufw allow 514                                                                  <span class="c"># ufw</span>
 sudo firewall-cmd --permanent --add-port=514/udp --add-port=514/tcp &amp;&amp; sudo firewall-cmd --reload</code></pre>
+          <p class="small muted">
+            TLS, SNMP traps and flows are off until you turn them on. <code>sudo woodshed tls on</code>, <code>snmp on</code> and
+            <code>flow on</code> open their own ports (TCP 6514, UDP 162, UDP 2055 and 4739) in ufw or firewalld when one is active,
+            and <code>off</code> removes only what they added.
+          </p>
           <h3>Portable</h3>
           <pre><code>tar xzf woodshed_X.Y.Z_linux_amd64.tar.gz
 cd woodshed_X.Y.Z_linux_amd64

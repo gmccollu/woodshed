@@ -43,8 +43,8 @@ const (
 
 // DisplayName and Description are shown by the service managers.
 const (
-	DisplayName = "Woodshed syslog server"
-	Description = "Receives syslog on port 514 and stores it as plain files. UI: http://127.0.0.1:8514/"
+	DisplayName = "Woodshed syslog, SNMP and flow collector"
+	Description = "Collects syslog, SNMP traps, SNMP polls and flows, and stores them as files. UI: http://127.0.0.1:8514/"
 )
 
 // Service accounts, as the packages create them.

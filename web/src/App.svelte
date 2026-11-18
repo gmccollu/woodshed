@@ -89,7 +89,7 @@
       <a class="brand glass" href={href('dashboard')} aria-label="Woodshed dashboard">
         <span class="grid size-11 place-items-center rounded-full bg-chip shadow-[var(--shadow-chip)]"><Logo /></span>
         <span class="text-[22px] leading-tight font-bold tracking-tight">
-          Woodshed<small class="block text-[11px] font-medium tracking-normal text-muted">syslog server</small>
+          Woodshed<small class="block text-[11px] font-medium tracking-normal text-muted">syslog, SNMP and flow collector</small>
         </span>
       </a>
 

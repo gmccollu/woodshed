@@ -1,12 +1,13 @@
 # Woodshed
 
-A syslog, SNMP trap and SNMP polling collector for the box on site. When something breaks, pick the moment and how
-far before and after, and get one zip with every device's logs, traps and polled counters for that window: checksums,
-a summary per device (counts by severity, first and last message, reboots, interfaces that went up or down) and any
+A syslog, SNMP and flow collector for the box on site. When something breaks, pick the moment and how far before
+and after, and get one zip with every device's logs, traps, polled counters and flows for that window: checksums, a
+summary per device (counts by severity, first and last message, reboots, interfaces that went up or down) and any
 gaps where Woodshed wasn't running. It installs in a minute on Windows, macOS or Linux.
 
-Underneath, it keeps every message as plain text files (one folder per device, one file per day) within a disk
-budget, with a web UI to watch the live tail and search, and `woodshed search` / `woodshed bundle` for the terminal.
+Underneath, it keeps every message as plain text files (one folder per device, one file per day), and flows in compact
+files of their own, within a disk budget, with a web UI to watch the live tail and search, and `woodshed search` /
+`woodshed bundle` for the terminal.
 
 ![demo](docs/demo.gif)
 
@@ -76,13 +77,15 @@ design), [docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTI
 
 ## Known issues
 
-As of 1.3.0 (details in the [CHANGELOG](CHANGELOG.md)):
+As of 2.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
 
 - The installers aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask once.
 - On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
-- On non-English Windows the "TLS firewall rule is off" banner doesn't appear; `woodshed tls on` still turns the rule on.
-- On some Windows machines, especially with endpoint protection, CPU use at moderate syslog rates is much higher than on
-  other systems. Nothing is lost; the cause is being traced.
+- On Windows, `woodshed send` over UDP can't tell when the receiver refuses (nothing listening), so it keeps sending
+  instead of stopping; check the receiving side's counts.
+- On Windows, receiving syslog uses about ten times the CPU it does on Linux: about 60 % of one core at 1,000 UDP
+  messages a second on a 4-core lab VM, against about 5 % on Linux. Nothing is lost. Woodshed's own code does the same
+  work on both; most of the extra time is in the kernel and the Go runtime's thread wake-ups, and is being traced.
 
 ## Features
 
@@ -96,20 +99,33 @@ As of 1.3.0 (details in the [CHANGELOG](CHANGELOG.md)):
   hash; v3 passphrases are encrypted for the service's account (Windows) or readable only by it.
 - Optional SNMP polling of the devices you choose (uptime, interface traffic and errors, CPU and memory), graphed
   beside their logs, with reboots marked.
+- Optional flow collection, off until you turn it on: flow v5 and v9 on UDP 2055, IPFIX on UDP 4739 (each port reads
+  every version). Firewall-event and NAT records included; sampled counts are shown as sent and scaled, never scaled
+  silently, and sequence gaps are counted per exporter. **Events → Flows** shows the top talkers, ports,
+  conversations and denied traffic for any window. It's for the flows around an incident, not long-term traffic
+  analytics.
+- **Connect** (Set up a device) prints the configuration a device needs to send its syslog, traps or flows, or to be
+  polled, filled in with this server's addresses and ports. It's organised by syntax, not brand (a line-oriented CLI,
+  a set-style CLI, rsyslog, net-snmp, softflowd, a web UI checklist). Secrets stay placeholders; the three Linux
+  snippets are tested in CI against the real tools, and the others say **Reference only**.
 - Plain files: one folder per device and one file per day (`logs/<ip>/<day>.log`, traps in `logs/<ip>/traps/`,
-  polls in `logs/<ip>/poll/`), gzipped once closed. Read them with grep, an editor or any log tool.
-- Doesn't fill the disk: retention by age and total size (30 days / 20 GiB by default), plus a low-disk guard. Every
-  deletion is recorded and shown in Settings.
+  polls in `logs/<ip>/poll/`), gzipped once closed. Read them with grep, an editor or any log tool. Flows are the
+  exception: at thousands of records a second they're kept in compact binary files (`logs/<ip>/flows/`, about 20 bytes
+  a record), read through Events, `woodshed search` or a CSV or IPFIX export.
+- Doesn't fill the disk: retention by age and total size (30 days / 20 GiB by default), plus a low-disk guard. Flows
+  have their own share (40 % by default) and go first. Every deletion is recorded and shown in Settings.
 - Dropped, truncated and refused messages are counted and shown. Where the OS hides kernel UDP drops (Windows,
   macOS), the UI says so instead of showing 0.
 - Web UI: a dashboard with the message rate, device tiles and a live tail with server-side filters; an Events page to
   browse and filter all stored history (text or regex, program/tag, host, exclude, devices, time, severity); a
   devices page to rename, group or hide senders; settings that apply without a restart; light and dark modes.
-- `woodshed search` searches the stored logs (and traps, `--type trap`) from a terminal with the same filters as
-  Events, compressed days included, on every OS (natively on Windows, no WSL). It only reads, so it's safe beside the running service.
+- `woodshed search` searches the stored logs (and traps, polls or flows, `--type trap|poll|flow`) from a terminal
+  with the same filters as Events, compressed days included, on every OS (natively on Windows, no WSL). It only reads, so it's safe beside the running service.
 - Incident bundles: pick a moment ("Bundle around this" on an Events line, the histogram, Export, or
   `woodshed bundle --at`) and get one zip with every record around it from every device that sent anything, a
-  per-device summary (counts by severity and by trap, reboots, gaps when Woodshed wasn't running, drops) and checksums.
+  per-device summary (counts by severity and by trap, reboots, gaps when Woodshed wasn't running, drops, and for
+  flows the top talkers, ports, denied traffic and sequence gaps) and checksums. Flows come as `flows.csv` and an
+  IPFIX file (`flows.ipfix`) other flow tools read.
 - The UI listens on `127.0.0.1:8514` only by default. LAN mode serves HTTPS with a password.
 - No telemetry. The only outbound connection is an optional daily update check, off until you turn it on: it
   fetches one public file (`https://gmccollu.github.io/woodshed/releases.json`), sends nothing about your
@@ -179,11 +195,17 @@ everything to disk first.
 | `woodshed reindex` | Rebuild the index from the log files (with the server stopped) |
 | `woodshed set-password [--stdin]` | Set the UI password from the shell, for servers without a browser (run as administrator) |
 | `woodshed lan-mode on\|off [--port N]` | Turn LAN mode on or off from the shell; prints the addresses and the certificate's SHA-256 (run as administrator) |
+| `woodshed update-check on\|off\|ask` | Turn the daily update check on or off, or back to asking in the UI (run as administrator) |
 | `woodshed reset-password` | Forgot the UI password: remove it and turn LAN mode off (run as administrator) |
-| `woodshed search` | Search the stored logs (and traps) from a terminal, with the Events filters |
+| `woodshed search` | Search the stored logs from a terminal, with the Events filters; `--type trap\|poll\|flow` for the other data |
+| `woodshed tls on\|off\|renew\|status` | Syslog over TLS: turn it on or off (with its firewall rule), renew the certificate, or show its state (run as administrator) |
+| `woodshed snmp on\|off\|status` | The SNMP trap receiver: turn it on or off (with its firewall rule; as administrator), or show its counts |
 | `woodshed poll test ADDRESS` | Test-poll one device over SNMP from here (secrets from files or the environment), step by step |
+| `woodshed flow on\|off\|status` | The flow listener: turn it on or off (with its firewall rules; as administrator), or show each exporter's rate, templates, sampling and gaps |
+| `woodshed flows top` | The top talkers, ports or conversations in the stored flows for a window |
+| `woodshed setup families` / `setup snippet` | Print the configuration a device needs (the **Connect** page, for a terminal) |
 | `woodshed bundle --at TIME` | Build an incident bundle (every record around a moment, with a summary) from the data folder |
-| `woodshed send` | Send numbered test messages to any syslog server |
+| `woodshed send` | Send numbered test messages to any syslog server, or test traps and flows (`--proto trap\|flow-v5\|flow-v9\|ipfix`) |
 | `woodshed bench` | Measure sustained throughput on a temporary in-process server |
 | `woodshed version` | Print the version |
 

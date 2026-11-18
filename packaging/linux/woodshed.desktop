@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=Woodshed
-GenericName=Syslog server
+GenericName=Syslog, SNMP and flow collector
 Comment=Open the Woodshed web UI (the woodshed service must be running)
 Exec=xdg-open http://localhost:8514/
 Icon=woodshed
 Terminal=false
 Categories=Network;System;Monitor;
-Keywords=syslog;logs;
+Keywords=syslog;logs;snmp;traps;flows;

@@ -9,19 +9,19 @@
     />
     <meta name="referrer" content="no-referrer" />
     <meta name="color-scheme" content="light dark" />
-    <title>Woodshed: a syslog server you can install anywhere in a minute</title>
+    <title>Woodshed: a syslog, SNMP and flow collector you can install anywhere in a minute</title>
     <meta
       name="description"
-      content="Woodshed is a free, open-source syslog server for Windows, macOS and Linux. It keeps every message as plain files within a disk budget, with a web UI to watch, search and export logs."
+      content="Woodshed is a free, open-source syslog, SNMP and flow collector for Windows, macOS and Linux. It keeps every device's logs, traps, polled counters and flows within a disk budget, with a web UI to watch, search and export them."
     />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <link rel="stylesheet" href="style.css" />
     <!-- Open Graph needs absolute URLs: update them if the site moves to its own domain. -->
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="Woodshed: a syslog server you can install anywhere in a minute" />
+    <meta property="og:title" content="Woodshed: a syslog, SNMP and flow collector you can install anywhere in a minute" />
     <meta
       property="og:description"
-      content="Keeps every message as plain files within a disk budget. Watch, search and export logs for support. Windows, macOS and Linux; MIT licensed."
+      content="Keeps every device's logs, traps, polled counters and flows within a disk budget. Watch, search and export them for support. Windows, macOS and Linux; MIT licensed."
     />
     <meta property="og:url" content="https://gmccollu.github.io/woodshed/" />
     <meta property="og:image" content="https://gmccollu.github.io/woodshed/img/og.jpg" />
@@ -51,10 +51,11 @@
         <section class="hero" aria-labelledby="title">
           <h1 id="title">Woodshed: the logs from around the moment it broke, in one zip.</h1>
           <p class="lede">
-            A syslog, SNMP trap and SNMP polling collector you can install anywhere in a minute. Pick a time and how far before
-            and after, and get every device's logs, traps and polled counters for that window, with checksums, a summary per
-            device and any gaps marked.
-            Day to day it keeps everything as plain text within a disk budget, with a clean web page to watch it live and search it.
+            A syslog, SNMP and flow collector you can install anywhere in a minute. Pick a time and how far before and after,
+            and get every device's logs, traps, polled counters and flows for that window, with checksums, a summary per device
+            and any gaps marked.
+            Day to day it keeps logs as plain text (flows in compact files of their own) within a disk budget, with a clean web
+            page to watch it live and search it.
           </p>
           <div class="cta">
             <a class="btn" href="#download">Download</a>
@@ -140,7 +141,7 @@
             <div class="card step">
               <span class="num" aria-hidden="true">2</span>
               <h3>Point your device at it</h3>
-              <p>In the device's syslog settings, enter this machine's IP address, <b>port 514</b>, UDP (or TCP). The Setup page says when the first message arrives.</p>
+              <p>In the device's syslog settings, enter this machine's IP address, <b>port 514</b>, UDP (or TCP). The Setup page says when the first message arrives, and <b>Connect</b> writes the device's configuration for you.</p>
             </div>
             <div class="card step">
               <span class="num" aria-hidden="true">3</span>
@@ -155,11 +156,14 @@
           <ul class="features">
             <li>Listens on UDP and TCP port 514 straight away, IPv4 and IPv6, with no setup.</li>
             <li>Lenient parsing of RFC 5424, RFC 3164 and the usual odd formats; the raw message is always kept exactly as received.</li>
-            <li>Plain text files, one folder per device and one file per day, compressed once the day is over.</li>
+            <li>Optional, each off until you turn it on: syslog over TLS (TCP 6514), SNMP traps v1, v2c and v3 (UDP 162), and SNMP polling of uptime, interfaces, CPU and memory.</li>
+            <li>Optional flow collection, off until you turn it on: flow v5 and v9 on UDP 2055, IPFIX on UDP 4739. Top talkers, ports and denied traffic for any window. It's for the flows around an incident, not long-term traffic analytics.</li>
+            <li>A <b>Connect</b> page that writes the configuration a device needs to send its syslog, traps or flows, by syntax rather than brand, with secrets left as placeholders.</li>
+            <li>Plain text files, one folder per device and one file per day, compressed once the day is over. Flows, at thousands a second, go in compact files of their own.</li>
             <li>Keeps 30 days or 20 GB by default, and never fills the disk.</li>
             <li>A dashboard with message rates, devices that went quiet, and a live tail.</li>
             <li>Search by text or regular expression, devices, time and severity, with the lines around each hit.</li>
-            <li>Export zips with a manifest, SHA-256 checksums and a report of any gaps, so the recipient can trust what they get.</li>
+            <li>Export zips with a manifest, SHA-256 checksums and a report of any gaps, so the recipient can trust what they get. Flows come as CSV and an IPFIX file.</li>
             <li>Name and group devices; an optional sender allowlist.</li>
             <li>The web page is on this machine only by default. LAN mode adds HTTPS and a password, and a login needs both a cookie and a session secret, so a stolen cookie alone is useless.</li>
             <li>Windows, macOS and Linux, on x64 and ARM; MIT licensed.</li>
