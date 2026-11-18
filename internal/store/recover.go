@@ -107,10 +107,11 @@ func (s *Store) recover(ctx context.Context) error {
 
 	// Flow segments a crash left open are closed before the index is
 	// reconciled with the files (SPEC §13.2).
-	if err := s.recoverFlows(); err != nil {
+	recovered, err := s.recoverFlows(ctx)
+	if err != nil {
 		return err
 	}
-	res, err := s.idx.Reconcile(ctx, s.dataDir)
+	res, err := s.idx.Reconcile(ctx, s.dataDir, recovered...)
 	if err != nil {
 		return err
 	}

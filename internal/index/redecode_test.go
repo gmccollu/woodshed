@@ -75,9 +75,18 @@ func TestRedecodeFlows(t *testing.T) {
 	if f.Totals.Records != 5 || f.Raw != 0 || f.Totals.Status[flow.StatusLate] != 3 {
 		t.Fatalf("footer %+v raw %d", f.Totals, f.Raw)
 	}
+	// Until Reindex has run, the rows are marked stale (a start reads
+	// every footer); Reindex clears the mark.
+	marker := filepath.Join(dataDir, FlowRowsStaleFile)
+	if _, err := os.Lstat(marker); err != nil {
+		t.Fatalf("no stale mark after a redecode: %v", err)
+	}
 	d := openIn(t, t.TempDir())
 	if _, err := d.Reindex(ctx, dataDir); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Lstat(marker); !os.IsNotExist(err) {
+		t.Fatalf("stale mark after Reindex: %v", err)
 	}
 	segs, _ := d.AllFlowSegments(ctx)
 	if len(segs) != 1 || segs[0].Records != 5 || segs[0].Late != 3 {

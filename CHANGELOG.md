@@ -121,6 +121,11 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   timeouts in `/api/stats` (`tcp_frames`) and on **About**. Older Woodshed versions show a marker as text at the end of
   the message, so there a message cut inside its header can show a wrong app or host, and a regex anchored with `$`
   doesn't match a marked line; lines stored before 2.0 have none.
+- A clean restart no longer re-reads every flow segment or logs a startup recovery warning ("index: re-read N files",
+  N being every segment), so start-up time no longer grows with the flow store (6 s with 184 segments on a 4-vCPU VM
+  in the rc4 lab). A closed segment whose index rows still match its file (path and size) is kept without being
+  opened; new, changed, missing and crash-recovered segments are still read or dropped, and only they are counted.
+  `woodshed reindex` still reads every footer. Present in the 2.0 release candidates.
 
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The

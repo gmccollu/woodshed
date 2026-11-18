@@ -13,7 +13,7 @@ import (
 // ReindexResult describes a Reindex or Reconcile run.
 type ReindexResult struct {
 	Files     []File   // every indexed file afterwards, by device and FirstReceived
-	Scanned   int      // files read from disk (in full or from where the index left off)
+	Scanned   int      // files read from disk (in full, from where the index left off, or a flow segment's footer)
 	Removed   int      // rows dropped because their file is gone
 	Devices   int      // devices with files on disk
 	TornBytes int64    // bytes in partial last lines, not indexed
@@ -37,7 +37,7 @@ type ReindexResult struct {
 // It also rebuilds the poll rollups (poll_hourly) from the poll files; the
 // poll targets are user data and stay (SPEC §12.3).
 func (d *DB) Reindex(ctx context.Context, dataDir string) (ReindexResult, error) {
-	res, err := d.rebuild(ctx, dataDir, true)
+	res, err := d.rebuild(ctx, dataDir, true, nil)
 	if err != nil {
 		return res, err
 	}
@@ -49,9 +49,13 @@ func (d *DB) Reindex(ctx context.Context, dataDir string) (ReindexResult, error)
 // Reconcile brings the index in line with the files on disk cheaply: rows for files
 // whose size still matches are kept, an uncompressed file that only grew is scanned
 // from where its row ends, other changed or new files are scanned in full, and rows
-// for missing files are dropped. The store runs it at startup, after crash repair.
-func (d *DB) Reconcile(ctx context.Context, dataDir string) (ReindexResult, error) {
-	return d.rebuild(ctx, dataDir, false)
+// for missing files are dropped. A closed flow segment whose rows still match the
+// file is kept without being opened; other flow segments are read from their
+// footers. The store runs it at startup, after crash repair, and names the
+// segments that repair recovered (their '/'-separated paths relative to
+// dataDir, as FlowFile.Rel): they're read whatever their rows say.
+func (d *DB) Reconcile(ctx context.Context, dataDir string, recovered ...string) (ReindexResult, error) {
+	return d.rebuild(ctx, dataDir, false, recovered)
 }
 
 type rebuilt struct {
@@ -63,7 +67,7 @@ type rebuilt struct {
 	scanned    bool
 }
 
-func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexResult, error) {
+func (d *DB) rebuild(ctx context.Context, dataDir string, full bool, recovered []string) (ReindexResult, error) {
 	var res ReindexResult
 	entries, _, err := logfile.List(dataDir)
 	if err != nil {
@@ -81,9 +85,22 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexRes
 	for _, e := range entries {
 		onDisk[e.Rel] = true
 	}
-	// Flow segments (SPEC §13.2): every row is rebuilt from its footer, which
-	// is cheap (no records are read).
-	flows, err := readFlowFiles(dataDir, full, &res)
+	// Flow segments (SPEC §13.2): Reindex rebuilds every row from its footer
+	// (no records are read). Reconcile keeps a closed segment's rows when the
+	// file still matches them (ClosedFlow.Current) without opening it, and
+	// reads only new, changed, unclosed or just-recovered segments, or every
+	// one while the rows are marked stale (FlowRowsStaleFile).
+	rereadFlows := full || flowRowsStale(dataDir)
+	var known map[string]ClosedFlow
+	if !rereadFlows {
+		if known, err = d.ClosedFlowSegments(ctx); err != nil {
+			return res, err
+		}
+		for _, rel := range recovered {
+			delete(known, rel)
+		}
+	}
+	flows, keptFlows, err := readFlowFiles(dataDir, full, known, &res)
 	if err != nil {
 		return res, err
 	}
@@ -153,12 +170,15 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexRes
 			}
 		}
 	} else {
-		kept := make(map[string]bool, len(out)+len(flows))
+		kept := make(map[string]bool, len(out)+len(flows)+len(keptFlows))
 		for _, r := range out {
 			kept[r.f.Path] = true
 		}
 		for _, fr := range flows {
 			kept[fr.rows.File.Path] = true
+		}
+		for _, c := range keptFlows {
+			kept[c.Path] = true
 		}
 		for _, f := range rows {
 			if !kept[f.Path] {
@@ -230,21 +250,26 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexRes
 			a.msgs += r.f.Lines
 		}
 	}
-	for _, fr := range flows {
-		id := fr.rows.File.DeviceID
+	addFlow := func(id string, first, last time.Time, records int64) {
 		a := devs[id]
 		if a == nil {
 			a = &devAgg{}
 			devs[id] = a
 			devOrder = append(devOrder, id)
 		}
-		if !fr.first.IsZero() && (a.first.IsZero() || fr.first.Before(a.first)) {
-			a.first = fr.first
+		if !first.IsZero() && (a.first.IsZero() || first.Before(a.first)) {
+			a.first = first
 		}
-		if fr.last.After(a.last) {
-			a.last = fr.last
+		if last.After(a.last) {
+			a.last = last
 		}
-		a.msgs += fr.rows.Segment.Records
+		a.msgs += records
+	}
+	for _, fr := range flows {
+		addFlow(fr.rows.File.DeviceID, fr.first, fr.last, fr.rows.Segment.Records)
+	}
+	for _, c := range keptFlows {
+		addFlow(c.DeviceID, c.First, c.Last, c.Records)
 	}
 	for _, id := range devOrder {
 		a := devs[id]
@@ -269,6 +294,12 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool) (ReindexRes
 	}
 	if err := tx.Commit(); err != nil {
 		return res, err
+	}
+	if rereadFlows {
+		// Every footer is in flow_minute again.
+		if err := clearFlowRowsStale(dataDir); err != nil {
+			return res, err
+		}
 	}
 	res.Devices = len(devOrder)
 	res.Files, err = d.Files(ctx, "")
