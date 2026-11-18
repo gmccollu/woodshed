@@ -3050,8 +3050,8 @@ the first bench, which records the measured numbers here:
       change), `TestStreamMatchesSearchPages` and `TestStreamDecodesEachBlockOnce` (flowquery), the encoders' tests
       against encoding/json and encoding/csv, and `BenchmarkFlowListing` (1,000,000 records: Stream 4.7 M/s, pages
       of 5,000 206 k/s, of 500 30 k/s, against 69 k/s and 8.2 k/s before).
-    - API pages stay far below a stream: each still reads again every block overlapping it, a cost of the stateless
-      cursor. Keeping a stream's state under the cursor (as top-N keeps its counts) would close the gap; open.
+    - API pages stayed far below a stream: each read again every block overlapping it, a cost of the stateless
+      cursor. Closed 2026-11-18 (below, "Search pages keep their stream").
     - Fixed after the independent review (2026-11-17): a page's hits own their extras (the shared arenas had pinned
       about 230 KiB a hit; a 40-hit page from 40 blocks now holds 34 KiB, `TestSearchPageExtrasNotPinned`); and raw
       sets decoded on read are found and ordered wherever their records end (`TestRawSetsAheadOfReceived`): search
@@ -3075,7 +3075,43 @@ the first bench, which records the measured numbers here:
       178 s, 465 GB read and slowing), oldest first 34.3 s and 1.96×; `woodshed search --type flow --json` 67 s
       (803 k/s, 178 MiB peak RSS) against 2.7 M records in its first 300 s before. `TestStreamReadsEachBlockAboutOnce`
       holds it to 2.2× with a pool smaller than the rows waiting. Search pages (the API) still read such blocks again
-      for every page they overlap; open, with the stateless-cursor note above.
+      for every page they overlap; closed the same day, next.
+    - **Search pages keep their stream (build, 2026-11-18):** a search page (`/api/search`, the Flows tab) is now read
+      by a stream like Stream's (plan read once, each block decoded once, its rows held packed, trimmed past its
+      budget), and a page that ends with a cursor keeps that stream under the cursor's own string, so the next page
+      carries on without planning again or reading again what it has read. The cursor's bytes don't change (still the
+      key of the page's last record), so a page whose stream is gone (dropped for room, after `StateTTL` unused,
+      taken by a second request with the same cursor, or a restart) is read from the cursor's values: a stream
+      started at the cursor, skipping what the stateless page skips, which saves its own for the page after. Bounds:
+      at most 8 saved (`MaxPageStates`, least recently used dropped first), each within 1/16 of the query pool (8
+      MiB of 128; trimmed to fit before it's saved), charged to the pool, and the pool drops them before top-N and
+      summary states, which can't be read again. A saved stream holds no open file (reopened from the footer it
+      read), so retention can delete its segments on every platform; their rows are then gone for the next page,
+      as for a stateless one. A stream over its budget even trimmed finishes the page with stateless pages from its
+      last record. A continued listing reads the store as its first page found it (an open segment's snapshot
+      then, as Stream and a continued top-N do); a stateless page planned again each time.
+      - Over an hourly segment of 18 M records (5,000 a second, blocks of 5,000, 1 % ending up to 20 min early;
+        `WOODSHED_PAGES_BIG=1 go test -run TestSearchPagesMeasure ./internal/flowquery`), 20 consecutive pages,
+        bytes read in all, before → after: newest first, pages of 500 973 MB → 24 MB and of 5,000 1.20 GB → 26 MB
+        (the first page reads the 24 MB footer once, where a stateless page read it twice, for its plan and its
+        second pass; pages 2–20 read 0 and 1.7 MB); oldest first, pages of 500 29.0 GB → 77 MB (12.1 s → 0.33 s)
+        and of 5,000 33.8 GB → 123 MB (14.6 s → 0.63 s), each block decoded once (13 of 1,201 again). Oldest first
+        still reads ~660 blocks for 10,000 records: the oldest records are the outliers, a few in each of the first
+        20 min's blocks.
+      - `BenchmarkFlowListing` (1,000,000 records): pages of 500 1.57 M records a second (30 k stateless), of 5,000
+        1.49 M (207 k); Stream 4.6 M. A search page's live heap over a week of 10 exporters 10.4 MiB (19.3
+        stateless).
+      - Guards: `TestFlowListingGolden` unchanged; `TestSearchPagesMatchStateless` (every page's hits, cursor and
+        partial flag equal the stateless page's, over open and closed segments, raw sets, filters, devices, pages of
+        1 to 100,000), `TestSearchPageStateGone` (dropped, expired, restarted, a cursor used twice),
+        `TestSearchPageAfterDeletion`, `TestSearchPageStatesBounded`, `TestSearchPageOverBudget`, and
+        `TestSearchPagesReadOnlyNewData`: over a store whose every block holds rows ending 120 s early (a stateless
+        page read 63–626 times the records it returned), pages 2–20 of 500 and 5,000 read at most 2.2 times their
+        records' bytes plus a wave of blocks (0.84–1.68× with the default pool; 2.06–2.38× with 1 MiB a stream,
+        trimming), each continuing the saved stream. Found on the way: Stream's blocks waiting to be read again were
+        keyed by footer, and a page's stream reopens its segments from a copy for each page, so each page charged
+        the segment's directory again (pages of 5,000 oldest first read 25× their records at 1 MiB a stream);
+        they're keyed by path now.
 - **Queries:** top talkers (`by=src`, bytes) over 1 h at 5,000 records/s (18 million records) in under 3 s,
   complete in one response; at 50,000/s (180 million) partial within the 10 s budget and complete within 60 s.
   A filtered search for one address over 1 h at 5,000/s returns its first page in under 1 s.
