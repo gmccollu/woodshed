@@ -166,9 +166,12 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   page). SPEC §13.6 has the numbers.
 
 ### Known issues
-- On Windows in a language other than English, the flow rules' "firewall rule is off" banner doesn't appear, as for
-  TLS (1.1.0) and SNMP traps: netsh's output is read in English only, so the rules' state reads as unknown. `woodshed
-  flow on` still turns the rules on.
+- On Windows, receiving syslog uses about ten times the CPU it does on Linux: about 60 % of one core at 1,000 UDP
+  messages a second on a 4-core lab VM, against about 5 % on Linux. Nothing is lost. Woodshed's own code does the same
+  work on both; most of the extra time is in the kernel and the Go runtime's thread wake-ups. A `woodshed profile cpu`
+  capture on Windows shows only a small part of it (see the user guide).
+- On Windows, `woodshed send` over UDP can't tell when the receiver refuses (nothing listening), so it keeps sending
+  instead of stopping.
 
 ## [1.3.0] - 2026-11-17
 
