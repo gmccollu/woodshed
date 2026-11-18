@@ -492,7 +492,13 @@ func TestMigrateV2ToV3EventSource(t *testing.T) {
 		t.Fatalf("version %d", v)
 	}
 	d2.AddEvent(ctx, Event{Time: t0.Add(time.Second), Level: LevelInfo, Kind: KindStart, Text: "new", Source: SourceListenerUDP})
-	evs, err := d2.Events(ctx, time.Time{}, time.Time{}, 0)
+	all, err := d2.Events(ctx, time.Time{}, time.Time{}, 0)
+	var evs []Event // less the migration's own events (TestMigrationsReported)
+	for _, e := range all {
+		if e.Kind != KindMigrate {
+			evs = append(evs, e)
+		}
+	}
 	if err != nil || len(evs) != 2 || evs[0].Source != "" || evs[1].Source != SourceListenerUDP || evs[1].Text != "new" {
 		t.Fatalf("%+v %v", evs, err)
 	}

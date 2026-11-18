@@ -126,7 +126,8 @@ type Kind string
 // HTTP layer records ui (UI server start, bind errors, mode changes, certificates)
 // and auth (password changes, login lockouts); the export queue records export
 // (queued, ready, failed, cancelled, deleted, expired); the store records clock
-// (the received clock stepped back by more than logfile.MaxSkew).
+// (the received clock stepped back by more than logfile.MaxSkew); Open records
+// migrate (one schema step on an existing index).
 const (
 	KindStart    Kind = "start"
 	KindStop     Kind = "stop"
@@ -154,6 +155,9 @@ const (
 	// KindTLS: the TLS syslog certificate was created, renewed or its CA
 	// replaced (with the fingerprints).
 	KindTLS Kind = "tls"
+	// KindMigrate: Open migrated an existing index one schema step
+	// ("index migrated from schema 8 to 9 in 12 ms").
+	KindMigrate Kind = "migrate"
 )
 
 // Source says what an event is about, for readers that act on events (export
