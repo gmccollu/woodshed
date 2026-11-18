@@ -77,6 +77,11 @@ type Engine struct {
 	pool   *Pool
 	slots  chan *slot
 
+	// saves counts saved states and page streams (e.mu): their least
+	// recently used order. Not the clock, whose readings tie (Windows'
+	// resolution) and which tests move.
+	saves uint64
+
 	page, batch int // plan sizes, for tests (0: planPage, planBatch)
 
 	// Stream's blocks decoded and its falls back to pages (tests).
@@ -455,7 +460,8 @@ func (e *Engine) wave() int { return max(e.o.Workers*waveBlocksPerW, 4) }
 type state struct {
 	id       string
 	key      string
-	used     time.Time
+	used     time.Time // for StateTTL
+	seq      uint64    // e.saves when saved: the LRU order
 	plan     *plan
 	done     int // blocks done
 	recsDone int64
@@ -488,7 +494,7 @@ func (e *Engine) evictOne() bool {
 	e.mu.Lock()
 	var old *state
 	for _, s := range e.states {
-		if old == nil || s.used.Before(old.used) {
+		if old == nil || s.seq < old.seq {
 			old = s
 		}
 	}
@@ -519,7 +525,8 @@ func (e *Engine) saveState(st *state) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.o.Clock()
-	st.used = now
+	e.saves++
+	st.used, st.seq = now, e.saves
 	for id, s := range e.states {
 		if now.Sub(s.used) > StateTTL {
 			delete(e.states, id)
@@ -530,7 +537,7 @@ func (e *Engine) saveState(st *state) {
 	for len(e.states) > MaxStates {
 		var old *state
 		for _, s := range e.states {
-			if old == nil || s.used.Before(old.used) {
+			if old == nil || s.seq < old.seq {
 				old = s
 			}
 		}

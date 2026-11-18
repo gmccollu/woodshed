@@ -283,15 +283,24 @@ func (fw *FileWriter) fieldsOf(r *Record, maxExtras int) {
 // vendor-range type at its own length (as exporters send them), an IANA or
 // reverse IE as variable length (so a reader never takes it for a column).
 // The IE behind rule_id is written whichever way reproduces its rendering
-// (RuleIDText depends on it).
+// (RuleIDText depends on it). The writer doesn't know rule_id_ies, so that
+// goes by the value: any extra that renders as the record's rule_id one way
+// and not the other is written that way. So an IANA or reverse IE is
+// written at its fixed length only if a reader would keep it as an extra
+// there: one that only looks like the rule (its value happens to render
+// as the rule_id) is never turned into a column, as a reverse
+// octetDeltaCount (stored as an extra because it came variable length)
+// whose 2 bytes matched a 4-byte rule's number was read back as rev_bytes
+// (FuzzIPFIXFile, CI 2026-11-18).
 func extraFixed(r *Record, e *Extra) bool {
-	fixed := (e.PEN != 0 && e.PEN != PENReverse) || (e.PEN == 0 && e.ID&0x8000 != 0)
+	asIs := (e.PEN != 0 && e.PEN != PENReverse) || (e.PEN == 0 && e.ID&0x8000 != 0)
+	fixed := asIs
 	if r.Is(HasRuleID) {
 		asFixed, asVar := RuleIDText(e.Value, false), RuleIDText(e.Value, true)
 		if asFixed != asVar {
 			switch r.RuleID {
 			case asFixed:
-				fixed = true
+				fixed = asIs || classify(TemplateField{PEN: e.PEN, ID: e.ID, Length: uint16(len(e.Value))}) == opExtra
 			case asVar:
 				fixed = false
 			}
