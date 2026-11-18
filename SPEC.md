@@ -3098,9 +3098,13 @@ the first bench, which records the measured numbers here:
       segments (one started, closed or was deleted), or a segment it still reads or holds rows of is gone or was
       written again under its name (another header identity: a part number reused), it's dropped and the page read
       from the cursor. Blocks written since to the open segments it has loaded, a live store's every page, are read
-      as it resumes, keeping their rows after the last one given. And neither a page stream nor Stream gives a row
-      that isn't after the last one it gave: one that comes up behind (an index row the plan's bounds didn't cover,
-      as a segment with raw sets indexed mid-listing) is left out, as a page from the cursor leaves it out. Before:
+      as it resumes, keeping their rows after the last one given, a wave at a time and trimmed between waves past
+      the stream's budget (re-review: 400 new blocks read at once had held 22.6 MiB against a 1 MiB budget in a 16
+      MiB pool; now 1.1 MiB, `TestSearchPageCatchUpBounded`); if trimming can't fit them, the page is read from the
+      cursor. A snapshot reopened against a file shorter than its last section is refused. And neither a page
+      stream nor Stream gives a row that isn't after the last one it gave: one that comes up behind (an index row the
+      plan's bounds didn't cover, as a segment with raw sets indexed mid-listing) is left out, as a page from the
+      cursor leaves it out. Before:
       such a segment indexed after page 3 of an oldest-first listing put its 09:05 records after a 10:49 one, and
       after the stream was dropped the stateless pages from that cursor gave 3,155 of 3,615 records again; an index
       error after a page ended a listing at 2,400 of 3,600 records with no error. `TestSearchPagesWhileTheStoreChanges`
