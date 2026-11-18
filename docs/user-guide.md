@@ -753,6 +753,13 @@ Read the files with Go's own tools, on any machine with Go installed (the machin
 `go tool pprof -top cpu.pprof`, `go tool pprof -sample_index=inuse_space -top heap.pprof`, or `go tool trace
 woodshed.trace` (it opens a browser). The profiles name the functions themselves, so the Woodshed binary isn't needed.
 
+**On Windows, compare the profile with the process's own CPU time.** A CPU profile samples only the time goroutines
+run Go code, so time spent in the kernel or in the Go runtime's own threads (waking and parking threads, timers) is
+missing from it. On a Windows lab machine at 1,000 messages a second, the profile accounted for about a tenth of
+Woodshed's CPU time (on Linux, about three quarters). Note `(Get-Process woodshed).CPU` just before and after the
+capture, and add a trace (`--trace`): if the profile's total is far below the process's CPU time, the cost is outside
+Woodshed's code, and Windows' own tools (`wpr -start CPU`, then `wpr -stop cpu.etl`) can show where.
+
 **What's in them.** CPU profiles and traces hold function names, the source file paths of the build, call stacks,
 times and counts: they're safe to attach to a public issue. A heap profile records where memory was allocated and how
 much, not what the memory holds, so it doesn't contain your log messages either; but it, and a goroutine dump (which

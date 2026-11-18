@@ -83,8 +83,9 @@ As of 2.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
 - On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
 - On Windows, `woodshed send` over UDP can't tell when the receiver refuses (nothing listening), so it keeps sending
   instead of stopping; check the receiving side's counts.
-- On some Windows machines, especially with endpoint protection, CPU use at moderate syslog rates is much higher than on
-  other systems. Nothing is lost; the cause is being traced.
+- On Windows, receiving syslog uses about ten times the CPU it does on Linux: about 60 % of one core at 1,000 UDP
+  messages a second on a 4-core lab VM, against about 5 % on Linux. Nothing is lost. Woodshed's own code does the same
+  work on both; most of the extra time is in the kernel and the Go runtime's thread wake-ups, and is being traced.
 
 ## Features
 
