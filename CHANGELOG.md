@@ -81,7 +81,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - `woodshed send` over UDP (syslog, traps and flows) keeps sending when the receiver restarts: a refusal (ICMP port
   unreachable) after the first second is reported in the summary (when, and how many, a lower bound on the loss) and
   the datagram sent again. A port that refuses from the start still stops it at once ("nothing is listening"). On
-  Windows a UDP refusal is never detected, so a send there never stops for one.
+  Windows too: `woodshed send` turns the OS's UDP refusal reporting back on for its own sockets (Go turns it off on
+  every UDP socket there); the listeners' sockets keep it off.
 - `woodshed snmp status` and `woodshed tls status` check the config first, as `woodshed run`, `reindex` and `flow
   status` do: a config the server wouldn't start with is reported (exit 1) instead of shown as a status.
 

@@ -3,7 +3,6 @@ package loadgen
 import (
 	"context"
 	"net"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -84,12 +83,8 @@ func TestSendThroughReceiverRestart(t *testing.T) {
 	if testing.Short() {
 		t.Skip("about 3 s")
 	}
-	if runtime.GOOS == "windows" {
-		// Go turns off UDP connection-reset reporting on Windows sockets
-		// (SIO_UDP_CONNRESET, net/fd_windows.go): no refusal is ever reported,
-		// so there's nothing to see (SPEC §13.10 decision 84).
-		t.Skip("Windows never reports a UDP refusal")
-	}
+	// On Windows too: the senders turn SIO_UDP_CONNRESET back on
+	// (reportRefusals), which Go turns off.
 	ctx := context.Background()
 	for _, c := range []struct {
 		name string

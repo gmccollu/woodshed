@@ -239,7 +239,7 @@ func Send(ctx context.Context, o SendOptions) (SendResult, error) {
 
 func sendUDP(ctx context.Context, o *SendOptions, res *SendResult) error {
 	d := o.dialer("udp")
-	c, err := d.DialContext(ctx, "udp", o.Addr)
+	c, err := dialUDP(ctx, &d, o.Addr)
 	if err != nil {
 		return fmt.Errorf("loadgen: %w", err)
 	}

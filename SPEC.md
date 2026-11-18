@@ -3718,9 +3718,15 @@ the connection; present since 1.0):
     and ICMP replies are rate-limited, so far more datagrams are lost than reported (about 60 to 1 in the review's
     measurement). The same rule covers syslog over UDP, traps (sends and an inform's reply reader; SNMPv3 discovery
     still needs an answer) and flows (`woodshed send --proto flow-v5|flow-v9|ipfix`); every retry checks for an
-    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows a UDP refusal is never detected**:
-    Go turns off connection-reset reporting on Windows UDP sockets (`SIO_UDP_CONNRESET`), so a send there never stops
-    for one, before or after the grace, and the summary has none.
+    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows** Go turns off ICMP port-unreachable
+    reporting on every UDP socket (`SIO_UDP_CONNRESET` set to FALSE in `net/fd_windows.go`), so at first a refusal was
+    never detected there. The senders' own connected sockets turn it back on after the dial
+    (`loadgen.reportRefusals`, `WSAIoctl(SIO_UDP_CONNRESET, TRUE)`; a `Dialer.Control` runs before Go's own setting
+    and would be undone), and Windows then reports the ICMP message on a later send or receive as `WSAECONNRESET`
+    (documented for `WSASend` on a UDP socket), which counts as a refusal like `ECONNREFUSED` elsewhere. Whether the send that returns it
+    also drops its own datagram isn't documented; if it doesn't, the resend is a duplicate at the receiver (the lab
+    checks). The listeners' sockets keep Go's setting: there an ICMP error from one reply (an inform's Response to a
+    sender that's gone) would fail the next read for every sender.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change
