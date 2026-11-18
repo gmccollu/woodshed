@@ -10,16 +10,24 @@
 #           trap: [--snmp-version 1|2c|3] [--inform] [--inform-timeout DUR] [--community-file FILE]
 #                 [--user NAME] [--auth PROTO] [--priv PROTO] [--key-ext draft|alt] [--auth-pass-file FILE]
 #                 [--priv-pass-file FILE] [--trap-oid OID|NAME] [--varbinds N] [--engine-id HEX]   (port 162 unless --port)
+#           flows (--proto flow-v5|flow-v9|ipfix; port 2055, or 4739 for ipfix, unless --port; --run is 8 hex digits):
+#                 [--records-per-packet N] [--domains N] [--sampling N] [--sampled-domains N] [--template-every N]
+#                 [--template-first-delay DUR] [--enterprise-ies N] [--events] [--deny-ratio X] [--biflow]
+#                 [--flow-log]   each sender writes every record it sent to OUT/flowlog-K.jsonl (`woodshed send --log`):
+#                                the ground truth for exactly-once, sums and top-N checks (keep it off for load steps)
 #   wl-send --unit-status UNIT | --unit-stop UNIT
 #
 # Files (--ca and the secret files) must be regular files under $LAB/stage/: the secrets are read by
-# `woodshed send` itself from the file, never from a command line.
+# `woodshed send` itself from the file, never from a command line. --out must be under /var/tmp/woodpile-lab/
+# or $LAB/runs/ (the default with --flow-log is $LAB/runs/RUN/<time>-<pid>, where the driver can fetch it).
 # --rate is the total msg/s (0: as fast as possible). --timeout bounds each sender (for the
 # firewall-closed checks, where a TCP connect would otherwise wait minutes). --detach runs
 # the same send as a transient systemd unit (survives the ssh session); its results go to
 # --out. The last line is machine-readable:
-#   WLSEND run=ID want=N sent=X senders=K elapsed_s=T rate=R failed=F out=DIR
+#   WLSEND run=ID want=N sent=X senders=K elapsed_s=T rate=R failed=F [udp_out=U sndbuf_errors=E tx_dropped=D] out=DIR
 # (informs add: answered=A timed_out=T rtt_p50_max=D rtt_p99_max=D rtt_max=D, the worst sender's figures)
+# udp_out and sndbuf_errors are the namespaces' own UDP counters (/proc/net/snmp OutDatagrams, SndbufErrors) over the
+# send, summed; tx_dropped is the parent NIC's: the sender end of a loss check (UDP has no backpressure).
 # Exit status 0 when every sender sent its whole share. Run as root (ip netns exec).
 set -euo pipefail
 LAB=${WL_HOME:-/opt/woodpile-lab}
@@ -28,7 +36,7 @@ CONF=${WL_CONF:-$LAB/senders.conf}
 DRY=${WL_DRYRUN:-}
 
 host="" port="" proto=udp framing=lf count=0 rate=0 run="" first=0 size=160 nsspec="" out="" tmo="" detach=""
-ca="" sname="" topts=()
+ca="" sname="" topts=() fopts=() flowlog=""
 orig=("$@")
 labfile() { # labfile FLAG PATH: a regular file under $LAB/stage/ (no .. and no symlink games)
 	local f=$2 r st
@@ -60,6 +68,17 @@ while [ $# -gt 0 ]; do
 	--snmp-version | --user | --auth | --priv | --key-ext | --trap-oid | --varbinds | --engine-id)
 		[[ "$2" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "wl-send: bad value for $1" >&2; exit 2; }
 		topts+=("$1" "$2"); shift 2 ;;
+	--records-per-packet | --domains | --sampling | --sampled-domains | --template-every | --enterprise-ies)
+		[[ "$2" =~ ^[0-9]{1,6}$ ]] || { echo "wl-send: $1 takes a number" >&2; exit 2; }
+		fopts+=("$1" "$2"); shift 2 ;;
+	--template-first-delay)
+		[[ "$2" =~ ^[0-9]{1,5}(ms|s|m)$ ]] || { echo "wl-send: $1 takes a duration such as 5s" >&2; exit 2; }
+		fopts+=("$1" "$2"); shift 2 ;;
+	--deny-ratio)
+		[[ "$2" =~ ^(0(\.[0-9]{1,3})?|1(\.0{1,3})?)$ ]] || { echo "wl-send: --deny-ratio takes 0 to 1" >&2; exit 2; }
+		fopts+=("$1" "$2"); shift 2 ;;
+	--events | --biflow) fopts+=("$1"); shift ;;
+	--flow-log) flowlog=1; shift ;;
 	--unit-status)
 		systemctl status --no-pager "$2" 2>&1 | head -5 || true
 		exit 0 ;;
@@ -69,16 +88,24 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -n "$host" ] && [ -n "$run" ] && [ "$count" -gt 0 ] || { echo "wl-send: --host, --run and --count are required" >&2; exit 2; }
-case "$proto" in udp | tcp | tls | trap) ;; *) echo "wl-send: --proto udp|tcp|tls|trap" >&2; exit 2 ;; esac
+isflow=""
+case "$proto" in udp | tcp | tls | trap) ;; flow-v5 | flow-v9 | ipfix) isflow=1 ;; *) echo "wl-send: --proto udp|tcp|tls|trap|flow-v5|flow-v9|ipfix" >&2; exit 2 ;; esac
+if [ -z "$isflow" ] && { [ ${#fopts[@]} -gt 0 ] || [ -n "$flowlog" ]; }; then
+	echo "wl-send: the flow options are for --proto flow-v5|flow-v9|ipfix" >&2; exit 2
+fi
 [ "$proto" = tls ] || [ -z "$ca$sname" ] || { echo "wl-send: --ca and --server-name are for --proto tls" >&2; exit 2; }
 [ "$proto" = trap ] || [ ${#topts[@]} = 0 ] || { echo "wl-send: the SNMP options are for --proto trap" >&2; exit 2; }
 [ -z "$ca" ] || labfile --ca "$ca"
 [ -z "$sname" ] || [[ "$sname" =~ ^[A-Za-z0-9.:-]+$ ]] || { echo "wl-send: bad --server-name" >&2; exit 2; }
-if [ -z "$port" ]; then case "$proto" in tls) port=6514 ;; trap) port=162 ;; *) port=514 ;; esac; fi
+if [ -z "$port" ]; then case "$proto" in tls) port=6514 ;; trap) port=162 ;; flow-v5 | flow-v9) port=2055 ;; ipfix) port=4739 ;; *) port=514 ;; esac; fi
+[[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { echo "wl-send: bad --port" >&2; exit 2; }
 [[ "$run" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "wl-send: bad --run" >&2; exit 2; }
+[ -z "$isflow" ] || [[ "$run" =~ ^[0-9a-f]{8}$ ]] || { echo "wl-send: a flow --run is 8 lowercase hex digits" >&2; exit 2; }
 # optional allowlist of target addresses (root-owned, one per line): refuse any other --host
-if [ -f "$LAB/targets.allow" ] && ! grep -qxF -- "$host" "$LAB/targets.allow"; then
-	echo "wl-send: --host $host is not in $LAB/targets.allow" >&2; exit 2
+if [ -f "$LAB/targets.allow" ]; then
+	grep -qxF -- "$host" "$LAB/targets.allow" || { echo "wl-send: --host $host is not in $LAB/targets.allow" >&2; exit 2; }
+elif [ -z "$DRY" ] && [ -z "${WL_TEST_NO_NETNS:-}" ]; then
+	echo "wl-send: $LAB/targets.allow is missing (install-sender.sh writes it): refusing to send anywhere" >&2; exit 2
 fi
 [ -z "$DRY" ] && [ -z "${WL_TEST_NO_NETNS:-}" ] && [ "$(id -u)" != 0 ] && { echo "wl-send: run as root" >&2; exit 2; }
 
@@ -101,7 +128,18 @@ n=${#list[@]}
 [ "$count" -ge "$n" ] || { echo "wl-send: --count $count is smaller than the $n senders" >&2; exit 2; }
 
 # one directory per invocation: two sends of the same run started in the same second must not share a plan/summary
-[ -n "$out" ] || out=/var/tmp/woodpile-lab/send-$run-$(date -u +%Y%m%dT%H%M%SZ)-$$
+if [ -z "$out" ]; then
+	if [ -n "$flowlog" ]; then out=$LAB/runs/$run/$(date -u +%Y%m%dT%H%M%SZ)-$$
+	else out=/var/tmp/woodpile-lab/send-$run-$(date -u +%Y%m%dT%H%M%SZ)-$$; fi
+fi
+# --out only under the lab's own scratch dirs (this runs as root)
+okout() { [[ "$1" =~ ^(/var/tmp/woodpile-lab|$LAB/runs)/[A-Za-z0-9._/-]+$ ]] && [[ "$1" != *..* ]]; }
+# and the resolved path under the resolved prefixes (mkdir as root follows symlinks)
+inside() { python3 -I -c 'import os, sys
+r = os.path.realpath(sys.argv[1])
+sys.exit(0 if any(r.startswith(os.path.realpath(p) + os.sep) for p in sys.argv[2:]) else 1)' "$@"; }
+okout "$out" && inside "$out" /var/tmp/woodpile-lab "$LAB/runs" ||
+	{ echo "wl-send: --out must be under /var/tmp/woodpile-lab/ or $LAB/runs/: $out" >&2; exit 2; }
 mkdir -p "$out"
 
 if [ -n "$detach" ]; then
@@ -119,6 +157,16 @@ if [ -n "$detach" ]; then
 	exit 0
 fi
 
+# udpc before|after: each namespace's UDP OutDatagrams and SndbufErrors, and the parent NIC's tx_dropped, into $out/udp-*
+udpc() {
+	[ -z "$DRY" ] && [ -z "${WL_TEST_NO_NETNS:-}" ] || return 0
+	local k
+	for k in "${list[@]}"; do
+		ip netns exec "wps$k" cat /proc/net/snmp 2>/dev/null | awk '$1 == "Udp:" { if (h) { print $5, $7 } else { h = 1 } }' >"$out/udp-$1-$k" || true
+	done
+	cat "/sys/class/net/${PARENT:-none}/statistics/tx_dropped" >"$out/udp-$1-parent" 2>/dev/null || true
+}
+udpc before
 base=$((count / n)) extra=$((count % n))
 seq=$first
 pids=()
@@ -131,6 +179,9 @@ for ((j = 0; j < n; j++)); do
 	cmd=("$WP" send --host "$host" --port "$port" --proto "$proto" --count "$c" --rate "$r" --run "$run" --first-seq "$seq")
 	case "$proto" in
 	trap) cmd+=(${topts[@]+"${topts[@]}"}) ;;   # woodshed send refuses --framing, --size and --hostname with traps
+	flow-v5 | flow-v9 | ipfix)                   # and with flows (records have no text)
+		cmd+=(${fopts[@]+"${fopts[@]}"})
+		[ -z "$flowlog" ] || cmd+=(--log "$out/flowlog-$k.jsonl") ;;
 	*) cmd+=(--framing "$framing" --size "$size" --hostname "wl-sender-$k") ;;
 	esac
 	[ -z "$ca" ] || cmd+=(--ca "$ca")
@@ -153,6 +204,7 @@ done
 [ -n "$DRY" ] && exit 0
 failed=0
 for p in "${pids[@]}"; do wait "$p" || failed=$((failed + 1)); done
+udpc after
 python3 - "$out" "$run" "$count" "$failed" <<'PY' | tee "$out/summary"
 import re, sys, glob, os
 out, run, want, failed = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
@@ -169,8 +221,8 @@ for k, c in sorted(plan.items(), key=lambda x: int(x[0])):
         txt = open(os.path.join(out, f"sender-{k}.out"), errors="replace").read()
     except OSError:
         txt = ""
-    m = (re.search(r"Sent (\d+) (?:messages?|traps?|informs?) .*? in (\S+) \(", txt) or
-         re.search(r"Sent (\d+) (?:message|trap|inform)", txt))
+    m = (re.search(r"Sent (\d+) (?:[A-Z0-9-]+ )?(?:messages?|traps?|informs?|records?) .*? in (\S+) \(", txt) or
+         re.search(r"Sent (\d+) (?:[A-Z0-9-]+ )?(?:message|trap|inform|record)", txt))
     s = int(m.group(1)) if m else 0
     e = secs(m.group(2)) if m and m.lastindex and m.lastindex >= 2 else 0.0
     sent += s; el = max(el, e)
@@ -187,8 +239,21 @@ for k, c in sorted(plan.items(), key=lambda x: int(x[0])):
         print(f"sender {k}: sent {s} of {c}: {txt.strip().splitlines()[-1] if txt.strip() else 'no output'}")
 rate = sent / el if el else 0
 extra = ""
+def nums(name):
+    try:
+        return [int(x) for x in open(os.path.join(out, name)).read().split()]
+    except (OSError, ValueError):
+        return None
+uo = se = 0; have = False
+for k in plan:
+    b, a = nums(f"udp-before-{k}"), nums(f"udp-after-{k}")
+    if b and a and len(b) == len(a) == 2:
+        uo += a[0] - b[0]; se += a[1] - b[1]; have = True
+pb, pa = nums("udp-before-parent"), nums("udp-after-parent")
+if have:
+    extra += f" udp_out={uo} sndbuf_errors={se}" + (f" tx_dropped={pa[0] - pb[0]}" if pb and pa else "")
 if inf:
-    extra = (f" answered={inf['answered']} timed_out={inf['timed_out']} rtt_p50_max={inf['p50'] * 1000:.2f}ms"
+    extra += (f" answered={inf['answered']} timed_out={inf['timed_out']} rtt_p50_max={inf['p50'] * 1000:.2f}ms"
              f" rtt_p99_max={inf['p99'] * 1000:.2f}ms rtt_max={inf['max'] * 1000:.2f}ms")
 print(f"WLSEND run={run} want={want} sent={sent} senders={len(plan)} elapsed_s={el:.3f} rate={rate:.0f} failed={max(failed, short)}{extra} out={out}")
 PY

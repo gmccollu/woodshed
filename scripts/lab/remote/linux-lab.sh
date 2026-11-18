@@ -13,11 +13,14 @@
 #                                          comma-separated endpoint protection (EDR) services/processes ("-" skips; from lab.env)
 #   linux-lab.sh api METHOD PATH [BODY]    any local API call; download PATH OUT saves a body (export zips)
 #   linux-lab.sh devices                   the device folders under logs/
-#   linux-lab.sh sample OUT INTERVAL SECS [PID]     CSV of RSS, CPU seconds, fds, threads, UDP drops; with INTERVAL >= 30 also
-#                                          OUT-stats.jsonl: the UDP queues (depth, high-water), drops by reason, SNMP counts
-#   linux-lab.sh ports                     JSON: which of UDP 514/162 and TCP 514/6514 the service holds
+#   linux-lab.sh sample OUT INTERVAL SECS [PID]     CSV of RSS, CPU seconds, fds, threads, UDP drops (514, and the flow
+#                                          ports 2055/4739); with INTERVAL >= 30 also OUT-stats.jsonl: the UDP queues
+#                                          (depth, high-water), drops by reason, SNMP counts, and the flow exporters' 24 h counts
+#   linux-lab.sh ports                     JSON: which of UDP 514/162/2055/4739 and TCP 514/6514 the service holds
 #   linux-lab.sh soak-sampler start|stop|status SECS   the sampler as a transient systemd unit
 #   linux-lab.sh verify-detached RUN N OUTJSON      verifyseq as a transient unit (long runs)
+#   linux-lab.sh flow-verify-detached RUN N OUTJSON [FROM TO]   flows: `woodshed search --type flow --json` (the window, else
+#                                          the last 7 days) through labcheck.py flow-seq, as a transient unit (long runs)
 #   linux-lab.sh portable start|stop|status PORT    the tarball binary by hand, unprivileged, on PORT
 #   linux-lab.sh reboot                    reboot in 2 s (the ssh session returns first)
 #   linux-lab.sh collect OUT.tgz           journal, unit, config, status, data listing, samples
@@ -120,6 +123,20 @@ verify-detached)
 	echo "started woodpile-lab-verify-$run -> $out"
 	;;
 stats) curl -fsS --max-time 5 "$UI/api/stats" ;;
+flow-verify-detached)
+	r=${1:?run} n=${2:?n} o=${3:?out} from=${4:-} to=${5:-}
+	[[ "$r" =~ ^[0-9a-f]{8}$ ]] && [[ "$n" =~ ^[0-9]{1,10}$ ]] && [[ "$o" =~ ^/var/tmp/woodpile-lab/[A-Za-z0-9._-]+$ ]] ||
+		{ echo "flow-verify-detached RUN(8 hex) N /var/tmp/woodpile-lab/OUT [FROM TO]" >&2; exit 2; }
+	rng="--last 7d"
+	if [ -n "$from" ]; then
+		for t in "$from" "$to"; do [[ "$t" =~ ^20[0-9]{2}-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z$ ]] || { echo "bad time $t" >&2; exit 2; }; done
+		rng="--from $from --to $to"
+	fi
+	$S rm -f "$o" "$o.tmp"                                   # never pick up an earlier result
+	$S systemd-run --unit="woodpile-lab-flowverify-$r-$(date -u +%Y%m%dT%H%M%SZ)" --collect --quiet --nice=10 /bin/bash -c \
+		"woodshed search --type flow --json $rng 2>/dev/null | python3 -I $L/labcheck.py flow-seq - --run $r --n $n >$o.tmp && mv $o.tmp $o"
+	echo "flow verify of $r started -> $o"
+	;;
 integrity) # what endpoint protection (EDR) did to the product: binary, service, sockets (and whether the EDR runs here)
 	exe=/usr/bin/woodshed pid=$(svc_pid) sha="" size=0 mtime="" udp=0 tcp=0
 	if [ -f "$exe" ]; then sha=$(sha256sum "$exe" | cut -d' ' -f1); size=$(stat -c %s "$exe"); mtime=$(date -u -r "$exe" +%FT%TZ); fi
@@ -154,13 +171,13 @@ devices) $S ls -1 "${WL_DATA:-$DATA}/logs" ;;
 ports)
 	pid=$(svc_pid)
 	c() { if [ -n "$pid" ]; then $S ss -H "$1" "sport = :$2" | grep -c "pid=$pid," || true; else echo 0; fi; }
-	echo "{\"pid\": \"$pid\", \"udp514\": $(c -lnup 514), \"tcp514\": $(c -lntp 514), \"udp162\": $(c -lnup 162), \"tcp6514\": $(c -lntp 6514)}"
+	echo "{\"pid\": \"$pid\", \"udp514\": $(c -lnup 514), \"tcp514\": $(c -lntp 514), \"udp162\": $(c -lnup 162), \"tcp6514\": $(c -lntp 6514), \"udp2055\": $(c -lnup 2055), \"udp4739\": $(c -lnup 4739)}"
 	;;
 sample)
 	out=${1:?out} iv=${2:?interval} secs=${3:?seconds} pid=${4:-}
 	[ -n "$pid" ] || pid=$(svc_pid)
 	tck=$(getconf CLK_TCK)
-	echo "time,elapsed_s,pid,rss_kb,cpu_s,fds,threads,udp_drops" >"$out"
+	echo "time,elapsed_s,pid,rss_kb,cpu_s,fds,threads,udp_drops,flow_udp_drops" >"$out"
 	t0=$(date +%s)
 	end=$((t0 + secs))
 	while [ "$(date +%s)" -lt "$end" ]; do
@@ -171,18 +188,22 @@ sample)
 		fds=$($S ls /proc/"$pid"/fd 2>/dev/null | wc -l)
 		# kernel drops on the :514 UDP sockets (port 0202 hex), the last column of /proc/net/udp{,6}
 		drops=$(awk '$2 ~ /:0202$/ {d += $NF} END {print d + 0}' /proc/net/udp /proc/net/udp6)
+		fdrops=$(awk '$2 ~ /:(0807|1283)$/ {d += $NF} END {print d + 0}' /proc/net/udp /proc/net/udp6) # 2055, 4739
 		cpu=$(python3 -c "print(round(($ut + $st) / $tck, 2))")
-		echo "$(date -u +%H:%M:%S),$(($(date +%s) - t0)),$pid,$rss,$cpu,$fds,$thr,$drops" >>"$out"
+		echo "$(date -u +%H:%M:%S),$(($(date +%s) - t0)),$pid,$rss,$cpu,$fds,$thr,$drops,$fdrops" >>"$out"
 		if [ "$iv" -ge 30 ]; then # the service's own view: UDP queues, drops by reason, SNMP counts (one JSON line)
-			{ curl -fsS --max-time 5 "$UI/api/stats" 2>/dev/null; echo; curl -fsS --max-time 5 "$UI/api/snmp" 2>/dev/null; echo; } |
+			{ curl -fsS --max-time 5 "$UI/api/stats" 2>/dev/null || echo '{}'; echo; curl -fsS --max-time 5 "$UI/api/snmp" 2>/dev/null || echo '{}'
+				echo; curl -fsS --max-time 5 "$UI/api/flows" 2>/dev/null || echo '{}'; echo; } |
 				python3 -c '
 import json, sys, datetime
 ls = [l for l in sys.stdin.read().splitlines() if l.strip()]
-st = json.loads(ls[0]) if ls else {}; sn = json.loads(ls[1]) if len(ls) > 1 else {}
+st = json.loads(ls[0]) if ls else {}; sn = json.loads(ls[1]) if len(ls) > 1 else {}; fl = json.loads(ls[2]) if len(ls) > 2 else {}
 print(json.dumps({"t": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "msgs_per_sec": st.get("msgs_per_sec"),
   "dropped_24h": st.get("dropped_24h"), "dropped_by_reason": st.get("dropped_by_reason"), "kernel_dropped_24h": st.get("kernel_dropped_24h"),
   "udp_queue": [{k: q.get(k) for k in ("listener", "depth", "high_water_24h", "dropped_24h", "high_water_by_hour")} for q in st.get("udp_queue") or []],
-  "snmp": sn.get("counts_24h")}))' >>"${out%.csv}-stats.jsonl" 2>/dev/null || true
+  "snmp": sn.get("counts_24h"), "flow_budget": fl.get("budget"),
+  "flows": [{"device_id": e.get("device_id"), "records_per_sec": e.get("records_per_sec"), "pending_bytes": e.get("pending_bytes"),
+             "counts_24h": e.get("counts_24h")} for e in fl.get("exporters") or []]}))' >>"${out%.csv}-stats.jsonl" 2>/dev/null || true
 		fi
 		sleep "$iv"
 	done
