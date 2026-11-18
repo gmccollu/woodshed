@@ -567,7 +567,7 @@ type StorageEntry struct {
 	File     string    `json:"file"`
 	DeviceID string    `json:"device_id"`
 	Bytes    int64     `json:"bytes"`
-	Reason   string    `json:"reason"` // age, cap, low_disk
+	Reason   string    `json:"reason"` // age, cap, flow_budget, low_disk
 	Type     string    `json:"type"`   // the file's data type: syslog, trap (SPEC §11.1)
 }
 

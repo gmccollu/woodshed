@@ -167,6 +167,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	if s.idx, err = index.Open(filepath.Join(dataDir, index.FileName)); err != nil {
 		return nil, fmt.Errorf("open the index: %w", err)
 	}
+	logMigrations(log, s.idx)
 	// Search and exports read the files through the index. The export queue
 	// opens before the store so the store's low-disk guard can delete exports
 	// before any log.
@@ -519,6 +520,18 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 }
 
 // closeOpened closes what Open managed to open, after an Open error.
+// logMigrations logs what opening the index did to its schema: one line for a
+// new index, one per step for an upgraded one (each step is also an event).
+func logMigrations(log *slog.Logger, idx *index.DB) {
+	created, steps := idx.Migrations()
+	if created {
+		log.Info("index created", "schema", index.CurrentSchema)
+	}
+	for _, m := range steps {
+		log.Info(m.Text(), "from_schema", m.From, "to_schema", m.To, "took", m.Took.Round(time.Microsecond))
+	}
+}
+
 func (s *Server) closeOpened() {
 	if s.be != nil {
 		s.be.closePoll()

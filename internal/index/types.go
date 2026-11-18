@@ -126,7 +126,8 @@ type Kind string
 // HTTP layer records ui (UI server start, bind errors, mode changes, certificates)
 // and auth (password changes, login lockouts); the export queue records export
 // (queued, ready, failed, cancelled, deleted, expired); the store records clock
-// (the received clock stepped back by more than logfile.MaxSkew).
+// (the received clock stepped back by more than logfile.MaxSkew); Open records
+// migrate (one schema step on an existing index).
 const (
 	KindStart    Kind = "start"
 	KindStop     Kind = "stop"
@@ -154,6 +155,9 @@ const (
 	// KindTLS: the TLS syslog certificate was created, renewed or its CA
 	// replaced (with the fingerprints).
 	KindTLS Kind = "tls"
+	// KindMigrate: Open migrated an existing index one schema step
+	// ("index migrated from schema 8 to 9 in 12 ms").
+	KindMigrate Kind = "migrate"
 )
 
 // Source says what an event is about, for readers that act on events (export
@@ -205,6 +209,12 @@ const (
 	ReasonAge     Reason = "age"
 	ReasonCap     Reason = "cap"
 	ReasonLowDisk Reason = "low_disk"
+	// ReasonFlowBudget: a flow segment deleted while flows were over their own
+	// budget (storage.flow_budget_bytes), not the storage cap. The deletions
+	// table stores it as "cap" (its CHECK predates flows); flows are never
+	// deleted for the cap itself, so Deletions reads a flow row's "cap" back as
+	// ReasonFlowBudget.
+	ReasonFlowBudget Reason = "flow_budget"
 )
 
 // Deletion is one entry of the storage history.

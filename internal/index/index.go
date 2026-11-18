@@ -49,6 +49,32 @@ type DB struct {
 	// immutable: opened by OpenReadOnly with no writer present (it reads the
 	// database file alone and wouldn't see a writer that starts later).
 	immutable bool
+	// created and migrated: what Open did to the schema (Migrations).
+	created  bool
+	migrated []Migration
+}
+
+// Migration is one schema step Open applied to an existing index.
+type Migration struct {
+	From, To int
+	Took     time.Duration
+}
+
+// Text is the step as its event reads: "index migrated from schema 8 to 9 in 12 ms".
+func (m Migration) Text() string {
+	took := fmt.Sprintf("%d ms", m.Took.Milliseconds())
+	if m.Took < time.Millisecond {
+		took = "under 1 ms"
+	}
+	return fmt.Sprintf("index migrated from schema %d to %d in %s", m.From, m.To, took)
+}
+
+// Migrations reports what Open did to the schema: created is true for a new
+// index (created at CurrentSchema, no steps listed); otherwise steps are the
+// migrations applied to an existing one, oldest first (none when it was
+// current). Each step is also recorded as a KindMigrate event.
+func (d *DB) Migrations() (created bool, steps []Migration) {
+	return d.created, append([]Migration(nil), d.migrated...)
 }
 
 // Open opens (creating if needed) the index at path, in WAL mode, and migrates its
@@ -289,7 +315,9 @@ func (d *DB) migrate(ctx context.Context) error {
 	if v > len(migrations) {
 		return fmt.Errorf("index: schema version %d is newer than this build supports (%d)", v, len(migrations))
 	}
+	d.created = v == 0
 	for ; v < len(migrations); v++ {
+		t0 := time.Now()
 		tx, err := d.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -302,8 +330,22 @@ func (d *DB) migrate(ctx context.Context) error {
 			tx.Rollback()
 			return err
 		}
+		m := Migration{From: v, To: v + 1, Took: time.Since(t0)}
+		if !d.created {
+			// The step's event, in the step's transaction: an upgrade shows in Events
+			// and the bundle's woodshed-events.log, not only in the service log.
+			// (These columns exist from schema 1; source came with 3.)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO events (time, level, kind, device_id, text) VALUES (?, ?, ?, '', ?)`,
+				time.Now().UnixMilli(), string(LevelInfo), string(KindMigrate), m.Text()); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("index: migrate %d -> %d: record the event: %w", v, v+1, err)
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("index: migrate %d -> %d: %w", v, v+1, err)
+		}
+		if !d.created {
+			d.migrated = append(d.migrated, m)
 		}
 	}
 	return nil

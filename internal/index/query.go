@@ -413,7 +413,7 @@ func (d *DB) Deletions(ctx context.Context, from, to time.Time, limit int) ([]De
 		if err := rows.Scan(&x.ID, &t, &x.File, &x.DeviceID, &x.Bytes, &reason, &x.Type); err != nil {
 			return nil, err
 		}
-		x.Time, x.Reason = tm(t), Reason(reason)
+		x.Time, x.Reason = tm(t), readReason(reason, x.Type)
 		out = append(out, x)
 	}
 	return out, rows.Err()

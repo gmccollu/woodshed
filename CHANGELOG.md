@@ -68,10 +68,17 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 - Retention: flows have their own budget, `storage.flow_budget_bytes`, 40 % of the storage cap by default. While they
   exceed it the oldest flows are deleted first, fair-shared between exporters, before any other data; the low-disk
   guard deletes flows first too. With no flows nothing changes.
+- Flow-budget deletions say so: each budget pass that deletes flows records one event, "flows over their budget (12.0
+  GiB of 10.0 GiB): deleted 14 oldest flow segments (2.1 GiB)", and each segment's event reads "(flows over their
+  budget, … bytes)" instead of "over the storage cap". `GET /api/storage/history` gives them `reason: "flow_budget"`
+  and **Settings → Storage history** shows "flows over their budget"; real storage-cap deletions keep their wording.
 - The index migrates once (schema 9: `flow_segments`, `flow_minute`, and the flow collector's counts per exporter and
   minute in the stats tables). Downgrading to 1.x keeps every syslog, trap and poll file and loses access to flows. A
   2.0.0-rc1 binary can't open a schema-9 index ("newer than this build supports"): after running this version, don't
   go back to rc1 with the same data folder.
+- Each index schema step at startup is logged and recorded in Events (kind `migrate`, so bundles' `woodshed-events.log`
+  have it too): "index migrated from schema 8 to 9 in 12 ms". Before, an upgrade logged only "store open took=…". A new
+  index logs one "index created" line and no event.
 - A restart keeps each flow exporter's last 24 hours (records, late, without a template, malformed, sequence gaps,
   duplicates, times off arrival) and its last-seen time in `GET /api/flows`, `woodshed flow status` and the device page.
   Templates, sampling rates, interface names and system init times aren't applied from before the restart: records

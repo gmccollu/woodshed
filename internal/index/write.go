@@ -208,7 +208,7 @@ func (s *stmts) fileOp(op *FileOp) error {
 			}
 		}
 		if del := op.Deletion; del != nil {
-			if _, err := s.exec(insertDeletionSQL, ms(del.Time), del.File, del.DeviceID, del.Bytes, string(del.Reason), fileType(del.Type)); err != nil {
+			if _, err := s.exec(insertDeletionSQL, ms(del.Time), del.File, del.DeviceID, del.Bytes, storedReason(del.Reason), fileType(del.Type)); err != nil {
 				return fmt.Errorf("index: record deletion: %w", err)
 			}
 			text := fmt.Sprintf("deleted %s (%s, %d bytes)", del.File, reasonText(del.Reason), del.Bytes)
@@ -226,10 +226,28 @@ func reasonText(r Reason) string {
 		return "older than the retention period"
 	case ReasonCap:
 		return "over the storage cap"
+	case ReasonFlowBudget:
+		return "flows over their budget"
 	case ReasonLowDisk:
 		return "low disk space"
 	}
 	return string(r)
+}
+
+// storedReason is a reason as the deletions table holds it (see ReasonFlowBudget).
+func storedReason(r Reason) string {
+	if r == ReasonFlowBudget {
+		return string(ReasonCap)
+	}
+	return string(r)
+}
+
+// readReason is the Reason of a stored deletion row (see ReasonFlowBudget).
+func readReason(reason, typ string) Reason {
+	if Reason(reason) == ReasonCap && typ == TypeFlow {
+		return ReasonFlowBudget
+	}
+	return Reason(reason)
 }
 
 // fileType is the stored form of a type: "" is syslog.

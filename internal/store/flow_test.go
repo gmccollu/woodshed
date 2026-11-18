@@ -6,9 +6,12 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/metrics"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,12 +235,34 @@ func TestFlowBudget(t *testing.T) {
 	dels, _ := e.idx.Deletions(bg, time.Time{}, time.Time{}, 100)
 	n := 0
 	for _, d := range dels {
-		if d.Type == index.TypeFlow && d.Reason == index.ReasonCap {
-			n++
+		if d.Type != index.TypeFlow || d.Reason != index.ReasonFlowBudget {
+			t.Fatalf("deletion %+v: want a flow-budget flow deletion", d)
 		}
+		n++
 	}
 	if n != 4 {
 		t.Fatalf("flow deletions %d: %+v", n, dels)
+	}
+	// The events name the flow budget, never the storage cap: one per segment
+	// and one per budget pass that deleted any.
+	size := `(?:\d+ B|\d+\.\d [KMGTPE]iB)`
+	passRe := regexp.MustCompile(`^flows over their budget \(` + size + ` of 1 B\): deleted (\d+) oldest flow segments? \(` + size + `\)$`)
+	perSeg, inPasses := 0, 0
+	for _, ev := range eventsOf(t, e.idx, index.KindDelete) {
+		switch {
+		case strings.Contains(ev.Text, "storage cap"):
+			t.Fatalf("flow budget event says storage cap: %q", ev.Text)
+		case strings.HasPrefix(ev.Text, "deleted logs/192.0.2.9/flows/") && strings.Contains(ev.Text, "(flows over their budget, "):
+			perSeg++
+		case passRe.MatchString(ev.Text):
+			k, _ := strconv.Atoi(passRe.FindStringSubmatch(ev.Text)[1])
+			inPasses += k
+		default:
+			t.Fatalf("unexpected delete event %q", ev.Text)
+		}
+	}
+	if perSeg != 4 || inPasses != 4 {
+		t.Fatalf("per-segment events %d, segments in pass events %d", perSeg, inPasses)
 	}
 	if b := e.s.FlowBudget(); b != 1 {
 		t.Fatalf("budget %d", b)
