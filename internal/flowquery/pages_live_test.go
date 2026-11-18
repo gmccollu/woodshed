@@ -6,7 +6,9 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -162,10 +164,14 @@ func TestSearchPagesWhileTheStoreChanges(t *testing.T) {
 				},
 				15: func() { // a segment deleted and written again under its name (another file, the same index row count)
 					path := filepath.Join(fx.dir, "logs", "10.1.0.1", "flows", flowseg.NameFor(h.Add(time.Hour)).String())
+					old, err := flowseg.ReadIdentity(path)
+					if err != nil {
+						t.Fatal(err)
+					}
 					if err := os.Remove(path); err != nil {
 						t.Fatal(err)
 					}
-					time.Sleep(3 * time.Millisecond) // another creation time
+					waitPast(old.Created) // another creation time
 					ls := newLiveSeg(t, fx, "10.1.0.1", h.Add(time.Hour))
 					ls.add(t, rng, 700, h.Add(90*time.Minute), h.Add(30*time.Minute), h.Add(118*time.Minute), 860_000)
 					ls.close(t, fx)
@@ -325,10 +331,14 @@ func TestSearchPageSegmentReplaced(t *testing.T) {
 			hour = fx.h
 		}
 		path := filepath.Join(fx.dir, "logs", "10.1.0.1", "flows", flowseg.NameFor(hour).String())
+		old, err := flowseg.ReadIdentity(path)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(3 * time.Millisecond)
+		waitPast(old.Created) // another creation time
 		ls := newLiveSeg(t, fx, "10.1.0.1", hour)
 		ls.add(t, rand.New(rand.NewPCG(5, 5)), 2000, hour.Add(30*time.Minute), hour, hour.Add(time.Hour), 880_000)
 		ls.close(t, fx)
@@ -544,5 +554,128 @@ func TestSearchPageStreamsReleased(t *testing.T) {
 	}
 	if e.savedPageBytes.Load() != 0 || e.pool.Used() != 0 {
 		t.Fatalf("saved bytes %d, pool %d after", e.savedPageBytes.Load(), e.pool.Used())
+	}
+}
+
+// An oldest-first listing that resumes after a busy open segment gained
+// many blocks ahead of it holds at most its budget and a wave while it
+// reads them (it trims between waves): the review found 400 new blocks
+// held at once, 22.6 MiB against a 1 MiB budget in a 16 MiB pool. The page
+// is still the stateless one.
+func TestSearchPageCatchUpBounded(t *testing.T) {
+	for _, blocks := range []int{20, 200} {
+		fx := newFixture(t, 1500)
+		e := New(Options{DataDir: fx.dir, Index: fx.idx, Open: fx.eng.o.Open, Workers: 3, PoolBytes: 16 << 20})
+		fx.eng = e
+		h := fx.h
+		rng := rand.New(rand.NewPCG(3, 3))
+		var lo liveOpens
+		lo.install(fx)
+		grow := newLiveSeg(t, fx, "10.1.0.8", h.Add(time.Hour))
+		grow.add(t, rng, 2000, h.Add(61*time.Minute), h.Add(60*time.Minute), h.Add(61*time.Minute), 1)
+		grow.index(t, fx, grow.w.Snapshot(), false)
+		lo.add(grow)
+		t.Cleanup(func() { grow.w.Close() })
+		twin := statelessTwin(e)
+		q := Query{From: h.Add(-time.Hour), To: h.Add(3 * time.Hour)}
+		cursor := ""
+		for range 3 { // until the open segment is loaded (oldest first: at its start less an hour)
+			res, err := e.Search(bg, q, 500, true, cursor, time.Minute)
+			if err != nil || res.Cursor == "" {
+				t.Fatal(err)
+			}
+			cursor = res.Cursor
+		}
+		for b := range blocks { // ahead of the listing: ending near the window's end
+			grow.add(t, rng, 2000, h.Add(119*time.Minute), h.Add(118*time.Minute), h.Add(119*time.Minute), uint32(10_000+b*2000))
+		}
+		foot := grow.w.Snapshot()
+		grow.index(t, fx, foot, false)
+		maxRows := 0
+		for i := range foot.Blocks {
+			maxRows = max(maxRows, foot.Blocks[i].Rows)
+		}
+		// The pool besides the stream's rows: its saved plan batch.
+		e.mu.Lock()
+		var batch int64
+		for _, ps := range e.pages {
+			batch = ps.s.p.charged
+		}
+		e.mu.Unlock()
+		var peak atomic.Int64
+		stop, done := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if u := e.pool.Used(); u > peak.Load() {
+					peak.Store(u)
+				}
+				runtime.Gosched()
+			}
+		}()
+		c0, r0 := e.pageCatchUps.Load(), e.pageResumes.Load()
+		got, err := e.Search(bg, q, 500, true, cursor, time.Minute)
+		close(stop)
+		<-done
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := twin.Search(bg, q, 500, true, cursor, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		samePages(t, fmt.Sprintf("%d new blocks", blocks), []pageResult{{got.Hits, got.Cursor, got.Partial}},
+			[]pageResult{{want.Hits, want.Cursor, want.Partial}})
+		budget := e.pool.cap / pageBudgetShare
+		wave := int64(e.streamWave()) * int64(maxRows) * 200 // a decoded wave's rows packed (generous: ~100 bytes a row)
+		ceiling := budget + wave + batch + int64(len(foot.Blocks))*entryCost
+		t.Logf("%d new blocks: caught up %d; pool peak %d KiB, ceiling %d KiB (budget %d, a wave %d, batch %d)", blocks,
+			e.pageCatchUps.Load()-c0, peak.Load()>>10, ceiling>>10, budget>>10, wave>>10, batch>>10)
+		if e.pageResumes.Load() == r0 || e.pageCatchUps.Load() == c0 {
+			t.Fatal("the page didn't resume and catch up")
+		}
+		if peak.Load() > ceiling {
+			t.Fatalf("%d new blocks: the pool peaked at %d, over the stream's budget and a wave (%d)", blocks, peak.Load(), ceiling)
+		}
+		// The rest of the listing (pages of 5,000), the caught-up rows trimmed
+		// and read again as the merge reaches them: still the stateless pages.
+		c1, c2 := got.Cursor, want.Cursor
+		if raceEnabled && blocks > 20 {
+			c1 = "" // the slow twin: the 20-block case pages on under -race
+		}
+		for page := 1; c1 != ""; page++ {
+			r1, err := e.Search(bg, q, 5000, true, c1, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r2, err := twin.Search(bg, q, 5000, true, c2, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			samePages(t, fmt.Sprintf("%d new blocks, page %d after", blocks, page), []pageResult{{r1.Hits, r1.Cursor, r1.Partial}},
+				[]pageResult{{r2.Hits, r2.Cursor, r2.Partial}})
+			c1, c2 = r1.Cursor, r2.Cursor
+		}
+		if e.streamTrims.Load() == 0 {
+			t.Fatalf("%d new blocks: never trimmed (the budget should be too small)", blocks)
+		}
+		for e.evictPage() {
+		}
+		if u := e.pool.Used(); u != 0 {
+			t.Fatalf("pool %d after", u)
+		}
+	}
+}
+
+// waitPast waits until the clock's unix ms is past ms (a file created then
+// has another creation time; the clock may tick in steps of 15 ms or so).
+func waitPast(ms int64) {
+	for time.Now().UnixMilli() <= ms {
+		time.Sleep(time.Millisecond)
 	}
 }

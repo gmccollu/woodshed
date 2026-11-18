@@ -353,7 +353,9 @@ func (s *stream) refresh(ctx context.Context) (stale bool, err error) {
 	}
 	s.setSkip()
 	for _, g := range gs {
-		if err := s.catchUp(ctx, g.ol, g.foot); err != nil {
+		if err := s.catchUp(ctx, g.ol, g.foot); errors.Is(err, errStreamFull) {
+			return true, nil // what was written since doesn't fit even trimmed: read from the cursor
+		} else if err != nil {
 			return false, err
 		}
 	}
@@ -363,7 +365,11 @@ func (s *stream) refresh(ctx context.Context) (stale bool, err error) {
 // catchUp reads the blocks written to an open segment the stream has loaded
 // since it planned them (foot is its snapshot now), keeping their rows after
 // skipTo. The stream's blocks of the segment share the newest snapshot
-// (what they had is a prefix of it), charged while it's kept.
+// (what they had is a prefix of it), charged while it's kept. It reads them
+// a wave (streamWave) at a time and trims after any wave that takes the
+// stream over its budget, as a wave of the plan's does, so a busy segment
+// after a long pause holds at most the budget and a wave; errStreamFull if
+// trimming can't get it back under (the caller reads from the cursor).
 func (s *stream) catchUp(ctx context.Context, ol *openLoad, foot *flowseg.Footer) error {
 	p := s.p
 	ref := ol.ref
@@ -379,7 +385,7 @@ func (s *stream) catchUp(ctx context.Context, ol *openLoad, foot *flowseg.Footer
 	}
 	ol.blocks = len(foot.Blocks)
 	shared := &segRef{DeviceID: ref.DeviceID, Rel: ref.Rel, Path: ref.Path, snap: foot, id: ref.id, open: true}
-	cost := int64(len(foot.Blocks)) * entryCost
+	cost := int64(len(foot.Blocks))*entryCost + int64(len(foot.RawChunks))*rawCost
 	s.release(ol.cost)
 	s.reserve(cost)
 	ol.ref.snap, ol.cost = foot, cost
@@ -394,25 +400,34 @@ func (s *stream) catchUp(ctx context.Context, ol *openLoad, foot *flowseg.Footer
 	rd := &readers{p: cp}
 	rd.track(blocks)
 	defer rd.close()
-	held, err := s.decode(ctx, cp, rd, blocks, s.f)
-	if err != nil {
+	for n := s.e.streamWave(); len(blocks) > 0; {
+		wv := blocks[:min(n, len(blocks))]
+		blocks = blocks[len(wv):]
+		held, err := s.decode(ctx, cp, rd, wv, s.f)
+		if err != nil {
+			for _, x := range held {
+				s.put(x)
+			}
+			return err
+		}
 		for _, x := range held {
-			s.put(x)
+			if len(x.rows) == 0 {
+				s.put(x)
+				continue
+			}
+			if x.src != nil && x.src.snap != nil {
+				x.src = shared
+			}
+			heap.Push(s.h, x)
 		}
-		return err
+		s.blocksDone += int64(len(wv))
+		s.e.pageCatchUps.Add(int64(len(wv)))
+		if s.used.Load() > s.budget {
+			if err := s.trim(s.h); err != nil {
+				return err
+			}
+		}
 	}
-	for _, x := range held {
-		if len(x.rows) == 0 {
-			s.put(x)
-			continue
-		}
-		if x.src != nil && x.src.snap != nil {
-			x.src = shared
-		}
-		heap.Push(s.h, x)
-	}
-	s.blocksDone += int64(len(blocks))
-	s.e.pageCatchUps.Add(int64(len(blocks)))
 	return nil
 }
 
