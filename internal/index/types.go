@@ -256,6 +256,12 @@ type FileOp struct {
 	Deletion         *Deletion
 	// Flow (OpUpsert of a flow segment) sets the segment's flow_segments row.
 	Flow *FlowSegment
+	// FlowMinutes (OpUpsert of a flow segment) are the segment's new
+	// flow_minute deltas, added right after its rows, in the batch's order:
+	// an OpDelete of the path later in the batch removes them with the
+	// segment, and a new segment created at the same path after that gets
+	// only its own.
+	FlowMinutes []FlowMinute
 }
 
 // Batch is a set of changes applied in one transaction, file ops in order.
@@ -264,7 +270,9 @@ type Batch struct {
 	Activity []Activity
 	Events   []Event
 	// FlowMinutes are deltas added to flow_minute, after Files (so a
-	// segment's rows exist before its minutes).
+	// segment's rows exist before its minutes). They aren't ordered with
+	// the file ops: a batch that might delete or re-create a segment carries
+	// its minutes in FileOp.FlowMinutes instead (the store does).
 	FlowMinutes []FlowMinute
 }
 

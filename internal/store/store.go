@@ -208,15 +208,16 @@ type Store struct {
 	openFiles int
 	maxOpen   int // high-water mark of openFiles, for tests
 
-	qMu      sync.Mutex
-	qFlowMin []index.FlowMinute
-	qOps     []index.FileOp
-	qAct     []index.Activity
-	qEvents  []index.Event
-	applyMu  sync.Mutex
-	// flowMinStale: index.FlowRowsStaleFile is written (queued flow
-	// minutes were dropped since Open).
-	flowMinStale atomic.Bool
+	qMu     sync.Mutex
+	qOps    []index.FileOp
+	qAct    []index.Activity
+	qEvents []index.Event
+	applyMu sync.Mutex
+	// flowMinStale: index.FlowRowsStaleFile is written (queued flow ops
+	// were dropped since Open); flowMinStaleLogged: writing it failed, and
+	// that was logged.
+	flowMinStale       atomic.Bool
+	flowMinStaleLogged atomic.Bool
 
 	catMu    sync.Mutex
 	cat      map[string]*catEntry // closed files by rel path
@@ -1080,10 +1081,12 @@ func (s *Store) pushOps(ops ...index.FileOp) {
 }
 
 // maxQueued bounds the index queue if the index keeps failing; the files stay
-// correct, and Reconcile at the next start rebuilds what was lost. Lost
-// flow_minute deltas are the one loss Reconcile can't see from the files (it
-// keeps a closed segment's rows unread), so dropping any records
-// index.FlowRowsStaleFile, and the next Reconcile re-reads every footer.
+// correct, and Reconcile at the next start rebuilds what was lost. A dropped
+// flow op can take flow_minute deltas or a segment's delete with it, which
+// Reconcile can't always see from the files (it keeps a closed segment's
+// rows unread when they match the file and its minutes), so dropping one
+// writes index.FlowRowsStaleFile, and the next Reconcile re-reads every
+// footer.
 var maxQueued = 1 << 20
 
 // applyIndex writes the queued file ops, activity and events in one transaction.
@@ -1091,8 +1094,8 @@ func (s *Store) applyIndex() error {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
 	s.qMu.Lock()
-	b := index.Batch{Files: s.qOps, Activity: s.qAct, Events: s.qEvents, FlowMinutes: s.qFlowMin}
-	s.qOps, s.qAct, s.qEvents, s.qFlowMin = nil, nil, nil, nil
+	b := index.Batch{Files: s.qOps, Activity: s.qAct, Events: s.qEvents}
+	s.qOps, s.qAct, s.qEvents = nil, nil, nil
 	s.qMu.Unlock()
 	if b.Empty() {
 		return nil
@@ -1108,13 +1111,11 @@ func (s *Store) applyIndex() error {
 	s.qOps = append(b.Files, s.qOps...)
 	s.qAct = append(b.Activity, s.qAct...)
 	s.qEvents = append(b.Events, s.qEvents...)
-	s.qFlowMin = append(b.FlowMinutes, s.qFlowMin...)
-	lostMinutes := false
-	if len(s.qFlowMin) > maxQueued {
-		s.qFlowMin = s.qFlowMin[len(s.qFlowMin)-maxQueued:]
-		lostMinutes = true
-	}
+	lostFlow := false
 	if len(s.qOps) > maxQueued {
+		for _, op := range s.qOps[:len(s.qOps)-maxQueued] {
+			lostFlow = lostFlow || op.Flow != nil || len(op.FlowMinutes) > 0 || op.File.Type == index.TypeFlow
+		}
 		s.qOps = s.qOps[len(s.qOps)-maxQueued:]
 	}
 	if len(s.qAct) > maxQueued {
@@ -1124,10 +1125,13 @@ func (s *Store) applyIndex() error {
 		s.qEvents = s.qEvents[len(s.qEvents)-maxQueued:]
 	}
 	s.qMu.Unlock()
-	if lostMinutes && !s.flowMinStale.Load() {
+	if lostFlow && !s.flowMinStale.Load() {
+		// Retried on every pass that drops more; said once per Open.
 		if merr := index.MarkFlowRowsStale(s.dataDir); merr != nil {
-			s.log.Error("store: flow counts were dropped from the index queue and the marker for the next start couldn't be written; run `woodshed reindex` with the service stopped",
-				"err", merr)
+			if !s.flowMinStaleLogged.Swap(true) {
+				s.log.Error("store: flow rows were dropped from the index queue and the marker for the next start couldn't be written; "+
+					"if the next start doesn't log a re-read of the flow segments, run `woodshed reindex` with the service stopped", "err", merr)
+			}
 		} else {
 			s.flowMinStale.Store(true)
 		}

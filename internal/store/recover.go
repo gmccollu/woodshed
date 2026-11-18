@@ -115,8 +115,21 @@ func (s *Store) recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if res.Scanned > 0 || res.Removed > 0 {
-		notes = append(notes, fmt.Sprintf("index: re-read %d files, dropped %d rows for missing files", res.Scanned, res.Removed))
+	scanned := res.Scanned
+	if res.FlowRowsRebuilt {
+		// This version derives the flow rows by other rules than the one
+		// that wrote them: every footer was read once, as planned.
+		scanned -= res.FlowRead
+		if res.FlowRead > 0 {
+			s.event(index.LevelInfo, index.KindMigrate, "", fmt.Sprintf(
+				"index: flow rows rebuilt from the footers of %d segments for this version (flow rows version %d)", res.FlowRead, index.FlowRowsVersion))
+		}
+	}
+	if scanned > 0 || res.Removed > 0 {
+		notes = append(notes, fmt.Sprintf("index: re-read %d files, dropped %d rows for missing files", scanned, res.Removed))
+	}
+	if res.FlowOrphans > 0 {
+		notes = append(notes, fmt.Sprintf("index: dropped the flow rows of %d segments with no file row", res.FlowOrphans))
 	}
 	rows := make(map[string]index.File, len(res.Files))
 	for _, f := range res.Files {

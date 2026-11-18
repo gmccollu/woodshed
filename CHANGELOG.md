@@ -122,10 +122,18 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   the message, so there a message cut inside its header can show a wrong app or host, and a regex anchored with `$`
   doesn't match a marked line; lines stored before 2.0 have none.
 - A clean restart no longer re-reads every flow segment or logs a startup recovery warning ("index: re-read N files",
-  N being every segment), so start-up time no longer grows with the flow store (6 s with 184 segments on a 4-vCPU VM
-  in the rc4 lab). A closed segment whose index rows still match its file (path and size) is kept without being
-  opened; new, changed, missing and crash-recovered segments are still read or dropped, and only they are counted.
-  `woodshed reindex` still reads every footer. Present in the 2.0 release candidates.
+  N being every segment), so start-up time no longer grows with the flow store's files (6 s with 184 segments on a
+  4-vCPU VM in the rc4 lab). A closed segment whose index rows still match its file (path and size) and whose
+  per-minute counts add up to its totals is kept without being opened; new, changed, missing, crash-recovered and
+  mismatched segments are still read or dropped, and only they are counted. The first start of this version reads
+  every footer once (an info event, "flow rows rebuilt …"), and so does a start after the index lost queued flow
+  updates. A segment damaged in place without changing size is noticed only when a query reads it; `woodshed reindex`
+  still reads every footer. Present in the 2.0 release candidates.
+- The flow counts of a segment deleted before the index had caught up (the low-disk guard can delete the current
+  hour's closed part) could be added to a new segment that then took the same file name, so the unfiltered flow
+  histogram and timeline still counted the deleted records. A segment's counts now go to the index with its own rows, a new
+  part never reuses a number within its hour, and the next start drops counts left without a file and re-reads any
+  segment whose counts don't add up. Present in the 2.0 release candidates.
 
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The

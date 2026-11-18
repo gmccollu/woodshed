@@ -23,6 +23,15 @@ type ReindexResult struct {
 	PollRollups int
 	// FlowRecovered is the flow segments Reindex closed (no footer: a crash).
 	FlowRecovered int
+	// FlowOrphans is the paths whose flow_segments or flow_minute rows
+	// Reconcile dropped because they had no files row.
+	FlowOrphans int
+	// FlowRead is the flow segments read (counted in Scanned too).
+	FlowRead int
+	// FlowRowsRebuilt: Reconcile read every segment's footer because the
+	// index's flow rows were derived under another FlowRowsVersion (an
+	// upgrade or downgrade), not because anything was found wrong.
+	FlowRowsRebuilt bool
 }
 
 // Reindex rebuilds the files and checkpoints tables from the log files under dataDir,
@@ -87,17 +96,59 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool, recovered [
 	}
 	// Flow segments (SPEC §13.2): Reindex rebuilds every row from its footer
 	// (no records are read). Reconcile keeps a closed segment's rows when the
-	// file still matches them (ClosedFlow.Current) without opening it, and
-	// reads only new, changed, unclosed or just-recovered segments, or every
-	// one while the rows are marked stale (FlowRowsStaleFile).
+	// file still matches them (ClosedFlow.Current) and its flow_minute rows
+	// add up to them (minutesMatch), without opening it. It reads new,
+	// changed, unclosed, just-recovered or mismatched segments, and every one
+	// while the rows are marked stale (FlowRowsStaleFile) or were derived by
+	// another version's rules (FlowRowsVersion: the first start of a new
+	// version, or one after a downgrade).
 	rereadFlows := full || flowRowsStale(dataDir)
+	if !rereadFlows {
+		v, err := d.metaInt(ctx, metaFlowRowsVersion)
+		if err != nil {
+			return res, err
+		}
+		rereadFlows = v != FlowRowsVersion
+		res.FlowRowsRebuilt = rereadFlows
+	}
 	var known map[string]ClosedFlow
+	var sums map[string]minuteSums
+	if !full {
+		if sums, err = d.flowMinuteSums(ctx); err != nil {
+			return res, err
+		}
+	}
 	if !rereadFlows {
 		if known, err = d.ClosedFlowSegments(ctx); err != nil {
 			return res, err
 		}
 		for _, rel := range recovered {
 			delete(known, rel)
+		}
+		for p, c := range known {
+			if !c.minutesMatch(sums[p]) {
+				delete(known, p)
+			}
+		}
+	}
+	// Derived flow rows without a files row (left by an index from before
+	// FileOp.FlowMinutes, whose minutes could land after their segment's
+	// delete) are dropped.
+	var orphans []string
+	if !full {
+		for p := range sums {
+			if _, ok := existing[p]; !ok {
+				orphans = append(orphans, p)
+			}
+		}
+		segOrphans, err := d.flowSegmentOrphans(ctx)
+		if err != nil {
+			return res, err
+		}
+		for _, p := range segOrphans {
+			if _, ok := sums[p]; !ok {
+				orphans = append(orphans, p)
+			}
 		}
 	}
 	flows, keptFlows, err := readFlowFiles(dataDir, full, known, &res)
@@ -192,6 +243,17 @@ func (d *DB) rebuild(ctx context.Context, dataDir string, full bool, recovered [
 				}
 				res.Removed++
 			}
+		}
+		for _, p := range orphans {
+			if err := st.deleteFlowRows(p); err != nil {
+				return res, err
+			}
+		}
+		res.FlowOrphans = len(orphans)
+	}
+	if rereadFlows {
+		if err := st.setMeta(metaFlowRowsVersion, FlowRowsVersion); err != nil {
+			return res, err
 		}
 	}
 	for i := range flows {

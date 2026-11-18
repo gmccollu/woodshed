@@ -132,6 +132,7 @@ type ClosedFlow struct {
 	// First and Last are the lowest and highest received times (the
 	// footer's MinReceived and MaxReceived; zero when it had none).
 	First, Last time.Time
+	bytes       int64 // flow_segments.bytes (minutesMatch)
 }
 
 // Current reports whether ff on disk is still the segment these rows
@@ -142,8 +143,10 @@ type ClosedFlow struct {
 // and nothing needs reading. A segment a crash left open has no closed rows;
 // one cut or replaced by hand almost always has another size; either is
 // read, and so is one the store's recovery rewrote (Reconcile's recovered),
-// whatever its size. A same-size change made outside Woodshed isn't seen:
-// `woodshed reindex` reads every footer.
+// whatever its size. A same-size change made outside Woodshed (a disk fault,
+// an edit) isn't seen here, by design (no file is read for it): the segment is
+// trusted until a query reads it, and `woodshed reindex` reads every footer
+// (the user guide says so, under Rebuilding the index).
 func (c ClosedFlow) Current(ff FlowFile) bool {
 	return c.Path == ff.Rel && c.DeviceID == ff.DeviceID && c.Size == ff.Size && ff.Size > 0
 }
@@ -151,7 +154,7 @@ func (c ClosedFlow) Current(ff FlowFile) bool {
 // ClosedFlowSegments returns, by path, every flow segment whose files and
 // flow_segments rows both say it closed.
 func (d *DB) ClosedFlowSegments(ctx context.Context) (map[string]ClosedFlow, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT f.path, f.device_id, f.size, f.first_received, f.last_received, s.records
+	rows, err := d.db.QueryContext(ctx, `SELECT f.path, f.device_id, f.size, f.first_received, f.last_received, s.records, s.bytes
 		FROM files f JOIN flow_segments s ON s.path = f.path
 		WHERE f.type = ? AND f.compressed = 1 AND s.closed = 1`, TypeFlow)
 	if err != nil {
@@ -162,13 +165,83 @@ func (d *DB) ClosedFlowSegments(ctx context.Context) (map[string]ClosedFlow, err
 	for rows.Next() {
 		var c ClosedFlow
 		var first, last int64
-		if err := rows.Scan(&c.Path, &c.DeviceID, &c.Size, &first, &last, &c.Records); err != nil {
+		if err := rows.Scan(&c.Path, &c.DeviceID, &c.Size, &first, &last, &c.Records, &c.bytes); err != nil {
 			return nil, err
 		}
 		c.First, c.Last = tm(first), tm(last)
 		out[c.Path] = c
 	}
 	return out, rows.Err()
+}
+
+// FlowRowsVersion is the version of the rules that derive a segment's
+// files, flow_segments and flow_minute rows from its footer (FlowRowsOf, and
+// the store's rows as it writes). Bump it whenever they change: the first
+// Reconcile under a different version (newer or older) reads every footer,
+// and records its own in index_meta.
+const FlowRowsVersion = 1
+
+const metaFlowRowsVersion = "flow_rows_version"
+
+// flowSegmentOrphans lists flow_segments paths without a files row.
+func (d *DB) flowSegmentOrphans(ctx context.Context) ([]string, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT path FROM flow_segments WHERE path NOT IN (SELECT path FROM files)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// minuteSums are a segment's flow_minute rows summed.
+type minuteSums struct{ records, bytes float64 }
+
+// flowMinuteSums sums flow_minute by path, from the covering index
+// flow_minute_path_sums (no table rows are read).
+func (d *DB) flowMinuteSums(ctx context.Context) (map[string]minuteSums, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT path, TOTAL(records), TOTAL(bytes) FROM flow_minute GROUP BY path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]minuteSums{}
+	for rows.Next() {
+		var p string
+		var m minuteSums
+		if err := rows.Scan(&p, &m.records, &m.bytes); err != nil {
+			return nil, err
+		}
+		out[p] = m
+	}
+	return out, rows.Err()
+}
+
+// exactSum bounds the values minuteSums compares: below it, TOTAL's float
+// sums of the minutes are exact, and a footer's saturating sums haven't
+// saturated.
+const exactSum = 1 << 53
+
+// minutesMatch reports whether a closed segment's flow_minute rows add up
+// to its flow_segments row. Each record counts once, in its end minute, and
+// its bytes are spread over its minutes with the remainder in the last one
+// (flowseg's minute rule), so the sums equal the segment's records and bytes
+// unless a value is too large to compare (then only what can be compared is).
+func (c ClosedFlow) minutesMatch(m minuteSums) bool {
+	if c.Records < exactSum && m.records != float64(c.Records) {
+		return false
+	}
+	if c.bytes < exactSum && m.bytes != float64(c.bytes) {
+		return false
+	}
+	return true
 }
 
 // FlowRowsStaleFile, in the data dir, says the flow rows may not match the
@@ -247,6 +320,7 @@ func readFlowFiles(dataDir string, fix bool, known map[string]ClosedFlow, res *R
 		rows := FlowRowsOf(ff, f, size, true)
 		r.Close()
 		res.Scanned++
+		res.FlowRead++
 		read = append(read, flowRebuilt{rows: rows, first: tm(f.MinReceived), last: tm(f.MaxReceived)})
 	}
 	return read, kept, nil

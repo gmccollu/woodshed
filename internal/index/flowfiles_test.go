@@ -309,3 +309,181 @@ func flowMinutesOnly(dump string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// segmentRows are a segment file's rows as the store queues them at close.
+func segmentRows(t *testing.T, dataDir, path string) FlowRows {
+	t.Helper()
+	r, err := flowseg.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(dataDir, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel = filepath.ToSlash(rel)
+	dev := strings.Split(rel, "/")[1]
+	n, _ := flowseg.ParseName(filepath.Base(path))
+	return FlowRowsOf(FlowFile{DeviceID: dev, Name: n, Rel: rel, Path: path, Size: fi.Size()}, r.Footer(), fi.Size(), true)
+}
+
+// One batch with a segment's close (rows and last minutes), its delete, and
+// a new segment at the same path: the minutes travel with their ops, so the
+// path ends with the new segment's minutes only. Minutes sent the old way
+// (Batch.FlowMinutes, after every op) land on the new segment; Reconcile's
+// sum check sees that and reads it.
+func TestApplyFlowCloseDeleteCreateSamePath(t *testing.T) {
+	dataDir := t.TempDir()
+	h := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	path := writeSegment(t, dataDir, "10.1.0.1", h, 50, true)
+	old := segmentRows(t, dataDir, path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	writeSegment(t, dataDir, "10.1.0.1", h, 30, true)
+	cur := segmentRows(t, dataDir, path)
+	if old.File.Path != cur.File.Path || old.Segment.Records != 50 || cur.Segment.Records != 30 {
+		t.Fatalf("setup %+v %+v", old.Segment, cur.Segment)
+	}
+	del := FileOp{Kind: OpDelete, File: File{DeviceID: "10.1.0.1", Type: TypeFlow, Path: old.File.Path}}
+	total := func(d *DB) int64 {
+		tot, err := d.FlowDeviceTotals(ctx, nil, h.Add(-3*time.Hour).UnixMilli(), h.Add(3*time.Hour).UnixMilli())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tot["10.1.0.1"].Records
+	}
+
+	d := openIn(t, t.TempDir())
+	if err := d.Apply(ctx, Batch{Files: []FileOp{
+		{Kind: OpUpsert, File: old.File, Flow: &old.Segment, FlowMinutes: old.Minutes},
+		del,
+		{Kind: OpUpsert, File: cur.File, Flow: &cur.Segment, FlowMinutes: cur.Minutes},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := total(d); n != 30 {
+		t.Fatalf("minutes %d, want 30", n)
+	}
+	setRowsVersion(t, d)
+	if res, err := d.Reconcile(ctx, dataDir); err != nil || res.Scanned != 0 || total(d) != 30 {
+		t.Fatalf("reconcile %+v %v, minutes %d", res, err, total(d))
+	}
+
+	// The old shape: every minute after every op.
+	d2 := openIn(t, t.TempDir())
+	if err := d2.Apply(ctx, Batch{Files: []FileOp{
+		{Kind: OpUpsert, File: old.File, Flow: &old.Segment},
+		del,
+		{Kind: OpUpsert, File: cur.File, Flow: &cur.Segment},
+	}, FlowMinutes: append(append([]FlowMinute(nil), old.Minutes...), cur.Minutes...)}); err != nil {
+		t.Fatal(err)
+	}
+	if n := total(d2); n != 80 {
+		t.Fatalf("old-shape minutes %d, want 80 (the drift this guards against)", n)
+	}
+	setRowsVersion(t, d2)
+	res, err := d2.Reconcile(ctx, dataDir)
+	if err != nil || res.Scanned != 1 || res.FlowRead != 1 || total(d2) != 30 {
+		t.Fatalf("reconcile of drifted minutes %+v %v, minutes %d", res, err, total(d2))
+	}
+	if res, err := d2.Reconcile(ctx, dataDir); err != nil || res.Scanned != 0 {
+		t.Fatalf("second reconcile %+v %v", res, err)
+	}
+}
+
+// setRowsVersion marks d's flow rows as derived by this version's rules,
+// as a Reconcile or Reindex under it leaves them.
+func setRowsVersion(t *testing.T, d *DB) {
+	t.Helper()
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO index_meta (key, value) VALUES (?, ?)
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, metaFlowRowsVersion, FlowRowsVersion); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Kept rows are checked against their minutes: a closed segment whose
+// flow_minute rows don't add up to its records or bytes is read. Rows
+// without a files row are dropped. A different rows version (an upgrade, or
+// a downgrade from a newer one) reads every footer once.
+func TestReconcileChecksKeptFlowRows(t *testing.T) {
+	dataDir := t.TempDir()
+	h := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	writeSegment(t, dataDir, "10.1.0.1", h, 50, true)
+	writeSegment(t, dataDir, "10.1.0.2", h, 30, true)
+	d := openIn(t, t.TempDir())
+	if _, err := d.Reindex(ctx, dataDir); err != nil {
+		t.Fatal(err)
+	}
+	want := flowRowsDump(t, d)
+	a := "logs/10.1.0.1/flows/" + flowseg.NameFor(h).String()
+
+	// Records off (a minute doubled), then bytes off alone.
+	for _, q := range []string{
+		`UPDATE flow_minute SET records = records + 1 WHERE path = ? AND minute = (SELECT min(minute) FROM flow_minute WHERE path = ?)`,
+		`UPDATE flow_minute SET bytes = bytes + 7 WHERE path = ? AND minute = (SELECT min(minute) FROM flow_minute WHERE path = ?)`,
+		`DELETE FROM flow_minute WHERE path = ? AND minute = (SELECT max(minute) FROM flow_minute WHERE path = ?)`,
+	} {
+		if _, err := d.db.ExecContext(ctx, q, a, a); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := d.Reconcile(ctx, dataDir); err != nil || res.Scanned != 1 || res.FlowRead != 1 || res.FlowRowsRebuilt {
+			t.Fatalf("%s: reconcile %+v %v", q, res, err)
+		}
+		if got := flowRowsDump(t, d); got != want {
+			t.Fatalf("%s: rows not restored\ngot:\n%s\nwant:\n%s", q, got, want)
+		}
+	}
+
+	// Orphans: derived rows for a path with no files row.
+	gone := "logs/10.1.0.9/flows/" + flowseg.NameFor(h).String()
+	if err := d.Apply(ctx, Batch{FlowMinutes: []FlowMinute{{Path: gone, DeviceID: "10.1.0.9", Minute: h.UnixMilli(), Records: 4}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO flow_segments (path, device_id, start, end, records, bytes, packets, bytes_scaled,
+		packets_scaled, scaled_complete, closed) VALUES (?, '10.1.0.8', 0, 0, 1, 1, 1, 1, 1, 1, 1)`, "logs/10.1.0.8/flows/x.wsf"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.Reconcile(ctx, dataDir)
+	if err != nil || res.Scanned != 0 || res.FlowOrphans != 2 {
+		t.Fatalf("orphans %+v %v", res, err)
+	}
+	if got := flowRowsDump(t, d); got != want {
+		t.Fatalf("after dropping orphans\ngot:\n%s\nwant:\n%s", got, want)
+	}
+
+	// The rows version: unset (an index from a release candidate), older
+	// or newer than this build's reads every footer once.
+	for _, v := range []string{`DELETE FROM index_meta`, `UPDATE index_meta SET value = value + 1`} {
+		if _, err := d.db.ExecContext(ctx, v); err != nil {
+			t.Fatal(err)
+		}
+		res, err := d.Reconcile(ctx, dataDir)
+		if err != nil || res.Scanned != 2 || res.FlowRead != 2 || !res.FlowRowsRebuilt {
+			t.Fatalf("%s: reconcile %+v %v", v, res, err)
+		}
+		if got, err := d.metaInt(ctx, metaFlowRowsVersion); err != nil || got != FlowRowsVersion {
+			t.Fatalf("version %d %v", got, err)
+		}
+		if res, err := d.Reconcile(ctx, dataDir); err != nil || res.Scanned != 0 || res.FlowRowsRebuilt {
+			t.Fatalf("%s: second reconcile %+v %v", v, res, err)
+		}
+		if got := flowRowsDump(t, d); got != want {
+			t.Fatalf("%s: rows\ngot:\n%s\nwant:\n%s", v, got, want)
+		}
+	}
+	// The covering index replaced flow_minute_path.
+	var n int
+	d.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name IN ('flow_minute_path_sums', 'flow_minute_path')`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("indexes %d", n)
+	}
+	if v, _ := d.SchemaVersion(ctx); v != 9 {
+		t.Fatalf("schema %d", v)
+	}
+}

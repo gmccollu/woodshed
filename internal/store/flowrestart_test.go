@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -343,4 +345,198 @@ func TestFlowMinutesDroppedMarkStale(t *testing.T) {
 	if got, want := flowDerived(t, idx2), reindexed(t, e.dir); got != want {
 		t.Fatalf("after the restart\ngot:\n%s\nrebuild:\n%s", got, want)
 	}
+}
+
+// flowRecordsInIndex is a device's flow_minute records over the test hours.
+func flowRecordsInIndex(t *testing.T, idx *index.DB, dev string) int64 {
+	t.Helper()
+	tot, err := idx.FlowDeviceTotals(bg, nil, restartHour.Add(-2*time.Hour).UnixMilli(), restartHour.Add(8*time.Hour).UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tot[dev].Records
+}
+
+// The low-disk guard can delete the current hour's closed part before the
+// index has its close: the exporter's next part takes a new number, and,
+// even in one index batch with the close and the delete, the path's
+// minutes are the new segment's only.
+func TestFlowPartDeletedBeforeIndexNotReused(t *testing.T) {
+	e := newEnv(t, nil)
+	a := ip(7)
+	seq := 0
+	e.clock.Set(restartHour.Add(10 * time.Minute))
+	e.writeFlowsAt(a, 50, &seq)
+	if err := e.s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	// Closed early (as the directory budget does) and deleted (as the
+	// low-disk guard may, the current hour included), then the exporter
+	// writes on, all before the next index update.
+	st := e.s.flowStream("192.0.2.7")
+	st.mu.Lock()
+	e.s.closeFlowLocked(st, "")
+	st.mu.Unlock()
+	e.s.flowLowDisk(e.clock.Now(), func(uint64) bool { return false })
+	e.clock.Add(time.Minute)
+	e.writeFlowsAt(a, 30, &seq)
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.flowFiles(a); len(got) != 1 || got[0] != "2026-11-10T12.001.wsf" {
+		t.Fatalf("files %v", got)
+	}
+	if n := flowRecordsInIndex(t, e.idx, "192.0.2.7"); n != 30 {
+		t.Fatalf("minutes count %d records, want 30", n)
+	}
+	if got, want := flowDerived(t, e.idx), reindexed(t, e.dir); got != want {
+		t.Fatalf("rows differ from a rebuild\ngot:\n%s\nrebuild:\n%s", got, want)
+	}
+	e.open()
+	if evs := eventsOf(t, e.idx, index.KindRecover); len(evs) != 0 {
+		t.Fatalf("recover events %+v", evs)
+	}
+}
+
+// badOp makes every index update fail while it's queued.
+var badOp = index.FileOp{Kind: index.FileOpKind(99)}
+
+// Flow minutes dropped from the index queue while their segment is open
+// (the index failing), then the index recovers and the segment's close row
+// commits: closed rows of the right size, minutes short. The stale marker,
+// or without it the sum check on kept rows, makes the next start read the
+// segment and the minutes come right.
+func TestFlowMinutesDroppedWhileOpenHealed(t *testing.T) {
+	for _, keepMarker := range []bool{true, false} {
+		t.Run(fmt.Sprintf("marker=%v", keepMarker), func(t *testing.T) {
+			old := maxQueued
+			maxQueued = 2
+			t.Cleanup(func() { maxQueued = old })
+			e := newEnv(t, nil)
+			a := ip(7)
+			seq := 0
+			e.clock.Set(restartHour.Add(10 * time.Minute))
+			e.writeFlowsAt(a, 5, &seq)
+			if err := e.s.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			// The index fails: the next block's op waits behind the bad op,
+			// then the one after pushes it out of the queue.
+			e.clock.Add(time.Minute)
+			e.writeFlowsAt(a, 7, &seq)
+			if err := e.s.flushFlows(e.clock.Now(), false); err != nil {
+				t.Fatal(err)
+			}
+			e.s.pushOps(badOp)
+			if err := e.s.applyIndex(); err == nil {
+				t.Fatal("index update with the bad op succeeded")
+			}
+			e.clock.Add(time.Minute)
+			e.writeFlowsAt(a, 3, &seq)
+			if err := e.s.flushFlows(e.clock.Now(), false); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.s.applyIndex(); err == nil {
+				t.Fatal("index update with the bad op succeeded")
+			}
+			marker := filepath.Join(e.dir, index.FlowRowsStaleFile)
+			if _, err := os.Lstat(marker); err != nil {
+				t.Fatalf("no marker: %v", err)
+			}
+			// The index recovers; the hour ends and the close row commits.
+			e.s.qMu.Lock()
+			var keep []index.FileOp
+			for _, op := range e.s.qOps {
+				if op.Kind != badOp.Kind {
+					keep = append(keep, op)
+				}
+			}
+			e.s.qOps = keep
+			e.s.qMu.Unlock()
+			e.clock.Set(restartHour.Add(time.Hour + time.Second))
+			e.maintain()
+			segs, _ := e.idx.AllFlowSegments(bg)
+			if len(segs) != 1 || !segs[0].Closed || segs[0].Records != 15 {
+				t.Fatalf("segments %+v", segs)
+			}
+			if n := flowRecordsInIndex(t, e.idx, "192.0.2.7"); n != 8 {
+				t.Fatalf("minutes before the restart: %d records, want 8 (the 7 dropped)", n)
+			}
+			if err := e.s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !keepMarker {
+				if err := os.Remove(marker); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.open()
+			if n := flowRecordsInIndex(t, e.idx, "192.0.2.7"); n != 15 {
+				t.Fatalf("minutes after the restart: %d records, want 15", n)
+			}
+			if _, err := os.Lstat(marker); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("marker after the restart: %v", err)
+			}
+			evs := eventsOf(t, e.idx, index.KindRecover)
+			if len(evs) != 1 || evs[0].Text != "startup recovery: index: re-read 1 files, dropped 0 rows for missing files" {
+				t.Fatalf("recover events %+v", evs)
+			}
+			if err := e.s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got, want := flowDerived(t, e.idx), reindexed(t, e.dir); got != want {
+				t.Fatalf("rows differ from a rebuild\ngot:\n%s\nrebuild:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// syncBuffer is a log destination safe for concurrent writes.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (w *syncBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *syncBuffer) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
+}
+
+// A failed marker write is logged once per Open, not on every pass.
+func TestFlowStaleMarkerErrorLoggedOnce(t *testing.T) {
+	old := maxQueued
+	maxQueued = 1
+	t.Cleanup(func() { maxQueued = old })
+	var buf syncBuffer
+	e := newEnv(t, func(o *Options) { o.Logger = slog.New(slog.NewTextHandler(&buf, nil)) })
+	// A folder where the marker goes: creating the file fails.
+	if err := os.Mkdir(filepath.Join(e.dir, index.FlowRowsStaleFile), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	a := ip(7)
+	seq := 0
+	for i := 0; i < 5; i++ {
+		e.clock.Add(time.Minute)
+		e.writeFlowsAt(a, 2, &seq)
+		if err := e.s.flushFlows(e.clock.Now(), false); err != nil {
+			t.Fatal(err)
+		}
+		e.s.qMu.Lock()
+		e.s.qOps = append([]index.FileOp{badOp}, e.s.qOps...) // the index keeps failing
+		e.s.qMu.Unlock()
+		e.s.applyIndex()
+	}
+	if n := strings.Count(buf.String(), "marker for the next start couldn't be written"); n != 1 {
+		t.Fatalf("logged %d times:\n%s", n, buf.String())
+	}
+	e.s.qMu.Lock()
+	e.s.qOps = nil
+	e.s.qMu.Unlock()
 }

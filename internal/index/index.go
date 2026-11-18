@@ -104,6 +104,10 @@ func Open(path string) (*DB, error) {
 		sdb.Close()
 		return nil, err
 	}
+	if err := d.ensureAux(context.Background()); err != nil {
+		sdb.Close()
+		return nil, err
+	}
 	// The migration wrote, so the -wal and -shm files exist now; give them the
 	// database's mode and owner too.
 	if err := prepareFiles(path); err != nil {
@@ -349,6 +353,44 @@ func (d *DB) migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// auxSchema is what this build adds beside the versioned schema, idempotently
+// at each Open, so the schema version stays 9 and a 2.0 release candidate
+// can still open the index (it ignores both):
+//   - flow_minute_path_sums covers Reconcile's per-segment sums of
+//     flow_minute (flowMinuteSums) and replaces flow_minute_path, its prefix,
+//     for the deletes by path;
+//   - index_meta holds values like FlowRowsVersion.
+const auxSchema = `
+CREATE INDEX IF NOT EXISTS flow_minute_path_sums ON flow_minute (path, records, bytes);
+DROP INDEX IF EXISTS flow_minute_path;
+CREATE TABLE IF NOT EXISTS index_meta (
+	key   TEXT PRIMARY KEY,
+	value INTEGER NOT NULL
+) WITHOUT ROWID;
+`
+
+func (d *DB) ensureAux(ctx context.Context) error {
+	if _, err := d.db.ExecContext(ctx, auxSchema); err != nil {
+		return fmt.Errorf("index: %w", err)
+	}
+	return nil
+}
+
+// metaInt reads an index_meta value (0 when it's not set).
+func (d *DB) metaInt(ctx context.Context, key string) (int64, error) {
+	var v int64
+	err := d.db.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return v, err
+}
+
+func (s *stmts) setMeta(key string, v int64) error {
+	_, err := s.exec(`INSERT INTO index_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, v)
+	return err
 }
 
 func ms(t time.Time) int64 {

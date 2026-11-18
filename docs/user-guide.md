@@ -708,6 +708,19 @@ and uses HTTPS. See the [FAQ](../FAQ.md#can-i-open-the-ui-from-another-computer)
 
 ## 9. Troubleshooting
 
+### Rebuilding the index
+
+The index (`index.db` in the data folder) is built from the stored files, which are always the source of truth. At
+each start Woodshed checks it against them: new, grown and changed files are read, rows for missing files are dropped,
+and a flow segment left open by a crash is closed and read. A closed flow segment whose size still matches the index,
+and whose per-minute counts in the index add up to its totals, isn't opened at start, so starting stays quick however
+many flows are kept. A segment damaged in place without changing size (a disk fault, or a tool that edited it) isn't
+noticed then, only when a search, an export or Top reads it.
+
+`woodshed reindex`, run with the service stopped, rebuilds the index from every file: it reads every log file and
+every flow segment's footer again, and lists the files it couldn't index ("not indexed: …"). Run it when results
+don't match the files, after restoring files by hand, or when a search reports a segment it can't read.
+
 ### Profiling CPU or memory use
 
 If Woodshed uses more CPU or memory on your machine than you'd expect for the traffic it gets, a profile shows where it

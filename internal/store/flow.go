@@ -407,13 +407,23 @@ func (s *Store) appendFlowsLocked(st *flowStream, rec time.Time, b *FlowBatch) e
 	return nil
 }
 
-// openFlowLocked starts the stream's segment for hour: the first free part.
+// openFlowLocked starts the stream's segment for hour: the first free part,
+// after any part the stream already had this hour. A part number isn't
+// reused within the hour even when its segment was deleted (the low-disk
+// guard can delete the current hour's closed parts): its index ops may still
+// be queued, and a new segment at the same path would share them.
 func (s *Store) openFlowLocked(st *flowStream, hour time.Time) error {
 	if err := os.MkdirAll(st.dir, 0o750); err != nil {
 		return err
 	}
 	n := flowseg.NameFor(hour)
+	if st.rel != "" && st.hour.Equal(hour) {
+		n.Part = st.name.Part + 1
+	}
 	for {
+		if n.Part > 999 {
+			return fmt.Errorf("store: %s: 1,000 flow segment parts in one hour", st.dir)
+		}
 		abs := filepath.Join(st.dir, n.String())
 		if _, err := os.Lstat(abs); errors.Is(err, fs.ErrNotExist) {
 			w, err := flowseg.Create(abs, st.id, hour, s.opts.Version)
@@ -432,9 +442,6 @@ func (s *Store) openFlowLocked(st *flowStream, hour time.Time) error {
 			return nil
 		}
 		n.Part++
-		if n.Part > 999 {
-			return fmt.Errorf("store: %s: 1,000 flow segment parts in one hour", st.dir)
-		}
 	}
 }
 
@@ -467,9 +474,11 @@ func (s *Store) queueFlowRows(st *flowStream, closed bool, foot *flowseg.Footer)
 	}
 	ff := index.FlowFile{DeviceID: st.id, Name: st.name, Rel: st.rel, Path: st.abs}
 	rows := index.FlowRowsOf(ff, foot, size, closed)
+	// The minutes travel with the rows, so they're applied in queue order
+	// with the segment's delete and any later segment at the same path.
 	s.qMu.Lock()
-	s.qOps = append(s.qOps, index.FileOp{Kind: index.OpUpsert, File: rows.File, Flow: &rows.Segment})
-	s.qFlowMin = append(s.qFlowMin, index.FlowMinutesOf(st.rel, st.id, mins)...)
+	s.qOps = append(s.qOps, index.FileOp{Kind: index.OpUpsert, File: rows.File, Flow: &rows.Segment,
+		FlowMinutes: index.FlowMinutesOf(st.rel, st.id, mins)})
 	s.qMu.Unlock()
 }
 
