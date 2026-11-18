@@ -3720,15 +3720,17 @@ the connection; present since 1.0):
     and ICMP replies are rate-limited, so far more datagrams are lost than reported (about 60 to 1 in the review's
     measurement). The same rule covers syslog over UDP, traps (sends and an inform's reply reader; SNMPv3 discovery
     still needs an answer) and flows (`woodshed send --proto flow-v5|flow-v9|ipfix`); every retry checks for an
-    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows** Go turns off ICMP port-unreachable
-    reporting on every UDP socket (`SIO_UDP_CONNRESET` set to FALSE in `net/fd_windows.go`), so at first a refusal was
-    never detected there. The senders' own connected sockets turn it back on after the dial
-    (`loadgen.reportRefusals`, `WSAIoctl(SIO_UDP_CONNRESET, TRUE)`; a `Dialer.Control` runs before Go's own setting
-    and would be undone), and Windows then reports the ICMP message on a later send or receive as `WSAECONNRESET`
-    (documented for `WSASend` on a UDP socket), which counts as a refusal like `ECONNREFUSED` elsewhere. Whether the send that returns it
-    also drops its own datagram isn't documented; if it doesn't, the resend is a duplicate at the receiver (the lab
-    checks). The listeners' sockets keep Go's setting: there an ICMP error from one reply (an inform's Response to a
-    sender that's gone) would fail the next read for every sender.
+    interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows a UDP refusal is never detected**:
+    Go turns off connection-reset reporting on Windows UDP sockets (`SIO_UDP_CONNRESET`), so a send there never stops
+    for one, before or after the grace, and the summary has none. Turning it back on for the senders' own sockets
+    (`WSAIoctl(SIO_UDP_CONNRESET, TRUE)` after the dial) was tried for 2.0 and reverted: on CI's windows-latest and
+    windows-11-arm runners 200 sends over 1 s to a closed loopback port all succeeded, and the restart test counted 0
+    refusals in 1,200 sends for syslog, traps and flows (run 44303973938). Windows delivers the ICMP error to the next
+    receive on the socket (`recvfrom`/`WSARecv`; Microsoft KB 263823, go.dev/issue/5834, where Go's `ReadFrom` failed
+    after a `WriteTo` to a closed port), not to a send, whatever `WSASend`'s error list says, and the senders never read
+    (an inform's reply reader is the one exception). Seeing it would take a reader goroutine on every sender's socket
+    turning a receive error into a refusal, whose error code through Go's overlapped I/O can only be checked on Windows;
+    it's left for later, as a test tool's limit.
 85. **An opt-in profiling listener, for CPU that only one machine shows.** A lab Windows Server VM runs the service at
     about 0.66 of a core at 1,000 syslog msg/s with light traps, flows and polls, 50 to 70 times what CI's Windows
     runner shows, and the 1.2 fast path (decision 70) didn't remove it. File scanning by security software, timer
