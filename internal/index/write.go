@@ -164,6 +164,11 @@ func (s *stmts) fileOp(op *FileOp) error {
 				return fmt.Errorf("index: flow segment %s: %w", f.Path, err)
 			}
 		}
+		for _, m := range op.FlowMinutes {
+			if err := s.flowMinute(m); err != nil {
+				return fmt.Errorf("index: flow minutes %s: %w", f.Path, err)
+			}
+		}
 		return s.checkpoints(id, op.Checkpoints)
 	case OpRename:
 		if op.OldPath != f.Path {

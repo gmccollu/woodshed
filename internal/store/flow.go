@@ -407,13 +407,23 @@ func (s *Store) appendFlowsLocked(st *flowStream, rec time.Time, b *FlowBatch) e
 	return nil
 }
 
-// openFlowLocked starts the stream's segment for hour: the first free part.
+// openFlowLocked starts the stream's segment for hour: the first free part,
+// after any part the stream already had this hour. A part number isn't
+// reused within the hour even when its segment was deleted (the low-disk
+// guard can delete the current hour's closed parts): its index ops may still
+// be queued, and a new segment at the same path would share them.
 func (s *Store) openFlowLocked(st *flowStream, hour time.Time) error {
 	if err := os.MkdirAll(st.dir, 0o750); err != nil {
 		return err
 	}
 	n := flowseg.NameFor(hour)
+	if st.rel != "" && st.hour.Equal(hour) {
+		n.Part = st.name.Part + 1
+	}
 	for {
+		if n.Part > 999 {
+			return fmt.Errorf("store: %s: 1,000 flow segment parts in one hour", st.dir)
+		}
 		abs := filepath.Join(st.dir, n.String())
 		if _, err := os.Lstat(abs); errors.Is(err, fs.ErrNotExist) {
 			w, err := flowseg.Create(abs, st.id, hour, s.opts.Version)
@@ -432,9 +442,6 @@ func (s *Store) openFlowLocked(st *flowStream, hour time.Time) error {
 			return nil
 		}
 		n.Part++
-		if n.Part > 999 {
-			return fmt.Errorf("store: %s: 1,000 flow segment parts in one hour", st.dir)
-		}
 	}
 }
 
@@ -467,9 +474,12 @@ func (s *Store) queueFlowRows(st *flowStream, closed bool, foot *flowseg.Footer)
 	}
 	ff := index.FlowFile{DeviceID: st.id, Name: st.name, Rel: st.rel, Path: st.abs}
 	rows := index.FlowRowsOf(ff, foot, size, closed)
+	// The minutes travel with the rows, so they're applied in queue order
+	// with the segment's delete and any later segment at the same path.
 	s.qMu.Lock()
-	s.qOps = append(s.qOps, index.FileOp{Kind: index.OpUpsert, File: rows.File, Flow: &rows.Segment})
-	s.qFlowMin = append(s.qFlowMin, index.FlowMinutesOf(st.rel, st.id, mins)...)
+	s.qOps = append(s.qOps, index.FileOp{Kind: index.OpUpsert, File: rows.File, Flow: &rows.Segment,
+		FlowMinutes: index.FlowMinutesOf(st.rel, st.id, mins)})
+	s.qMins += len(mins)
 	s.qMu.Unlock()
 }
 
@@ -657,13 +667,35 @@ func (s *Store) OpenFlowSegments(deviceIDs []string) []FlowSnapshot {
 // ---- recovery ----
 
 // recoverFlows closes every segment a crash left open and catalogs the
-// closed ones. It runs before the index is reconciled.
-func (s *Store) recoverFlows() error {
+// closed ones. It runs before the index is reconciled, and returns the
+// segments it recovered (for Reconcile to read). A segment whose closed rows
+// in the index still match the file (index.ClosedFlow.Current) is cataloged
+// from them, unopened; the others are opened (and recovered when they have
+// no footer).
+func (s *Store) recoverFlows(ctx context.Context) (recovered []string, err error) {
 	files, err := index.ListFlowFiles(s.dataDir)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	known, err := s.idx.ClosedFlowSegments(ctx)
+	if err != nil {
+		return nil, err
 	}
 	for _, ff := range files {
+		if c, ok := known[ff.Rel]; ok && c.Current(ff) {
+			// As from the footer: its received range (the epoch when it
+			// had none), its records and its size.
+			first, last := c.First, c.Last
+			if first.IsZero() {
+				first = time.UnixMilli(0).UTC()
+			}
+			if last.IsZero() {
+				last = time.UnixMilli(0).UTC()
+			}
+			s.catalogFlowSeg(&flowSeg{deviceID: ff.DeviceID, rel: ff.Rel, abs: ff.Path, name: ff.Name, size: ff.Size,
+				records: c.Records, first: first, last: last})
+			continue
+		}
 		r, err := flowseg.Open(ff.Path)
 		if errors.Is(err, flowseg.ErrNoFooter) {
 			rr, rerr := flowseg.Recover(ff.Path)
@@ -675,6 +707,7 @@ func (s *Store) recoverFlows() error {
 			s.event(index.LevelWarn, index.KindRecover, ff.DeviceID, fmt.Sprintf(
 				"%s was left open by an unclean stop; kept %d complete blocks and removed %d bytes after them",
 				ff.Rel, rr.KeptBlocks, rr.CutBytes))
+			recovered = append(recovered, ff.Rel)
 			r, err = flowseg.Open(ff.Path)
 		}
 		if err != nil {
@@ -687,15 +720,19 @@ func (s *Store) recoverFlows() error {
 		if fi, err := os.Stat(ff.Path); err == nil {
 			size = fi.Size()
 		}
-		seg := &flowSeg{deviceID: ff.DeviceID, rel: ff.Rel, abs: ff.Path, name: ff.Name, size: size, records: f.Totals.Records,
-			first: time.UnixMilli(f.MinReceived).UTC(), last: time.UnixMilli(f.MaxReceived).UTC()}
-		s.fl.cat[seg.rel] = seg
-		s.fl.catBytes += seg.size
-		s.devMu.Lock()
-		s.known[ff.DeviceID] = struct{}{}
-		s.devMu.Unlock()
+		s.catalogFlowSeg(&flowSeg{deviceID: ff.DeviceID, rel: ff.Rel, abs: ff.Path, name: ff.Name, size: size, records: f.Totals.Records,
+			first: time.UnixMilli(f.MinReceived).UTC(), last: time.UnixMilli(f.MaxReceived).UTC()})
 	}
-	return nil
+	return recovered, nil
+}
+
+// catalogFlowSeg adds a closed segment found at startup to the catalog.
+func (s *Store) catalogFlowSeg(seg *flowSeg) {
+	s.fl.cat[seg.rel] = seg
+	s.fl.catBytes += seg.size
+	s.devMu.Lock()
+	s.known[seg.deviceID] = struct{}{}
+	s.devMu.Unlock()
 }
 
 // ---- retention ----

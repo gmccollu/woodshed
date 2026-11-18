@@ -76,6 +76,9 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   minute in the stats tables). Downgrading to 1.x keeps every syslog, trap and poll file and loses access to flows. A
   2.0.0-rc1 binary can't open a schema-9 index ("newer than this build supports"): after running this version, don't
   go back to rc1 with the same data folder.
+- The first start after upgrading from a 2.0 release candidate builds a new index over the flow minute table (a few
+  seconds on a large flow store) and reads every flow segment's footer once (Events: "flow rows rebuilt …"); later
+  starts don't. The schema stays 9, so a release candidate from rc2 on still opens the index.
 - Each index schema step at startup is logged and recorded in Events (kind `migrate`, so bundles' `woodshed-events.log`
   have it too): "index migrated from schema 8 to 9 in 12 ms". Before, an upgrade logged only "store open took=…". A new
   index logs one "index created" line and no event.
@@ -125,6 +128,19 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   timeouts in `/api/stats` (`tcp_frames`) and on **About**. Older Woodshed versions show a marker as text at the end of
   the message, so there a message cut inside its header can show a wrong app or host, and a regex anchored with `$`
   doesn't match a marked line; lines stored before 2.0 have none.
+- A clean restart no longer re-reads every flow segment or logs a startup recovery warning ("index: re-read N files",
+  N being every segment), so start-up time no longer grows with the flow store's files (6 s with 184 segments on a
+  4-vCPU VM in the rc4 lab). A closed segment whose index rows still match its file (path and size) and whose
+  per-minute counts add up to its totals is kept without being opened; new, changed, missing, crash-recovered and
+  mismatched segments are still read or dropped, and only they are counted. The first start of this version reads
+  every footer once (an info event, "flow rows rebuilt …"), and so does a start after the index lost queued flow
+  updates. A segment damaged in place without changing size is noticed only when a query reads it; `woodshed reindex`
+  still reads every footer. Present in the 2.0 release candidates.
+- The flow counts of a segment deleted before the index had caught up (the low-disk guard can delete the current
+  hour's closed part) could be added to a new segment that then took the same file name, so the unfiltered flow
+  histogram and timeline still counted the deleted records. A segment's counts now go to the index with its own rows, a new
+  part never reuses a number within its hour, and the next start drops counts left without a file and re-reads any
+  segment whose counts don't add up. Present in the 2.0 release candidates.
 
 ### Security
 - The flow listener opens no port until it's turned on; on Windows its firewall rules are installed disabled. The

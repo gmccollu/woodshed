@@ -30,6 +30,11 @@ func RedecodeFlows(dataDir, version string, rules []flow.IEKey) (RedecodeResult,
 	if err != nil {
 		return res, err
 	}
+	// Until Reindex has the rewritten segments' rows, a start reads every
+	// footer.
+	if err := MarkFlowRowsStale(dataDir); err != nil {
+		return res, err
+	}
 	for _, ff := range files {
 		n, recs, left, err := redecodeOne(ff, version, rules)
 		if err != nil {
