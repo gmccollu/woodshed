@@ -3089,6 +3089,8 @@ the first bench, which records the measured numbers here:
   templates, sampling, sequence gaps and pending data.
 - `woodshed bundle` includes flows (`--types`, `--flow-formats csv,ipfix`).
 - `woodshed status` gains a Flows row: exporters, records a second, budget used.
+- `woodshed profile on|off|cpu|trace|heap|goroutine` (decision 85): an opt-in, local-only profile of the running
+  server, written to `--out`.
 
 ### 13.8 Testing plan
 - **Unit and fuzz:** the v5, v9 and IPFIX decoders against hand-built and captured packets (every IE type and length,
@@ -3716,6 +3718,32 @@ the connection; present since 1.0):
     interrupt. TCP and TLS are unchanged: a refused dial is an error. **On Windows a UDP refusal is never detected**:
     Go turns off connection-reset reporting on Windows UDP sockets (`SIO_UDP_CONNRESET`), so a send there never stops
     for one, before or after the grace, and the summary has none.
+85. **An opt-in profiling listener, for CPU that only one machine shows.** A lab Windows Server VM runs the service at
+    about 0.66 of a core at 1,000 syslog msg/s with light traps, flows and polls, 50 to 70 times what CI's Windows
+    runner shows, and the 1.2 fast path (decision 70) didn't remove it. File scanning by security software, timer
+    resolution, the UDP receive path, fsync frequency and GC are all candidates, and only a profile from that machine
+    can tell them apart. Options: a route on the UI's API (reachable from the network in LAN mode, and behind a login
+    the CLI doesn't have), Go's `net/http/pprof` (it registers on `http.DefaultServeMux` for every server built with a
+    nil handler), or a separate listener. Chosen: a separate listener (`internal/pprofsrv`), **off by default**, on
+    only with `debug.pprof = true` in the config (file-only, `json:"-"`, so neither the UI nor the API can turn it on;
+    `woodshed profile on|off` sets it and restarts the service) or `WOODSHED_PPROF=1` in the server's environment. It
+    binds 127.0.0.1 (`::1` without IPv4 loopback) on a port the OS picks, so it can't clash with a configured port,
+    and answers only GETs from a loopback address with `Authorization: Bearer <token>`: a random 256-bit token made at
+    each start and written with the address to `woodshed.pprof.json` in the data folder (0600; on Windows the data
+    folder's protected ACL), removed at stop, and removed at start when profiling is off (a crash leaves it). Reading
+    the data folder already means reading every log, so the token adds no new reader; a browser on the machine can't
+    send the header cross-origin. `woodshed profile cpu|trace|heap|goroutine` reads the file, refuses an address
+    that isn't loopback, and writes the body through a `.part` file (0600). A CPU profile runs 1 to 300 s (default
+    30), a trace 1 to 60 s (default 5), one of each at a time (409 for a second; a trace may overlap a CPU profile,
+    which is what `cpu --trace` does); the server's shutdown ends a capture in progress. A banner (`profiling_on`,
+    info) and a service event say it's on. The CLI only writes the files: `github.com/google/pprof` isn't a
+    dependency, and the formats read with `go tool pprof` and `go tool trace` on any machine with Go. CPU profiles,
+    traces and goroutine dumps hold stacks, counts and times, and a heap profile allocation sites and sizes, never
+    memory contents, so none holds message text; the docs still ask for heap profiles and goroutine dumps to be sent
+    privately, as they say more about the process. Tests: off by default (no listener, file, banner or route on the
+    UI port, the env var only for `1`/`true`/`on`/`yes`), on by config and by env, loopback-only binding, every
+    route refusing a missing or wrong token and a non-loopback peer, all four kinds through the CLI, and no package
+    importing `net/http/pprof` or `expvar`.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

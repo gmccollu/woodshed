@@ -389,3 +389,57 @@ func TestUpdatesCheck(t *testing.T) {
 		t.Errorf("read back %q", got.Updates.Check)
 	}
 }
+
+// debug.pprof is off by default, absent from a default file (an admin can
+// append the table by hand), file-only (never in /api/settings), and survives
+// a save (SPEC §13.10 decision 85).
+func TestDebugPProfOffByDefaultAndFileOnly(t *testing.T) {
+	c := testConfig(t)
+	if c.Debug.PProf {
+		t.Fatal("debug.pprof is on by default")
+	}
+	b, err := Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "[debug]") || strings.Contains(string(b), "pprof") {
+		t.Errorf("a default file has the debug table:\n%s", b)
+	}
+	j, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(j), "pprof") || strings.Contains(string(j), "debug") {
+		t.Errorf("the settings JSON has debug: %s", j)
+	}
+
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := Save(path, c); err != nil {
+		t.Fatal(err)
+	}
+	// What the docs tell an admin to do: append the table to the file.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("\n[debug]\npprof = true\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	got, err := Load(path)
+	if err != nil || !got.Debug.PProf {
+		t.Fatalf("appended table: %+v %v", got.Debug, err)
+	}
+	// A PUT of the settings object keeps it (it isn't part of the object).
+	in, _ := json.Marshal(Default())
+	next := got.Clone()
+	if err := json.Unmarshal(in, &next); err != nil || !next.Debug.PProf {
+		t.Errorf("after a settings PUT: %+v %v", next.Debug, err)
+	}
+	if err := Save(path, next); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := Load(path); err != nil || !again.Debug.PProf {
+		t.Errorf("after a save: %+v %v", again.Debug, err)
+	}
+}

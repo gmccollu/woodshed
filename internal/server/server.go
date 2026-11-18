@@ -31,6 +31,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/listen"
 	"github.com/gmccollu/woodshed/internal/peer"
+	"github.com/gmccollu/woodshed/internal/pprofsrv"
 	"github.com/gmccollu/woodshed/internal/search"
 	"github.com/gmccollu/woodshed/internal/store"
 	"github.com/gmccollu/woodshed/internal/updatecheck"
@@ -67,6 +68,8 @@ type Options struct {
 	pollOnSend func(netip.AddrPort)
 	// pollUnit shortens poll intervals (tests in this package only).
 	pollUnit time.Duration
+	// getenv replaces os.Getenv for WOODSHED_PPROF (tests in this package only).
+	getenv func(string) string
 }
 
 // Server is an opened Woodshed service. Call Run once.
@@ -84,6 +87,9 @@ type Server struct {
 	hub     *hub.Hub
 	api     *api.Server
 	be      *backend
+	// prof is the profiling listener, while debug.pprof (or WOODSHED_PPROF)
+	// has it on (SPEC §13.10 decision 85); nil otherwise.
+	prof *pprofsrv.Server
 
 	ran bool
 }
@@ -377,6 +383,8 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
+	s.startProfiling(cfg)
+
 	apiCtx, apiCancel := context.WithCancel(context.Background())
 	apiDone := make(chan error, 1)
 	go func() { apiDone <- s.api.Run(apiCtx) }()
@@ -437,6 +445,10 @@ func (s *Server) shutdown(ln *listen.Server, apiCancel context.CancelFunc, apiDo
 	done := make(chan error, 1)
 	go func() {
 		var errs []error
+		if s.prof != nil {
+			setStep("stopping the profiling listener")
+			_ = s.prof.Close() // ends a capture in progress
+		}
 		if ln != nil {
 			setStep("stopping the listeners")
 			// Close drains the UDP queue into the store first (bounded).
@@ -585,4 +597,38 @@ func (s *Server) watchState(started time.Time, stop <-chan struct{}) {
 		case <-s.api.StateChanged():
 		}
 	}
+}
+
+// startProfiling starts the profiling listener when debug.pprof or
+// WOODSHED_PPROF turns it on, before the UI (so its banner is there from the
+// first status). It's never fatal: without it the server runs as usual.
+func (s *Server) startProfiling(cfg config.Config) {
+	dataDir := cfg.Storage.DataDir
+	getenv := s.opts.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	src := pprofsrv.Source(cfg.Debug.PProf, getenv)
+	if src == "" {
+		// A crash can leave the file behind; its token opens nothing, but
+		// woodshed profile would try it.
+		_ = os.Remove(filepath.Join(dataDir, pprofsrv.InfoFile))
+		return
+	}
+	why := "debug.pprof in the config"
+	if src == "env" {
+		why = pprofsrv.EnvVar + " in the service's environment"
+	}
+	p, err := pprofsrv.Start(dataDir, src, s.log)
+	if err != nil {
+		s.log.Error("the profiling listener didn't start", "source", src, "err", err)
+		s.be.serviceEvent(index.LevelError, index.KindError, fmt.Sprintf("The profiling listener (%s) didn't start: %v", why, err))
+		return
+	}
+	s.prof = p
+	text := fmt.Sprintf("Profiling is on (%s): administrators of this machine can capture CPU and memory profiles with "+
+		"woodshed profile, on %s only. Turn it off with woodshed profile off when you're done.", why, p.Addr())
+	s.log.Warn("profiling listener on", "addr", p.Addr(), "source", src)
+	s.be.serviceEvent(index.LevelWarn, index.KindStart, text)
+	s.be.startupBanners = append(s.be.startupBanners, api.Banner{Kind: "profiling_on", Level: api.LevelInfo, Text: text})
 }

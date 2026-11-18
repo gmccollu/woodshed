@@ -705,3 +705,56 @@ new installer from the releases page and run it, and your settings and logs are 
 
 Other machines can't open this page unless you turn on **LAN mode** (Settings → UI access), which needs a password
 and uses HTTPS. See the [FAQ](../FAQ.md#can-i-open-the-ui-from-another-computer).
+
+## 9. Troubleshooting
+
+### Profiling CPU or memory use
+
+If Woodshed uses more CPU or memory on your machine than you'd expect for the traffic it gets, a profile shows where it
+goes. `woodshed profile` captures one from the running service, on that machine. Profiling is **off** until you turn it
+on, and while it's on it can only be used from the machine itself, by an administrator:
+
+- It listens on `127.0.0.1` only (`::1` where there's no IPv4 loopback), on a port the OS picks, never on the network,
+  whatever LAN mode says. The UI's port has no profiling routes at all.
+- It answers only requests that carry a random token, which it writes into the data folder (`woodshed.pprof.json`,
+  readable only by the service and administrators), and only from a loopback address. A new token is made at each
+  start, and the file is removed when Woodshed stops.
+- While it's on, the UI shows a banner saying so, and the event log records when it started.
+
+Turn it on, capture, and turn it off again. Run these as an administrator (from an administrator PowerShell on Windows,
+with `sudo` on Linux and macOS):
+
+```sh
+woodshed profile on                                  # sets debug.pprof = true and restarts the service
+woodshed profile cpu --seconds 60 --out cpu.pprof    # which functions use the CPU, over 60 s
+woodshed profile cpu --seconds 60 --trace --out cpu.pprof   # the same, plus a 5 s runtime trace (cpu.trace)
+woodshed profile trace --seconds 5 --out woodshed.trace     # scheduler, syscall, timer and GC waits
+woodshed profile heap --out heap.pprof               # where the memory in use was allocated
+woodshed profile goroutine --out goroutines.txt      # every goroutine's stack, as text
+woodshed profile off                                 # and restart the service again
+```
+
+`profile on` restarts the service, so wait until the problem shows again before you capture. Instead of `profile on`,
+you can add these two lines to the end of the config file yourself (if it has no `[debug]` table yet) and restart the
+service, or set `WOODSHED_PPROF=1` in the service's environment (then remove it again to turn profiling off: `profile
+off` can't change the service's environment):
+
+```toml
+[debug]
+pprof = true
+```
+
+A CPU profile runs for 1 to 300 s (default 30), a trace for 1 to 60 s (default 5); one of each kind can run at a time.
+Without `--out`, the file is `woodshed-<kind>-<date>-<time>` in the current folder. The exit status is 0 when the file
+is written, 1 when Woodshed isn't running, profiling is off or the capture failed (nothing is written then), and 2 for a
+usage error.
+
+Read the files with Go's own tools, on any machine with Go installed (the machine Woodshed runs on doesn't need Go):
+`go tool pprof -top cpu.pprof`, `go tool pprof -sample_index=inuse_space -top heap.pprof`, or `go tool trace
+woodshed.trace` (it opens a browser). The profiles name the functions themselves, so the Woodshed binary isn't needed.
+
+**What's in them.** CPU profiles and traces hold function names, the source file paths of the build, call stacks,
+times and counts: they're safe to attach to a public issue. A heap profile records where memory was allocated and how
+much, not what the memory holds, so it doesn't contain your log messages either; but it, and a goroutine dump (which
+shows argument values such as sizes and addresses), says more about the running process than you may want to post.
+**Don't share heap profiles or goroutine dumps publicly**; send them privately to whoever asked for them.
