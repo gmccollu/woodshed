@@ -89,6 +89,19 @@ func OpenSnapshot(path string, snap *Footer) (*Reader, error) {
 		f.Close()
 		return nil, err
 	}
+	// Sections are appended in order: a file shorter than the snapshot's
+	// last block or raw chunk isn't the file the snapshot is of.
+	var end int64
+	if n := len(snap.Blocks); n > 0 {
+		end = snap.Blocks[n-1].Offset + snap.Blocks[n-1].Length
+	}
+	if n := len(snap.RawChunks); n > 0 {
+		end = max(end, snap.RawChunks[n-1].Offset+snap.RawChunks[n-1].Length)
+	}
+	if st.Size() < end {
+		f.Close()
+		return nil, ErrCorrupt
+	}
 	foot := *snap // the blocks are shared: a reader never changes them (Block doesn't cache)
 	return &Reader{f: f, size: st.Size(), h: h, foot: &foot}, nil
 }

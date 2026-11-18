@@ -55,10 +55,20 @@ func TestIdentity(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(3 * time.Millisecond)
+	for time.Now().UnixMilli() <= id.Created { // another creation time (the clock may tick in steps)
+		time.Sleep(time.Millisecond)
+	}
 	write()
 	if got, err := ReadIdentity(path); err != nil || got == id {
 		t.Fatalf("written again: %+v %v, the old %+v", got, err, id)
+	}
+	// The old snapshot against the new, shorter file: refused.
+	big := *foot
+	big.Blocks = append([]BlockInfo(nil), foot.Blocks...)
+	big.Blocks[len(big.Blocks)-1].Offset += 1 << 20
+	if r, err := OpenSnapshot(path, &big); err == nil {
+		r.Close()
+		t.Fatal("a snapshot past the file's end opened")
 	}
 	if _, err := ReadIdentity(filepath.Join(dir, "gone")); err == nil {
 		t.Fatal("no error for a missing file")
