@@ -4,7 +4,7 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
-## [2.0.0] - unreleased
+## [2.0.0] - 2026-11-18
 
 ### Added
 - A flow collector (flow v5, flow v9 (RFC 3954) and IPFIX (RFC 7011)), off until you turn it on in **Settings → Flows** or with `woodshed flow on`
@@ -76,8 +76,9 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   minute in the stats tables). Downgrading to 1.x keeps every syslog, trap and poll file and loses access to flows. A
   2.0.0-rc1 binary can't open a schema-9 index ("newer than this build supports"): after running this version, don't
   go back to rc1 with the same data folder.
-- The first start after upgrading from a 2.0 release candidate builds a new index over the flow minute table (a few
-  seconds on a large flow store) and reads every flow segment's footer once (Events: "flow rows rebuilt …"); later
+- The first start after upgrading from a 2.0 release candidate builds a new index over the flow minute table and
+  reads every flow segment's footer once (about 2 s for 7 GiB of flows on a Linux lab VM, 15 s on a Windows one; the
+  listeners start after it) (Events: "flow rows rebuilt …"); later
   starts don't. The schema stays 9, so a release candidate from rc2 on still opens the index.
 - Each index schema step at startup is logged and recorded in Events (kind `migrate`, so bundles' `woodshed-events.log`
   have it too): "index migrated from schema 8 to 9 in 12 ms". Before, an upgrade logged only "store open took=…". A new
