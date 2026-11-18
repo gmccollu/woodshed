@@ -58,6 +58,19 @@ type Config struct {
 	Updates   Updates   `toml:"updates" json:"updates"`
 	// Poll is the SNMP poller's defaults (poll.go, SPEC §12).
 	Poll Poll `toml:"poll" json:"poll" comment:"SNMP polling of the devices you add under Devices → Polling (defaults; each device can override them)."`
+	// Debug is file-only (never in /api/settings, so the UI can't turn it on),
+	// and the file leaves it out until it's set.
+	Debug Debug `toml:"debug,omitempty" json:"-"`
+}
+
+// Debug holds troubleshooting switches, all off by default (SPEC §13.10
+// decision 85).
+type Debug struct {
+	// PProf starts the profiling listener: 127.0.0.1 only, on a port the OS
+	// picks, answering only requests that carry the token it writes into the
+	// data folder (`woodshed profile`). WOODSHED_PPROF=1 in the server's
+	// environment turns it on too.
+	PProf bool `toml:"pprof,omitempty" comment:"true: serve CPU and memory profiles to administrators of this machine, for woodshed profile (127.0.0.1 only, with a token in the data folder). Restart to apply."`
 }
 
 // Listeners configures the syslog listeners and the sender allowlist.
