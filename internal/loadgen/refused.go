@@ -1,9 +1,7 @@
 package loadgen
 
 import (
-	"context"
 	"fmt"
-	"net"
 	"sync"
 	"time"
 )
@@ -23,8 +21,9 @@ const RefusedGrace = time.Second
 // Refusals are a sender's counted refusals (RefusedGrace) and when the first
 // and last came. The count is a lower bound on the datagrams lost: the OS
 // keeps one pending error per socket and ICMP replies are rate-limited, so
-// many datagrams can be lost for each refusal reported. On Windows the
-// sender's sockets turn the reporting Go switches off back on (reportRefusals).
+// many datagrams can be lost for each refusal reported. On Windows none is
+// ever reported (Go turns off UDP connection-reset reporting there), so a
+// sender just goes on.
 type Refusals struct {
 	Count       int
 	First, Last time.Time
@@ -74,17 +73,6 @@ func (r *refusals) result() Refusals {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.r
-}
-
-// dialUDP dials a connected UDP socket for a sender, with refusals reported
-// (reportRefusals). Only senders use it, never a listener.
-func dialUDP(ctx context.Context, d *net.Dialer, addr string) (net.Conn, error) {
-	c, err := d.DialContext(ctx, "udp", addr)
-	if err != nil {
-		return nil, err
-	}
-	reportRefusals(c)
-	return c, nil
 }
 
 func notListening(addr string) error {

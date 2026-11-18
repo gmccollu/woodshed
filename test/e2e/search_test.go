@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/store/logfile"
 )
 
 type searchResult struct {
@@ -77,11 +78,36 @@ func TestSearchContextExport(t *testing.T) {
 		hit.Results[0].Severity == nil || *hit.Results[0].Severity != 6 || hit.Results[0].DeviceID != "127.0.0.1" {
 		t.Fatalf("hit %+v", hit)
 	}
-	// Every message, a page at a time, in both orders.
+	// Every message, a page at a time, in both orders. A device's results are
+	// in file order (internal/search's package doc), and one file holds both
+	// runs' lines: each receiver stores its own lines in the order it stamped
+	// them, but the UDP drainer can still be storing the UDP run's last lines
+	// while the TCP run's first are stored, so across the two, received times
+	// interleave by milliseconds (logfile.Checkpoint: nearly, not strictly,
+	// ordered; CI run 44303973938 had a TCP line at .475 stored before a UDP
+	// line at .472). So the order is checked per run, and across runs only
+	// within logfile.MaxSkew.
+	udpRun := func(r searchResult) bool {
+		var n int
+		_, rest, ok := strings.Cut(r.Raw, tag)
+		if _, err := fmt.Sscanf(rest, "%d", &n); !ok || err != nil {
+			t.Fatalf("no sequence number in %q", r.Raw)
+		}
+		return n < per
+	}
+	received := func(r searchResult) time.Time {
+		at, err := time.Parse(time.RFC3339Nano, r.Received)
+		if err != nil {
+			t.Fatalf("received %q: %v", r.Received, err)
+		}
+		return at
+	}
 	for _, order := range []string{"desc", "asc"} {
 		q := url.Values{"q": {"link down probe"}, "order": {order}, "limit": {"333"}}
 		seen := map[string]bool{}
-		var last string
+		last := map[bool]searchResult{} // by udpRun
+		var newest, oldest time.Time    // of the results so far
+		crossed, worst := 0, time.Duration(0)
 		pages := 0
 		for {
 			pg := search(q)
@@ -91,10 +117,31 @@ func TestSearchContextExport(t *testing.T) {
 					t.Fatalf("%s: repeated %s", order, r.Raw)
 				}
 				seen[r.Ref] = true
-				if last != "" && (order == "desc" && r.Received > last || order == "asc" && r.Received < last) {
-					t.Fatalf("%s: out of order", order)
+				u, at := udpRun(r), received(r)
+				if l, ok := last[u]; ok && (order == "desc" && r.Received > l.Received || order == "asc" && r.Received < l.Received) {
+					t.Fatalf("%s: out of order in one run: %s %q after %s %q", order, r.Received, r.Raw, l.Received, l.Raw)
 				}
-				last = r.Received
+				last[u] = r
+				if newest.IsZero() {
+					newest, oldest = at, at
+				}
+				back := at.Sub(oldest) // how far it's out of order
+				if order == "asc" {
+					back = newest.Sub(at)
+				}
+				if back > logfile.MaxSkew {
+					t.Fatalf("%s: %s %q is out of order by more than %v", order, r.Received, r.Raw, logfile.MaxSkew)
+				}
+				if back > 0 {
+					crossed++
+					worst = max(worst, back)
+				}
+				if at.After(newest) {
+					newest = at
+				}
+				if at.Before(oldest) {
+					oldest = at
+				}
 			}
 			if pg.NextCursor == "" {
 				break
@@ -104,7 +151,7 @@ func TestSearchContextExport(t *testing.T) {
 		if len(seen) != 2*per {
 			t.Fatalf("%s: %d results over %d pages, want %d", order, len(seen), pages, 2*per)
 		}
-		t.Logf("%s: %d results in %d pages", order, len(seen), pages)
+		t.Logf("%s: %d results in %d pages; %d out of order across the runs, by up to %v", order, len(seen), pages, crossed, worst)
 	}
 	if n := len(search(url.Values{"q": {tag}, "severities": {"none"}}).Results); n != 0 {
 		t.Errorf("severities=none returned %d", n)

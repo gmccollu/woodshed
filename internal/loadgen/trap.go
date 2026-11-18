@@ -185,7 +185,7 @@ func randUint64() uint64 {
 func sendTrap(ctx context.Context, o *SendOptions, res *SendResult) error {
 	t := &o.Trap
 	d := o.dialer("udp")
-	c, err := dialUDP(ctx, &d, o.Addr)
+	c, err := d.DialContext(ctx, "udp", o.Addr)
 	if err != nil {
 		return fmt.Errorf("loadgen: %w", err)
 	}

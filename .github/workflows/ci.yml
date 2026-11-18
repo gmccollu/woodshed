@@ -80,6 +80,13 @@ jobs:
       - name: go test
         run: go test ${{ matrix.race }} -timeout 20m ./...
 
+      # The Windows firewall rules read through COM against netsh's own listing,
+      # printed: in the run above a skip (firewall unreadable, netsh not English)
+      # looks the same as a pass.
+      - name: Firewall rules, COM against netsh (printed)
+        if: runner.os == 'Windows'
+        run: go test -count=1 -run '^TestListRulesMatchesNetsh$' -v ./internal/fwrule/
+
       # The heavy variants at full size, once, without -race: internal/search's,
       # the flow writer's full hour of ingest, a week's query plan over 50
       # exporters, and the store's flow directory budget over 300 (which the
@@ -160,6 +167,13 @@ jobs:
 
       - name: go test
         run: go test ${{ matrix.race }} -timeout 20m ./...
+
+      # The Windows firewall rules read through COM against netsh's own listing,
+      # printed: in the run above a skip (firewall unreadable, netsh not English)
+      # looks the same as a pass.
+      - name: Firewall rules, COM against netsh (printed)
+        if: runner.os == 'Windows'
+        run: go test -count=1 -run '^TestListRulesMatchesNetsh$' -v ./internal/fwrule/
 
       - name: go build
         run: |

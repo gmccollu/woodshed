@@ -712,7 +712,7 @@ func SendFlows(ctx context.Context, o FlowOptions, log func([]Expected)) (res Fl
 		}
 		d.LocalAddr = &net.UDPAddr{IP: net.IP(a.AsSlice())}
 	}
-	c, err := dialUDP(ctx, &d, o.Addr)
+	c, err := d.DialContext(ctx, "udp", o.Addr)
 	if err != nil {
 		return res, fmt.Errorf("loadgen: %w", err)
 	}
