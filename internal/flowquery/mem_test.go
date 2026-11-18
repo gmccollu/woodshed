@@ -668,6 +668,10 @@ func TestWeekPlanBounded(t *testing.T) {
 		if p := max(live, slive); p > 192<<20 {
 			t.Fatalf("live heap %.1f MiB over the ceiling", float64(p)/(1<<20))
 		}
+		if n := e.savedPages(); n != 1 {
+			t.Fatalf("%d page streams saved, want the second page's", n)
+		}
+		e.evictPage() // the second page's stream, saved under its cursor, holds its plan's batch
 		if u := e.pool.Used(); u != 0 {
 			t.Fatalf("pool used %d after the queries", u)
 		}

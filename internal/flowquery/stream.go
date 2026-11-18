@@ -24,16 +24,18 @@ import (
 // another, without a budget. The hit (and its record) is fn's only for the
 // call. An error from fn stops the stream and is returned.
 //
-// Search pages: each page plans the window again and decodes every block
-// that overlaps the page's end-time span, so a listing of the whole window
-// decodes each block about as many times as pages fit in its span (with a
-// few seconds of end-time spread per block and 5,000 hits a page, 30 to 50
-// times). Stream decodes each block once: it keeps each block's matching
-// rows, sorted and packed (flowseg.Packed, about a sixth of a decoded
-// block), while they aren't certain yet (an unread block could still come
-// before them), merges the blocks it keeps and gives a row once it's beyond
-// the bound of everything unread. A reader decodes the next wave (half the
-// workers' blocks) while the caller writes the current one.
+// Stateless search pages (searchStateless): each page plans the window
+// again and decodes every block that overlaps the page's end-time span, so
+// a listing of the whole window decodes each block about as many times as
+// pages fit in its span (with a few seconds of end-time spread per block
+// and 5,000 hits a page, 30 to 50 times). Stream decodes each block once
+// (and Search's pages are such a stream, saved between pages: pages.go):
+// it keeps each block's matching rows, sorted and packed (flowseg.Packed,
+// about a sixth of a decoded block), while they aren't certain yet (an
+// unread block could still come before them), merges the blocks it keeps
+// and gives a row once it's beyond the bound of everything unread. A
+// reader decodes the next wave (half the workers' blocks) while the caller
+// writes the current one.
 //
 // What it keeps is bounded: the rows it holds are charged to the engine's
 // pool (decision 51's shared budget), and it decodes in the workers' own
@@ -46,7 +48,7 @@ import (
 // twice at most when a few of its rows end far from the others, not once per
 // page as a fall back to Search's pages read it. Only when the blocks waiting
 // to be read again can't fit (their bookkeeping alone) does it carry on from
-// the last record it gave with Search's pages.
+// the last record it gave with stateless pages.
 func (e *Engine) Stream(ctx context.Context, q Query, asc bool, fn func(h *Hit) error) error {
 	s := &stream{e: e, asc: asc, fn: fn}
 	err := s.run(ctx, q)
@@ -142,8 +144,23 @@ type stream struct {
 
 	// Segments with trimmed blocks waiting (the merge's own), by path: their
 	// readers, opened from the footer on first use, and how many blocks
-	// wait. (By path: a segment reopened gives a copy of its footer.)
+	// wait. (By path, not footer: a page's stream reopens its segments from
+	// copies of their footers, one for each page.)
 	again map[string]*againSeg
+
+	// A search page's stream (pages.go) reads its waves itself and keeps
+	// them between pages: its plan, readers (nil while saved), merge, the
+	// last wave's bound, and the rows it skips (it started at a cursor).
+	p          *plan
+	rd         *readers
+	h          *heldHeap
+	bound      int64
+	more       bool
+	after      *hitKey
+	blocksDone int64
+	recsDone   int64
+	out        []Hit // the page being filled
+	limit      int
 }
 
 type againSeg struct {
@@ -565,6 +582,7 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 			return fail(err)
 		}
 		slices.SortFunc(rows, func(a, b rawRow) int { return s.cmpRow(a.rowEnd, b.rowEnd) })
+		rows = rows[s.afterCut(x, len(rows), func(i int) rowEnd { return rows[i].rowEnd }):]
 		x.rows, x.ends, x.raw = make([]int, len(rows)), make([]int64, len(rows)), make([]flow.Record, len(rows))
 		for i := range rows {
 			x.rows[i], x.ends[i], x.raw[i] = rows[i].row, rows[i].end, rows[i].rec
@@ -592,8 +610,21 @@ func (s *stream) decodeOne(p *plan, rd *readers, b *planned, f *Filter, sl *slot
 	}
 	x.src = &segRef{DeviceID: seg.DeviceID, Rel: seg.Rel, Path: seg.Path, snap: r.Footer()}
 	re = s.selectRows(blk, &sl.rec, f, p.from, p.to, re)
-	s.packRows(x, blk, re)
+	s.packRows(x, blk, re[s.afterCut(x, len(re), func(i int) rowEnd { return re[i] }):])
 	return x, re, nil
+}
+
+// afterCut is how many of block x's n sorted rows (row(i) the i-th) come
+// at or before the cursor a page's stream started at (none without one):
+// within a block the result order is the rows' (end, row) order.
+func (s *stream) afterCut(x *heldBlock, n int, row func(i int) rowEnd) int {
+	if s.after == nil {
+		return 0
+	}
+	return sort.Search(n, func(i int) bool {
+		r := row(i)
+		return s.after.before(hitKey{End: r.end, Dev: x.dev, Rel: x.rel, Block: x.block, Row: r.row}, s.asc)
+	})
 }
 
 // selectRows is a decoded block's rows in the window that pass f, sorted in
@@ -828,7 +859,7 @@ func (s *stream) pages(ctx context.Context, q Query) error {
 		cursor = encodeCursor(s.last, qk, &q)
 	}
 	for {
-		res, err := s.e.Search(ctx, q, streamPage, s.asc, cursor, time.Minute)
+		res, err := s.e.searchStateless(ctx, q, streamPage, s.asc, cursor, time.Minute)
 		if err != nil {
 			return err
 		}

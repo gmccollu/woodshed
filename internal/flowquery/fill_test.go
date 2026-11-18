@@ -65,7 +65,15 @@ func TestSearchPageExtrasNotPinned(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := Query{From: h0.Add(-time.Hour), To: h0.Add(3 * time.Hour), Filter: mustFilter(t, "src=10.9.9.9")}
-	e := New(Options{DataDir: dir, Index: idx, Workers: 2})
+	// The stateless page's second pass, and a page's stream (Search's).
+	for _, stateless := range []bool{true, false} {
+		e := New(Options{DataDir: dir, Index: idx, Workers: 2})
+		e.statelessPages = stateless
+		extrasNotPinned(t, e, q, blocks)
+	}
+}
+
+func extrasNotPinned(t *testing.T, e *Engine, q Query, blocks int) {
 	heapNow := func() uint64 {
 		for range 3 {
 			runtime.GC()
@@ -96,7 +104,7 @@ func TestSearchPageExtrasNotPinned(t *testing.T) {
 	runtime.KeepAlive(e)
 	pinned := int64(with) - int64(without)
 	const ceiling = 512 << 10 // the hits' records are about 25 KiB
-	t.Logf("%d hits pin %d bytes", blocks, pinned)
+	t.Logf("stateless %v: %d hits pin %d bytes", e.statelessPages, blocks, pinned)
 	if pinned > ceiling {
 		t.Fatalf("a %d-hit page holds %d KiB (ceiling %d KiB)", blocks, pinned>>10, ceiling>>10)
 	}
@@ -107,6 +115,7 @@ func TestSearchPageExtrasNotPinned(t *testing.T) {
 // after the deletion is.
 func TestSearchPageRereadsAfterDeletion(t *testing.T) {
 	fx := newFixture(t, 2000)
+	fx.eng.statelessPages = true // the two passes are the stateless page's (pages.go: a stream reads each block once)
 	q := Query{DeviceIDs: []string{"10.1.0.1", "10.1.0.2"}, From: fx.h.Add(-time.Hour), To: fx.h.Add(3 * time.Hour)}
 	gone := filepath.Join(fx.dir, "logs", "10.1.0.2", "flows", flowseg.NameFor(fx.h.Add(time.Hour)).String())
 	calls := 0

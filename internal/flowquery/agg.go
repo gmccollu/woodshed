@@ -56,7 +56,7 @@ func (p *Pool) reserve(n int64) bool {
 			}
 			continue
 		}
-		if p.full == nil || freed > MaxStates || !p.full() {
+		if p.full == nil || freed > MaxStates+MaxPageStates || !p.full() {
 			return false
 		}
 		freed++
