@@ -4,7 +4,7 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
-## [Unreleased]
+## [2.1.0] - unreleased
 
 ### Added
 - A syslog severity filter: store syslog from a minimum severity, by default for every device (**Settings → Storage →
