@@ -26,6 +26,7 @@
   import { PRESETS as POLL_PRESETS, pollSettingsBody, pollSettingsForm, type PollSettingsForm } from '../lib/poll';
   import FlowStatePanel from '../components/FlowStatePanel.svelte';
   import { budgetOf, flowBudgetBody, flowFormErrors, flowListenerBody, flowSettingsForm, ruleIesOf, type FlowSettingsForm } from '../lib/flows';
+  import { isPort, keepEdits, lanUrls, refusedWithoutPassword } from '../lib/uiaccess';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
   interface Form extends PollSettingsForm, FlowSettingsForm {
@@ -267,6 +268,14 @@
     }
   }
   load();
+
+  // Setting the first password turns require_login_local on, which changes the settings (and the
+  // ETag): read them again, but keep what the user was editing (the port, a host name…).
+  async function afterPassword() {
+    const before = saved && form ? { base: toForm(saved), mine: $state.snapshot(form) as Form } : null;
+    await load();
+    if (before && form && saved) form = keepEdits(before.base, before.mine, toForm(saved), ['requireLocal']);
+  }
 
   // The Updates switch saves on its own, which changes the settings' ETag. Take the new one
   // when nothing else changed, so the next Save isn't refused as a conflict.
@@ -588,6 +597,31 @@
   const firewallCmd = (port: number) =>
     `netsh advfirewall firewall add rule name="Woodshed UI" dir=in action=allow protocol=TCP localport=${port}`;
   const passwordSet = $derived(!!auth.session?.password_set);
+  /**
+   * LAN mode and "require login on this machine" need a password. Without one, a click on either is
+   * refused with a message next to it (not a disabled box, which looks clickable and does nothing),
+   * and the message offers the password field.
+   */
+  let needPw = $state<'' | 'lan' | 'local'>('');
+  const lanRefused = $derived(!!form && refusedWithoutPassword(passwordSet, form.lanMode));
+  const localRefused = $derived(!!form && refusedWithoutPassword(passwordSet, form.requireLocal));
+  $effect(() => {
+    if (passwordSet) needPw = '';
+  });
+  function refuseWithoutPassword(e: MouseEvent, which: 'lan' | 'local') {
+    if (which === 'lan' ? !lanRefused : !localRefused) return;
+    // Space on a focused checkbox is a click too, so this covers the keyboard.
+    e.preventDefault();
+    needPw = which;
+  }
+  function goToPassword() {
+    const el = document.getElementById('pw-new');
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    el.focus({ preventScroll: true });
+  }
+  /** This machine's addresses for "From another machine, open:". */
+  const uiAddrs = $derived(live.status?.ui_addrs ?? []);
   const isMac = $derived(live.status?.os.startsWith('darwin') ?? false);
   const REASON: Record<string, string> = { allowlist: 'not on the allowlist', blocked: 'blocked', per_source: 'too many TCP connections', community: 'SNMP community not on the list' };
 
@@ -631,6 +665,33 @@
       <CopyButton text={firewallCmd(port)} />
     </div>
   </div>
+{/snippet}
+
+{#snippet needPassword(id: string, text: string)}
+  <p class="needpw" {id} role="alert">
+    {text}
+    <button type="button" class="linkbtn" onclick={goToPassword}>Go to the password</button>
+  </p>
+{/snippet}
+
+{#snippet otherMachines(port: number, title: string)}
+  {@const urls = lanUrls(uiAddrs, port)}
+  {#if isPort(port)}<div class="mt-3">
+    <p class="m-0 text-[13.5px]"><b>{title}</b></p>
+    {#if urls.length}
+      <ul class="lanurls">
+        {#each urls as u (u)}
+          <li><code class="font-mono text-[13px] break-all">{u}</code><CopyButton text={u} name="Copy {u}" /></li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="m-0 mt-1 text-[13.5px]"><code class="font-mono text-[13px]">https://&lt;this machine's address&gt;:{port}/</code></p>
+    {/if}
+    <p class="hint m-0 mt-1">
+      It's HTTPS on port {port}, not port 80: type the <code>https://</code> and the <code>:{port}</code>. The address alone goes to port 80, where
+      another program may answer.
+    </p>
+  </div>{/if}
 {/snippet}
 
 {#snippet fieldError(path: string)}
@@ -714,6 +775,7 @@
           <button type="button" class="ghost-btn" onclick={() => (moved = null)}>Dismiss</button>
         </div>
         {#if moved.lan}
+          {@render otherMachines(moved.port, 'From another machine, open:')}
           <p class="m-0 mt-3 text-[13.5px]">
             The browser will warn that the certificate isn't trusted, because Woodshed made it itself. That's expected the first time: check the address is
             this machine, then continue.
@@ -1264,15 +1326,16 @@
       {/if}
     </section>
 
-    <section class="card">
+    <section class="card" id="ui-access">
       <h2 class="sec">UI access</h2>
       <label class="flex items-start gap-3">
         <input
           type="checkbox"
           bind:checked={form.lanMode}
-          disabled={!passwordSet && !form.lanMode}
+          onclick={(e) => refuseWithoutPassword(e, 'lan')}
+          aria-disabled={lanRefused ? 'true' : undefined}
           aria-invalid={!!err('ui.lan_mode')}
-          aria-describedby="hint-lan err-ui.lan_mode"
+          aria-describedby="hint-lan needpw-lan err-ui.lan_mode"
           class="mt-1"
         />
         <span>
@@ -1282,19 +1345,24 @@
               On: other machines can open this UI over HTTPS, with the password.
             {:else}
               Off: the UI is only reachable from this machine, on localhost:{saved?.ui.port}.
-              {#if !passwordSet}Set a password below to turn it on.{/if}
+              {#if !passwordSet}It needs a UI password first.{/if}
             {/if}
           </span>
         </span>
       </label>
+      {#if needPw === 'lan'}{@render needPassword('needpw-lan', 'LAN mode needs a UI password. Set one first.')}{/if}
       {@render fieldError('ui.lan_mode')}
       {#if form.lanMode && !saved?.ui.lan_mode}
         <div class="lanwarn" role="note">
           <b>Before you turn this on:</b> anyone on your network who can reach this machine will see the Woodshed login page, and with the password,
           all of your logs. Use a strong password. Browsers will warn about the certificate the first time, because Woodshed creates its own
           (self-signed) certificate; that's expected, not an attack, as long as the address is this machine.
-          {#if isWindows}Windows also needs a firewall rule for the UI port; the command is shown after you save.{/if}
+          {@render otherMachines(n(form.uiPort), 'After you save, from another machine, open:')}
+          {#if isWindows}{@render firewall(n(form.uiPort))}{/if}
         </div>
+      {/if}
+      {#if saved?.ui.lan_mode}
+        {@render otherMachines(saved.ui.port, 'From another machine, open:')}
       {/if}
       {#if saved?.ui.lan_mode && isWindows}
         {@render firewall(saved.ui.port)}
@@ -1316,22 +1384,26 @@
         <input
           type="checkbox"
           bind:checked={form.requireLocal}
-          disabled={!passwordSet && !form.requireLocal}
+          onclick={(e) => refuseWithoutPassword(e, 'local')}
+          aria-disabled={localRefused ? 'true' : undefined}
           aria-invalid={!!err('ui.require_login_local')}
-          aria-describedby="hint-local err-ui.require_login_local"
+          aria-describedby="hint-local needpw-local err-ui.require_login_local"
           class="mt-1"
         />
         <span>
           <span class="font-semibold">Require login on this machine too</span>
           <span class="hint block" id="hint-local">
             For shared or multi-user machines: anyone logged in to this computer can otherwise open the UI on localhost without a password.
-            {#if !passwordSet}Set a password below first.{/if}
+            {#if !passwordSet}It needs a UI password first.{/if}
           </span>
         </span>
       </label>
+      {#if needPw === 'local'}{@render needPassword('needpw-local', 'Requiring a login needs a UI password. Set one first.')}{/if}
       {@render fieldError('ui.require_login_local')}
 
-      <label class="lbl mt-3 w-40">
+      <PasswordForm onchange={afterPassword} />
+
+      <label class="lbl mt-4 w-40">
         <span>UI port</span>
         <input class="field" type="number" bind:value={form.uiPort} aria-invalid={!!err('ui.port')} aria-describedby="err-ui.port" />
         {@render fieldError('ui.port')}
@@ -1392,8 +1464,6 @@
           </label>
         </div>
       </details>
-
-      <PasswordForm onchange={load} />
     </section>
 
     <section class="card">
@@ -1564,6 +1634,39 @@
     border-radius: 14px;
     border: 1px solid var(--info-border);
     background: var(--info-bg);
+  }
+  .needpw {
+    margin: 6px 0 0 28px;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--warn-fg);
+  }
+  .linkbtn {
+    background: none;
+    border: 0;
+    padding: 0;
+    margin-left: 4px;
+    font: inherit;
+    color: var(--link);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .lanurls {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .lanurls li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  input[type='checkbox'][aria-disabled='true'] {
+    opacity: 0.55;
   }
   .lanwarn {
     margin-top: 10px;

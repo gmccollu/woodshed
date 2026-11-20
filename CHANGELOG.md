@@ -4,6 +4,21 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [Unreleased]
+
+### Fixed
+- **Settings → UI access**: with no UI password set, the **LAN mode** and **Require login on this machine too**
+  checkboxes looked clickable but were disabled, so a click did nothing. A click (or Space) now says, next to the
+  box, that a password is needed, with **Go to the password**, which moves to the password field; the **Set a
+  password** form now sits directly under the two checkboxes, and they work as soon as the password is set (edits
+  made before setting it are kept). The server still refuses `lan_mode` without a password.
+- **Settings → UI access** now says what to type on another machine: with LAN mode on, in the **Before you turn this
+  on** note and in the "restarting at a new address" message, **From another machine, open:** lists
+  `https://<address>:<port>/` for each of this machine's addresses (those `woodshed status` lists), each with a copy
+  button, and says it's HTTPS on the UI port, not port 80. On Windows the firewall command for the UI port is shown
+  right there, before the save too. `GET /api/status` has the addresses as `ui_addrs`
+  ([docs/api.md](docs/api.md#status-and-stats)).
+
 ## [2.0.0] - 2026-11-18
 
 ### Added

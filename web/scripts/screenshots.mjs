@@ -386,8 +386,103 @@ const SHOTS = [
     noshot: true,
     mode: 'light',
     url: '/?mock_panel=0#/settings',
-    check: `__field('Require login on this machine too').disabled && document.body.innerText.includes('shared or multi-user machines')`,
+    // Not a dead control: the click is refused, and says why next to the box (2.0.0 on Windows, the owner).
+    act: `__field('Require login on this machine too').click();`,
+    after: 300,
+    check: `(() => { const box = __field('Require login on this machine too'); const m = document.getElementById('needpw-local');
+      return !box.disabled && !box.checked && box.getAttribute('aria-disabled') === 'true' && !!m && m.getAttribute('role') === 'alert'
+        && m.textContent.includes('needs a UI password') && box.getAttribute('aria-describedby').split(' ').includes('needpw-local')
+        && document.body.innerText.includes('shared or multi-user machines'); })()`,
   },
+  // ---- LAN mode with no password set: the click is refused with a reason, not a silently disabled box ----
+  {
+    name: 'lan-mode-needs-password-click',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__field('LAN mode').click();`,
+    after: 300,
+    check: `(() => { const box = __field('LAN mode'); const m = document.getElementById('needpw-lan');
+      return !box.disabled && !box.checked && !!m && m.getAttribute('role') === 'alert' && m.textContent.includes('LAN mode needs a UI password. Set one first.')
+        && box.getAttribute('aria-describedby').split(' ').includes('needpw-lan') && !document.querySelector('.lanwarn'); })()`,
+  },
+  {
+    name: 'lan-mode-needs-password-goes-to-password',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__field('LAN mode').click(); await __tick(); document.querySelector('#needpw-lan button').click();`,
+    after: 400,
+    check: `document.activeElement === document.getElementById('pw-new') && document.activeElement.autocomplete === 'new-password'`,
+  },
+  {
+    name: 'lan-mode-usable-after-password',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    act: `__set(__field('UI port'), '8090'); __field('LAN mode').click(); await __tick();
+      __set(document.getElementById('pw-new'), 'correct horse battery'); __set(__field('Repeat it'), 'correct horse battery'); await __tick();
+      __btn('Set password').click(); await new Promise((r) => setTimeout(r, 1500));
+      if (document.getElementById('needpw-lan')) throw new Error('the message stayed after the password was set');
+      __field('LAN mode').click();`,
+    after: 400,
+    // The port edit made before the password survives the settings reload the password causes.
+    check: `__field('LAN mode').checked && !!document.querySelector('.lanwarn') && !document.getElementById('needpw-lan')
+      && __field('UI port').value === '8090' && __field('Require login on this machine too').checked`,
+  },
+  ...both({ name: 'ui-access-no-password', url: '/?mock_panel=0#/settings', clip: 'section.card:has(#hint-lan)' }),
+  ...both({
+    name: 'ui-access-click-no-password',
+    url: '/?mock_panel=0#/settings',
+    act: `__field('LAN mode').click();`,
+    clip: 'section.card:has(#hint-lan)',
+  }),
+  {
+    name: 'ui-access-click-no-password-narrow-dark',
+    mode: 'dark',
+    w: 390,
+    h: 844,
+    url: '/?mock_panel=0#/settings',
+    act: `__field('LAN mode').click();`,
+    clip: 'section.card:has(#hint-lan)',
+  },
+  ...both({
+    name: 'ui-access-password-set',
+    url: '/?mock_panel=0#/settings',
+    act: `__field('LAN mode').click(); await __tick();
+      __set(document.getElementById('pw-new') ?? __field('New password'), 'correct horse battery'); __set(__field('Repeat it'), 'correct horse battery'); await __tick();
+      __btn('Set password').click(); await new Promise((r) => setTimeout(r, 1500)); __field('LAN mode').click();`,
+    clip: 'section.card:has(#hint-lan)',
+  }),
+  // ---- The address to type on another machine: https://<addr>:<ui.port>/, not port 80 (the owner's 2.0.0 test) ----
+  ...both({
+    name: 'ui-access-before-note-windows',
+    url: '/?mock_panel=0&mock_password=1&mock_os=windows#/settings',
+    act: `__field('LAN mode').click(); await __tick(); __set(__field('UI port'), '8600');`,
+    // The note follows the port being typed, and gives the firewall command before the save.
+    check: `(() => { const t = document.querySelector('.lanwarn').innerText;
+      return t.includes('After you save, from another machine, open:') && t.includes('https://10.1.0.50:8600/') && t.includes('https://[fd00::50]:8600/')
+        && t.includes('not port 80') && t.includes('localport=8600') && !t.includes('192.168.64.1'); })()`,
+    clip: 'section.card:has(#hint-lan)',
+  }),
+  ...both({
+    name: 'ui-access-lan-on',
+    url: '/?mock_panel=0&mock_auth=1&mock_loggedin=1&mock_os=windows#/settings',
+    check: `(() => { const c = document.getElementById('ui-access'); const urls = [...c.querySelectorAll('.lanurls code')].map((e) => e.textContent);
+      return JSON.stringify(urls) === '["https://10.1.0.50:8514/","https://[fd00::50]:8514/"]' && c.innerText.includes('From another machine, open:')
+        && c.innerText.includes("It's HTTPS on port 8514, not port 80") && c.querySelectorAll('.lanurls button').length === 2
+        && c.innerText.includes('localport=8514'); })()`,
+    clip: 'section.card:has(#hint-lan)',
+  }),
+  ...both({
+    name: 'ui-access-moved-lan',
+    url: '/?mock_panel=0&mock_password=1&mock_os=windows#/settings',
+    act: `__field('LAN mode').click(); await __tick(); __btn('Save').click();`,
+    after: 1200,
+    check: `(() => { const t = document.querySelector('.moved').innerText;
+      return t.includes('From another machine, open:') && t.includes('https://10.1.0.50:8514/') && t.includes('https://[fd00::50]:8514/') && t.includes('localport=8514'); })()`,
+    clip: '.moved',
+  }),
   {
     name: 'password-change-needs-current-localhost',
     noshot: true,
@@ -1451,14 +1546,14 @@ const SHOTS = [
     noshot: true,
     mode: 'light',
     url: '/?mock_panel=0#/settings',
-    act: `const lan = document.querySelector('[aria-describedby^="hint-lan"]'); if (!lan.disabled) throw new Error('LAN enabled without a password');
+    act: `const lan = document.querySelector('[aria-describedby^="hint-lan"]'); if (lan.getAttribute('aria-disabled') !== 'true') throw new Error('LAN enabled without a password');
       __set(__field('New password'), 'short'); __set(__field('Repeat it'), 'short'); await __tick(); __btn('Set password').click();
       await new Promise(r => setTimeout(r, 600));
       if (!document.body.innerText.includes('Use 8 to 1024 characters.')) throw new Error('no length error');
       __set(__field('New password'), 'correct horse'); __set(__field('Repeat it'), 'correct horse'); await __tick(); __btn('Set password').click();`,
     after: 800,
-    check: `document.body.innerText.includes('Password set. Login is now required on this machine too; you can turn it off below.')
-      && !document.querySelector('[aria-describedby^="hint-lan"]').disabled && __field('Require login on this machine too').checked
+    check: `document.body.innerText.includes('Password set. Login is now required on this machine too; you can turn that off above.')
+      && !document.querySelector('[aria-describedby^="hint-lan"]').hasAttribute('aria-disabled') && __field('Require login on this machine too').checked
       && !!__btn('Log out') && !__field('Password')`,
   },
   {

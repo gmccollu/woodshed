@@ -31,13 +31,19 @@ func StableAddrs() ([]netip.Addr, error) {
 	if err != nil {
 		return nil, err
 	}
+	return id.stableAddrs(), nil
+}
+
+// stableAddrs is id's addresses without loopback (StableAddrs, and
+// /api/status's ui_addrs).
+func (id hostIdentity) stableAddrs() []netip.Addr {
 	var out []netip.Addr
 	for _, ip := range id.IPs {
 		if !ip.IsLoopback() {
 			out = append(out, ip)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // CertFingerprintPEM is the SHA-256 of the first certificate in a PEM file's
