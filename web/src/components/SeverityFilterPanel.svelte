@@ -15,9 +15,12 @@
    * /api/settings once (the device only says what's in effect for it).
    */
   let settingsDefault = $state('');
+  /** Bumped when the page regains focus: Settings may have changed the default in another tab. */
+  let focused = $state(0);
   const defaultLevel = $derived(device.min_severity === 'default' ? (device.min_severity_effective ?? '') : settingsDefault);
   $effect(() => {
-    if (device.min_severity === 'default' || settingsDefault) return;
+    void focused;
+    if (device.min_severity === 'default') return;
     getSettings().then(
       (s) => (settingsDefault = s.settings.syslog?.min_severity ?? 'debug'),
       () => {},
@@ -50,6 +53,8 @@
     }
   }
 </script>
+
+<svelte:window onfocus={() => focused++} />
 
 <section class="card" aria-labelledby="sevf-h">
   <h2 id="sevf-h" class="m-0 text-[17px] font-bold">Syslog stored</h2>
