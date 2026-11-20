@@ -77,7 +77,7 @@ design), [docs/api.md](docs/api.md) (the UI's API), [CONTRIBUTING.md](CONTRIBUTI
 
 ## Known issues
 
-As of 2.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
+As of 2.1.0 (details in the [CHANGELOG](CHANGELOG.md)):
 
 - The installers aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask once.
 - On Windows and macOS the OS doesn't expose kernel UDP drops, so the UI says that instead of showing 0.
@@ -114,6 +114,9 @@ As of 2.0.0 (details in the [CHANGELOG](CHANGELOG.md)):
   a record), read through Events, `woodshed search` or a CSV or IPFIX export.
 - Doesn't fill the disk: retention by age and total size (30 days / 20 GiB by default), plus a low-disk guard. Flows
   have their own share (40 % by default) and go first. Every deletion is recorded and shown in Settings.
+- A severity filter for chatty devices: store syslog from a minimum severity, for every device or per device (a
+  device that sends debug you can't turn off). What's left out is counted per device and severity and named in each
+  bundle, so nothing is dropped silently.
 - Dropped, truncated and refused messages are counted and shown. Where the OS hides kernel UDP drops (Windows,
   macOS), the UI says so instead of showing 0.
 - Web UI: a dashboard with the message rate, device tiles and a live tail with server-side filters; an Events page to

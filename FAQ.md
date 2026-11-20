@@ -237,6 +237,16 @@ deleting the oldest logs if it has to, and if there's nothing left to delete it 
 banner, counting what it couldn't store. Every deletion is listed in **Settings → Storage history**. The dashboard
 shows how much disk the logs use and how many days that covers.
 
+## A device sends debug logs I can't turn off. Can Woodshed skip them?
+
+Yes, since 2.1. On the device's page, **Syslog stored → Store from**, pick a severity (say **Info and above**): from
+the next message, Woodshed stores that severity and the more severe ones and leaves the rest out. **Settings →
+Storage → Store syslog from** sets the same for every device, and a device's own setting wins. From a terminal:
+`woodshed severity-filter --device 192.0.2.10 info`. Messages without a severity are always kept, and traps, polls
+and flows aren't affected. Nothing is dropped silently: the device page counts what was left out, and an incident
+bundle's README says which setting was in effect and how many messages it left out. It saves disk, not CPU. See the
+[user guide](docs/user-guide.md#storing-less-severity-filter).
+
 ## Can I open the UI from another computer?
 
 Not by default: the UI answers only on the computer Woodshed runs on (`http://localhost:8514/`). To open it from
