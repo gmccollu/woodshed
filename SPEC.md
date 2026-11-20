@@ -3865,13 +3865,20 @@ the connection; present since 1.0):
       README row says "heard, nothing stored (severity filter)" with the counts), and a window with only left-out
       messages still builds, from the API and `woodshed bundle` alike. Each syslog device's manifest entry has
       `severity_filter`: `settings`, the settings in effect over the window (`{from, to, min_severity, own}`, oldest
-      first), and the counts over the bundle window. The settings come from the `severity_filter` events, not the
-      config at build time: the default's events say what it changed from, and so do a device's (since 2.1.0-rc2;
-      "… set to notice and above, was the default (warning and above)"), so the last change before each moment, or
-      what the first one changed from, gives the setting; with no change kept, the setting the last run recorded
-      (stored everything when none was). A span no event records (before the oldest event kept, before an rc1
-      device event that doesn't say what it changed from) has `min_severity` `""` and the README says "setting before
-      <time> not recorded". The README's Filter line says the settings ("storing warning and above (the default)
+      first), and the counts over the bundle window. The settings come from the index's `severity_changes` table, not
+      the config at build time: a row per change (time, the override's address without the zone or "" for the
+      default, the level after and before, live or found at a start), written in the same transaction as its
+      `severity_filter` event, which stays the human-readable record. The table is created at Open beside the schema,
+      so the schema stays 10 and a 2.1.0-rc1 index gains it; changes from before its first row come from rc1's event
+      texts, parsed only for those. Keying by the zoneless address matches the setting itself: one override covers
+      every zone of an address, so a change made through one zoned device is in the others' history. The last change
+      before each moment, or what the first one changed from, gives the setting; with no change kept, the setting the
+      last run recorded (stored everything when none was). A span nothing records has `min_severity` `""` and the
+      README says "setting before <time> not recorded": before the oldest event kept, before an rc1 device event that
+      doesn't say what it changed from, and wherever a chain doesn't add up (a change's "was" isn't the previous
+      change's level, or the last change isn't the recorded setting: a lost record or a clock that stepped back). A
+      start's check that a live change was already recorded (so it isn't logged again as made while stopped) reads
+      the table too, not the event's text. The README's Filter line says the settings ("storing warning and above (the default)
       until 20:49:12, then notice and above (this device's setting)") and what was left out in the window, "since
       <time>" when the stats retention cut the window, by hour when hourly buckets were used, and that nothing is
       known when the window is older than the stats kept.

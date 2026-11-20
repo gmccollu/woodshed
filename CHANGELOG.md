@@ -16,7 +16,7 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   per device and severity (kept across restarts) and shown on the device page, the dashboard's Dropped card and About
   (as a choice, not a drop), `GET /api/stats` (`severity_filter`), `GET /api/devices` (`filtered_24h`,
   `filtered_by_severity_24h`), `woodshed status`, and each device's line in an incident bundle's README and manifest,
-  with the settings in effect over the bundle's window (from the filter's events). The filter saves disk, not CPU.
+  with the settings in effect over the bundle's window. The filter saves disk, not CPU.
   The live tail shows only what's stored. See [docs/user-guide.md](docs/user-guide.md#storing-less-severity-filter).
 - **The index schema goes to 10 (the severity filter's counts).** After this version has run once, a 2.0.x build
   refuses the index: `woodshed run` and `woodshed reindex` stop with "schema version 10 is newer than this build
@@ -47,9 +47,13 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   stored … No zip written."), while the API built it. The CLI now builds it too, with the device's "heard, nothing
   stored (severity filter)" row.
 - A bundle's Filter line and manifest named the severity filter set when the bundle was built, not the one in effect
-  during the window. They now give each setting over the window with its times, from the filter's events
-  (`severity_filter.settings`: `from`, `to`, `min_severity`, `own`), and say "setting before <time> not recorded"
-  where no event covers it. A device's severity filter events now also say what the setting was before.
+  during the window. They now give each setting over the window with its times (`severity_filter.settings`:
+  `from`, `to`, `min_severity`, `own`), from a record of each change the index now keeps beside its event (a new
+  table, created at start; the schema stays 10, and rc1's earlier changes are read from its events), and say
+  "setting before <time> not recorded" where nothing covers it or the record doesn't add up. Every zone of a
+  link-local address shares one history, as it shares one setting. A device's severity filter events now also say
+  what the setting was before. A device whose name contains "set to the default" no longer has a live change logged
+  again at the next start as made while stopped.
 - The service log's "store open" line now gives each startup step's time and what it read (`steps="list 2ms (144
   files), tails 1ms (18 files), flows 0s (161 segments, 0 read), reconcile 3ms (0 re-read), …"`), so a slow start
   says where its time went.

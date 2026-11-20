@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/model"
 )
@@ -43,8 +42,8 @@ func TestBundleSeverityFilter(t *testing.T) {
 	}
 	// The default went to warning before the window, the access point to its
 	// own info and above in it; B follows the default throughout.
-	sevEvent(t, be.idx, min("2026-11-13T23:00:00Z"), "", config.DefaultSeverityEvent(4, 7, 0, false))
-	sevEvent(t, be.idx, min("2026-11-13T23:55:00Z"), a, config.DeviceSeverityEvent(devA.String()+" (ap)", 6, 4, -1, 4, false))
+	sevRow(t, be.idx, "", index.SeverityChange{Time: min("2026-11-13T23:00:00Z"), Default: true, Level: 4, Was: 7, WasKnown: true})
+	sevRow(t, be.idx, a, index.SeverityChange{Time: min("2026-11-13T23:55:00Z"), Address: devA.String(), Level: 6, Was: -1, WasKnown: true})
 	if err := be.idx.RecordSeverityFilter(bg, index.SeverityFilterState{Default: 4, ByDevice: map[string]int{devA.String(): 6}}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,11 +135,13 @@ func TestSeverityReadmeWords(t *testing.T) {
 	}
 }
 
-// The settings over a window come from the severity_filter events: the last
-// change before each moment, what the first kept change changed from before
-// it, the recorded setting when nothing changed; and "not recorded" before
-// the oldest event kept or where a 2.1.0-rc1 event doesn't say what it changed
-// from.
+// The settings over a window come from the severity_changes table (and,
+// before its first row, 2.1.0-rc1's event texts): the last change before each
+// moment, what the first change changed from before it, the recorded setting
+// when nothing changed. "Not recorded" before the oldest event kept, where an
+// rc1 event doesn't say what it changed from, and over a span whose next
+// change (or the recorded setting) says it was something else. Every zone of
+// an address shares its history.
 func TestSeveritySettings(t *testing.T) {
 	t0 := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
 	from, to := t0.Add(time.Hour), t0.Add(3*time.Hour)
@@ -148,52 +149,76 @@ func TestSeveritySettings(t *testing.T) {
 	set := func(f, t int, sev string, own bool) SeveritySetting {
 		return SeveritySetting{From: tt(f), To: tt(t), MinSeverity: sev, Own: own}
 	}
-	const dev, addr = "192.0.2.9", "192.0.2.9"
-	type ev struct {
+	const addr = "192.0.2.9"
+	type ev struct { // an event written as it is: rc1's, or "Woodshed started"
 		at   int
 		id   string
 		text string
 	}
+	type row struct {
+		at       int
+		addr     string // "": the default
+		level    int
+		was      int
+		wasKnown bool
+	}
+	def := func(at, level, was int) row { return row{at, "", level, was, true} }
+	dev := func(at, level, was int) row { return row{at, addr, level, was, true} }
+	started := ev{0, "", "Woodshed started"}
 	for _, c := range []struct {
-		name string
-		evs  []ev
-		rec  *index.SeverityFilterState
-		want []SeveritySetting
+		name   string
+		evs    []ev
+		rows   []row
+		rec    *index.SeverityFilterState
+		device [2]string // ID and row IP; default 192.0.2.9
+		want   []SeveritySetting
 	}{
-		{"nothing recorded: stored everything", []ev{{0, "", "Woodshed started"}}, nil, []SeveritySetting{set(60, 180, "debug", false)}},
-		{"recorded, never changed", []ev{{0, "", "Woodshed started"}}, &index.SeverityFilterState{Default: 6, ByDevice: map[string]int{addr: 5}},
-			[]SeveritySetting{set(60, 180, "notice", true)}},
-		{"a change before the window and one in it", []ev{
-			{10, "", config.DefaultSeverityEvent(4, 7, 0, true)},
-			{109, dev, config.DeviceSeverityEvent(addr, 5, 4, -1, 4, false)},
-			{150, "", config.DefaultSeverityEvent(6, 4, 1, false)}, // the device keeps its own
-		}, &index.SeverityFilterState{Default: 6, ByDevice: map[string]int{addr: 5}},
-			[]SeveritySetting{set(60, 109, "warning", false), set(109, 180, "notice", true)}},
-		{"the default's first change, in the window, says what it was", []ev{
-			{0, "", "Woodshed started"},
-			{90, "", config.DefaultSeverityEvent(6, 7, 0, false)},
-		}, &index.SeverityFilterState{Default: 6}, []SeveritySetting{set(60, 90, "debug", false), set(90, 180, "info", false)}},
-		{"back to the default in the window", []ev{
-			{0, "", "Woodshed started"},
-			{120, dev, config.DeviceSeverityEvent(addr, -1, 6, 3, 6, false)},
-		}, &index.SeverityFilterState{Default: 6}, []SeveritySetting{set(60, 120, "err", true), set(120, 180, "info", false)}},
-		{"an rc1 event doesn't say what it was", []ev{
-			{0, "", "Woodshed started"},
-			{100, dev, "severity filter for 192.0.2.9 set to notice and above"},
-		}, &index.SeverityFilterState{Default: 7, ByDevice: map[string]int{addr: 5}},
-			[]SeveritySetting{set(60, 100, "", false), set(100, 180, "notice", true)}},
-		{"events kept only from inside the window", []ev{{80, "", "Woodshed started"}}, &index.SeverityFilterState{Default: 6},
-			[]SeveritySetting{set(60, 80, "", false), set(80, 180, "info", false)}},
-		{"another device's change doesn't split it", []ev{
-			{0, "", "Woodshed started"},
-			{100, "192.0.2.10", config.DeviceSeverityEvent("192.0.2.10", 0, 6, -1, 6, false)},
-		}, &index.SeverityFilterState{Default: 6, ByDevice: map[string]int{"192.0.2.10": 0}},
-			[]SeveritySetting{set(60, 180, "info", false)}},
+		{name: "nothing recorded: stored everything", evs: []ev{started}, want: []SeveritySetting{set(60, 180, "debug", false)}},
+		{name: "recorded, never changed", evs: []ev{started}, rec: &index.SeverityFilterState{Default: 6, ByDevice: map[string]int{addr: 5}},
+			want: []SeveritySetting{set(60, 180, "notice", true)}},
+		{name: "a change before the window and one in it", rows: []row{def(10, 4, 7), dev(109, 5, -1), def(150, 6, 4)},
+			rec:  &index.SeverityFilterState{Default: 6, ByDevice: map[string]int{addr: 5}},
+			want: []SeveritySetting{set(60, 109, "warning", false), set(109, 180, "notice", true)}},
+		{name: "the default's first change, in the window, says what it was", evs: []ev{started}, rows: []row{def(90, 6, 7)},
+			rec: &index.SeverityFilterState{Default: 6}, want: []SeveritySetting{set(60, 90, "debug", false), set(90, 180, "info", false)}},
+		{name: "back to the default in the window", evs: []ev{started}, rows: []row{dev(120, -1, 3)},
+			rec: &index.SeverityFilterState{Default: 6}, want: []SeveritySetting{set(60, 120, "err", true), set(120, 180, "info", false)}},
+		{name: "an rc1 event doesn't say what it was", evs: []ev{started, {100, addr, "severity filter for 192.0.2.9 set to notice and above"}},
+			rec:  &index.SeverityFilterState{Default: 7, ByDevice: map[string]int{addr: 5}},
+			want: []SeveritySetting{set(60, 100, "", false), set(100, 180, "notice", true)}},
+		{name: "events kept only from inside the window", evs: []ev{{80, "", "Woodshed started"}}, rec: &index.SeverityFilterState{Default: 6},
+			want: []SeveritySetting{set(60, 80, "", false), set(80, 180, "info", false)}},
+		{name: "another address's change doesn't split it", evs: []ev{started}, rows: []row{{100, "192.0.2.10", 0, -1, true}},
+			rec:  &index.SeverityFilterState{Default: 6, ByDevice: map[string]int{"192.0.2.10": 0}},
+			want: []SeveritySetting{set(60, 180, "info", false)}},
+		{name: "zone en0 shares the address's history", evs: []ev{started}, rows: []row{{90, "fe80::1", 6, -1, true}},
+			rec: &index.SeverityFilterState{Default: 7, ByDevice: map[string]int{"fe80::1": 6}}, device: [2]string{"fe80__1_en0", "fe80::1%en0"},
+			want: []SeveritySetting{set(60, 90, "debug", false), set(90, 180, "info", true)}},
+		{name: "and so does zone en1", evs: []ev{started}, rows: []row{{90, "fe80::1", 6, -1, true}},
+			rec: &index.SeverityFilterState{Default: 7, ByDevice: map[string]int{"fe80::1": 6}}, device: [2]string{"fe80__1_en1", "fe80::1%en1"},
+			want: []SeveritySetting{set(60, 90, "debug", false), set(90, 180, "info", true)}},
+		{name: "a lost change: the next one was from something else", evs: []ev{started}, rows: []row{def(70, 4, 7), def(120, 6, 5)},
+			rec:  &index.SeverityFilterState{Default: 6},
+			want: []SeveritySetting{set(60, 70, "debug", false), set(70, 120, "", false), set(120, 180, "info", false)}},
+		{name: "a lost change after the last one", evs: []ev{started}, rows: []row{def(70, 4, 7)}, rec: &index.SeverityFilterState{Default: 6},
+			want: []SeveritySetting{set(60, 70, "debug", false), set(70, 180, "", false)}},
+		{name: "an rc1 index upgraded: its events, then the table", evs: []ev{started,
+			{10, "", "default severity filter set to warning and above (was everything)"},
+			{80, addr, "severity filter for 192.0.2.9 set to notice and above"}},
+			rows: []row{dev(130, -1, 5)}, rec: &index.SeverityFilterState{Default: 4},
+			want: []SeveritySetting{set(60, 80, "", false), set(80, 130, "notice", true), set(130, 180, "warning", false)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			idx := openIndex(t)
 			for _, e := range c.evs {
 				sevEvent(t, idx, tt(e.at), e.id, e.text)
+			}
+			for _, r := range c.rows {
+				id := ""
+				if r.addr != "" {
+					id = model.DeviceID(netip.MustParseAddr(r.addr))
+				}
+				sevRow(t, idx, id, index.SeverityChange{Time: tt(r.at), Address: r.addr, Default: r.addr == "", Level: r.level, Was: r.was, WasKnown: r.wasKnown})
 			}
 			if c.rec != nil {
 				if err := idx.RecordSeverityFilter(bg, *c.rec); err != nil {
@@ -204,10 +229,23 @@ func TestSeveritySettings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := h.settings(dev, sevAddr(dev, addr), from, to); !sameSettings(got, c.want) {
+			id, ip := c.device[0], c.device[1]
+			if id == "" {
+				id, ip = addr, addr
+			}
+			if got := h.settings(sevAddr(id, ip), from, to); !sameSettings(got, c.want) {
 				t.Errorf("got  %+v\nwant %+v", got, c.want)
 			}
 		})
+	}
+}
+
+// sevRow records a change as the server does, with its event.
+func sevRow(t *testing.T, idx *index.DB, deviceID string, c index.SeverityChange) {
+	t.Helper()
+	c.Source = index.SeverityLive
+	if err := idx.AddSeverityChange(bg, c, index.Event{DeviceID: deviceID, Text: "a change"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

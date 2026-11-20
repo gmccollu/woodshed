@@ -7,8 +7,9 @@ import (
 )
 
 // The severity filter's events (SPEC §13.10 decision 86). The server writes
-// them on every change, and a bundle reads them back for the setting in effect
-// over its window, so the texts and their parser live together.
+// them on every change, beside a row in the index's severity_changes table,
+// which is what a bundle reads; the parser is for the changes 2.1.0-rc1
+// recorded only as events, before that table existed.
 
 // StoppedNote ends an event for a change made while Woodshed was stopped.
 const StoppedNote = " (changed while Woodshed was stopped)"

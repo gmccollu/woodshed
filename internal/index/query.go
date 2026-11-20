@@ -467,21 +467,3 @@ func (d *DB) FirstEventTime(ctx context.Context) (t time.Time, ok bool, err erro
 	}
 	return tm(v.Int64), true, nil
 }
-
-// LatestEvent returns the newest event of kind for deviceID ("" for events
-// that name no device); ok is false when there's none.
-func (d *DB) LatestEvent(ctx context.Context, kind Kind, deviceID string) (e Event, ok bool, err error) {
-	var t int64
-	var level, k, source string
-	err = d.db.QueryRowContext(ctx, `SELECT id, time, level, kind, device_id, text, source FROM events
-		WHERE kind = ? AND device_id = ? ORDER BY time DESC, id DESC LIMIT 1`, string(kind), deviceID).
-		Scan(&e.ID, &t, &level, &k, &e.DeviceID, &e.Text, &source)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Event{}, false, nil
-	}
-	if err != nil {
-		return Event{}, false, err
-	}
-	e.Time, e.Level, e.Kind, e.Source = tm(t), Level(level), Kind(k), Source(source)
-	return e, true, nil
-}

@@ -55,38 +55,74 @@ type SeveritySetting struct {
 	Own         bool      `json:"own"`
 }
 
-// sevHistory is what the index records of the filter's settings: each change
-// (its severity_filter events), the oldest event kept (none before it are
-// known), and the setting the last run recorded (what holds after the last
-// change, or always when nothing changed).
+// sevHistory is what the index records of the filter's settings: the
+// default's changes and each address's (the override's key: no zone, so every
+// zone of an address shares one history, as it shares one setting), from the
+// severity_changes table and, before its first row, 2.1.0-rc1's event texts;
+// the oldest event kept (nothing before it is known); and the setting the
+// last run recorded (what holds after the last change, or always when nothing
+// changed).
 type sevHistory struct {
 	defaults   []sevChange
-	devices    map[string][]sevChange
+	addrs      map[string][]sevChange
 	horizon    time.Time
 	rec        index.SeverityFilterState
 	hasHorizon bool
 }
 
+// sevChange is a change; known is false when its span (to the next change)
+// isn't trustworthy: the next change says it changed from something else (a
+// change that wasn't recorded, or a clock that stepped back).
 type sevChange struct {
-	at time.Time
-	config.SeverityEvent
+	at       time.Time
+	level    int
+	was      int
+	wasKnown bool
+	known    bool
 }
 
 func loadSevHistory(ctx context.Context, idx *index.DB) (*sevHistory, error) {
-	h := &sevHistory{devices: map[string][]sevChange{}}
+	h := &sevHistory{addrs: map[string][]sevChange{}}
+	add := func(addr string, def bool, c sevChange) {
+		if def {
+			h.defaults = append(h.defaults, c)
+		} else {
+			h.addrs[addr] = append(h.addrs[addr], c)
+		}
+	}
+	rows, err := idx.SeverityChanges(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Before the table (2.1.0-rc1), the events' texts are the record.
 	evs, err := idx.EventsOfKind(ctx, index.KindSeverityFilter)
 	if err != nil {
 		return nil, err
 	}
 	for _, e := range evs {
-		c, ok := config.ParseSeverityEvent(e.Text)
-		switch {
-		case !ok:
-		case c.Default && e.DeviceID == "":
-			h.defaults = append(h.defaults, sevChange{e.Time, c})
-		case !c.Default && e.DeviceID != "":
-			h.devices[e.DeviceID] = append(h.devices[e.DeviceID], sevChange{e.Time, c})
+		if len(rows) > 0 && !e.Time.Before(rows[0].Time) {
+			break
 		}
+		c, ok := config.ParseSeverityEvent(e.Text)
+		if !ok || c.Default != (e.DeviceID == "") {
+			continue
+		}
+		addr := ""
+		if !c.Default {
+			// rc1 logged a live change under the device's ID, which is lossy
+			// for a zoned address; its row has the address.
+			ip := ""
+			if d, err := idx.Device(ctx, e.DeviceID); err == nil {
+				ip = d.IP
+			}
+			if addr = sevAddr(e.DeviceID, ip); addr == "" {
+				continue
+			}
+		}
+		add(addr, c.Default, sevChange{at: e.Time, level: c.Level, was: c.Was, wasKnown: c.WasKnown})
+	}
+	for _, r := range rows {
+		add(r.Address, r.Default, sevChange{at: r.Time, level: r.Level, was: r.Was, wasKnown: r.WasKnown})
 	}
 	if h.horizon, h.hasHorizon, err = idx.FirstEventTime(ctx); err != nil {
 		return nil, err
@@ -100,31 +136,54 @@ func loadSevHistory(ctx context.Context, idx *index.DB) (*sevHistory, error) {
 		rec = index.SeverityFilterState{Default: config.SeverityDebug}
 	}
 	h.rec = rec
+	mark(h.defaults, rec.Default)
+	for a, cs := range h.addrs {
+		mark(cs, h.own(a))
+	}
 	return h, nil
 }
 
-// at is the setting a list of changes gives at t: the last change at or
-// before it, else what the first one changed from, else (no change kept)
-// fallback; ok is false when no event records it.
+// own is the address's recorded own setting, -1 when it follows the default.
+func (h *sevHistory) own(addr string) int {
+	if l, ok := h.rec.ByDevice[addr]; ok {
+		return l
+	}
+	return -1
+}
+
+// mark sets each change's known: the next change (or, after the last, the
+// recorded setting) agrees with it.
+func mark(cs []sevChange, rec int) {
+	for i := range cs {
+		next, nextKnown := rec, true
+		if i+1 < len(cs) {
+			next, nextKnown = cs[i+1].was, cs[i+1].wasKnown
+		}
+		cs[i].known = !nextKnown || next == cs[i].level
+	}
+}
+
+// at is the setting a chain of changes gives at t: the last change at or
+// before it, else what the first one changed from, else (no change)
+// fallback; ok is false when nothing records it.
 func (h *sevHistory) at(cs []sevChange, t time.Time, fallback int) (level int, ok bool) {
 	i := sort.Search(len(cs), func(i int) bool { return cs[i].at.After(t) }) - 1
 	if i >= 0 {
-		return cs[i].Level, true
+		return cs[i].level, cs[i].known
 	}
 	kept := !h.hasHorizon || !t.Before(h.horizon)
 	if len(cs) > 0 {
-		return cs[0].Was, cs[0].WasKnown && kept
+		return cs[0].was, cs[0].wasKnown && kept
 	}
 	return fallback, kept
 }
 
-// setting is the device's setting at t (level -1: not recorded).
-func (h *sevHistory) setting(deviceID, addr string, t time.Time) (level int, own bool) {
-	fallback := -1
-	if l, ok := h.rec.ByDevice[addr]; ok {
-		fallback = l
+// setting is the setting at t for a device at addr (level -1: not recorded).
+func (h *sevHistory) setting(addr string, t time.Time) (level int, own bool) {
+	dev, ok := -1, true
+	if addr != "" {
+		dev, ok = h.at(h.addrs[addr], t, h.own(addr))
 	}
-	dev, ok := h.at(h.devices[deviceID], t, fallback)
 	if !ok {
 		return -1, false
 	}
@@ -138,8 +197,9 @@ func (h *sevHistory) setting(deviceID, addr string, t time.Time) (level int, own
 	return def, false
 }
 
-// settings are the device's settings from from to to, a span per setting.
-func (h *sevHistory) settings(deviceID, addr string, from, to time.Time) []SeveritySetting {
+// settings are the settings from from to to for a device at addr, a span per
+// setting.
+func (h *sevHistory) settings(addr string, from, to time.Time) []SeveritySetting {
 	edges := []time.Time{from}
 	add := func(t time.Time) {
 		if t.After(from) && t.Before(to) {
@@ -149,7 +209,7 @@ func (h *sevHistory) settings(deviceID, addr string, from, to time.Time) []Sever
 	for _, c := range h.defaults {
 		add(c.at)
 	}
-	for _, c := range h.devices[deviceID] {
+	for _, c := range h.addrs[addr] {
 		add(c.at)
 	}
 	if h.hasHorizon {
@@ -165,7 +225,7 @@ func (h *sevHistory) settings(deviceID, addr string, from, to time.Time) []Sever
 		if !end.After(t) {
 			continue
 		}
-		level, own := h.setting(deviceID, addr, t)
+		level, own := h.setting(addr, t)
 		s := SeveritySetting{From: t.UTC(), To: end.UTC(), Own: own}
 		if level >= 0 {
 			s.MinSeverity = config.SeverityName(level)
@@ -198,7 +258,7 @@ func (b *builder) severitySummary(ctx context.Context, h *sevHistory, deviceID, 
 	if err != nil {
 		return nil, err
 	}
-	s := &SeverityFilterSummary{Settings: h.settings(deviceID, sevAddr(deviceID, ip), info.From, info.To),
+	s := &SeverityFilterSummary{Settings: h.settings(sevAddr(deviceID, ip), info.From, info.To),
 		NotStored: w.Total(), NotStoredBySeverity: map[string]int64{}, From: w.From, To: w.To,
 		ByHour: w.ByHour, Partial: w.Partial, Known: !w.NotKept}
 	for i, n := range w.SevCounts {

@@ -501,10 +501,13 @@ The zip is an export's (below), with each type in its folder, and:
    "from": "2026-11-14T20:30:00Z", "to": "2026-11-14T21:10:00Z", "by_hour": false, "partial": false, "known": true}
   ```
   `settings` are the filter's settings over the window, oldest first, together covering it: `min_severity` (`"debug"`
-  stores everything) and `own` (the device's own setting, else the default), read from the `severity_filter` events,
-  changes made while Woodshed was stopped included (at the start that found them). `min_severity` is `""` for a
-  span no event records: before the oldest event kept, or before a device's first change when that event (from
-  2.1.0-rc1) doesn't say what it changed from. `not_stored` counts the messages the filter left out in the stats
+  stores everything) and `own` (the device's own setting, else the default). They come from the index's record of
+  each change (written with its `severity_filter` event; before 2.1.0-rc2, from those events' texts), changes made
+  while Woodshed was stopped included (at the start that found them). A device's own setting is kept by its address
+  without the zone, so every zone of a link-local address (`fe80::1%en0`, `fe80::1%en1`) shares one setting and one
+  history. `min_severity` is `""` for a span nothing records: before the oldest event kept, before a device's first
+  change when that event (from 2.1.0-rc1) doesn't say what it changed from, and over a span whose next change says it
+  changed from something else (a change that wasn't recorded, or a clock that stepped back). `not_stored` counts the messages the filter left out in the stats
   buckets from `from` to `to` (as for `dropped`; `partial` when the 7-day retention cut the window's start, `by_hour`
   when hourly buckets widened it, `known` false when the whole window is older than the counts kept). The README's
   Filter line says both: `storing warning and above (the default) until 20:49:12.500, then notice and above (this

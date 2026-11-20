@@ -370,7 +370,9 @@ func (d *DB) migrate(ctx context.Context) error {
 //     flow_minute (flowMinuteSums) and replaces flow_minute_path, its prefix,
 //     for the deletes by path;
 //   - index_meta holds values like FlowRowsVersion, and the severity filter
-//     the server last ran with (RecordSeverityFilter).
+//     the server last ran with (RecordSeverityFilter);
+//   - severity_changes is the severity filter's changes (sevchanges.go),
+//     since 2.1.0-rc2.
 const auxSchema = `
 CREATE INDEX IF NOT EXISTS flow_minute_path_sums ON flow_minute (path, records, bytes);
 DROP INDEX IF EXISTS flow_minute_path;
@@ -381,7 +383,7 @@ CREATE TABLE IF NOT EXISTS index_meta (
 `
 
 func (d *DB) ensureAux(ctx context.Context) error {
-	if _, err := d.db.ExecContext(ctx, auxSchema); err != nil {
+	if _, err := d.db.ExecContext(ctx, auxSchema+severityChangesSchema); err != nil {
 		return fmt.Errorf("index: %w", err)
 	}
 	return nil
