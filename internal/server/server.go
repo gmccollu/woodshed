@@ -345,6 +345,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.be.serviceEvent(index.LevelInfo, index.KindStart,
 		fmt.Sprintf("Woodshed %s (%s) started on %s/%s; data folder %s.", s.opts.Version, s.opts.Commit, runtime.GOOS, runtime.GOARCH, cfg.Storage.DataDir))
 
+	s.be.severityChangedWhileStopped(cfg.Syslog)
 	sevf := severityFilterOf(cfg.Syslog)
 	ln, err := listen.Start(cfg.Listeners, listen.Options{
 		Sink:        s.be.sink,

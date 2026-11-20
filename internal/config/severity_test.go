@@ -154,3 +154,28 @@ func TestSyslogDeviceLevel(t *testing.T) {
 		t.Error("an explicit debug override filters nothing")
 	}
 }
+
+// Two spellings of one device's address in min_severity_by_device resolve the
+// same way every time (the canonical key wins, the other is kept as written)
+// and Validate refuses the second as a duplicate.
+func TestSyslogDuplicateDeviceKeys(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		c := testConfig(t)
+		c.Syslog.MinSeverityByDevice = map[string]SeverityText{"::ffff:192.0.2.10": "info", "192.0.2.10": "err", " 192.0.2.11 ": "notice"}
+		c.Normalize()
+		if got := c.Syslog.MinSeverityByDevice; got["192.0.2.10"] != "err" || got["::ffff:192.0.2.10"] != "info" || got["192.0.2.11"] != "notice" || len(got) != 3 {
+			t.Fatalf("normalized %v", got)
+		}
+		errs := c.Validate(nil)
+		if errs[`syslog.min_severity_by_device["::ffff:192.0.2.10"]`] != `the same device as "192.0.2.10"; keep one of them` || len(errs) != 1 {
+			t.Fatalf("errors %v", errs)
+		}
+	}
+	// Only the mapped spelling: it's the device's, not a duplicate.
+	c := testConfig(t)
+	c.Syslog.MinSeverityByDevice = map[string]SeverityText{"::ffff:192.0.2.10": "info"}
+	c.Normalize()
+	if got := c.Syslog.MinSeverityByDevice; got["192.0.2.10"] != "info" || len(got) != 1 || len(c.Validate(nil)) != 0 {
+		t.Fatalf("one spelling %v %v", got, c.Validate(nil))
+	}
+}

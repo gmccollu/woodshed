@@ -135,6 +135,13 @@ func (d *DB) FlowCountsIn(ctx context.Context, deviceID string, from, to, kept t
 			}
 		}
 	}
+	// One read transaction (one snapshot), so a rollup between the two reads
+	// can't count a bucket twice or not at all.
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return out, err
+	}
+	defer tx.Rollback()
 	var rows, uncounted int64
 	for _, q := range []struct {
 		table, col string
@@ -143,7 +150,7 @@ func (d *DB) FlowCountsIn(ctx context.Context, deviceID string, from, to, kept t
 		var c FlowCounts
 		var msgs, n, un int64
 		var lo, hi sql.NullInt64
-		err := d.db.QueryRowContext(ctx, `SELECT `+flowCountCols+`, min(`+q.col+`), max(`+q.col+`) FROM `+q.table+
+		err := tx.QueryRowContext(ctx, `SELECT `+flowCountCols+`, min(`+q.col+`), max(`+q.col+`) FROM `+q.table+
 			` WHERE device_id = ? AND type = ? AND `+q.col+` >= ? AND `+q.col+` < ?`, deviceID, TypeFlow, ms(q.lo), ms(to)).
 			Scan(append(flowCountDest(&c, &msgs, &n, &un), &lo, &hi)...)
 		if err != nil {

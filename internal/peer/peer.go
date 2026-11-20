@@ -168,3 +168,7 @@ func parseSystemctl(out []byte) (running bool, pid int) {
 	}
 	return running, pid
 }
+
+// ProcessAlive reports whether a process with this PID exists (another
+// user's included).
+func ProcessAlive(pid int) bool { return pid > 0 && processAlive(pid) }

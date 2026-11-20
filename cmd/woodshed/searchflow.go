@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +20,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
 	"github.com/gmccollu/woodshed/internal/server"
 )
@@ -69,8 +69,8 @@ func searchSeverity(f *searchFlags, dataDir string) func(id string) (int, bool) 
 		return nil
 	}
 	return func(id string) (int, bool) {
-		a, err := netip.ParseAddr(strings.ReplaceAll(id, "_", ":"))
-		if err != nil {
+		a, ok := model.ParseDeviceID(id)
+		if !ok {
 			return c.Syslog.Level(), false
 		}
 		return c.Syslog.DeviceLevel(a)
@@ -83,19 +83,21 @@ func searchSeverity(f *searchFlags, dataDir string) func(id string) (int, bool) 
 // --data isn't given. It never creates one.
 func searchConfig(f *searchFlags, dataDir string) (config.Config, bool) {
 	var path string
-	running := ""
-	if rs, err := server.ReadState(dataDir); err == nil && rs.Config != "" && fileExists(rs.Config) {
-		if inUse, _ := server.DataDirInUse(dataDir); inUse {
-			running = rs.Config
+	// The config the server running on the data folder names: only that
+	// server's own run-state file (the lock's holder), never one left behind.
+	running := func() string {
+		if rs, ok := server.RunningState(dataDir); ok && rs.Config != "" && fileExists(rs.Config) {
+			return rs.Config
 		}
+		return ""
 	}
 	switch own := filepath.Join(dataDir, config.FileName); {
 	case f.set["config"]:
 		path = f.config
 	case fileExists(own):
 		path = own
-	case running != "":
-		path = running
+	case f.set["data"] && running() != "":
+		path = running()
 	case !f.set["data"]:
 		path = f.config
 	default:

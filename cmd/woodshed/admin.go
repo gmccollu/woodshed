@@ -258,6 +258,9 @@ reached.`, stderr)
 		w.row("", fmt.Sprintf("couldn't check the data folder either: %v (try as administrator)", lockErr))
 	default:
 		w.row("Server", "not running (nothing answers on "+uiURL(cfg)+")")
+		if cfgErr == nil {
+			statusSeverityRows(w, cfg, nil)
+		}
 	}
 	return 1
 }

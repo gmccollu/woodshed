@@ -202,6 +202,7 @@ type Store struct {
 	dropped     atomic.Int64 // messages dropped since Open
 	filtered    atomic.Int64 // syslog messages the severity filter left out since Open (filtered.go)
 	filt        filtTable    // their counts, until the next maintenance pass
+	ftot        filtTotals   // and the last 24 hours' totals (filtered.go)
 	written     atomic.Int64 // messages written to files since Open
 	activeBytes atomic.Int64 // bytes on disk in active files
 
@@ -390,6 +391,9 @@ func Open(opts Options) (*Store, error) {
 	}
 	if err := s.applyIndex(); err != nil {
 		s.log.Warn("store: index update failed", "err", err)
+	}
+	if err := s.seedFiltered(); err != nil {
+		s.log.Warn("store: couldn't read the severity filter's counts", "err", err)
 	}
 	// A clock that stepped back while Woodshed was stopped counts too.
 	if files, err := s.idx.Files(s.ctx, ""); err == nil {
@@ -625,6 +629,14 @@ func (d *device) heardLocked(rec time.Time) {
 // stream) is admitted as it is: the cap and the buckets count devices, not
 // types. Recovery creates devices unchecked.
 func (s *Store) device(k streamKey, admit bool) (*device, error) {
+	return s.deviceFor(k, admit, true)
+}
+
+// deviceFor is device; noteReason false leaves the refusal reason alone when
+// the sender isn't admitted, for a caller that doesn't count a refused
+// message either (the severity filter's counts: nothing of it was stored or
+// dropped, so it mustn't name the reason of a device_limit event).
+func (s *Store) deviceFor(k streamKey, admit, noteReason bool) (*device, error) {
 	if v, ok := s.devices.Load(k); ok {
 		return v.(*device), nil
 	}
@@ -644,7 +656,9 @@ func (s *Store) device(k streamKey, admit bool) (*device, error) {
 				// known senders can't turn every message into an eviction.
 				s.readmit.refill(now, s.opts.ReadmitPerSecond, s.opts.ReadmitPerSecond*60)
 				if s.readmit.tokens < 1 {
-					s.setRefuseReason("churn")
+					if noteReason {
+						s.setRefuseReason("churn")
+					}
 					return nil, ErrDeviceLimit
 				}
 				s.readmit.tokens--
@@ -652,11 +666,15 @@ func (s *Store) device(k streamKey, admit bool) (*device, error) {
 			}
 		} else {
 			if full {
-				s.setRefuseReason("cap")
+				if noteReason {
+					s.setRefuseReason("cap")
+				}
 				return nil, ErrDeviceLimit
 			}
 			if reason := s.takeTokenLocked(addr, now); reason != "" {
-				s.setRefuseReason(reason)
+				if noteReason {
+					s.setRefuseReason(reason)
+				}
 				return nil, ErrDeviceLimit
 			}
 		}

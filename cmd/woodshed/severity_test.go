@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
@@ -77,9 +81,23 @@ func TestSeverityFilterCommand(t *testing.T) {
 	if code != 0 || restarts != 1 || !strings.Contains(out, "Restarted the service") || !strings.Contains(out, "The 1 device with its own setting keeps it.") {
 		t.Errorf("restart: %d restarts=%d %q %q", code, restarts, out, errOut)
 	}
-	code, out, _ = runCLI("severity-filter", "err", "--no-restart", "--config", cfgPath)
-	if code != 0 || restarts != 1 || !strings.Contains(out, "uses the change when it next starts") {
-		t.Errorf("--no-restart: %d restarts=%d %q", code, restarts, out)
+	// --no-restart while it runs is refused: the service would write its own
+	// config back on its next save from the UI.
+	code, out, errOut = runCLI("severity-filter", "err", "--no-restart", "--config", cfgPath)
+	if code != 1 || restarts != 1 || out != "" || !strings.Contains(errOut, "Woodshed is running") || !strings.Contains(errOut, "nothing changed") {
+		t.Errorf("--no-restart while running: %d restarts=%d %q %q", code, restarts, out, errOut)
+	}
+	if c := loadCfg(t, cfgPath); c.Syslog.MinSeverity != "notice" {
+		t.Errorf("--no-restart changed it: %+v", c.Syslog)
+	}
+	lock.Unlock()
+	serviceStatus = func() (service.State, error) { return service.StateStopped, nil }
+	code, out, errOut = runCLI("severity-filter", "err", "--no-restart", "--config", cfgPath)
+	if code != 0 || restarts != 1 || !strings.Contains(out, "to store err and above") || errOut != "" {
+		t.Errorf("--no-restart while stopped: %d restarts=%d %q %q", code, restarts, out, errOut)
+	}
+	if c := loadCfg(t, cfgPath); c.Syslog.MinSeverity != "err" {
+		t.Errorf("--no-restart while stopped didn't save: %+v", c.Syslog)
 	}
 }
 
@@ -105,5 +123,35 @@ func TestStatusSeverityRows(t *testing.T) {
 	statusSeverityRows(w, cfg, rs)
 	if !strings.HasSuffix(b.String(), "; nothing left out in the last 24 h\n") {
 		t.Errorf("got %q", b.String())
+	}
+}
+
+// With the service stopped, a run-state file a crash left behind gives the
+// last run's counts, labelled so, with the file's time.
+func TestStatusSeverityRowsLastRun(t *testing.T) {
+	cfg := config.Default()
+	cfg.Storage.DataDir = t.TempDir()
+	cfg.Syslog.MinSeverity = "info"
+	st := server.RunState{PID: 1, SeverityFilter: &api.SeverityFilterStats{MinSeverity: "info", Filtered24h: 5,
+		BySeverity24h: map[string]int64{"debug": 5}, Devices24h: 1}}
+	raw, _ := json.Marshal(st)
+	path := filepath.Join(cfg.Storage.DataDir, server.StateFileName)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2026, 11, 20, 9, 30, 0, 0, time.Local)
+	os.Chtimes(path, when, when)
+	var b bytes.Buffer
+	statusSeverityRows(&tabw{w: &b}, cfg, nil)
+	want := "Severity:   stores info and above by default; not stored in the last run's last 24 h (as of 2026-11-20 09:30:00; Woodshed isn't running): 5 (5 debug from 1 device)\n"
+	if b.String() != want {
+		t.Errorf("got  %q\nwant %q", b.String(), want)
+	}
+	// No file (a clean stop removes it): the setting only.
+	os.Remove(path)
+	b.Reset()
+	statusSeverityRows(&tabw{w: &b}, cfg, nil)
+	if b.String() != "Severity:   stores info and above by default\n" {
+		t.Errorf("no file: %q", b.String())
 	}
 }

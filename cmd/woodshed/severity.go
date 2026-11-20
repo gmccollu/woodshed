@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -39,10 +40,11 @@ it sets that device's own ("default": follow the default again).
 
 Run it as an administrator (sudo): it saves the config, and a running service
 is restarted to use it (a second or two without listeners). The device's page
-and Settings in the web UI change it without a restart.`, stderr)
+and Settings in the web UI change it without a restart. --no-restart only
+saves the config, and is refused while the service runs.`, stderr)
 	cfgPath := configFlag(fs)
 	device := fs.String("device", "", "set this device's own filter instead of the default (its IP `address`, as on the Devices page)")
-	noRestart := fs.Bool("no-restart", false, "don't restart a running service (it uses the change when it next starts)")
+	noRestart := fs.Bool("no-restart", false, "only save the config, for a service that isn't running (refused while it runs: its next save from the web UI would undo the change)")
 	// The severity may come before, between or after the flags.
 	for _, a := range args {
 		if a == "-h" || a == "-help" || a == "--help" || a == "-?" {
@@ -112,6 +114,16 @@ and Settings in the web UI change it without a restart.`, stderr)
 	if err := checkWritable(filepath.Dir(abs)); err != nil {
 		return fail(stderr, "severity-filter", adminErr(err))
 	}
+	// A running service holds the config it started with and writes it back
+	// on its next settings or device save, so a change it never picked up
+	// would be undone without a word.
+	if *noRestart {
+		if inUse, _ := server.DataDirInUse(cfg.Storage.DataDir); inUse {
+			fmt.Fprintln(stderr, "woodshed severity-filter: Woodshed is running, and its next save from the web UI would undo a change it hasn't picked up; nothing changed.\n"+
+				"Run it without --no-restart (it restarts the service to use it), or change it on the device's page or in Settings.")
+			return 1
+		}
+	}
 	next := cfg.Clone()
 	var done string
 	if *device == "" {
@@ -148,10 +160,7 @@ and Settings in the web UI change it without a restart.`, stderr)
 	fmt.Fprintln(stdout, done)
 	dataDir := next.Storage.DataDir
 	if *noRestart {
-		if inUse, _ := server.DataDirInUse(dataDir); inUse {
-			fmt.Fprintln(stdout, "Woodshed is running; it uses the change when it next starts.")
-		}
-		return 0
+		return 0 // not running (checked above): it uses the change when it starts
 	}
 	before, _ := server.ReadState(dataDir)
 	switch a := applyToRunning("severity-filter", dataDir, stderr); a {
@@ -186,13 +195,22 @@ func showSeverityFilter(w io.Writer, s config.Syslog) {
 }
 
 // statusSeverityRows is `woodshed status`'s line for the severity filter:
-// the setting from the config, and the last 24 hours from the run-state
-// file when it can be read. Nothing while it stores everything and left
-// nothing out.
+// the setting from the config, and the last 24 hours' counts from the run
+// state (rs, or the running server's own run-state file). With the service
+// stopped, a run-state file a crash left behind is labelled as the last run's,
+// with its time, and with none only the setting is shown. Nothing while it
+// stores everything and left nothing out.
 func statusSeverityRows(w *tabw, cfg config.Config, rs *server.RunState) {
+	var lastRun time.Time
 	if rs == nil {
-		if got, err := server.ReadState(cfg.Storage.DataDir); err == nil {
+		if got, ok := server.RunningState(cfg.Storage.DataDir); ok {
 			rs = &got
+		} else if got, err := server.ReadState(cfg.Storage.DataDir); err == nil {
+			rs = &got
+			lastRun = got.StartedAt
+			if fi, err := os.Stat(filepath.Join(cfg.Storage.DataDir, server.StateFileName)); err == nil {
+				lastRun = fi.ModTime()
+			}
 		}
 	}
 	filtering := cfg.Syslog.Filtering()
@@ -206,8 +224,12 @@ func statusSeverityRows(w *tabw, cfg config.Config, rs *server.RunState) {
 	}
 	if rs != nil && rs.SeverityFilter != nil {
 		f := rs.SeverityFilter
+		span := "in the last 24 h"
+		if !lastRun.IsZero() {
+			span = "in the last run's last 24 h (as of " + lastRun.Local().Format("2006-01-02 15:04:05") + "; Woodshed isn't running)"
+		}
 		if f.Filtered24h == 0 {
-			text += "; nothing left out in the last 24 h"
+			text += "; nothing left out " + span
 		} else {
 			var parts []string
 			for i := 7; i >= 0; i-- {
@@ -215,7 +237,7 @@ func statusSeverityRows(w *tabw, cfg config.Config, rs *server.RunState) {
 					parts = append(parts, datatype.Thousands(n)+" "+config.SeverityNames[i])
 				}
 			}
-			text += fmt.Sprintf("; not stored in the last 24 h: %s (%s from %d %s)", datatype.Thousands(f.Filtered24h), strings.Join(parts, ", "),
+			text += fmt.Sprintf("; not stored %s: %s (%s from %d %s)", span, datatype.Thousands(f.Filtered24h), strings.Join(parts, ", "),
 				f.Devices24h, map[bool]string{true: "device", false: "devices"}[f.Devices24h == 1])
 		}
 	}

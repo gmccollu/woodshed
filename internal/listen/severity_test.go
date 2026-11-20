@@ -104,7 +104,7 @@ func TestSeverityFilterOverSockets(t *testing.T) {
 		o.SeverityFilter = &SeverityFilter{Min: 7, ByDevice: map[netip.Addr]int{netip.MustParseAddr("127.0.0.1"): 6}}
 	})
 	const lo = "127.0.0.1"
-	sendUDP(t, udpAddr(t, s), "<15>udp debug 1", "<15>udp debug 2", "<14>udp info", "udp no pri", "<11>udp err")
+	sendUDPSeen(t, s, "<15>udp debug 1", "<15>udp debug 2", "<14>udp info", "udp no pri", "<11>udp err")
 	tcp, err := net.Dial("tcp", tcpAddr(t, s))
 	if err != nil {
 		t.Fatal(err)
@@ -129,9 +129,11 @@ func TestSeverityFilterOverSockets(t *testing.T) {
 
 	// The override changes on the open connections: notice and above.
 	s.SetSeverityFilter(SeverityFilter{Min: 7, ByDevice: map[netip.Addr]int{netip.MustParseAddr(lo): 5}})
+	// UDP first: sendUDPSeen counts what the listeners took in, so nothing
+	// else may be in flight while it waits.
+	sendUDPSeen(t, s, "<14>udp info now filtered", "<12>udp warning kept")
 	tcp.Write([]byte("<14>tcp info now filtered\n<13>tcp notice kept\n"))
 	tl.Write([]byte("<14>tls info now filtered\n<12>tls warning kept\n"))
-	sendUDP(t, udpAddr(t, s), "<14>udp info now filtered", "<12>udp warning kept")
 	got = raws(t, c, 8)
 	for _, m := range got {
 		if strings.Contains(m, "now filtered") {
@@ -190,5 +192,56 @@ func TestSeverityFilterBeforeTheQueue(t *testing.T) {
 	}
 	if n := fc.of("192.0.2.10"); n[7] != 3*config.MinUDPQueueMessages {
 		t.Fatalf("filtered %v", n)
+	}
+}
+
+// The filter reads the PRI from the bytes that are stored and parsed: a PRI
+// past the max message size (after a long run of blanks) isn't in the stored
+// copy, which has no severity, so the message is kept, as Parse sees it.
+func TestSeverityFilterReadsTheStoredBytes(t *testing.T) {
+	var fc filterCounts
+	s, c, _ := start(t, config.Listeners{MaxMessageBytes: config.MinMaxMessageBytes}, func(o *Options) {
+		o.OnFiltered = fc.add
+		o.SeverityFilter = &SeverityFilter{Min: 6}
+	})
+	from := netip.MustParseAddr("192.0.2.10")
+	s.deliver([]byte(strings.Repeat(" ", config.MinMaxMessageBytes)+"<15>debug past the cut"), from, false, frameEnd{})
+	s.deliver([]byte("<15>debug"), from, false, frameEnd{})
+	s.deliver([]byte("<14>info"), from, false, frameEnd{})
+	got := c.wait(t, 2)
+	if len(got) != 2 || got[0].Severity != -1 || !got[0].Truncated || string(got[1].Raw) != "<14>info" {
+		t.Fatalf("kept %+v", got)
+	}
+	if n := fc.of("192.0.2.10"); n[7] != 1 {
+		t.Errorf("filtered %v", n)
+	}
+}
+
+// sendUDPSeen sends each datagram and waits until the listener took it in
+// (handed on or left out), sending it again if loopback lost it: these tests
+// are about the filter, not UDP's losses.
+func sendUDPSeen(t *testing.T, s *Server, msgs ...string) {
+	t.Helper()
+	c, err := net.Dial("udp", udpAddr(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	seen := func() int64 { st := s.Status(); return st.Received + st.Filtered }
+	for _, m := range msgs {
+		before, ok := seen(), false
+		for try := 0; try < 5 && !ok; try++ {
+			if _, err := c.Write([]byte(m)); err != nil {
+				t.Fatal(err)
+			}
+			for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+				if ok = seen() > before; ok {
+					break
+				}
+			}
+		}
+		if !ok {
+			t.Fatalf("the listener never got %q", m)
+		}
 	}
 }

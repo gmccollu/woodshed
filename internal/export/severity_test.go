@@ -2,6 +2,7 @@ package export
 
 import (
 	"encoding/json"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -107,4 +108,57 @@ func TestSeverityReadmeWords(t *testing.T) {
 	if none.readme(tf) != "" {
 		t.Error("nil summary")
 	}
+}
+
+// A device whose syslog in the window was all left out by the severity filter
+// is an active device: it gets its entry and says "heard, nothing stored"; and
+// a window where only left-out messages arrived builds instead of failing
+// "No device stored anything".
+func TestBundleFilteredOnlyDevice(t *testing.T) {
+	be := newBundleEnv(t)
+	ap := netip.MustParseAddr("192.0.2.77")
+	for _, at := range []time.Time{time.Date(2026, 11, 14, 0, 1, 0, 0, time.UTC), time.Date(2026, 11, 14, 3, 1, 0, 0, time.UTC)} {
+		be.clock.Set(at)
+		for i := 0; i < 5; i++ {
+			be.st.Filtered(ap, at, 7)
+		}
+		be.st.Filtered(ap, at, 6)
+		be.st.Maintain()
+	}
+	be.clock.Set(time.Date(2026, 11, 14, 4, 0, 0, 0, time.UTC))
+	m := be.manager(func(o *Options) {
+		o.SeverityFilter = func(id string) (int, bool) { return 5, id == "192.0.2.77" }
+	})
+	check := func(r Request, devices int) {
+		t.Helper()
+		in, err := m.Create(bg, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in = wait(t, m, in.ID, Ready)
+		files, _ := readZip(t, m, in.ID)
+		readme := string(files["README.txt"])
+		if want := "  Syslog       heard, nothing stored (severity filter): 5 debug and 1 info\n"; !strings.Contains(readme, want) {
+			t.Errorf("README lacks %q:\n%s", want, readme)
+		}
+		var man Manifest
+		if err := json.Unmarshal(files["manifest.json"], &man); err != nil {
+			t.Fatal(err)
+		}
+		if len(man.Summary) != devices {
+			t.Fatalf("%d devices in the summary", len(man.Summary))
+		}
+		var s *SeverityFilterSummary
+		for _, d := range man.Summary {
+			if d.DeviceID == "192.0.2.77" {
+				s = d.SeverityFilter
+			}
+		}
+		if s == nil || s.NotStored != 6 || s.MinSeverity != "notice" || !s.Own {
+			t.Errorf("the access point's entry %+v", s)
+		}
+	}
+	check(be.bundleRequest(), 3)
+	at := time.Date(2026, 11, 14, 3, 5, 0, 0, time.UTC)
+	check(Request{Filters: Filters{Kind: KindBundle, At: &at, Before: 30 * time.Minute, After: 10 * time.Minute, ActiveDevices: true}}, 1)
 }

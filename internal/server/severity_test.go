@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/loadgen"
+	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/tlscert"
 )
 
@@ -22,9 +24,40 @@ type sevSender struct {
 	t        *testing.T
 	udp, tcp net.Conn
 	tls      *tls.Conn
+	r        *running
 }
 
-func newSevSender(t *testing.T, port, tlsPort int, dataDir string) *sevSender {
+// seen is how many messages the listeners took in: handed on or left out.
+func (s *sevSender) seen() int64 {
+	ln := s.r.srv.be.ln.Load()
+	if ln == nil {
+		return 0
+	}
+	st := ln.Status()
+	return st.Received + st.Filtered
+}
+
+// sendUDP sends one datagram and waits until the listener has it, sending it
+// again if loopback lost it (UDP may; nothing here is about that).
+func (s *sevSender) sendUDP(raw string) {
+	s.t.Helper()
+	before := s.seen()
+	for try := 0; try < 5; try++ {
+		if _, err := s.udp.Write([]byte(raw)); err != nil {
+			s.t.Fatal(err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if s.seen() > before {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	s.t.Fatalf("the listener never got %q", raw)
+}
+
+func newSevSender(t *testing.T, r *running, port, tlsPort int, dataDir string) *sevSender {
 	t.Helper()
 	caFile := filepath.Join(t.TempDir(), "ca.pem")
 	pem, err := os.ReadFile(filepath.Join(dataDir, tlscert.CAFile))
@@ -36,7 +69,7 @@ func newSevSender(t *testing.T, port, tlsPort int, dataDir string) *sevSender {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &sevSender{t: t}
+	s := &sevSender{t: t, r: r}
 	if s.udp, err = net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", port)); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +100,7 @@ func (s *sevSender) phase(tag string) (sent []string) {
 				var err error
 				switch proto {
 				case "udp":
-					_, err = s.udp.Write([]byte(raw))
+					s.sendUDP(raw)
 				case "tcp":
 					_, err = s.tcp.Write([]byte(raw + "\n"))
 				case "tls":
@@ -124,7 +157,7 @@ func TestSeverityFilterEndToEnd(t *testing.T) {
 	})
 	dataDir := filepath.Join(dir, "data")
 	r := start(t, cfgPath)
-	snd := newSevSender(t, port, tlsPort, dataDir)
+	snd := newSevSender(t, r, port, tlsPort, dataDir)
 	const id = "127.0.0.1"
 
 	// Phase 1: no override, the default (notice and above): per protocol the
@@ -199,12 +232,13 @@ func TestSeverityFilterEndToEnd(t *testing.T) {
 	for _, e := range evs {
 		if e.Kind == index.KindSeverityFilter {
 			texts = append(texts, e.Text)
-			if e.DeviceID != id {
+			if e.DeviceID != id && e.DeviceID != "" {
 				t.Errorf("event %+v", e)
 			}
 		}
 	}
-	if strings.Join(texts, "|") != "severity filter for 127.0.0.1 set to info and above|severity filter for 127.0.0.1 set to the default (notice and above)" {
+	if strings.Join(texts, "|") != "default severity filter set to notice and above, was everything (changed while Woodshed was stopped)|"+
+		"severity filter for 127.0.0.1 set to info and above|severity filter for 127.0.0.1 set to the default (notice and above)" {
 		t.Errorf("events %q", texts)
 	}
 
@@ -237,12 +271,13 @@ func TestSeverityFilterSettings(t *testing.T) {
 	cfgPath := writeConfig(t, dir, port, 0, nil)
 	r := start(t, cfgPath)
 	const id = "127.0.0.1"
-	c, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", port))
+	// TCP: this test is about the settings, not UDP, so no datagram can be lost.
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	c.Write([]byte("<15>debug before"))
+	c.Write([]byte("<15>debug before\n"))
 	waitFor(t, "the first message", func() bool { return deviceOf(t, r, id).TotalMsgs == 1 })
 
 	var set api.Settings
@@ -267,8 +302,7 @@ func TestSeverityFilterSettings(t *testing.T) {
 	if err != nil || cfg.Syslog.MinSeverity != "warning" || cfg.Syslog.MinSeverityByDevice[id] != "notice" {
 		t.Fatalf("config %+v %v", cfg.Syslog, err)
 	}
-	c.Write([]byte("<14>info after"))
-	c.Write([]byte("<13>notice after"))
+	c.Write([]byte("<14>info after\n<13>notice after\n"))
 	waitFor(t, "the notice", func() bool { d := deviceOf(t, r, id); return d.TotalMsgs == 2 && d.Filtered24h == 1 })
 
 	set.Syslog.MinSeverity = "loud"
@@ -293,5 +327,173 @@ func TestSeverityFilterSettings(t *testing.T) {
 		"default severity filter set to warning and above (was everything); 1 device keeps its own setting"}
 	if strings.Join(texts, "|") != strings.Join(want, "|") {
 		t.Errorf("events %q", texts)
+	}
+}
+
+// The run-state file (rewritten every second), /api/stats and the device
+// list read the severity filter's 24-hour counts from memory: none of them
+// queries the index's filtered counts, however many devices and minutes it
+// holds (SPEC §13.10 decision 86).
+func TestSeverityCountsStayOffTheIndex(t *testing.T) {
+	dir := t.TempDir()
+	port := freePort(t)
+	cfgPath := writeConfig(t, dir, port, 0, func(c *config.Config) { c.Syslog.MinSeverity = "info" })
+	r := start(t, cfgPath)
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprint(c, "<15>left out\n<15>left out\n<14>kept\n")
+	waitFor(t, "counted", func() bool { d := deviceOf(t, r, "127.0.0.1"); return d.TotalMsgs == 1 && d.Filtered24h == 2 })
+
+	before := r.srv.be.idx.FilteredReads()
+	for i := 0; i < 5; i++ {
+		var rs RunState
+		r.srv.be.fillRunState(&rs)
+		if rs.SeverityFilter == nil || rs.SeverityFilter.Filtered24h != 2 {
+			t.Fatalf("run state %+v", rs.SeverityFilter)
+		}
+	}
+	var st api.Stats
+	r.do(t, "GET", "/api/stats", nil, &st)
+	if st.SeverityFilter.Filtered24h != 2 {
+		t.Fatalf("stats %+v", st.SeverityFilter)
+	}
+	if d := deviceOf(t, r, "127.0.0.1"); d.FilteredBySeverity24h["debug"] != 2 {
+		t.Fatalf("device %+v", d)
+	}
+	if n := r.srv.be.idx.FilteredReads() - before; n != 0 {
+		t.Fatalf("%d index reads of the filtered counts", n)
+	}
+}
+
+// A change made while Woodshed was stopped (woodshed severity-filter, a hand
+// edit of the config) is recorded as an event at the next start, once; a
+// start with nothing changed records none.
+func TestSeverityFilterChangedWhileStopped(t *testing.T) {
+	dir := t.TempDir()
+	port := freePort(t)
+	cfgPath := writeConfig(t, dir, port, 0, nil)
+	r := start(t, cfgPath)
+	r.stop(t)
+	cfg, err := config.Read(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Syslog.MinSeverity = "info"
+	cfg.Syslog.SetDevice(netip.MustParseAddr("192.0.2.10"), 3)
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	r = start(t, cfgPath)
+	r.stop(t)
+	cfg, _ = config.Read(cfgPath)
+	cfg.Syslog.SetDevice(netip.MustParseAddr("192.0.2.10"), -1)
+	config.Save(cfgPath, cfg)
+	r = start(t, cfgPath)
+	r.stop(t)
+	r = start(t, cfgPath) // nothing changed
+	evs, err := r.srv.be.idx.Events(t.Context(), time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, e := range evs {
+		if e.Kind == index.KindSeverityFilter {
+			texts = append(texts, e.DeviceID+": "+e.Text)
+		}
+	}
+	want := []string{
+		": default severity filter set to info and above, was everything (changed while Woodshed was stopped)",
+		"192.0.2.10: severity filter for 192.0.2.10 set to err and above (changed while Woodshed was stopped)",
+		"192.0.2.10: severity filter for 192.0.2.10 set to the default, info and above (changed while Woodshed was stopped)",
+	}
+	if strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Errorf("events\n%s", strings.Join(texts, "\n"))
+	}
+}
+
+// Device IDs parse back as model.DeviceID builds them, zones included.
+func TestDeviceIPParsesIDs(t *testing.T) {
+	for _, c := range []struct {
+		id, want string
+	}{
+		{"192.0.2.10", "192.0.2.10"},
+		{"2001_db8__1", "2001:db8::1"},
+		{"fe80__1_en0", "fe80::1%en0"},
+		{"fe80__1_eth0_1", "fe80::1%eth0_1"},
+		{"fe80__1", "fe80::1"},
+		{"refused", ""},
+		{"", ""},
+		{"fe80__1_", ""},
+	} {
+		a, ok := deviceIP(c.id)
+		if got := map[bool]string{true: a.String(), false: ""}[ok]; got != c.want {
+			t.Errorf("%q: %q, want %q", c.id, got, c.want)
+		}
+		if ok {
+			if back := model.DeviceID(a); back != c.id {
+				t.Errorf("%q round trip %q", c.id, back)
+			}
+		}
+	}
+}
+
+// A link-local sender's device (its ID carries the zone) takes its own
+// setting and shows it; a device ID without an address is a 400, not a 500.
+func TestSeverityFilterZonedDevice(t *testing.T) {
+	dir := t.TempDir()
+	r := start(t, writeConfig(t, dir, freePort(t), 0, nil))
+	at := time.Now().UTC().Truncate(time.Minute)
+	if err := r.srv.be.idx.Apply(t.Context(), index.Batch{Activity: []index.Activity{
+		{DeviceID: "fe80__1_en0", IP: "fe80::1%en0", Minute: at, FirstHeard: at, LastHeard: at, Counts: index.Counts{Msgs: 1}},
+		{DeviceID: "no-address", IP: "", Minute: at, FirstHeard: at, LastHeard: at, Counts: index.Counts{Msgs: 1}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var d api.Device
+	if code := r.do(t, "PATCH", "/api/devices/fe80__1_en0", map[string]any{"min_severity": "Info"}, &d); code != 200 ||
+		d.MinSeverity != "info" || d.MinSeverityEffective != "info" {
+		t.Fatalf("zoned PATCH %d %+v", code, d)
+	}
+	if got := deviceOf(t, r, "fe80__1_en0"); got.MinSeverity != "info" {
+		t.Fatalf("zoned device %+v", got)
+	}
+	if code := r.do(t, "PATCH", "/api/devices/fe80__1_en0", map[string]any{"min_severity": "Default"}, &d); code != 200 || d.MinSeverity != "default" {
+		t.Fatalf("Default %d %+v", code, d)
+	}
+	var e struct {
+		Errors map[string]string `json:"errors"`
+	}
+	if code := r.do(t, "PATCH", "/api/devices/no-address", map[string]any{"min_severity": "info"}, &e); code != 400 || e.Errors["min_severity"] == "" {
+		t.Fatalf("no address %d %v", code, e)
+	}
+}
+
+// The CLI trusts a run-state file's config only while its writer holds the
+// data folder's lock: not after the server stopped (a crash leaves the file),
+// and not when the file's PID isn't the lock holder's.
+func TestRunningState(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeState(dir, RunState{PID: os.Getpid(), Config: "/x/woodshed.toml"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := RunningState(dir); ok {
+		t.Fatal("trusted without the lock")
+	}
+	lock, err := LockDataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Unlock()
+	if rs, ok := RunningState(dir); !ok || rs.Config != "/x/woodshed.toml" {
+		t.Fatalf("the holder's %+v %v", rs, ok)
+	}
+	if err := writeState(dir, RunState{PID: os.Getpid() + 1, Config: "/x/woodshed.toml"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := RunningState(dir); ok {
+		t.Fatal("trusted a file that isn't the lock holder's")
 	}
 }

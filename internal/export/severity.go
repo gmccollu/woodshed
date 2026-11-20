@@ -90,16 +90,7 @@ func (s *SeverityFilterSummary) readme(tf timeFmt) string {
 	if s.NotStored == 0 {
 		return join(setting, "nothing was left out in this window")
 	}
-	var parts []string
-	for i := 7; i >= 0; i-- {
-		if n := s.NotStoredBySeverity[datatype.SeverityNames[i]]; n > 0 {
-			parts = append(parts, datatype.Thousands(n)+" "+datatype.SeverityNames[i])
-		}
-	}
-	what := strings.Join(parts, ", ")
-	if len(parts) > 1 {
-		what = strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
-	}
+	what := s.counts()
 	msgs := "messages"
 	if s.NotStored == 1 {
 		msgs = "message"
@@ -119,4 +110,19 @@ func join(a, b string) string {
 		return b
 	}
 	return a + "; " + b
+}
+
+// counts names the left-out messages by severity, least severe first:
+// "12,345 debug and 2 info".
+func (s *SeverityFilterSummary) counts() string {
+	var parts []string
+	for i := 7; i >= 0; i-- {
+		if n := s.NotStoredBySeverity[datatype.SeverityNames[i]]; n > 0 {
+			parts = append(parts, datatype.Thousands(n)+" "+datatype.SeverityNames[i])
+		}
+	}
+	if len(parts) > 1 {
+		return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+	}
+	return strings.Join(parts, ", ")
 }

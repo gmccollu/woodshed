@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/gmccollu/woodshed/internal/peer"
 )
 
 // LockFileName is the file in the data dir that a running Woodshed holds an
@@ -82,4 +84,29 @@ func DataDirInUse(dataDir string) (bool, error) {
 	}
 	_ = unlockFile(f)
 	return false, nil
+}
+
+// RunningState is the run-state file of the server that holds dataDir's lock
+// now: ok only while the lock is held and the file's PID is the one the
+// holder wrote into the lock file, so a file a crashed or older run left
+// behind isn't taken for the running server's.
+func RunningState(dataDir string) (RunState, bool) {
+	if inUse, err := DataDirInUse(dataDir); err != nil || !inUse {
+		return RunState{}, false
+	}
+	rs, err := ReadState(dataDir)
+	if err != nil || rs.PID == 0 {
+		return RunState{}, false
+	}
+	b, err := os.ReadFile(filepath.Join(dataDir, LockFileName))
+	if err != nil {
+		// Windows: the holder's LockFileEx covers the byte the PID starts at,
+		// so another process can't read it. The state's PID must be alive.
+		return rs, peer.ProcessAlive(rs.PID)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(string(b), "%d", &pid); err != nil || pid != rs.PID {
+		return RunState{}, false
+	}
+	return rs, true
 }

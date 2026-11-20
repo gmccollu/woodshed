@@ -3,12 +3,15 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/listen"
+	"github.com/gmccollu/woodshed/internal/model"
 )
 
 // The syslog severity filter (SPEC §13.10 decision 86): the config holds the
@@ -45,7 +48,7 @@ func (b *backend) deviceSeverity(id string) (level int, own bool) {
 func (b *backend) setDeviceSeverity(d index.Device, v string) error {
 	ip, ok := deviceIP(d.ID)
 	if !ok {
-		return fmt.Errorf("device %q has no address", d.ID)
+		return &api.RequestError{Msg: fmt.Sprintf("device %q has no address, so it can't have its own severity filter", d.ID)}
 	}
 	level := -1
 	if v != config.SeverityDefault {
@@ -69,6 +72,7 @@ func (b *backend) setDeviceSeverity(d index.Device, v string) error {
 	b.cfg = next.Clone()
 	b.cfgMu.Unlock()
 	b.applySeverityFilter(next.Syslog)
+	b.recordSeverityFilter(next.Syslog)
 	who := ip.String()
 	if d.Name != "" {
 		who += " (" + d.Name + ")"
@@ -96,6 +100,7 @@ func (b *backend) defaultSeverityChanged(cur, next config.Syslog) {
 		return
 	}
 	b.applySeverityFilter(next)
+	b.recordSeverityFilter(next)
 	text := fmt.Sprintf("default severity filter set to %s (was %s)", filterPhrase(next.Level()), config.SeverityPhrase(cur.Level()))
 	switch n := len(next.DeviceLevels()); n {
 	case 0:
@@ -127,9 +132,9 @@ func sevMap(c index.SevCounts) map[string]int64 {
 }
 
 // markSeverity fills the devices' severity filter fields: the setting from
-// the config, the last 24 hours' counts from the index (one query for the
-// page, through the partial index: devices with none cost nothing).
-func (b *backend) markSeverity(ctx context.Context, ds []api.Device) error {
+// the config, the last 24 hours' counts from the store's running totals
+// (memory, never the index).
+func (b *backend) markSeverity(_ context.Context, ds []api.Device) error {
 	if len(ds) == 0 {
 		return nil
 	}
@@ -138,10 +143,7 @@ func (b *backend) markSeverity(ctx context.Context, ds []api.Device) error {
 	for i, d := range ds {
 		ids[i] = d.ID
 	}
-	counts, err := b.idx.FilteredCounts(ctx, ids, b.now().Add(-24*time.Hour), time.Time{})
-	if err != nil {
-		return err
-	}
+	counts := b.store.Filtered24h(ids)
 	for i := range ds {
 		d := &ds[i]
 		level, own := cfg.Syslog.Level(), false
@@ -159,14 +161,12 @@ func (b *backend) markSeverity(ctx context.Context, ds []api.Device) error {
 	return nil
 }
 
-// severityStats is /api/stats severity_filter.
-func (b *backend) severityStats(ctx context.Context) (api.SeverityFilterStats, error) {
+// severityStats is /api/stats severity_filter, and the run-state file's
+// (written every second): from the store's running totals, never the index.
+func (b *backend) severityStats(context.Context) (api.SeverityFilterStats, error) {
 	cfg := b.config()
 	st := api.SeverityFilterStats{MinSeverity: config.SeverityName(cfg.Syslog.Level()), DeviceOverrides: len(cfg.Syslog.DeviceLevels())}
-	by, err := b.idx.FilteredCounts(ctx, nil, b.now().Add(-24*time.Hour), time.Time{})
-	if err != nil {
-		return st, err
-	}
+	by := b.store.Filtered24h(nil)
 	var tot index.SevCounts
 	for id, c := range by {
 		tot.Add(c)
@@ -176,4 +176,84 @@ func (b *backend) severityStats(ctx context.Context) (api.SeverityFilterStats, e
 	}
 	st.Filtered24h, st.BySeverity24h = tot.Total(), sevMap(tot)
 	return st, nil
+}
+
+// filterState is the config's filter as the index records it.
+func filterState(c config.Syslog) index.SeverityFilterState {
+	st := index.SeverityFilterState{Default: c.Level(), ByDevice: map[string]int{}}
+	for a, l := range c.DeviceLevels() {
+		st.ByDevice[a.String()] = l
+	}
+	return st
+}
+
+// recordSeverityFilter records the filter the server now runs with, for the
+// next start's comparison (severityChangedWhileStopped).
+func (b *backend) recordSeverityFilter(c config.Syslog) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := b.idx.RecordSeverityFilter(ctx, filterState(c)); err != nil {
+		b.log.Warn("couldn't record the severity filter", "err", err)
+	}
+}
+
+// severityChangedWhileStopped compares the filter this start runs with to the
+// one the last run recorded and records an event for each difference (the
+// CLI and hand edits of the config change it while Woodshed is stopped), then
+// records the new one. An index that never recorded one (2.0, or a new
+// index) compares with no filter, which is what ran before.
+func (b *backend) severityChangedWhileStopped(c config.Syslog) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prev, ok, err := b.idx.RecordedSeverityFilter(ctx)
+	if err != nil {
+		b.log.Warn("couldn't read the recorded severity filter", "err", err)
+		return
+	}
+	if !ok {
+		prev = index.SeverityFilterState{Default: config.SeverityDebug, ByDevice: map[string]int{}}
+	}
+	cur := filterState(c)
+	const why = " (changed while Woodshed was stopped)"
+	if cur.Default != prev.Default {
+		b.severityEvent("", fmt.Sprintf("default severity filter set to %s, was %s%s", filterPhrase(cur.Default), config.SeverityPhrase(prev.Default), why))
+	}
+	addrs := map[string]bool{}
+	for a := range cur.ByDevice {
+		addrs[a] = true
+	}
+	for a := range prev.ByDevice {
+		addrs[a] = true
+	}
+	sorted := make([]string, 0, len(addrs))
+	for a := range addrs {
+		sorted = append(sorted, a)
+	}
+	slices.Sort(sorted)
+	for _, a := range sorted {
+		now, has := cur.ByDevice[a]
+		was, had := prev.ByDevice[a]
+		if has == had && now == was {
+			continue
+		}
+		ip, err := netip.ParseAddr(a)
+		if err != nil {
+			continue
+		}
+		id := model.DeviceID(ip)
+		who := a
+		if d, err := b.idx.Device(ctx, id); err == nil && d.Name != "" {
+			who += " (" + d.Name + ")"
+		}
+		text := fmt.Sprintf("severity filter for %s set to %s%s", who, filterPhrase(now), why)
+		if !has {
+			text = fmt.Sprintf("severity filter for %s set to the default, %s%s", who, filterPhrase(cur.Default), why)
+		}
+		b.severityEvent(id, text)
+	}
+	if !ok || cur.Default != prev.Default || len(sorted) > 0 {
+		if err := b.idx.RecordSeverityFilter(ctx, cur); err != nil {
+			b.log.Warn("couldn't record the severity filter", "err", err)
+		}
+	}
 }

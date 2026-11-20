@@ -3,9 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/gmccollu/woodshed/internal/model"
 	"net/netip"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
@@ -25,11 +25,8 @@ func (b *backend) blocker() blocker {
 
 func (k blocker) empty() bool { return len(k.prefixes) == 0 }
 
-// deviceIP is a device ID's address (IDs are IPs with ':' as '_').
-func deviceIP(id string) (netip.Addr, bool) {
-	a, err := netip.ParseAddr(strings.ReplaceAll(id, "_", ":"))
-	return a.Unmap(), err == nil
-}
+// deviceIP is a device ID's address (model.ParseDeviceID).
+func deviceIP(id string) (netip.Addr, bool) { return model.ParseDeviceID(id) }
 
 func (k blocker) blocked(id string) bool {
 	if k.empty() {

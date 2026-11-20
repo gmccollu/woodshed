@@ -89,6 +89,7 @@ func sevDest(c *SevCounts) []any {
 // every device (RefusedDeviceID included: messages from senders the device
 // limits didn't admit); devices with none are absent.
 func (d *DB) FilteredCounts(ctx context.Context, deviceIDs []string, from, to time.Time) (map[string]SevCounts, error) {
+	d.filteredReads.Add(1)
 	fromMin, fromHour := ms(from.UTC().Truncate(time.Minute)), ms(from.UTC().Truncate(time.Hour))
 	if from.IsZero() {
 		fromMin, fromHour = 0, 0
@@ -133,6 +134,7 @@ func (d *DB) FilteredCounts(ctx context.Context, deviceIDs []string, from, to ti
 // FilteredTotal sums every device's filtered counts over [from, now), like
 // FilteredCounts (RefusedDeviceID included).
 func (d *DB) FilteredTotal(ctx context.Context, from time.Time) (SevCounts, error) {
+	d.filteredReads.Add(1)
 	var c SevCounts
 	err := d.db.QueryRowContext(ctx, `SELECT `+filteredSums+` FROM (
 		SELECT `+strings.Join(filteredCols(""), ", ")+` FROM stats INDEXED BY stats_filtered WHERE `+filteredAny+` AND minute >= ?
@@ -161,6 +163,7 @@ type FilteredWindow struct {
 // in the span. kept is the stats retention cutoff (now - StatsRetention;
 // zero: none).
 func (d *DB) FilteredIn(ctx context.Context, deviceID string, from, to, kept time.Time) (FilteredWindow, error) {
+	d.filteredReads.Add(1)
 	out := FilteredWindow{From: from.UTC().Truncate(time.Minute), To: to.UTC()}
 	if t := out.To.Truncate(time.Minute); t.Before(out.To) {
 		out.To = t.Add(time.Minute)
@@ -180,24 +183,31 @@ func (d *DB) FilteredIn(ctx context.Context, deviceID string, from, to, kept tim
 			}
 		}
 	}
-	for _, q := range []struct {
-		table, col string
-		lo         time.Time
-	}{{"stats", "minute", out.From}, {"stats_hourly", "hour", hourLo}} {
+	// One statement, so a rollup between reading the minutes and the hours
+	// can't count a bucket twice (or not at all).
+	rows, err := d.db.QueryContext(ctx, `SELECT 0, `+filteredSums+`, count(*), max(minute) FROM stats INDEXED BY stats_filtered`+
+		` WHERE `+filteredAny+` AND device_id = ? AND minute >= ? AND minute < ?
+		UNION ALL
+		SELECT 1, `+filteredSums+`, count(*), max(hour) FROM stats_hourly INDEXED BY stats_hourly_filtered`+
+		` WHERE `+filteredAny+` AND device_id = ? AND hour >= ? AND hour < ?`,
+		deviceID, ms(out.From), ms(to), deviceID, ms(hourLo), ms(to))
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var hourly int
 		var c SevCounts
 		var n int64
 		var hi sql.NullInt64
-		err := d.db.QueryRowContext(ctx, `SELECT `+filteredSums+`, count(*), max(`+q.col+`) FROM `+q.table+` INDEXED BY `+q.table+`_filtered`+
-			` WHERE `+filteredAny+` AND device_id = ? AND `+q.col+` >= ? AND `+q.col+` < ?`, deviceID, ms(q.lo), ms(to)).
-			Scan(append(sevDest(&c), &n, &hi)...)
-		if err != nil {
+		if err := rows.Scan(append(append([]any{&hourly}, sevDest(&c)...), &n, &hi)...); err != nil {
 			return out, err
 		}
 		if n == 0 {
 			continue
 		}
 		out.SevCounts.Add(c)
-		if q.table == "stats_hourly" {
+		if hourly == 1 {
 			out.ByHour = true
 			out.From = hourLo
 			if t := tm(hi.Int64).Add(time.Hour); t.After(out.To) {
@@ -205,5 +215,111 @@ func (d *DB) FilteredIn(ctx context.Context, deviceID string, from, to, kept tim
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
 	return out, nil
+}
+
+// FilteredByHour returns each device's filtered counts per unix hour from
+// from's hour on (minute buckets summed into their hour), in one statement so
+// a rollup can't move a bucket between the two tables mid-read. The store
+// seeds its running 24-hour totals from it at Open.
+func (d *DB) FilteredByHour(ctx context.Context, from time.Time) (map[string]map[int64]SevCounts, error) {
+	fromHour := ms(from.UTC().Truncate(time.Hour))
+	cols := strings.Join(filteredCols(""), ", ")
+	d.filteredReads.Add(1)
+	rows, err := d.db.QueryContext(ctx, `SELECT device_id, h, `+filteredSums+` FROM (
+		SELECT device_id, (minute / 3600000) * 3600000 AS h, `+cols+` FROM stats INDEXED BY stats_filtered WHERE `+filteredAny+` AND minute >= ?
+		UNION ALL
+		SELECT device_id, hour AS h, `+cols+` FROM stats_hourly INDEXED BY stats_hourly_filtered WHERE `+filteredAny+` AND hour >= ?)
+		GROUP BY device_id, h`, fromHour, fromHour)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[int64]SevCounts{}
+	for rows.Next() {
+		var id string
+		var h int64
+		var c SevCounts
+		if err := rows.Scan(append([]any{&id, &h}, sevDest(&c)...)...); err != nil {
+			return nil, err
+		}
+		if out[id] == nil {
+			out[id] = map[int64]SevCounts{}
+		}
+		out[id][h/3600000] = c
+	}
+	return out, rows.Err()
+}
+
+// FilteredReads counts the queries over the filtered counts since Open, for
+// tests that a path stays off the index.
+func (d *DB) FilteredReads() int64 { return d.filteredReads.Load() }
+
+// The severity filter the server last ran with, in index_meta (keys
+// "sevf.default" and "sevf.device:<address>", values the level + 1), so a
+// start can record a change made while it was stopped (the CLI, a hand
+// edit) as an event.
+const (
+	sevfDefaultKey = "sevf.default"
+	sevfDevicePfx  = "sevf.device:"
+)
+
+// SeverityFilterState is the filter recorded by RecordSeverityFilter.
+type SeverityFilterState struct {
+	Default  int
+	ByDevice map[string]int // by address
+}
+
+// RecordedSeverityFilter returns the last recorded filter; ok is false when
+// none was ever recorded (an index from before 2.1's first start).
+func (d *DB) RecordedSeverityFilter(ctx context.Context) (st SeverityFilterState, ok bool, err error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT key, value FROM index_meta WHERE key = ? OR (key >= ? AND key < ?)`,
+		sevfDefaultKey, sevfDevicePfx, sevfDevicePfx+"\xff")
+	if err != nil {
+		return st, false, err
+	}
+	defer rows.Close()
+	st.ByDevice = map[string]int{}
+	for rows.Next() {
+		var k string
+		var v int64
+		if err := rows.Scan(&k, &v); err != nil {
+			return st, false, err
+		}
+		if k == sevfDefaultKey {
+			st.Default, ok = int(v-1), true
+		} else {
+			st.ByDevice[strings.TrimPrefix(k, sevfDevicePfx)] = int(v - 1)
+		}
+	}
+	return st, ok, rows.Err()
+}
+
+// RecordSeverityFilter replaces the recorded filter with st.
+func (d *DB) RecordSeverityFilter(ctx context.Context, st SeverityFilterState) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM index_meta WHERE key = ? OR (key >= ? AND key < ?)`,
+		sevfDefaultKey, sevfDevicePfx, sevfDevicePfx+"\xff"); err != nil {
+		return err
+	}
+	put := func(k string, level int) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO index_meta (key, value) VALUES (?, ?)`, k, int64(level+1))
+		return err
+	}
+	if err := put(sevfDefaultKey, st.Default); err != nil {
+		return err
+	}
+	for a, l := range st.ByDevice {
+		if err := put(sevfDevicePfx+a, l); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

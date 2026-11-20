@@ -108,16 +108,35 @@ func normalizeSyslog(s *Syslog) {
 		s.MinSeverity = SeverityText(SeverityNames[n])
 	}
 	out := make(map[string]SeverityText, len(s.MinSeverityByDevice))
-	for k, v := range s.MinSeverityByDevice {
-		if a, err := netip.ParseAddr(strings.TrimSpace(k)); err == nil && a.Zone() == "" {
-			k = a.Unmap().String()
-		}
+	// In key order, so two spellings of one address ("::ffff:192.0.2.10" and
+	// "192.0.2.10") always resolve the same way: the first takes the
+	// canonical key, the others keep theirs and Validate refuses them as
+	// duplicates (checkSyslog).
+	keys := slices.Sorted(maps.Keys(s.MinSeverityByDevice))
+	for _, k := range keys {
+		v := s.MinSeverityByDevice[k]
 		if n, ok := ParseSeverity(string(v)); ok {
 			v = SeverityText(SeverityNames[n])
+		}
+		if c, ok := canonicalDeviceKey(k); ok {
+			if _, taken := out[c]; !taken {
+				k = c
+			}
 		}
 		out[k] = v
 	}
 	s.MinSeverityByDevice = out
+}
+
+// canonicalDeviceKey is a min_severity_by_device key's address as the config
+// stores it: unmapped, trimmed, without a zone (ok false for a key that isn't
+// an address, or has a zone).
+func canonicalDeviceKey(k string) (string, bool) {
+	a, err := netip.ParseAddr(strings.TrimSpace(k))
+	if err != nil || a.Zone() != "" {
+		return "", false
+	}
+	return a.Unmap().String(), true
 }
 
 func checkSyslog(e Errors, s Syslog) {
@@ -130,6 +149,12 @@ func checkSyslog(e Errors, s Syslog) {
 		if err != nil || a.Zone() != "" {
 			e[key] = "the key must be a device's IP address (e.g. \"192.0.2.10\")"
 			continue
+		}
+		if c, _ := canonicalDeviceKey(k); c != k {
+			if _, dup := s.MinSeverityByDevice[c]; dup {
+				e[key] = fmt.Sprintf("the same device as %q; keep one of them", c)
+				continue
+			}
 		}
 		if _, ok := ParseSeverity(string(v)); !ok {
 			e[key] = "must be a severity: emerg, alert, crit, err, warning, notice, info or debug (or 0 to 7)"

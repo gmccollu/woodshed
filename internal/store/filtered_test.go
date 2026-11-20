@@ -130,3 +130,112 @@ func BenchmarkFiltered(b *testing.B) {
 		s.Filtered(from, at, 7)
 	}
 }
+
+// A device the store knows is counted under its own ID even when its shard of
+// the pending table is full of new senders, and is heard.
+func TestFilteredKnownDeviceExactInAFullShard(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.MaxDevices = 10 })
+	known := ip(16) // shard 0
+	if known.As16()[15]%filtShards != 0 {
+		t.Fatal("shard")
+	}
+	e.write(known, "<13>stored notice")
+	e.maintain()
+	e.clock.Add(time.Minute)
+	for i := 0; i < maxFiltPending; i++ {
+		e.s.Filtered(netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 0}), e.clock.Now(), 6)
+	}
+	for i := 0; i < 3; i++ {
+		e.s.Filtered(known, e.clock.Now(), 7)
+	}
+	e.maintain()
+	id := "192.0.2.16"
+	got, _ := e.idx.FilteredCounts(bg, nil, time.Time{}, time.Time{})
+	if got[id][7] != 3 || got[id].Total() != 3 {
+		t.Fatalf("the known device %v", got[id])
+	}
+	var info int64
+	for _, c := range got {
+		info += c[6]
+	}
+	if info != maxFiltPending {
+		t.Fatalf("the new senders' total %d", info)
+	}
+	if d, err := e.idx.Device(bg, id); err != nil || !d.LastHeard.Equal(e.clock.Now()) {
+		t.Fatalf("not heard: %+v %v", d, err)
+	}
+	// The device limits refused most new senders: none of that names a reason
+	// for a device_limit event (nothing was refused as a message).
+	e.s.refMu.Lock()
+	reason, pending := e.s.refReason, e.s.refPending
+	e.s.refMu.Unlock()
+	if reason != "" || pending != 0 {
+		t.Fatalf("refusal noted for filtered-only senders: %q %d", reason, pending)
+	}
+}
+
+// The running 24-hour totals agree with the index, survive a restart (seeded
+// from the index), and age out after 24 hours.
+func TestFiltered24hTotals(t *testing.T) {
+	e := newEnv(t, nil)
+	a, b := ip(30), ip(31)
+	for i := 0; i < 4; i++ {
+		e.s.Filtered(a, e.clock.Now(), 7)
+	}
+	e.s.Filtered(b, e.clock.Now(), 6)
+	if got := e.s.Filtered24h(nil); len(got) != 0 {
+		t.Fatalf("before the maintenance pass %v", got)
+	}
+	e.maintain()
+	e.clock.Add(90 * time.Minute)
+	e.s.Filtered(a, e.clock.Now(), 6)
+	e.maintain()
+	want, _ := e.idx.FilteredCounts(bg, nil, e.clock.Now().Add(-24*time.Hour), time.Time{})
+	check := func(when string) {
+		t.Helper()
+		got := e.s.Filtered24h(nil)
+		if len(got) != 2 || got["192.0.2.30"] != want["192.0.2.30"] || got["192.0.2.31"] != want["192.0.2.31"] ||
+			got["192.0.2.30"][7] != 4 || got["192.0.2.30"][6] != 1 {
+			t.Fatalf("%s: %v, index %v", when, got, want)
+		}
+		if one := e.s.Filtered24h([]string{"192.0.2.31", "192.0.2.99"}); len(one) != 1 || one["192.0.2.31"][6] != 1 {
+			t.Fatalf("%s: by id %v", when, one)
+		}
+	}
+	check("running")
+	e.reopen()
+	check("after a restart")
+	e.clock.Add(24 * time.Hour)
+	if got := e.s.Filtered24h(nil); len(got) != 1 || got["192.0.2.30"].Total() != 1 {
+		t.Fatalf("a day later %v", got)
+	}
+}
+
+// The run-state path's read at 500 filtering devices with every hour of the
+// last 24 filled.
+func BenchmarkFiltered24h500Devices(b *testing.B) {
+	dir := b.TempDir()
+	idx, err := index.Open(dir + "/" + index.FileName)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer idx.Close()
+	s, err := Open(Options{DataDir: dir, Index: idx, Manual: true, Logger: quiet})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	hr := time.Now().Unix() / 3600
+	for i := 0; i < 500; i++ {
+		for h := int64(0); h < filtHourSpan; h++ {
+			s.ftot.add(netip.AddrFrom4([4]byte{10, 0, byte(i / 250), byte(i % 250)}).String(), hr-h, index.SevCounts{7: 2400, 6: 120})
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := s.Filtered24h(nil); len(got) != 500 {
+			b.Fatal(len(got))
+		}
+	}
+}

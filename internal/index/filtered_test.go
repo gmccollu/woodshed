@@ -1,6 +1,10 @@
 package index
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -177,4 +181,47 @@ func TestFilteredQueriesUseThePartialIndexes(t *testing.T) {
 			t.Errorf("plan %q for %s", p, q)
 		}
 	}
+}
+
+// 500 filtering devices with a minute bucket every minute for 24 hours
+// (720,000 rows): what the 24-hour totals cost from the index (the 2.1 review's
+// once-a-second run-state path) and what the store's seed at Open costs.
+// WOODSHED_BENCH_FILTERED=1 builds the data (about a minute).
+func BenchmarkFiltered500Devices24h(b *testing.B) {
+	if os.Getenv("WOODSHED_BENCH_FILTERED") != "1" {
+		b.Skip("set WOODSHED_BENCH_FILTERED=1")
+	}
+	ctx := context.Background()
+	d, err := Open(filepath.Join(b.TempDir(), FileName))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer d.Close()
+	now := time.Now().UTC().Truncate(time.Minute)
+	for m := 0; m < 1440; m++ {
+		at := now.Add(-time.Duration(m) * time.Minute)
+		acts := make([]Activity, 500)
+		for i := range acts {
+			id := fmt.Sprintf("10.0.%d.%d", i/250, i%250)
+			acts[i] = Activity{DeviceID: id, IP: id, Minute: at, FirstHeard: at, LastHeard: at, Counts: Counts{Filtered: SevCounts{7: 40, 6: 2}}}
+		}
+		if err := d.Apply(ctx, Batch{Activity: acts}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	from := now.Add(-24 * time.Hour)
+	b.Run("FilteredCounts-all-24h", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if got, err := d.FilteredCounts(ctx, nil, from, time.Time{}); err != nil || len(got) != 500 {
+				b.Fatal(len(got), err)
+			}
+		}
+	})
+	b.Run("FilteredByHour-seed", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if got, err := d.FilteredByHour(ctx, from); err != nil || len(got) != 500 {
+				b.Fatal(len(got), err)
+			}
+		}
+	})
 }

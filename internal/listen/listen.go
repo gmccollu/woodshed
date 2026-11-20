@@ -637,8 +637,8 @@ func (s *Server) frameStatus(proto string, t *tcpListener, port int, c *frameCou
 	return FrameStatus{Listener: proto, Port: port, Incomplete: c.incomplete.Load(), FrameTimeouts: c.timeouts.Load()}
 }
 
-// deliver applies the blocklist and the allowlist (before anything else), the
-// severity filter, truncation and parsing to one framed TCP or TLS message and
+// deliver applies the blocklist and the allowlist (before anything else),
+// truncation, the severity filter and parsing to one framed TCP or TLS message and
 // hands it to the sink. raw is only read; the message gets its own copy. end
 // says whether its frame ended before all of it arrived.
 func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool, end frameEnd) (refused string) {
@@ -648,10 +648,11 @@ func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool, end frameE
 		s.rejects.add(from, now, 1, r)
 		return r
 	}
+	// The filter reads the PRI from the bytes that would be stored and parsed.
+	raw, truncated = s.cut(raw, truncated)
 	if s.filteredOut(raw, from, now) {
 		return ""
 	}
-	raw, truncated = s.cut(raw, truncated)
 	s.handoff(model.Message{Received: now, Sender: from, Raw: append(make([]byte, 0, len(raw)), raw...), Truncated: truncated,
 		Incomplete: end.incomplete, FrameArrived: end.arrived, FrameLength: end.length})
 	return ""
@@ -676,7 +677,7 @@ func (s *Server) handoff(m model.Message) {
 }
 
 // enqueue is the UDP reader's half of deliver: the blocklist and the allowlist,
-// the severity filter, truncation, and a copy into q (or a counted drop when q
+// truncation, the severity filter, and a copy into q (or a counted drop when q
 // is full). raw is only read. A filtered message never takes room in q.
 func (s *Server) enqueue(q *udpQueue, raw []byte, from netip.Addr) {
 	now := s.opts.Clock().UTC()
@@ -685,10 +686,11 @@ func (s *Server) enqueue(q *udpQueue, raw []byte, from netip.Addr) {
 		s.rejects.add(from, now, 1, r)
 		return
 	}
+	// The filter reads the PRI from the bytes that would be stored and parsed.
+	raw, truncated := s.cut(raw, false)
 	if s.filteredOut(raw, from, now) {
 		return
 	}
-	raw, truncated := s.cut(raw, false)
 	own := append(make([]byte, 0, len(raw)), raw...)
 	if s.opts.TrySink != nil && q.inline(now) {
 		m := model.Message{Received: now, Sender: from, Raw: own, Truncated: truncated}

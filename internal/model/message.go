@@ -3,6 +3,7 @@ package model
 
 import (
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -46,4 +47,25 @@ func DeviceID(a netip.Addr) string {
 		}
 	}
 	return string(out)
+}
+
+// ParseDeviceID is the address a device ID stands for, the inverse of
+// DeviceID: ':' and an IPv6 zone's '%' are both written '_' there
+// (fe80::1%en0 is "fe80__1_en0"), so a zoned ID is tried with each '_' from
+// the right as the zone's, and only a parse that builds the same ID counts.
+// ok is false for an ID that isn't an address (index.RefusedDeviceID).
+func ParseDeviceID(id string) (netip.Addr, bool) {
+	if a, err := netip.ParseAddr(strings.ReplaceAll(id, "_", ":")); err == nil {
+		return a.Unmap(), true
+	}
+	for i := len(id) - 1; i > 0; i-- {
+		if id[i] != '_' {
+			continue
+		}
+		a, err := netip.ParseAddr(strings.ReplaceAll(id[:i], "_", ":") + "%" + id[i+1:])
+		if err == nil && DeviceID(a) == id {
+			return a, true
+		}
+	}
+	return netip.Addr{}, false
 }

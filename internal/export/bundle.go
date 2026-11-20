@@ -183,6 +183,20 @@ func (b *builder) resolveBundle(ctx context.Context, r *Request) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
+	// A device whose syslog in the window was all left out by the severity
+	// filter stored nothing, but it sent syslog: it's active, so its entry
+	// and Filter line say what wasn't stored (SPEC §13.10 decision 86).
+	if slices.Contains(all, datatype.Syslog) {
+		left, err := b.idx.FilteredCounts(ctx, nil, r.From, r.To)
+		if err != nil {
+			return nil, err
+		}
+		for id, c := range left {
+			if id != index.RefusedDeviceID && c.Total() > 0 && !slices.Contains(active[id], datatype.Syslog) {
+				active[id] = append(active[id], datatype.Syslog)
+			}
+		}
+	}
 	// Every non-hidden device, or the named ones (hidden ones too), the group's
 	// or the ungrouped ones, as for exports.
 	devs, err := b.eng.ResolveDevices(ctx, r.Devices, f.Group, f.Ungrouped, nil)
@@ -874,6 +888,10 @@ func (b *builder) bundleReadme(info Info, sum []DeviceSummary) string {
 				label = "Polls" // SPEC §12.6
 			}
 			if ts.Lines == 0 {
+				if t == datatype.Syslog && d.SeverityFilter != nil && d.SeverityFilter.NotStored > 0 {
+					row(label, "heard, nothing stored (severity filter): "+d.SeverityFilter.counts())
+					continue
+				}
 				row(label, "none")
 				continue
 			}
