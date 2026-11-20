@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -504,7 +505,15 @@ func TestRunningState(t *testing.T) {
 	if rs, ok := RunningState(dir); !ok || rs.Config != "/x/woodshed.toml" {
 		t.Fatalf("the holder's %+v %v", rs, ok)
 	}
-	if err := writeState(dir, RunState{PID: os.Getpid() + 1, Config: "/x/woodshed.toml"}); err != nil {
+	// A PID that isn't the holder's: a process that has exited. Not
+	// os.Getpid()+1: Windows ignores a PID's low two bits, so that is this
+	// process there, and on Windows (where the locked lock file can't be read)
+	// RunningState can only check that the state's PID is alive.
+	child := exec.Command(os.Args[0], "-test.run=^$")
+	if err := child.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeState(dir, RunState{PID: child.Process.Pid, Config: "/x/woodshed.toml"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := RunningState(dir); ok {
