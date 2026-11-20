@@ -25,17 +25,34 @@ func (b *backend) blocker() blocker {
 
 func (k blocker) empty() bool { return len(k.prefixes) == 0 }
 
-// deviceIP is a device ID's address (model.ParseDeviceID).
+// deviceIP is a device ID's address when the ID alone can say
+// (model.ParseDeviceID: not for a zoned ID, which is lossy).
 func deviceIP(id string) (netip.Addr, bool) { return model.ParseDeviceID(id) }
 
-func (k blocker) blocked(id string) bool {
+// deviceAddr is a device's address from its row's IP column, which keeps an
+// IPv6 zone ("fe80::1%5"), and from the ID only when the row has none.
+func deviceAddr(id, ip string) (netip.Addr, bool) {
+	if ip != "" {
+		if a, err := netip.ParseAddr(ip); err == nil {
+			return a.Unmap(), true
+		}
+	}
+	return deviceIP(id)
+}
+
+// blocked: the device with this ID (and row IP, "" when not at hand) is on
+// the blocklist; the listener compares without the zone, so this does too.
+func (k blocker) blocked(id string) bool { return k.blockedAt(id, "") }
+
+func (k blocker) blockedAt(id, ip string) bool {
 	if k.empty() {
 		return false
 	}
-	a, ok := deviceIP(id)
+	a, ok := deviceAddr(id, ip)
 	if !ok {
 		return false
 	}
+	a = a.WithZone("")
 	for _, p := range k.prefixes {
 		if p.Contains(a) {
 			return true
@@ -50,7 +67,7 @@ func (k blocker) mark(ds []api.Device) {
 		return
 	}
 	for i := range ds {
-		if k.blocked(ds[i].ID) {
+		if k.blockedAt(ds[i].ID, ds[i].IP) {
 			ds[i].Blocked, ds[i].Status = true, statusBlocked
 		}
 	}
@@ -74,7 +91,7 @@ func (k blocker) blockedIDs(ids []string) []string {
 // saves the config and applies it to the listeners. It returns the entry that
 // still covers the device after an unblock ("" if none).
 func (b *backend) setBlocked(ctx context.Context, d index.Device, block bool) (string, error) {
-	ip, ok := deviceIP(d.ID)
+	ip, ok := deviceAddr(d.ID, d.IP)
 	if !ok {
 		return "", fmt.Errorf("device %q has no address", d.ID)
 	}

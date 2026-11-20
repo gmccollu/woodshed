@@ -225,3 +225,31 @@ func BenchmarkFiltered500Devices24h(b *testing.B) {
 		}
 	})
 }
+
+// A bundle's active devices count only filtered buckets that start inside
+// the window: not a minute before it, and not an hourly bucket that began
+// before it (rolled up from minutes outside the window).
+func TestFilteredActiveOnlyInside(t *testing.T) {
+	d := openIn(t, t.TempDir())
+	from := time.Date(2026, 11, 20, 12, 30, 0, 0, time.UTC)
+	to := from.Add(20 * time.Minute)
+	act := func(dev string, at time.Time) Activity {
+		return Activity{DeviceID: dev, IP: dev, Minute: at, FirstHeard: at, LastHeard: at, Counts: Counts{Filtered: SevCounts{7: 1}}}
+	}
+	if err := d.Apply(context.Background(), Batch{Activity: []Activity{
+		act("10.0.0.1", from.Add(5*time.Minute)),   // inside
+		act("10.0.0.2", from.Add(-time.Minute)),    // just before
+		act("10.0.0.3", from.Add(-20*time.Minute)), // 12:10: rolled up into the 12:00 hour
+		act("10.0.0.4", to),                        // at the end: outside
+		act(RefusedDeviceID, from.Add(time.Minute)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RollupStats(context.Background(), from.Add(-15*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.FilteredActive(context.Background(), from, to)
+	if err != nil || strings.Join(got, ",") != "10.0.0.1" {
+		t.Fatalf("active %v %v", got, err)
+	}
+}

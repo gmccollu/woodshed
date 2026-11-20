@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/config"
@@ -24,6 +25,9 @@ type udpListener struct {
 	q         *udpQueue
 	done      chan struct{} // the reader ended
 	drained   chan struct{} // the drainer ended
+	// read counts the datagrams the reader took off the socket (tests wait
+	// on it: it moves before any queue or drainer is involved).
+	read atomic.Int64
 }
 
 func listenUDP(s *Server, ln config.Listener, rcvbuf int, q *udpQueue) (*udpListener, error) {
@@ -85,6 +89,7 @@ func (u *udpListener) run() {
 			continue
 		}
 		errRun = 0
+		u.read.Add(1)
 		msg := syslog.TrimDatagram(buf[:n])
 		if len(msg) == 0 {
 			continue

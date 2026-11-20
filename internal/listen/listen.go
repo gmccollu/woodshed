@@ -177,6 +177,7 @@ type Status struct {
 	KernelDrops        int64
 
 	Received  int64 // messages handed to the sink since Start
+	UDPRead   int64 // syslog UDP datagrams the reader took off the socket since Start (before the filter, the queue and the drainer)
 	Filtered  int64 // syslog messages the severity filter left out since Start (not in Received)
 	Inline    int64 // of those, UDP datagrams (syslog and traps) the reader delivered itself (TrySink, TrapTry)
 	Truncated int64 // of those, cut at the max message size
@@ -472,6 +473,7 @@ func (s *Server) Status() Status {
 	st := Status{
 		UDPRcvbufRequestedBytes:  rcvbufOf(s.cfg),
 		Received:                 s.received.Load(),
+		UDPRead:                  s.udpRead(),
 		Filtered:                 s.filtered.Load(),
 		Inline:                   s.inline.Load(),
 		Truncated:                s.truncated.Load(),
@@ -656,6 +658,14 @@ func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool, end frameE
 	s.handoff(model.Message{Received: now, Sender: from, Raw: append(make([]byte, 0, len(raw)), raw...), Truncated: truncated,
 		Incomplete: end.incomplete, FrameArrived: end.arrived, FrameLength: end.length})
 	return ""
+}
+
+// udpRead is the syslog UDP reader's datagram count (0 without UDP).
+func (s *Server) udpRead() int64 {
+	if s.udp == nil {
+		return 0
+	}
+	return s.udp.read.Load()
 }
 
 // cut truncates raw at the max message size.

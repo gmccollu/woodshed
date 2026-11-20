@@ -1,7 +1,10 @@
 package store
 
 import (
+	"cmp"
+	"math"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -98,14 +101,14 @@ func (s *Store) Filtered(from netip.Addr, at time.Time, sev int) {
 
 // knownSender reports whether from is a device the store knows (resident, or
 // with logs or messages since Open), for the overflow rule above. Only a new
-// key in a full shard asks.
+// key in a full shard asks, and it takes no lock: the UDP reader calls it
+// with a shard locked, during exactly the flood of new senders in which
+// admissions hold devMu (two sync.Map reads).
 func (s *Store) knownSender(from netip.Addr) bool {
 	if _, ok := s.devices.Load(streamKey{from, 0}); ok {
 		return true
 	}
-	s.devMu.Lock()
-	_, ok := s.known[model.DeviceID(from)]
-	s.devMu.Unlock()
+	_, ok := s.knownIDs.Load(model.DeviceID(from))
 	return ok
 }
 
@@ -184,22 +187,40 @@ func (s *Store) filteredInto(k filtKey, a *filtAcc) bool {
 //
 // Every reader of "left out in the last 24 hours" (the run-state file each
 // second, /api/stats, the device pages) reads these, not the index: a sum
-// over 25 hourly buckets per device that has any. They're seeded from the
+// over the hours with any (at most 25) per device that has any. They're seeded from the
 // index at Open and moved on by each maintenance pass, the same counts the
 // index gets, so they agree with it to the hour: the window starts at the
 // hour 24 hours ago (as the index's hourly buckets do).
 
-// filtHourSpan is the buckets kept: this hour and the 24 before it.
+// filtHourSpan is the window's hours: this hour and the 24 before it.
 const filtHourSpan = 25
 
-type sevHours struct {
-	n     [filtHourSpan]index.SevCounts
-	stamp [filtHourSpan]int64 // unix hour each bucket holds
+// maxFiltTracked caps the device IDs with running totals. Only admitted
+// senders get an ID, but the new-device rate admits a few hundred thousand a
+// day under a sustained spoof; past the cap a new ID's counts go to
+// index.RefusedDeviceID (the index still has them per device), so memory
+// stays bounded (about 140 bytes an ID with one hour, 1.25 KB with all 25:
+// 7 MB to 62 MB at the cap).
+const maxFiltTracked = 50_000
+
+// sevHour is one hour's counts; a device keeps only hours with any, oldest
+// first, at most filtHourSpan of them. 36 bytes: uint32 counts (one device
+// would need 1.2 million left-out messages a second to fill one in an hour;
+// they saturate rather than wrap).
+type sevHour struct {
+	hour int32 // unix hour
+	n    [8]uint32
+}
+
+func (e *sevHour) add(c index.SevCounts) {
+	for i, v := range c {
+		e.n[i] = uint32(min(int64(e.n[i])+v, math.MaxUint32))
+	}
 }
 
 type filtTotals struct {
 	mu  sync.Mutex
-	dev map[string]*sevHours
+	dev map[string][]sevHour
 	// lastPrune: unix minute of the last prune.
 	lastPrune int64
 }
@@ -211,29 +232,45 @@ func (t *filtTotals) add(id string, hour int64, c index.SevCounts) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.dev == nil {
-		t.dev = map[string]*sevHours{}
+		t.dev = map[string][]sevHour{}
 	}
-	h := t.dev[id]
-	if h == nil {
-		h = &sevHours{}
-		t.dev[id] = h
+	h, ok := t.dev[id]
+	if !ok && len(t.dev) >= maxFiltTracked && id != index.RefusedDeviceID {
+		id = index.RefusedDeviceID
+		h = t.dev[id]
 	}
-	i := int(hour % filtHourSpan)
-	switch {
-	case h.stamp[i] == hour:
-	case h.stamp[i] < hour:
-		h.stamp[i], h.n[i] = hour, index.SevCounts{}
-	default:
-		return // older than the bucket holds now: out of the window anyway
+	hr := int32(hour)
+	switch n := len(h); {
+	case n > 0 && h[n-1].hour == hr:
+		h[n-1].add(c)
+	case n == 0 || h[n-1].hour < hr:
+		h = append(h, sevHour{hour: hr})
+		h[len(h)-1].add(c)
+	default: // an older hour (the seed): keep the order
+		k, found := slices.BinarySearchFunc(h, hr, func(e sevHour, x int32) int { return cmp.Compare(e.hour, x) })
+		if !found {
+			h = slices.Insert(h, k, sevHour{hour: hr})
+		}
+		h[k].add(c)
 	}
-	h.n[i].Add(c)
+	// Hours before the newest's window can't be read again.
+	k := 0
+	for k < len(h) && h[k].hour <= h[len(h)-1].hour-filtHourSpan {
+		k++
+	}
+	if k > 0 {
+		h = slices.Delete(h, 0, k)
+	}
+	t.dev[id] = h
 }
 
-// sum is h's total over the window ending in hour now.
-func (h *sevHours) sum(now int64) (c index.SevCounts) {
-	for i := range h.n {
-		if d := now - h.stamp[i]; d >= 0 && d < filtHourSpan {
-			c.Add(h.n[i])
+// sumHours is h's total over the window ending in hour now.
+func sumHours(h []sevHour, now int64) (c index.SevCounts) {
+	for _, e := range h {
+		if d := now - int64(e.hour); d >= 0 && d < filtHourSpan {
+			for i, v := range e.n {
+				c[i] += int64(v)
+			}
 		}
 	}
 	return c
@@ -249,7 +286,7 @@ func (t *filtTotals) prune(now time.Time) {
 	}
 	t.lastPrune = min
 	for id, h := range t.dev {
-		if h.sum(hr).Total() == 0 {
+		if sumHours(h, hr).Total() == 0 {
 			delete(t.dev, id)
 		}
 	}
@@ -283,7 +320,7 @@ func (s *Store) Filtered24h(ids []string) map[string]index.SevCounts {
 	defer s.ftot.mu.Unlock()
 	if ids == nil {
 		for id, h := range s.ftot.dev {
-			if c := h.sum(hr); c.Total() > 0 {
+			if c := sumHours(h, hr); c.Total() > 0 {
 				out[id] = c
 			}
 		}
@@ -291,7 +328,7 @@ func (s *Store) Filtered24h(ids []string) map[string]index.SevCounts {
 	}
 	for _, id := range ids {
 		if h := s.ftot.dev[id]; h != nil {
-			if c := h.sum(hr); c.Total() > 0 {
+			if c := sumHours(h, hr); c.Total() > 0 {
 				out[id] = c
 			}
 		}

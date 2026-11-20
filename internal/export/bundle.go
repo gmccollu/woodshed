@@ -52,7 +52,7 @@ type builder struct {
 	flows     func() *flowquery.Engine
 	flowStats func(deviceID string) *FlowStats
 	// severityFilter: the severity filter in effect for a device (nil: not known).
-	severityFilter func(deviceID string) (level int, own bool)
+	severityFilter func(deviceID, ip string) (level int, own bool)
 }
 
 func newBuilder(o Options) builder {
@@ -187,12 +187,14 @@ func (b *builder) resolveBundle(ctx context.Context, r *Request) ([]string, erro
 	// filter stored nothing, but it sent syslog: it's active, so its entry
 	// and Filter line say what wasn't stored (SPEC §13.10 decision 86).
 	if slices.Contains(all, datatype.Syslog) {
-		left, err := b.idx.FilteredCounts(ctx, nil, r.From, r.To)
+		// Only buckets that start inside the window: an hourly bucket that
+		// began before it doesn't make a device active.
+		left, err := b.idx.FilteredActive(ctx, r.From, r.To)
 		if err != nil {
 			return nil, err
 		}
-		for id, c := range left {
-			if id != index.RefusedDeviceID && c.Total() > 0 && !slices.Contains(active[id], datatype.Syslog) {
+		for _, id := range left {
+			if !slices.Contains(active[id], datatype.Syslog) {
 				active[id] = append(active[id], datatype.Syslog)
 			}
 		}
@@ -588,7 +590,7 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 		}
 		ds.Dropped, ds.Truncated = cnt.Dropped, cnt.Truncated
 		if slices.Contains(types, datatype.Syslog) {
-			if ds.SeverityFilter, err = b.severitySummary(ctx, d.ID, info); err != nil {
+			if ds.SeverityFilter, err = b.severitySummary(ctx, d.ID, d.IP, info); err != nil {
 				return nil, err
 			}
 		}

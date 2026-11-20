@@ -40,7 +40,7 @@ type SeverityFilterSummary struct {
 }
 
 // severitySummary is a device's SeverityFilterSummary for the window.
-func (b *builder) severitySummary(ctx context.Context, deviceID string, info Info) (*SeverityFilterSummary, error) {
+func (b *builder) severitySummary(ctx context.Context, deviceID, ip string, info Info) (*SeverityFilterSummary, error) {
 	w, err := b.idx.FilteredIn(ctx, deviceID, info.From, info.To, b.now().Add(-index.StatsRetention))
 	if err != nil {
 		return nil, err
@@ -53,7 +53,7 @@ func (b *builder) severitySummary(ctx context.Context, deviceID string, info Inf
 		}
 	}
 	if b.severityFilter != nil {
-		level, own := b.severityFilter(deviceID)
+		level, own := b.severityFilter(deviceID, ip)
 		if level >= 0 && level <= 7 {
 			s.MinSeverity, s.Own = datatype.SeverityNames[level], own
 		}

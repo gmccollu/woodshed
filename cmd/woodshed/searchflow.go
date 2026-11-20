@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,15 +64,19 @@ func searchRuleIEs(f *searchFlags, dataDir string) []flow.IEKey {
 // searchSeverity is the syslog severity filter in effect for a device, from
 // the same config as searchRuleIEs, for a bundle's summary (nil: the config
 // can't be read, so the README gives the counts without the setting).
-func searchSeverity(f *searchFlags, dataDir string) func(id string) (int, bool) {
+func searchSeverity(f *searchFlags, dataDir string) func(id, ip string) (int, bool) {
 	c, ok := searchConfig(f, dataDir)
 	if !ok {
 		return nil
 	}
-	return func(id string) (int, bool) {
-		a, ok := model.ParseDeviceID(id)
-		if !ok {
-			return c.Syslog.Level(), false
+	return func(id, ip string) (int, bool) {
+		// The device's row IP (it keeps a zone); the ID only without one.
+		a, err := netip.ParseAddr(ip)
+		if err != nil {
+			var ok bool
+			if a, ok = model.ParseDeviceID(id); !ok {
+				return c.Syslog.Level(), false
+			}
 		}
 		return c.Syslog.DeviceLevel(a)
 	}
@@ -91,13 +96,18 @@ func searchConfig(f *searchFlags, dataDir string) (config.Config, bool) {
 		}
 		return ""
 	}
-	switch own := filepath.Join(dataDir, config.FileName); {
+	own := filepath.Join(dataDir, config.FileName)
+	run := ""
+	if !f.set["config"] && !fileExists(own) && f.set["data"] {
+		run = running() // once: it reads the lock and the run-state file
+	}
+	switch {
 	case f.set["config"]:
 		path = f.config
 	case fileExists(own):
 		path = own
-	case f.set["data"] && running() != "":
-		path = running()
+	case run != "":
+		path = run
 	case !f.set["data"]:
 		path = f.config
 	default:

@@ -323,3 +323,29 @@ func (d *DB) RecordSeverityFilter(ctx context.Context, st SeverityFilterState) e
 	}
 	return tx.Commit()
 }
+
+// FilteredActive returns the devices with filtered counts in buckets that
+// start inside [from, to) (minute buckets and hourly ones alike, so an hour
+// that began before from doesn't count), for a bundle's active devices.
+// RefusedDeviceID is never in it.
+func (d *DB) FilteredActive(ctx context.Context, from, to time.Time) ([]string, error) {
+	d.filteredReads.Add(1)
+	rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT device_id FROM (
+		SELECT device_id FROM stats INDEXED BY stats_filtered WHERE `+filteredAny+` AND minute >= ? AND minute < ?
+		UNION ALL
+		SELECT device_id FROM stats_hourly INDEXED BY stats_hourly_filtered WHERE `+filteredAny+` AND hour >= ? AND hour < ?)
+		WHERE device_id != ?`, ms(from), ms(to), ms(from), ms(to), RefusedDeviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

@@ -40,7 +40,7 @@ func TestBundleSeverityFilter(t *testing.T) {
 	}
 	m := be.manager(func(o *Options) {
 		o.Location = est
-		o.SeverityFilter = func(id string) (int, bool) {
+		o.SeverityFilter = func(id, _ string) (int, bool) {
 			if id == a {
 				return 6, true // the access point: info and above, its own setting
 			}
@@ -127,7 +127,7 @@ func TestBundleFilteredOnlyDevice(t *testing.T) {
 	}
 	be.clock.Set(time.Date(2026, 11, 14, 4, 0, 0, 0, time.UTC))
 	m := be.manager(func(o *Options) {
-		o.SeverityFilter = func(id string) (int, bool) { return 5, id == "192.0.2.77" }
+		o.SeverityFilter = func(id, _ string) (int, bool) { return 5, id == "192.0.2.77" }
 	})
 	check := func(r Request, devices int) {
 		t.Helper()

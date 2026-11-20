@@ -49,23 +49,16 @@ func DeviceID(a netip.Addr) string {
 	return string(out)
 }
 
-// ParseDeviceID is the address a device ID stands for, the inverse of
-// DeviceID: ':' and an IPv6 zone's '%' are both written '_' there
-// (fe80::1%en0 is "fe80__1_en0"), so a zoned ID is tried with each '_' from
-// the right as the zone's, and only a parse that builds the same ID counts.
-// ok is false for an ID that isn't an address (index.RefusedDeviceID).
+// ParseDeviceID is the address a device ID stands for, when the ID alone can
+// say: an IP with ':' written '_'. An IPv6 zone's '%' is written '_' too, so a
+// zoned ID is lossy ("fe80__1_5" is fe80::1%5 or fe80::1:5): ok is false for
+// any ID that isn't a plain address. Use the device's IP (the devices row's IP
+// column keeps the zone) wherever there is one; this is for callers that
+// have only the ID.
 func ParseDeviceID(id string) (netip.Addr, bool) {
-	if a, err := netip.ParseAddr(strings.ReplaceAll(id, "_", ":")); err == nil {
-		return a.Unmap(), true
+	a, err := netip.ParseAddr(strings.ReplaceAll(id, "_", ":"))
+	if err != nil {
+		return netip.Addr{}, false
 	}
-	for i := len(id) - 1; i > 0; i-- {
-		if id[i] != '_' {
-			continue
-		}
-		a, err := netip.ParseAddr(strings.ReplaceAll(id[:i], "_", ":") + "%" + id[i+1:])
-		if err == nil && DeviceID(a) == id {
-			return a, true
-		}
-	}
-	return netip.Addr{}, false
+	return a.Unmap(), true
 }

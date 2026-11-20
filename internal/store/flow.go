@@ -732,6 +732,7 @@ func (s *Store) catalogFlowSeg(seg *flowSeg) {
 	s.fl.catBytes += seg.size
 	s.devMu.Lock()
 	s.known[seg.deviceID] = struct{}{}
+	s.knownIDs.Store(seg.deviceID, struct{}{})
 	s.devMu.Unlock()
 }
 

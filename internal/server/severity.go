@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/gmccollu/woodshed/internal/api"
@@ -31,11 +32,11 @@ func (b *backend) applySeverityFilter(c config.Syslog) {
 	}
 }
 
-// deviceSeverity is the minimum severity in effect for a device ID, and
-// whether it's the device's own (for bundles).
-func (b *backend) deviceSeverity(id string) (level int, own bool) {
+// deviceSeverity is the minimum severity in effect for a device (its ID and
+// row IP), and whether it's the device's own (for bundles).
+func (b *backend) deviceSeverity(id, rowIP string) (level int, own bool) {
 	cfg := b.config()
-	ip, ok := deviceIP(id)
+	ip, ok := deviceAddr(id, rowIP)
 	if !ok {
 		return cfg.Syslog.Level(), false
 	}
@@ -46,7 +47,7 @@ func (b *backend) deviceSeverity(id string) (level int, own bool) {
 // number, or config.SeverityDefault to follow the default), saves the config,
 // applies it to the listeners from the next message and records an event.
 func (b *backend) setDeviceSeverity(d index.Device, v string) error {
-	ip, ok := deviceIP(d.ID)
+	ip, ok := deviceAddr(d.ID, d.IP)
 	if !ok {
 		return &api.RequestError{Msg: fmt.Sprintf("device %q has no address, so it can't have its own severity filter", d.ID)}
 	}
@@ -147,7 +148,7 @@ func (b *backend) markSeverity(_ context.Context, ds []api.Device) error {
 	for i := range ds {
 		d := &ds[i]
 		level, own := cfg.Syslog.Level(), false
-		if ip, ok := deviceIP(d.ID); ok {
+		if ip, ok := deviceAddr(d.ID, d.IP); ok {
 			level, own = cfg.Syslog.DeviceLevel(ip)
 		}
 		d.MinSeverity = config.SeverityDefault
@@ -215,7 +216,16 @@ func (b *backend) severityChangedWhileStopped(c config.Syslog) {
 	}
 	cur := filterState(c)
 	const why = " (changed while Woodshed was stopped)"
-	if cur.Default != prev.Default {
+	// The newest event already says it: a live change whose record didn't
+	// get saved (RecordSeverityFilter failed), not one made while stopped.
+	said := func(id string, ok func(text string) bool) bool {
+		e, found, err := b.idx.LatestEvent(ctx, index.KindSeverityFilter, id)
+		return err == nil && found && ok(e.Text)
+	}
+	if cur.Default != prev.Default && !said("", func(t string) bool {
+		p := "default severity filter set to " + filterPhrase(cur.Default)
+		return strings.HasPrefix(t, p+" ") || strings.HasPrefix(t, p+",")
+	}) {
 		b.severityEvent("", fmt.Sprintf("default severity filter set to %s, was %s%s", filterPhrase(cur.Default), config.SeverityPhrase(prev.Default), why))
 	}
 	addrs := map[string]bool{}
@@ -241,6 +251,14 @@ func (b *backend) severityChangedWhileStopped(c config.Syslog) {
 			continue
 		}
 		id := model.DeviceID(ip)
+		if said(id, func(t string) bool {
+			if !has {
+				return strings.Contains(t, " set to the default")
+			}
+			return strings.Contains(t, " set to "+filterPhrase(now)) && !strings.Contains(t, " set to the default")
+		}) {
+			continue
+		}
 		who := a
 		if d, err := b.idx.Device(ctx, id); err == nil && d.Name != "" {
 			who += " (" + d.Name + ")"

@@ -217,9 +217,12 @@ func TestSeverityFilterReadsTheStoredBytes(t *testing.T) {
 	}
 }
 
-// sendUDPSeen sends each datagram and waits until the listener took it in
-// (handed on or left out), sending it again if loopback lost it: these tests
-// are about the filter, not UDP's losses.
+// sendUDPSeen sends each datagram and waits until the UDP reader took it off
+// the socket (its own counter, before any queue or drainer), sending it again
+// only if the reader never got it: these tests are about the filter, not
+// UDP's losses. A datagram on loopback is in the socket buffer at once, so
+// one the reader hasn't read in 10 s was lost, not slow; a slow drainer can't
+// cause a resend.
 func sendUDPSeen(t *testing.T, s *Server, msgs ...string) {
 	t.Helper()
 	c, err := net.Dial("udp", udpAddr(t, s))
@@ -227,21 +230,20 @@ func sendUDPSeen(t *testing.T, s *Server, msgs ...string) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	seen := func() int64 { st := s.Status(); return st.Received + st.Filtered }
 	for _, m := range msgs {
-		before, ok := seen(), false
-		for try := 0; try < 5 && !ok; try++ {
+		before, ok := s.udp.read.Load(), false
+		for try := 0; try < 3 && !ok; try++ {
 			if _, err := c.Write([]byte(m)); err != nil {
 				t.Fatal(err)
 			}
-			for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if ok = seen() > before; ok {
+			for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+				if ok = s.udp.read.Load() > before; ok {
 					break
 				}
 			}
 		}
 		if !ok {
-			t.Fatalf("the listener never got %q", m)
+			t.Fatalf("the reader never got %q", m)
 		}
 	}
 }

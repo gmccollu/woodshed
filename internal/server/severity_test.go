@@ -15,7 +15,6 @@ import (
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/loadgen"
-	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/tlscert"
 )
 
@@ -27,34 +26,34 @@ type sevSender struct {
 	r        *running
 }
 
-// seen is how many messages the listeners took in: handed on or left out.
-func (s *sevSender) seen() int64 {
+// udpRead is how many datagrams the syslog UDP reader took off the socket.
+func (s *sevSender) udpRead() int64 {
 	ln := s.r.srv.be.ln.Load()
 	if ln == nil {
 		return 0
 	}
-	st := ln.Status()
-	return st.Received + st.Filtered
+	return ln.Status().UDPRead
 }
 
-// sendUDP sends one datagram and waits until the listener has it, sending it
-// again if loopback lost it (UDP may; nothing here is about that).
+// sendUDP sends one datagram and waits until the UDP reader took it off the
+// socket (its own counter, before the filter, the queue and the drainer),
+// sending it again only if the reader never got it: UDP may lose one on
+// loopback, and nothing here is about that. One unread for 10 s was lost, not
+// slow, so a slow drainer can't cause a duplicate.
 func (s *sevSender) sendUDP(raw string) {
 	s.t.Helper()
-	before := s.seen()
-	for try := 0; try < 5; try++ {
+	before := s.udpRead()
+	for try := 0; try < 3; try++ {
 		if _, err := s.udp.Write([]byte(raw)); err != nil {
 			s.t.Fatal(err)
 		}
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if s.seen() > before {
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+			if s.udpRead() > before {
 				return
 			}
-			time.Sleep(5 * time.Millisecond)
 		}
 	}
-	s.t.Fatalf("the listener never got %q", raw)
+	s.t.Fatalf("the reader never got %q", raw)
 }
 
 func newSevSender(t *testing.T, r *running, port, tlsPort int, dataDir string) *sevSender {
@@ -414,54 +413,69 @@ func TestSeverityFilterChangedWhileStopped(t *testing.T) {
 	}
 }
 
-// Device IDs parse back as model.DeviceID builds them, zones included.
+// A device ID alone gives an address only when it's a plain one: a zoned ID
+// is lossy ("fe80__1_5" is fe80::1%5 or fe80::1:5), so it gives none.
 func TestDeviceIPParsesIDs(t *testing.T) {
 	for _, c := range []struct {
 		id, want string
 	}{
 		{"192.0.2.10", "192.0.2.10"},
 		{"2001_db8__1", "2001:db8::1"},
-		{"fe80__1_en0", "fe80::1%en0"},
-		{"fe80__1_eth0_1", "fe80::1%eth0_1"},
 		{"fe80__1", "fe80::1"},
+		{"fe80__1_en0", ""},
 		{"refused", ""},
 		{"", ""},
-		{"fe80__1_", ""},
 	} {
 		a, ok := deviceIP(c.id)
 		if got := map[bool]string{true: a.String(), false: ""}[ok]; got != c.want {
 			t.Errorf("%q: %q, want %q", c.id, got, c.want)
 		}
-		if ok {
-			if back := model.DeviceID(a); back != c.id {
-				t.Errorf("%q round trip %q", c.id, back)
-			}
-		}
+	}
+	// "fe80__1_5" parses as an address, but the wrong one: callers with a
+	// device row use its IP instead.
+	if a, ok := deviceAddr("fe80__1_5", "fe80::1%5"); !ok || a.String() != "fe80::1%5" {
+		t.Errorf("row IP: %v %v", a, ok)
 	}
 }
 
-// A link-local sender's device (its ID carries the zone) takes its own
-// setting and shows it; a device ID without an address is a 400, not a 500.
+// A link-local sender's device (its row's IP keeps the zone; its ID is lossy)
+// takes its own setting for its address without the zone, as the listener
+// looks it up, and shows it; a device ID without an address is a 400.
 func TestSeverityFilterZonedDevice(t *testing.T) {
 	dir := t.TempDir()
-	r := start(t, writeConfig(t, dir, freePort(t), 0, nil))
+	cfgPath := writeConfig(t, dir, freePort(t), 0, nil)
+	r := start(t, cfgPath)
 	at := time.Now().UTC().Truncate(time.Minute)
 	if err := r.srv.be.idx.Apply(t.Context(), index.Batch{Activity: []index.Activity{
-		{DeviceID: "fe80__1_en0", IP: "fe80::1%en0", Minute: at, FirstHeard: at, LastHeard: at, Counts: index.Counts{Msgs: 1}},
+		{DeviceID: "fe80__1_5", IP: "fe80::1%5", Minute: at, FirstHeard: at, LastHeard: at, Counts: index.Counts{Msgs: 1}},
+		{DeviceID: "fe80__a_bad", IP: "fe80::a%bad", Minute: at, FirstHeard: at, LastHeard: at, Counts: index.Counts{Msgs: 1}},
 		{DeviceID: "no-address", IP: "", Minute: at, FirstHeard: at, LastHeard: at, Counts: index.Counts{Msgs: 1}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	var d api.Device
-	if code := r.do(t, "PATCH", "/api/devices/fe80__1_en0", map[string]any{"min_severity": "Info"}, &d); code != 200 ||
-		d.MinSeverity != "info" || d.MinSeverityEffective != "info" {
-		t.Fatalf("zoned PATCH %d %+v", code, d)
+	for _, c := range []struct{ id, sender, addr string }{{"fe80__1_5", "fe80::1%5", "fe80::1"}, {"fe80__a_bad", "fe80::a%bad", "fe80::a"}} {
+		var d api.Device
+		if code := r.do(t, "PATCH", "/api/devices/"+c.id, map[string]any{"min_severity": "Info"}, &d); code != 200 ||
+			d.MinSeverity != "info" || d.MinSeverityEffective != "info" {
+			t.Fatalf("%s PATCH %d %+v", c.id, code, d)
+		}
+		if got := deviceOf(t, r, c.id); got.MinSeverity != "info" {
+			t.Fatalf("%s %+v", c.id, got)
+		}
+		cfg, err := config.Read(cfgPath)
+		if err != nil || cfg.Syslog.MinSeverityByDevice[c.addr] != "info" {
+			t.Fatalf("%s saved for %v (%v)", c.id, cfg.Syslog.MinSeverityByDevice, err)
+		}
+		// What the listener uses: the zoned sender's own setting.
+		if n, own := cfg.Syslog.DeviceLevel(netip.MustParseAddr(c.sender)); n != 6 || !own {
+			t.Fatalf("%s level %d %v", c.id, n, own)
+		}
+		if code := r.do(t, "PATCH", "/api/devices/"+c.id, map[string]any{"min_severity": "Default"}, &d); code != 200 || d.MinSeverity != "default" {
+			t.Fatalf("%s Default %d %+v", c.id, code, d)
+		}
 	}
-	if got := deviceOf(t, r, "fe80__1_en0"); got.MinSeverity != "info" {
-		t.Fatalf("zoned device %+v", got)
-	}
-	if code := r.do(t, "PATCH", "/api/devices/fe80__1_en0", map[string]any{"min_severity": "Default"}, &d); code != 200 || d.MinSeverity != "default" {
-		t.Fatalf("Default %d %+v", code, d)
+	if cfg, _ := config.Read(cfgPath); len(cfg.Syslog.MinSeverityByDevice) != 0 {
+		t.Fatalf("left %v", cfg.Syslog.MinSeverityByDevice)
 	}
 	var e struct {
 		Errors map[string]string `json:"errors"`
@@ -495,5 +509,52 @@ func TestRunningState(t *testing.T) {
 	}
 	if _, ok := RunningState(dir); ok {
 		t.Fatal("trusted a file that isn't the lock holder's")
+	}
+}
+
+// A live change whose record didn't get saved (RecordSeverityFilter failed)
+// isn't logged again at the next start as made while stopped: the newest
+// event already says it.
+func TestSeverityFilterNoDuplicateEventAtStart(t *testing.T) {
+	dir := t.TempDir()
+	port := freePort(t)
+	cfgPath := writeConfig(t, dir, port, 0, nil)
+	r := start(t, cfgPath)
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(c, "<14>hello\n")
+	waitFor(t, "the device", func() bool { return deviceOf(t, r, "127.0.0.1").TotalMsgs == 1 })
+	c.Close()
+	if code := r.do(t, "PATCH", "/api/devices/127.0.0.1", map[string]any{"min_severity": "err"}, nil); code != 200 {
+		t.Fatalf("patch %d", code)
+	}
+	var set api.Settings
+	r.do(t, "GET", "/api/settings", nil, &set)
+	set.Syslog.MinSeverity = "notice"
+	if code := r.do(t, "PUT", "/api/settings", set, nil); code != 200 {
+		t.Fatalf("put %d", code)
+	}
+	// As if both records had failed: the index still has the start's filter.
+	if err := r.srv.be.idx.RecordSeverityFilter(t.Context(), index.SeverityFilterState{Default: 7, ByDevice: map[string]int{}}); err != nil {
+		t.Fatal(err)
+	}
+	r.stop(t)
+	r = start(t, cfgPath)
+	evs, _ := r.srv.be.idx.Events(t.Context(), time.Time{}, time.Time{}, 0)
+	var texts []string
+	for _, e := range evs {
+		if e.Kind == index.KindSeverityFilter {
+			texts = append(texts, e.Text)
+		}
+	}
+	want := []string{"severity filter for 127.0.0.1 set to err and above",
+		"default severity filter set to notice and above (was everything); 1 device keeps its own setting"}
+	if strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Errorf("events %q", texts)
+	}
+	if st, ok, err := r.srv.be.idx.RecordedSeverityFilter(t.Context()); err != nil || !ok || st.Default != 5 || st.ByDevice["127.0.0.1"] != 3 {
+		t.Errorf("recorded %+v %v %v", st, ok, err)
 	}
 }

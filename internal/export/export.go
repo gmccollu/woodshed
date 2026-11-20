@@ -221,7 +221,7 @@ type Options struct {
 	// (0-7, and whether it's the device's own setting), for a bundle's
 	// summary (SPEC §13.10 decision 86); nil: not known (the counts are still
 	// in the summary, from the index).
-	SeverityFilter func(deviceID string) (level int, own bool)
+	SeverityFilter func(deviceID, ip string) (level int, own bool)
 	// zip64Limit lowers the zip64 threshold, for tests.
 	zip64Limit int64
 	// janitor is how often expiry runs (default 1 min).
@@ -261,7 +261,7 @@ func (m *Manager) SetFlowStats(fn func(deviceID string) *FlowStats) { m.builder.
 
 // SetSeverityFilter gives the severity filter in effect for a device, for a
 // bundle's summary (Options.SeverityFilter).
-func (m *Manager) SetSeverityFilter(fn func(deviceID string) (level int, own bool)) {
+func (m *Manager) SetSeverityFilter(fn func(deviceID, ip string) (level int, own bool)) {
 	m.builder.severityFilter = fn
 }
 

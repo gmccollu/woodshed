@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/gmccollu/woodshed/internal/peer"
 )
@@ -101,8 +102,12 @@ func RunningState(dataDir string) (RunState, bool) {
 	b, err := os.ReadFile(filepath.Join(dataDir, LockFileName))
 	if err != nil {
 		// Windows: the holder's LockFileEx covers the byte the PID starts at,
-		// so another process can't read it. The state's PID must be alive.
-		return rs, peer.ProcessAlive(rs.PID)
+		// so another process can't read it; there the state's PID must be
+		// alive. Anywhere else a read error means we can't tell.
+		if runtime.GOOS == "windows" {
+			return rs, peer.ProcessAlive(rs.PID)
+		}
+		return RunState{}, false
 	}
 	var pid int
 	if _, err := fmt.Sscanf(string(b), "%d", &pid); err != nil || pid != rs.PID {

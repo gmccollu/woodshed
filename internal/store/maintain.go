@@ -654,6 +654,7 @@ func (s *Store) pruneDevices(now time.Time) {
 		}
 		if err := os.Remove(filepath.Join(s.logsDir, id)); err == nil || errors.Is(err, fs.ErrNotExist) {
 			delete(s.known, id)
+			s.knownIDs.Delete(id)
 			removed++
 		}
 	}

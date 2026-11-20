@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"net/netip"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -237,5 +239,98 @@ func BenchmarkFiltered24h500Devices(b *testing.B) {
 		if got := s.Filtered24h(nil); len(got) != 500 {
 			b.Fatal(len(got))
 		}
+	}
+}
+
+// The running totals keep only the hours with any, and at most
+// maxFiltTracked device IDs: a new ID past the cap counts under the refused
+// bucket, so the total stays exact.
+func TestFilteredTotalsSparseAndCapped(t *testing.T) {
+	var ft filtTotals
+	hr := int64(500_000)
+	ft.add("a", hr-30, index.SevCounts{7: 1}) // out of the window once newer hours come
+	ft.add("a", hr-3, index.SevCounts{7: 2})
+	ft.add("a", hr, index.SevCounts{7: 3})
+	ft.add("a", hr-1, index.SevCounts{6: 1}) // an older hour, in order
+	if h := ft.dev["a"]; len(h) != 3 || int64(h[0].hour) != hr-3 || int64(h[1].hour) != hr-1 || int64(h[2].hour) != hr {
+		t.Fatalf("hours %+v", h)
+	}
+	if c := sumHours(ft.dev["a"], hr); c[7] != 5 || c[6] != 1 {
+		t.Fatalf("sum %v", c)
+	}
+	for i := 0; i < maxFiltTracked+5; i++ {
+		ft.add(fmt.Sprintf("10.%d.%d.%d", i>>16, (i>>8)&255, i&255), hr, index.SevCounts{7: 1})
+	}
+	if len(ft.dev) != maxFiltTracked+1 {
+		t.Fatalf("%d ids tracked", len(ft.dev))
+	}
+	var tot int64
+	for _, h := range ft.dev {
+		tot += sumHours(h, hr).Total()
+	}
+	if tot != 6+maxFiltTracked+5 || sumHours(ft.dev[index.RefusedDeviceID], hr)[7] < 5 {
+		t.Fatalf("total %d, refused %v", tot, sumHours(ft.dev[index.RefusedDeviceID], hr))
+	}
+}
+
+// Bytes per device ID in the running totals, for the review's numbers (run
+// with -v): one hour with any (a sender heard once), and every hour of the
+// window (a device that filters all day).
+func TestFilteredTotalsBytesPerDevice(t *testing.T) {
+	measure := func(hours int) float64 {
+		const n = 10_000
+		runtime.GC()
+		var a, b runtime.MemStats
+		runtime.ReadMemStats(&a)
+		ft := &filtTotals{}
+		for i := 0; i < n; i++ {
+			id := fmt.Sprintf("10.%d.%d.%d", i>>16, (i>>8)&255, i&255)
+			for h := 0; h < hours; h++ {
+				ft.add(id, int64(500_000+h), index.SevCounts{7: 40, 6: 2})
+			}
+		}
+		runtime.GC()
+		runtime.ReadMemStats(&b)
+		runtime.KeepAlive(ft)
+		return float64(b.HeapAlloc-a.HeapAlloc) / n
+	}
+	one, all := measure(1), measure(filtHourSpan)
+	t.Logf("bytes per device ID: %.0f with one hour, %.0f with all %d", one, all, filtHourSpan)
+	if one <= 0 || all <= one {
+		t.Logf("(heap noise: %v %v)", one, all)
+	}
+}
+
+// The reader's path takes no store-wide lock, even when a shard is full and
+// it has to tell a known device from a new sender: with devMu held (as
+// admissions and the prefix prune hold it during a flood), Filtered still
+// returns, and counts the known device under its own ID.
+func TestFilteredTakesNoStoreLock(t *testing.T) {
+	e := newEnv(t, nil)
+	known := ip(16) // shard 0
+	e.write(known, "<13>stored")
+	e.maintain()
+	for i := 0; i < maxFiltPending; i++ {
+		e.s.Filtered(netip.AddrFrom4([4]byte{10, byte(i >> 8), byte(i), 0}), e.clock.Now(), 6)
+	}
+	e.s.devMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.s.Filtered(known, e.clock.Now(), 7)                               // known: its own entry
+		e.s.Filtered(netip.MustParseAddr("10.255.255.0"), e.clock.Now(), 7) // new: the overflow
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Filtered waited for devMu")
+	}
+	e.s.devMu.Unlock()
+	sh := &e.s.filt.shards[0]
+	sh.mu.Lock()
+	_, own := sh.m[filtKey{known, e.clock.Now().UnixMilli() / 60000}]
+	sh.mu.Unlock()
+	if !own {
+		t.Fatal("the known device went to the overflow")
 	}
 }

@@ -177,6 +177,7 @@ type Store struct {
 	devSet   map[streamKey]*device    // the same streams, authoritative (devMu)
 	addrRes  map[netip.Addr]int       // resident streams not marked for eviction, per address (devMu)
 	known    map[string]struct{}      // device IDs with logs on disk or seen since Open (devMu)
+	knownIDs sync.Map                 // the same IDs, for lock-free reads (filtered.go); written beside known
 	leavingN int                      // resident streams marked for eviction (devMu)
 	readmit  bucket                   // re-admissions at the cap (devMu)
 	resMu    sync.Mutex               // guards resident and device.resElem (a leaf lock)
@@ -688,6 +689,7 @@ func (s *Store) deviceFor(k streamKey, admit, noteReason bool) (*device, error) 
 	s.devSet[k] = d
 	s.addrRes[addr]++
 	s.known[id] = struct{}{}
+	s.knownIDs.Store(id, struct{}{})
 	s.devices.Store(k, d)
 	return d, nil
 }

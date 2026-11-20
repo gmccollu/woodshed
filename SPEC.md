@@ -3834,12 +3834,15 @@ the connection; present since 1.0):
       after), and a left-out message is 45 ns with no allocation (`BenchmarkReaderPath`, darwin/arm64).
     - **Counted, not dropped.** The store counts each left-out message by sender, minute and severity in a sharded
       table (bounded: past 4,096 pending entries per shard, senders that aren't devices yet count under the refused
-      bucket, so the total stays exact; devices the store knows always count under their own ID), and the maintenance
+      bucket, so the total stays exact; devices the store knows always count under their own ID, checked without a
+      lock so the UDP reader never waits on admissions during a flood), and the maintenance
       pass adds them to the device's stats (schema 10: `filtered_emerg` … `filtered_debug`
       on `stats` and `stats_hourly`, with partial indexes over the buckets that have any). They roll up and are pruned
       like the other stats and survive a restart. Every "last 24 hours" reader (the run-state file each second,
-      `/api/stats`, the device list) reads running totals the store keeps in memory (25 hourly buckets per device
-      with any, seeded from the index at start and moved on by each maintenance pass), never the index: at 500
+      `/api/stats`, the device list) reads running totals the store keeps in memory (only the hours with any, at most
+      25, per device: about 140 bytes for a device with one hour, 1.25 KB with all 25; at most 50,000 device IDs,
+      past which new ones count under the refused bucket; seeded from the index at start and moved on by each
+      maintenance pass), never the index: at 500
       filtering devices with 24 h of minute buckets the index query took about 750 ms, the memory read 90 µs. A
       left-out message makes the device heard (last heard, status, the
       device limits) but isn't in its stored lines or rate. None of it is in a drop count: the dashboard, About,
