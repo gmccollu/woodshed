@@ -402,6 +402,7 @@ sudo woodshed set-password            # asks twice; nothing is shown as you type
 sudo woodshed lan-mode on             # HTTPS on every interface, with a login
 sudo woodshed status                  # listeners, warnings, UI addresses, certificate SHA-256
 sudo woodshed update-check off        # or on: the daily update check, without the UI's question
+sudo woodshed severity-filter info    # store syslog from info up (leave out debug); --device ADDR for one device
 ```
 
 - **`woodshed set-password`** sets or changes the UI password (at least 8 characters). In a script, pass it on
@@ -422,6 +423,10 @@ sudo woodshed update-check off        # or on: the daily update check, without t
   (only that the UI needs a login, in LAN mode).
 - **`woodshed update-check on|off|ask`** sets `updates.check` (see below) and restarts a running service. `ask` puts
   the UI's one-time question back.
+- **`woodshed severity-filter [--device <address>] [<severity>|default]`** (2.1) shows or sets which syslog messages
+  are stored: `syslog.min_severity` for every device, or with `--device` one device's own (`default` follows the
+  default again). It restarts a running service. `--no-restart` only saves the config and is refused while the service runs (its next save from the web UI would undo the change). See
+  [the user guide](user-guide.md#storing-less-severity-filter).
 - **Forgot the password?** `sudo woodshed reset-password` removes it and turns LAN mode off.
 
 ## The update check on many machines

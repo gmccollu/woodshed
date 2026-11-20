@@ -72,7 +72,9 @@ because this copy holds the UI port.
                 {"listener": "snmp", "port": 162, "capacity_messages": 100000, "capacity_bytes": 67108864,
                  "depth": 0, "high_water_24h": 40, "dropped_24h": 0, "high_water_by_hour": [12, 40]}],  // while listeners.snmp.enabled
   "flow_parts_early": 0,                      // flow segments started early to keep flow memory bounded (2.0, below)
-  "tcp_frames": [{"listener": "tcp", "port": 514, "incomplete": 0, "frame_timeouts": 0}]  // per TCP and TLS listener (2.0, below)
+  "tcp_frames": [{"listener": "tcp", "port": 514, "incomplete": 0, "frame_timeouts": 0}],  // per TCP and TLS listener (2.0, below)
+  "severity_filter": {"min_severity": "debug", "device_overrides": 1, "filtered_24h": 12345,  // the syslog severity filter (below)
+                      "by_severity_24h": {"debug": 12345}, "devices_24h": 1}
 }
 ```
 **Drops by reason** (since 1.2): `dropped_by_reason` splits `dropped_24h`: `paused` (the low-disk guard had paused
@@ -80,6 +82,14 @@ writing, UDP messages still in the queue included), `write_error` (a log file wr
 over the device limits, see `device_limit`) and `queue_full` (a UDP listener's queue was full, below). `dropped_24h`
 still counts every drop, `queue_full` included. The reasons are counted since the server started, so for a day after a
 restart they can sum to less than `dropped_24h`, which comes from the index.
+
+**Severity filter** (after 2.0.0, SPEC §13.10 decision 86): `severity_filter` is the syslog severity filter and what it
+left out. `min_severity` is the default (`syslog.min_severity` in Settings; `"debug"` stores everything, the default),
+`device_overrides` how many devices have their own setting (`PATCH /api/devices/{id}` `min_severity`), and
+`filtered_24h` the syslog messages it left out in the last 24 hours, every device together, split by severity name in
+`by_severity_24h` (only severities with any), with `devices_24h` the devices that had any. These messages were never
+stored: they're not in search, the live tail or exports. They're a choice, not a loss, so they're in none of the drop
+counts (`dropped_24h`, `dropped_by_reason`). They come from the index's per-minute counts, so they survive a restart.
 
 **Early flow parts** (since 2.0): `flow_parts_early` counts the flow segments closed before their hour ended, since
 the server started, because every exporter's open segment together had reached the writers' memory budget. The
@@ -163,7 +173,9 @@ id, IP or name (case-insensitive substring); `hidden` and `blocked` default to `
   "msgs_per_min": 36720, "total_msgs": 9123456, "bytes_on_disk": 123456789,
   "tls": null,                                 // null until the device has tried TLS since the server started; see below
   "types": ["syslog", "trap"], "lines_by_type": {"syslog": 9120000, "trap": 3456},
-  "polled": false}]                            // since 1.3; a polled device also has "poll_status": "ok"
+  "polled": false,                             // since 1.3; a polled device also has "poll_status": "ok"
+  "min_severity": "default", "min_severity_effective": "debug",   // the syslog severity filter (below)
+  "filtered_24h": 0, "filtered_by_severity_24h": {}}]
 ```
 `total_msgs` counts every data type (syslog and SNMP traps, SPEC §11.1), so a device that sends only traps is online.
 `types` lists the data types the device has files of on disk now (`[]` when none), and `lines_by_type` their stored
@@ -190,10 +202,25 @@ tell), not from the per-minute stats. A missing partner, a bad time or an empty 
 `GET /api/groups` → `[{"name": "HQ", "devices": 12}]`, sorted by name, with the number of non-hidden devices in each
 (ungrouped devices aren't listed).
 
-`PATCH /api/devices/{id}` body `{"name": "...", "group": "...", "hidden": true, "blocked": true}` (any subset) → the
-updated device. `blocked: true` adds the device's exact address (`/32` or `/128`) to `listeners.blocklist`;
+`PATCH /api/devices/{id}` body `{"name": "...", "group": "...", "hidden": true, "blocked": true, "min_severity": "info"}`
+(any subset) → the updated device. `blocked: true` adds the device's exact address (`/32` or `/128`) to `listeners.blocklist`;
 `blocked: false` removes that exact entry (a broader CIDR that also covers it stays, and the device stays blocked:
 the response says so with `"blocked_by": "198.51.100.0/24"`).
+
+**Severity filter per device** (after 2.0.0, SPEC §13.10 decision 86): `min_severity` is the device's own syslog
+severity filter: `"default"` (it follows `syslog.min_severity`, `GET /api/settings`) or a severity, `emerg`, `alert`,
+`crit`, `err`, `warning`, `notice`, `info` or `debug`, meaning that severity and more severe are stored (`debug`
+stores everything, even when the default doesn't). `min_severity_effective` is the one in effect. A PATCH takes
+`"default"` (in any case), a name or `"0"`–`"7"` (anything else is a `400` with `errors.min_severity`, and so is a
+device whose ID isn't an address) and saves it in the config
+(`syslog.min_severity_by_device`, keyed by the device's address), like `blocked`; it applies from the next message, on
+open TCP and TLS connections too, and records a `severity_filter` event ("severity filter for 192.0.2.10 set to info
+and above"). An address with a zone (a link-local sender, ID `fe80__1_en0`) takes the setting of its address
+without the zone. `filtered_24h` counts the device's syslog messages the filter left out in the last 24 hours (from
+the hour 24 hours ago, from the server's running totals), and
+`filtered_by_severity_24h` splits them by severity name (only the ones with any; `{}` when none). Messages without a
+valid PRI (severity unknown) are always stored; SNMP traps, polls and flows aren't filtered. Left-out messages make
+the device heard (`last_heard`, its status), but they aren't in `total_msgs`, `msgs_per_min` or anything stored.
 
 **Blocklist** (`listeners.blocklist`, IPs or CIDRs, editable in Settings): messages and TCP connections from a
 matching sender are refused at the listener, before parsing or storage, and counted as refusals with reason
@@ -710,7 +737,8 @@ normalising (dedupe, sort). `listeners.allowlist` entries may be a bare IP or a 
   "quiet": {"quiet_after_seconds": 300, "offline_after_seconds": 3600},
   "updates": {"check": "ask"},
   "poll": {"interval_s": 60, "timeout_ms": 2000, "retries": 1, "concurrency": 32, "max_interfaces": 64,
-           "max_targets": 500, "presets": ["system", "system-info", "interfaces"]}
+           "max_targets": 500, "presets": ["system", "system-info", "interfaces"]},
+  "syslog": {"min_severity": "debug"}
 }
 ```
 `updates.check` must be `"ask"`, `"on"` or `"off"` (a `400` on `updates.check` otherwise); see "Update check". A PUT
@@ -720,6 +748,14 @@ without `updates` (a 1.0 client or script) leaves it as it is.
 out. Ranges: `interval_s` 30–600, `timeout_ms` 200–10,000, `retries` 0–5, `concurrency` 1–256, `max_interfaces`
 1–1,024, `max_targets` 1–5,000; `presets` any of `system`, `system-info`, `interfaces`. Errors are keyed `poll.<field>`.
 A PUT without `poll` (a 1.2 client) leaves it as it is.
+
+`syslog` (after 2.0.0) is the syslog severity filter's default (SPEC §13.10 decision 86): `min_severity` is the least
+severe syslog message stored, `emerg`, `alert`, `crit`, `err`, `warning`, `notice`, `info` or `debug` (the default:
+store everything); a PUT also takes the aliases (`warn`, `error`, …) and `"0"`–`"7"`, and the response has the name.
+Anything else is a `400` on `syslog.min_severity`. It applies from the next message without a restart, to every device
+without its own setting (devices' own settings are `PATCH /api/devices/{id}` `min_severity`; they're in the config as
+`syslog.min_severity_by_device`, not in this object, so a PUT never changes them), and a change records a
+`severity_filter` event. A PUT without `syslog` (a 2.0 client) leaves it as it is.
 
 `listeners.tls` is the TLS syslog listener (SPEC §10.3), off by default:
 - `port` is 1–65535, and differs from the UDP and TCP ports when they share an address (and from `ui.port`). Ports
@@ -1280,7 +1316,9 @@ is on (or a v3 user is set, or a trap was received), an `snmp` object gives `ena
 `by_status_24h`, `users`, `unreadable_users`, `mib_names`, `mib_errors` and `failures` (the 5 senders failing most:
 `ip`, `count_24h`, `status`, `detail`, `last_seen`), for `woodshed status` and `woodshed snmp status`. While any
 SNMP poll target is configured (since 1.3), a `poll` object gives `targets`, `answering`, `not_answering` (each
-`device_id`, `address`, `since`) and `last_cycle`, for `woodshed status`'s Polling row.
+`device_id`, `address`, `since`) and `last_cycle`, for `woodshed status`'s Polling row. Since 2.1, `severity_filter` is
+`/api/stats`'s (the severity filter's setting and the last 24 hours' left-out counts), for `woodshed status`'s
+Severity row.
 
 ## Profiling listener
 

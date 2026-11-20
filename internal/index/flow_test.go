@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// A 1.3 index (schema 7) migrates to 8 and 9, keeping everything.
+// A 1.3 index (schema 7) migrates to 8, 9 and 10, keeping everything.
 func TestMigrate13ToFlows(t *testing.T) {
 	dir := t.TempDir()
 	d := openIn(t, dir)
@@ -16,7 +16,7 @@ func TestMigrate13ToFlows(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != 9 || CurrentSchema != 9 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 10 {
 		t.Fatalf("schema %d", v)
 	}
 	if segs, err := d2.AllFlowSegments(ctx); err != nil || len(segs) != 0 {

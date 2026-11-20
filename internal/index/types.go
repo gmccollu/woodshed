@@ -66,6 +66,10 @@ type Counts struct {
 	Bytes     int64 // raw bytes stored
 	Truncated int64 // messages cut at the max message size (still stored)
 	Dropped   int64 // messages Woodshed received but could not store
+	// Filtered are the syslog messages the severity filter left out, by
+	// severity (stats rows only: syslog). Not stored, and not drops: a
+	// choice the user made (filtered.go).
+	Filtered SevCounts
 	// Flow is the flow collector's counts (type_stats rows of type flow
 	// only; zero for the other types).
 	Flow FlowCounts
@@ -77,6 +81,7 @@ func (c *Counts) Add(o Counts) {
 	c.Bytes += o.Bytes
 	c.Truncated += o.Truncated
 	c.Dropped += o.Dropped
+	c.Filtered.Add(o.Filtered)
 	c.Flow.Add(o.Flow)
 }
 
@@ -155,6 +160,9 @@ const (
 	// KindTLS: the TLS syslog certificate was created, renewed or its CA
 	// replaced (with the fingerprints).
 	KindTLS Kind = "tls"
+	// KindSeverityFilter: the syslog severity filter changed, the default
+	// (no device) or a device's own (SPEC §13.10 decision 86).
+	KindSeverityFilter Kind = "severity_filter"
 	// KindMigrate: Open migrated an existing index one schema step
 	// ("index migrated from schema 8 to 9 in 12 ms").
 	KindMigrate Kind = "migrate"

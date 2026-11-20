@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,9 @@ import (
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/index"
+	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
+	"github.com/gmccollu/woodshed/internal/server"
 )
 
 // `woodshed search --type flow` (SPEC §13.7): the flow engine over the data
@@ -51,26 +54,71 @@ func ruleIEsOf(c config.Config) []flow.IEKey {
 // woodshed.toml (a portable copy), else the installed config unless --data
 // named another folder. Nil when none can be read.
 func searchRuleIEs(f *searchFlags, dataDir string) []flow.IEKey {
+	c, ok := searchConfig(f, dataDir)
+	if !ok {
+		return nil
+	}
+	return ruleIEsOf(c)
+}
+
+// searchSeverity is the syslog severity filter in effect for a device, from
+// the same config as searchRuleIEs, for a bundle's summary (nil: the config
+// can't be read, so the README gives the counts without the setting).
+func searchSeverity(f *searchFlags, dataDir string) func(id, ip string) (int, bool) {
+	c, ok := searchConfig(f, dataDir)
+	if !ok {
+		return nil
+	}
+	return func(id, ip string) (int, bool) {
+		// The device's row IP (it keeps a zone); the ID only without one.
+		a, err := netip.ParseAddr(ip)
+		if err != nil {
+			var ok bool
+			if a, ok = model.ParseDeviceID(id); !ok {
+				return c.Syslog.Level(), false
+			}
+		}
+		return c.Syslog.DeviceLevel(a)
+	}
+}
+
+// searchConfig reads the config that goes with the data folder: --config
+// when given, the data folder's own woodshed.toml, the one a server running
+// on the data folder names in its run-state file, or the default config when
+// --data isn't given. It never creates one.
+func searchConfig(f *searchFlags, dataDir string) (config.Config, bool) {
 	var path string
-	switch own := filepath.Join(dataDir, config.FileName); {
+	// The config the server running on the data folder names: only that
+	// server's own run-state file (the lock's holder), never one left behind.
+	running := func() string {
+		if rs, ok := server.RunningState(dataDir); ok && rs.Config != "" && fileExists(rs.Config) {
+			return rs.Config
+		}
+		return ""
+	}
+	own := filepath.Join(dataDir, config.FileName)
+	run := ""
+	if !f.set["config"] && !fileExists(own) && f.set["data"] {
+		run = running() // once: it reads the lock and the run-state file
+	}
+	switch {
 	case f.set["config"]:
 		path = f.config
 	case fileExists(own):
 		path = own
+	case run != "":
+		path = run
 	case !f.set["data"]:
 		path = f.config
 	default:
-		return nil
+		return config.Config{}, false
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil
+		return config.Config{}, false
 	}
 	c, err := config.Read(abs) // never creates it
-	if err != nil {
-		return nil
-	}
-	return ruleIEsOf(c)
+	return c, err == nil
 }
 
 func fileExists(p string) bool {

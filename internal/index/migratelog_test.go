@@ -25,14 +25,15 @@ func TestMigrationsReported(t *testing.T) {
 
 	d2 := openIn(t, dir)
 	created, steps := d2.Migrations()
-	if created || len(steps) != 2 || steps[0].From != 7 || steps[0].To != 8 || steps[1].From != 8 || steps[1].To != 9 {
+	if created || len(steps) != 3 || steps[0].From != 7 || steps[0].To != 8 || steps[1].From != 8 || steps[1].To != 9 ||
+		steps[2].From != 9 || steps[2].To != 10 {
 		t.Fatalf("upgrade: created %v steps %+v", created, steps)
 	}
 	evs, err := d2.Events(ctx, time.Time{}, time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	re := regexp.MustCompile(`^index migrated from schema (7 to 8|8 to 9) in (\d+ ms|under 1 ms)$`)
+	re := regexp.MustCompile(`^index migrated from schema (7 to 8|8 to 9|9 to 10) in (\d+ ms|under 1 ms)$`)
 	var got []string
 	for _, e := range evs {
 		if e.Kind != KindMigrate || e.Level != LevelInfo || e.DeviceID != "" || !re.MatchString(e.Text) {
@@ -40,7 +41,7 @@ func TestMigrationsReported(t *testing.T) {
 		}
 		got = append(got, e.Text)
 	}
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("migrate events %q", got)
 	}
 	d2.Close()
@@ -50,7 +51,7 @@ func TestMigrationsReported(t *testing.T) {
 	if created, steps := d3.Migrations(); created || len(steps) != 0 {
 		t.Fatalf("current: created %v steps %v", created, steps)
 	}
-	if evs, _ := d3.Events(ctx, time.Time{}, time.Time{}, 0); len(evs) != 2 {
+	if evs, _ := d3.Events(ctx, time.Time{}, time.Time{}, 0); len(evs) != 3 {
 		t.Fatalf("events after a no-op open: %d", len(evs))
 	}
 }

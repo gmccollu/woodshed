@@ -198,6 +198,7 @@ reached.`, stderr)
 		statusTLSRows(w, cfg, nil)
 		statusSNMPRows(w, cfg, nil)
 		statusPollRows(w, cfg, nil, time.Now())
+		statusSeverityRows(w, cfg, nil)
 		w.row("Data", status.DataDir)
 		if cfgErr == nil {
 			updateRows(w, cfg, status.Version)
@@ -226,6 +227,7 @@ reached.`, stderr)
 		statusSNMPRows(w, cfg, &rs)
 		statusPollRows(w, cfg, &rs, time.Now())
 		statusFlowRows(w, &rs)
+		statusSeverityRows(w, cfg, &rs)
 		w.row("Data", cfg.Storage.DataDir)
 		if cfgErr == nil {
 			updateRows(w, cfg, rs.Version)
@@ -256,6 +258,9 @@ reached.`, stderr)
 		w.row("", fmt.Sprintf("couldn't check the data folder either: %v (try as administrator)", lockErr))
 	default:
 		w.row("Server", "not running (nothing answers on "+uiURL(cfg)+")")
+		if cfgErr == nil {
+			statusSeverityRows(w, cfg, nil)
+		}
 	}
 	return 1
 }

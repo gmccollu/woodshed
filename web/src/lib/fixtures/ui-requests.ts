@@ -8,6 +8,7 @@ import { newSetupForm, snippetBody, type SetupFamily } from '../setup.ts';
 import { allTypesExport, flowBudgetBody, flowExport, flowListenerBody, flowSettingsForm } from '../flows.ts';
 import { bundleBody, newBundle } from '../bundle.ts';
 import { exportJson } from '../exportbody.ts';
+import { severityPatch, syslogSettingsBody } from '../severity.ts';
 
 /** Placeholders the replay substitutes (strings in the JSON, numbers here). */
 export const AGENT_PORT = 16161;
@@ -22,7 +23,7 @@ export const ALL_TYPES = ['syslog', 'trap', 'poll', 'flow'];
 
 export interface Step {
   name: string;
-  method: 'POST' | 'PUT' | 'DELETE';
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path: string;
   body?: unknown;
   /** A whole-object PUT: the GET the form starts from; body holds only the keys the form changed. */
@@ -178,6 +179,11 @@ export function buildSteps(): Step[] {
     { name: 'export_flows_filtered_csv', method: 'POST', path: '/api/exports', if_match: false, body: flowOnly },
     { name: 'bundle_estimate_flows_ipfix', method: 'POST', path: '/api/exports/estimate', if_match: false, body: bundleIpfix },
     { name: 'bundle_leave_flows_out', method: 'POST', path: '/api/exports', if_match: false, body: bundleNoFlows },
+    // 2.1, the severity filter: Settings → Storage's default, then the device page's own setting and back to the default.
+    { name: 'settings_severity_save', method: 'PUT', path: '/api/settings', merge_get: '/api/settings', if_match: true, etag_get: '/api/settings',
+      body: { syslog: syslogSettingsBody('notice') } },
+    { name: 'device_severity_own', method: 'PATCH', path: '/api/devices/{device_id}', if_match: false, body: severityPatch('info') },
+    { name: 'device_severity_default', method: 'PATCH', path: '/api/devices/{device_id}', if_match: false, body: severityPatch('default') },
   ];
 }
 
@@ -191,4 +197,5 @@ export const NOTES = [
   'Test poll of an edited target that keeps its stored community is sent as {"id": …} (the UI can\'t resend a community it never sees).',
   'Set up a device: the body has only the choices that apply to the family, data type and transport, and only those set (the server fills in its defaults); it never carries a secret.',
   '2.0 flows: {flow_port} and {flow_ipfix_port} are two free UDP ports the replay picks (never 2055 or 4739); the settings step turns the flow listener on there. Export steps name device 127.0.0.1 and a fixed past hour; bundle steps\' at is {at} (the replay substitutes now minus 30 min, RFC 3339 UTC); "Every type" lists the types a 2.0 server has (syslog, trap, poll, flow), and Leave flows out lists them without flow. flow_formats is sent only when it isn\'t both; flow filters are top-level lists like the trap filters.',
+  '2.1 severity filter: Settings sends syslog.min_severity (a severity name) only to a server whose GET has syslog; the device page PATCHes /api/devices/{id} with {"min_severity": <name or "default">}. {device_id} is a device the replay has (the Go replay: 127.0.0.1, after one syslog message from it; the mock: one of its fleet).',
 ];

@@ -11,6 +11,7 @@
   import type { PollTarget } from '../lib/poll';
   import PollPanel from '../components/PollPanel.svelte';
   import FlowDevicePanel from '../components/FlowDevicePanel.svelte';
+  import SeverityFilterPanel from '../components/SeverityFilterPanel.svelte';
   import StatusDot from '../components/StatusDot.svelte';
 
   const RANGES = [
@@ -88,6 +89,11 @@
       </div>
       {#if loadError}<p class="mb-0 text-bad-fg" role="alert">{loadError}</p>{/if}
     </section>
+
+    <!-- The severity filter: devices that send syslog, had some left out, or have their own setting (2.1 servers). -->
+    {#if device && device.min_severity !== undefined && (device.types?.includes('syslog') || (device.filtered_24h ?? 0) > 0 || device.min_severity !== 'default')}
+      <SeverityFilterPanel {device} onchange={(d) => (device = d)} />
+    {/if}
 
     <FlowDevicePanel {id} {device} />
 

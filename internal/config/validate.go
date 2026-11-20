@@ -111,6 +111,7 @@ func (c Config) validate(goos string, prev *Config) Errors {
 		e["updates.check"] = `must be "ask", "on" or "off"`
 	}
 	checkPoll(e, c.Poll)
+	checkSyslog(e, c.Syslog)
 	if len(e) == 0 {
 		return nil
 	}

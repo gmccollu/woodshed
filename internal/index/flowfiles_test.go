@@ -483,7 +483,7 @@ func TestReconcileChecksKeptFlowRows(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("indexes %d", n)
 	}
-	if v, _ := d.SchemaVersion(ctx); v != 9 {
+	if v, _ := d.SchemaVersion(ctx); v != CurrentSchema {
 		t.Fatalf("schema %d", v)
 	}
 }

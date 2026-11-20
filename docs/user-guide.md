@@ -407,6 +407,52 @@ What to do:
 
 The banner goes away an hour after the last drop. When Woodshed stops, it first stores what's in the queue.
 
+### Storing less: severity filter
+
+Some devices (an access point is the usual case) send a flood of debug messages and can't be told not to. You can
+tell Woodshed to store syslog only from a minimum severity: that severity and the more severe ones. The default stores
+everything.
+
+- **For every device:** **Settings → Storage → Store syslog from**. For example *Info and above (leaves out debug)*.
+- **For one device:** open it from **Devices** and use **Syslog stored → Store from** on its page. *The default*
+  follows Settings again. A device's own setting wins over the default, in either direction, so you can leave out
+  debug from one chatty device while storing everything from the rest, or the reverse.
+- **From the command line** (as an administrator): `sudo woodshed severity-filter` shows the default and every
+  device's own setting; `sudo woodshed severity-filter info` sets the default; `sudo woodshed severity-filter --device
+  192.0.2.10 info` sets one device's (`default` to follow the default again). It saves the config and restarts a
+  running service to use it; the web UI changes it without a restart. In the config file the keys are
+  `min_severity` and `min_severity_by_device` under `[syslog]`, with severities by name (emerg, alert, crit, err,
+  warning, notice, info, debug) or number (0 to 7).
+
+What it does and doesn't do:
+
+- A change applies from the next message, also on open TCP and TLS connections. What's already stored stays. Each
+  change is recorded as an event.
+- A message without a severity (no PRI) is always stored. SNMP traps, polls and flows aren't affected.
+- What's left out isn't stored anywhere: search, the **live tail** and exports don't have it. It's not lost unseen,
+  though: Woodshed counts it per device and severity, and the counts survive a restart. The device's page shows them
+  (*Debug not stored: 12,345 in the last 24 h*), the **Dropped** card and **About** show the total as *not stored, by
+  choice* (it's never in the dropped count), `woodshed status` has a Severity line, and an incident bundle's README
+  says, per device, what it stored and how many were left out in the bundle's window.
+- The device still counts as heard while everything it sends is left out, so it doesn't turn quiet or offline.
+- If a device's syslog in an incident bundle's window was all left out, it's still in the bundle (as *heard,
+  nothing stored (severity filter)* with the counts), and a bundle where only left-out messages arrived still builds.
+- A change made with `woodshed severity-filter` or by editing the config while Woodshed is stopped is recorded as an
+  event when it next starts ("… (changed while Woodshed was stopped)"). `--no-restart` is refused while the service
+  runs, because its next save from the web UI would put back the setting it started with.
+
+### Going back to 2.0
+
+This version stores the severity filter's counts in the index, so the index's schema is 10. After it has run once,
+a 2.0.x build refuses the index: `woodshed run` and `woodshed reindex` stop with "schema version 10 is newer than
+this build supports (9)". The log files themselves are unaffected and 2.0.x reads them as before.
+
+To go back: stop Woodshed, move `index.db`, `index.db-wal` and `index.db-shm` out of the data folder (keep them if
+you may upgrade again), and start the 2.0.x build. It creates a new index and reads every log file into it at start,
+so search, exports and bundles have all the logs. What only the index held starts over: device names, groups and
+hidden flags, saved searches, poll targets, the events list, and the message-count history behind the charts and
+the dropped counts.
+
 ## 4. Find the log files
 
 Every message is kept, exactly as it arrived, in plain text: one folder per device and one file per day (UTC).

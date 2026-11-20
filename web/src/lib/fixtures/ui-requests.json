@@ -8,7 +8,8 @@
     "SNMP user: key_ext is \"draft\" unless priv is aes-192 or aes-256 (the form's choice is sent only then); empty passphrases are omitted (kept).",
     "Test poll of an edited target that keeps its stored community is sent as {\"id\": …} (the UI can't resend a community it never sees).",
     "Set up a device: the body has only the choices that apply to the family, data type and transport, and only those set (the server fills in its defaults); it never carries a secret.",
-    "2.0 flows: {flow_port} and {flow_ipfix_port} are two free UDP ports the replay picks (never 2055 or 4739); the settings step turns the flow listener on there. Export steps name device 127.0.0.1 and a fixed past hour; bundle steps' at is {at} (the replay substitutes now minus 30 min, RFC 3339 UTC); \"Every type\" lists the types a 2.0 server has (syslog, trap, poll, flow), and Leave flows out lists them without flow. flow_formats is sent only when it isn't both; flow filters are top-level lists like the trap filters."
+    "2.0 flows: {flow_port} and {flow_ipfix_port} are two free UDP ports the replay picks (never 2055 or 4739); the settings step turns the flow listener on there. Export steps name device 127.0.0.1 and a fixed past hour; bundle steps' at is {at} (the replay substitutes now minus 30 min, RFC 3339 UTC); \"Every type\" lists the types a 2.0 server has (syslog, trap, poll, flow), and Leave flows out lists them without flow. flow_formats is sent only when it isn't both; flow filters are top-level lists like the trap filters.",
+    "2.1 severity filter: Settings sends syslog.min_severity (a severity name) only to a server whose GET has syslog; the device page PATCHes /api/devices/{id} with {\"min_severity\": <name or \"default\">}. {device_id} is a device the replay has (the Go replay: 127.0.0.1, after one syslog message from it; the mock: one of its fleet)."
   ],
   "steps": [
     {
@@ -444,6 +445,37 @@
           "trap",
           "poll"
         ]
+      }
+    },
+    {
+      "name": "settings_severity_save",
+      "method": "PUT",
+      "path": "/api/settings",
+      "merge_get": "/api/settings",
+      "if_match": true,
+      "etag_get": "/api/settings",
+      "body": {
+        "syslog": {
+          "min_severity": "notice"
+        }
+      }
+    },
+    {
+      "name": "device_severity_own",
+      "method": "PATCH",
+      "path": "/api/devices/{device_id}",
+      "if_match": false,
+      "body": {
+        "min_severity": "info"
+      }
+    },
+    {
+      "name": "device_severity_default",
+      "method": "PATCH",
+      "path": "/api/devices/{device_id}",
+      "if_match": false,
+      "body": {
+        "min_severity": "default"
       }
     }
   ]

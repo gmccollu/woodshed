@@ -39,6 +39,7 @@ commands:
   setup           print the configuration a device needs to send to Woodshed
   flow            the flow listener (flow v5, v9 and IPFIX): on, off, status
   flows           stored flows: the top talkers, ports and conversations (flows top)
+  severity-filter which syslog severities are stored (default and per device), e.g. info and above
   update-check    turn the daily update check on or off (or back to asking)
   reset-password  remove the UI password and turn LAN mode off
   send            send test messages to a syslog server
@@ -75,6 +76,7 @@ func init() {
 		{"setup", cmdSetup},
 		{"flow", cmdFlow},
 		{"flows", cmdFlows},
+		{"severity-filter", cmdSeverityFilter},
 		{"update-check", cmdUpdateCheck},
 		{"reset-password", cmdResetPassword},
 		{"send", cmdSend},

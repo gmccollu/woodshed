@@ -66,3 +66,11 @@ test('the fixture covers the 2.0 flow forms as the contract expects', () => {
   assert.deepEqual((by.bundle_leave_flows_out.body as Record<string, unknown>).types, ['syslog', 'trap', 'poll']);
   assert.ok(!('flow_formats' in (by.bundle_leave_flows_out.body as object)));
 });
+
+test('the fixture covers the severity filter: Settings and the device page', () => {
+  const by = Object.fromEntries(built.steps.map((s) => [s.name, s]));
+  assert.deepEqual(by.settings_severity_save.body, { syslog: { min_severity: 'notice' } });
+  assert.equal(by.device_severity_own.method, 'PATCH');
+  assert.deepEqual(by.device_severity_own.body, { min_severity: 'info' });
+  assert.deepEqual(by.device_severity_default.body, { min_severity: 'default' });
+});

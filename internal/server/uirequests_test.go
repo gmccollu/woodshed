@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gmccollu/woodshed/internal/api"
 	"github.com/gmccollu/woodshed/internal/config"
 	"github.com/gmccollu/woodshed/internal/snmp"
 	"github.com/gmccollu/woodshed/internal/snmp/agenttest"
@@ -105,6 +106,7 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 
 	vars := map[string]string{"{agent_port}": strconv.Itoa(int(a1.Addr().Port())), "{agent_v3_port}": strconv.Itoa(int(a2.Addr().Port())),
 		"{flow_port}": strconv.Itoa(freeUDP(t)), "{flow_ipfix_port}": strconv.Itoa(freeUDP(t)),
+		"{device_id}": "127.0.0.1",
 		// A bundle's moment can't be in the future.
 		"{at}": time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second).Format(time.RFC3339)}
 	subst := func(s string) string {
@@ -182,6 +184,16 @@ func TestUIRequestBodiesAgainstServer(t *testing.T) {
 				t.Errorf("%s: the response holds a secret", st.Name)
 			}
 		}
+	}
+
+	// 2.1: the severity filter steps took: the default from Settings, and
+	// the device back on it after its own setting.
+	var sev api.Settings
+	if r.do(t, "GET", "/api/settings", nil, &sev); sev.Syslog == nil || sev.Syslog.MinSeverity != "notice" {
+		t.Errorf("settings syslog after the fixture: %+v", sev.Syslog)
+	}
+	if d := deviceOf(t, r, "127.0.0.1"); d.MinSeverity != "default" || d.MinSeverityEffective != "notice" {
+		t.Errorf("the device after the fixture: %q %q", d.MinSeverity, d.MinSeverityEffective)
 	}
 
 	// GET -> PUT round trips: an SNMP v3 user (its GET entry, read-only

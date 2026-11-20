@@ -189,6 +189,91 @@ const SHOTS = [
   }),
   ...both({ name: 'about', url: '/?mock_panel=0#/about' }),
   { name: 'about-linux-light', mode: 'light', url: '/?mock_panel=0&mock_os=linux#/about' },
+  // 2.1, the severity filter (`npm run screenshots -- sevf`). The mock's access point sends chatty debug and has its own
+  // setting, info and above, from the start: its page counts what was left out, worded as a choice, never as an error.
+  ...both({
+    name: 'sevf-device',
+    url: '/?mock_panel=0#/device?id=10.8.0.5',
+    wait: 2500,
+    clip: 'section[aria-labelledby="sevf-h"]',
+    check: `(() => { const t = document.querySelector('section[aria-labelledby="sevf-h"]')?.innerText ?? '';
+      return t.includes('Stores info and above') && t.includes("this device's own setting") && /Debug not stored: [0-9,]+ in the last 24 h/.test(t)
+        && !document.querySelector('section[aria-labelledby="sevf-h"] .text-bad-fg'); })()`,
+  }),
+  {
+    // Back to the default from the page: applies at once (the next poll's counts stop growing for debug only if the default leaves it out).
+    name: 'sevf-device-back-to-default',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.8.0.5',
+    wait: 2500,
+    act: `const sel = document.querySelector('section[aria-labelledby="sevf-h"] select'); sel.value = 'default'; sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await __until(() => document.querySelector('section[aria-labelledby="sevf-h"]')?.innerText.includes('the default, from Settings'));`,
+    check: `(() => { const t = document.querySelector('section[aria-labelledby="sevf-h"]').innerText; return t.includes('Stores everything') && t.includes('the default, from Settings'); })()`,
+  },
+  {
+    // A save that fails shows the error and the setting still in effect, not the one picked.
+    name: 'sevf-device-failed-save',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.8.0.5',
+    wait: 2500,
+    act: `window.__woodshedMock.failNextDevicePatch = true;
+      const sel = document.querySelector('section[aria-labelledby="sevf-h"] select'); sel.value = 'err'; sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await __until(() => document.querySelector('section[aria-labelledby="sevf-h"] [role=alert]'));`,
+    check: `document.querySelector('section[aria-labelledby="sevf-h"] select').value === 'info'
+      && document.querySelector('section[aria-labelledby="sevf-h"] [role=alert]').textContent.includes('the mock was told to fail')
+      && document.querySelector('section[aria-labelledby="sevf-h"]').innerText.includes('Stores info and above')`,
+  },
+  {
+    name: 'sevf-device-follows-default',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.1.0.1',
+    wait: 2500,
+    check: `!document.querySelector('section[aria-labelledby="sevf-h"] [data-testid=sevf-left-out]') && document.querySelector('section[aria-labelledby="sevf-h"] select').value === 'default'`,
+  },
+  ...both({
+    name: 'sevf-settings-storage',
+    url: '/?mock_panel=0#/settings',
+    wait: 2000,
+    clip: 'section:has(#storage)',
+    act: `document.getElementById('storage').scrollIntoView();`,
+    check: `(() => { const sel = [...document.querySelectorAll('label')].find((l) => l.textContent.trim().startsWith('Store syslog from'))?.querySelector('select');
+      return !!sel && sel.value === 'debug' && [...sel.options].some((o) => o.textContent === 'Info and above (leaves out debug)'); })()`,
+  }),
+  {
+    // Settings → Storage saves the default without a restart, and a device with its own keeps it.
+    name: 'sevf-settings-save',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/settings',
+    wait: 2000,
+    act: `const sel = [...document.querySelectorAll('label')].find((l) => l.textContent.trim().startsWith('Store syslog from')).querySelector('select');
+      sel.value = 'notice'; sel.dispatchEvent(new Event('change', { bubbles: true })); await __tick(); __btn('Save').click(); await new Promise((r) => setTimeout(r, 800));
+      const f = window.__woodshedMockFetch; window.__sv = [(await (await f('/api/settings')).json()).syslog.min_severity,
+        (await (await f('/api/stats')).json()).severity_filter.min_severity,
+        (await (await f('/api/devices?q=10.8.0.5')).json()).devices[0].min_severity_effective];`,
+    report: `JSON.stringify(window.__sv)`,
+    check: `JSON.stringify(window.__sv) === JSON.stringify(['notice', 'notice', 'info'])`,
+  },
+  {
+    name: 'sevf-about-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/about',
+    wait: 2000,
+    clip: 'section:has([data-testid=about-sevf])',
+    check: `(() => { const el = document.querySelector('[data-testid=about-sevf]'); return !!el && el.innerText.startsWith('Not drops: left out by the severity filter.')
+      && /1 device has its own setting/.test(el.innerText) && /debug\\) from 1 device/.test(el.innerText); })()`,
+  },
+  {
+    name: 'sevf-dashboard-light',
+    mode: 'light',
+    url: '/?mock_panel=0#/dashboard',
+    wait: 3000,
+    check: `(() => { const a = document.querySelector('[data-testid=dash-sevf]'); return !!a && /^[0-9,]+ not stored, by choice$/.test(a.textContent.trim())
+      && !a.closest('.text-bad-fg'); })()`,
+  },
   // The UDP receive queue (SPEC §11.5): the banner while it overflows, and its hourly high-water view.
   ...both({
     name: 'banner-udp-queue-full',
@@ -2348,7 +2433,7 @@ const SHOTS = [
     url: '/?mock_panel=0&mock_latency=0#/about',
     wait: 1500,
     act: `const fx = ${JSON.stringify(JSON.parse(readFileSync(new URL('../src/lib/fixtures/ui-requests.json', import.meta.url), 'utf8')))};
-      const f = window.__woodshedMockFetch; const vars = { '{agent_port}': 16161, '{agent_v3_port}': 16162, '{flow_port}': 12055, '{flow_ipfix_port}': 14739, '{at}': new Date(Date.now() - 30 * 60_000).toISOString().replace(/[.][0-9]+Z$/, 'Z') }; const out = [];
+      const f = window.__woodshedMockFetch; const vars = { '{agent_port}': 16161, '{agent_v3_port}': 16162, '{flow_port}': 12055, '{flow_ipfix_port}': 14739, '{device_id}': '10.1.0.1', '{at}': new Date(Date.now() - 30 * 60_000).toISOString().replace(/[.][0-9]+Z$/, 'Z') }; const out = [];
       const sub = (x) => JSON.parse(JSON.stringify(x ?? null), (k, v) => (typeof v === 'string' && v in vars ? vars[v] : v));
       const path = (p) => p.replace(/[{][a-z0-9_]+[}]/g, (m) => vars[m] ?? m);
       const merge = (a, b) => { if (!b || typeof b !== 'object' || Array.isArray(b) || !a || typeof a !== 'object' || Array.isArray(a)) return b;

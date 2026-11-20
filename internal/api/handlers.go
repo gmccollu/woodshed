@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 // maxBody caps JSON request bodies.
@@ -263,9 +265,29 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if v := p.MinSeverity; v != nil {
+		if strings.EqualFold(strings.TrimSpace(*v), config.SeverityDefault) {
+			*v = config.SeverityDefault // "Default" too, as the CLI takes it
+		}
+		if _, ok := config.ParseSeverity(*v); !ok && *v != config.SeverityDefault {
+			msg := `Must be "default" or a severity: emerg, alert, crit, err, warning, notice, info or debug (or 0 to 7).`
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "min_severity: " + msg, Errors: map[string]string{"min_severity": msg}})
+			return
+		}
+	}
 	d, err := s.backend.UpdateDevice(r.Context(), id, p)
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("No device with id %q.", id))
+		return
+	}
+	var re *RequestError
+	if errors.As(err, &re) {
+		// A device the change can't apply to (min_severity on an ID without an address).
+		body := errorBody{Error: re.Msg}
+		if p.MinSeverity != nil {
+			body.Errors = map[string]string{"min_severity": re.Msg}
+		}
+		writeJSON(w, http.StatusBadRequest, body)
 		return
 	}
 	if err != nil {

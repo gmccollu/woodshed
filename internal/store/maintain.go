@@ -166,6 +166,7 @@ func (s *Store) flushAll(midnight bool) error {
 		first = err
 	}
 	s.collectRefused(now, false)
+	s.collectFiltered()
 	if midnight && today != s.lastUnparkDay {
 		s.lastUnparkDay = today
 		s.unparkBefore(today)
@@ -653,6 +654,7 @@ func (s *Store) pruneDevices(now time.Time) {
 		}
 		if err := os.Remove(filepath.Join(s.logsDir, id)); err == nil || errors.Is(err, fs.ErrNotExist) {
 			delete(s.known, id)
+			s.knownIDs.Delete(id)
 			removed++
 		}
 	}

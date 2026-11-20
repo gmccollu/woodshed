@@ -162,6 +162,7 @@ func (s *Store) recover(ctx context.Context) error {
 		}
 		s.devMu.Lock()
 		s.known[dev] = struct{}{} // has logs: exempt from the new-device rate
+		s.knownIDs.Store(dev, struct{}{})
 		s.devMu.Unlock()
 		for _, e := range list {
 			if active != nil && e.Rel == active.Rel {

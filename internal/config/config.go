@@ -53,9 +53,12 @@ const (
 type Config struct {
 	Listeners Listeners `toml:"listeners" json:"listeners"`
 	Storage   Storage   `toml:"storage" json:"storage"`
-	UI        UI        `toml:"ui" json:"ui"`
-	Quiet     Quiet     `toml:"quiet" json:"quiet"`
-	Updates   Updates   `toml:"updates" json:"updates"`
+	// Syslog is how syslog messages are stored: the severity filter
+	// (severity.go, SPEC §13.10 decision 86).
+	Syslog  Syslog  `toml:"syslog" json:"syslog" comment:"Which syslog messages are stored (the severity filter). Traps, polls and flows aren't affected."`
+	UI      UI      `toml:"ui" json:"ui"`
+	Quiet   Quiet   `toml:"quiet" json:"quiet"`
+	Updates Updates `toml:"updates" json:"updates"`
 	// Poll is the SNMP poller's defaults (poll.go, SPEC §12).
 	Poll Poll `toml:"poll" json:"poll" comment:"SNMP polling of the devices you add under Devices → Polling (defaults; each device can override them)."`
 	// Debug is file-only (never in /api/settings, so the UI can't turn it on),
@@ -197,6 +200,7 @@ func Default() Config {
 			RetentionBytes: DefaultRetentionBytes,
 			PartBytes:      DefaultPartBytes,
 		},
+		Syslog:  Syslog{MinSeverity: DefaultMinSeverity, MinSeverityByDevice: map[string]SeverityText{}},
 		UI:      UI{Port: DefaultUIPort, ExtraHostnames: []string{}, TrustedHosts: []string{}},
 		Quiet:   Quiet{QuietAfterSeconds: DefaultQuietAfterSeconds, OfflineAfterSeconds: DefaultOfflineAfterSeconds},
 		Updates: Updates{Check: UpdateCheckAsk},
@@ -213,6 +217,7 @@ func (c Config) Clone() Config {
 	c.UI.ExtraHostnames = append([]string{}, c.UI.ExtraHostnames...)
 	c.UI.TrustedHosts = append([]string{}, c.UI.TrustedHosts...)
 	c.Poll.Presets = append([]string{}, c.Poll.Presets...)
+	c.Syslog = cloneSyslog(c.Syslog)
 	return c
 }
 
@@ -243,6 +248,7 @@ func (c *Config) Normalize() {
 	normalizeUDPQueue(&c.Listeners)
 	normalizeFlow(&c.Listeners.Flow)
 	normalizePoll(&c.Poll)
+	normalizeSyslog(&c.Syslog)
 }
 
 // Prefixes parses the allowlist: an IP becomes a single-address prefix and IPv4-mapped

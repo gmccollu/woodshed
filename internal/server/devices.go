@@ -29,11 +29,14 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 	}
 	if (q.Sort == "" || q.Sort == "rate") && q.Q == "" {
 		page, err := b.devicesByLiveRate(ctx, q, now, k, active)
+		if err != nil {
+			return page, err
+		}
 		k.mark(page.Devices)
 		b.markTLS(page.Devices)
 		b.markTypes(ctx, page.Devices)
 		b.markPolled(ctx, page.Devices)
-		return page, err
+		return page, b.markSeverity(ctx, page.Devices)
 	}
 	iq := index.DeviceQuery{
 		Limit: q.Limit, Offset: q.Offset, Sort: index.DeviceSort(q.Sort), Q: q.Q, Group: q.Group, Ungrouped: q.Ungrouped,
@@ -92,7 +95,7 @@ func (b *backend) QueryDevices(ctx context.Context, q api.DeviceQuery) (api.Devi
 	b.markTLS(out.Devices)
 	b.markTypes(ctx, out.Devices)
 	b.markPolled(ctx, out.Devices)
-	return out, nil
+	return out, b.markSeverity(ctx, out.Devices)
 }
 
 // Groups serves GET /api/groups from the index.

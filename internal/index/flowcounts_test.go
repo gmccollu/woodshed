@@ -133,7 +133,7 @@ func TestMigrateFlowCounts(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != 9 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema {
 		t.Fatalf("schema %d", v)
 	}
 	w, err := d2.FlowCountsIn(ctx, "10.1.0.1", time.UnixMilli(0), time.UnixMilli(120000), time.Time{})

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver (pure Go, no cgo)
@@ -52,6 +53,8 @@ type DB struct {
 	// created and migrated: what Open did to the schema (Migrations).
 	created  bool
 	migrated []Migration
+	// filteredReads counts reads of the severity filter's counts (FilteredReads).
+	filteredReads atomic.Int64
 }
 
 // Migration is one schema step Open applied to an existing index.
@@ -306,6 +309,9 @@ CREATE INDEX poll_hourly_hour ON poll_hourly (hour);
 	// 8 -> 9: the flow collector's counts per exporter and minute (SPEC
 	// §13.10 decisions 82 and 83), in type_stats beside msgs and bytes.
 	flowCountsMigration,
+	// 9 -> 10: the severity filter's counts per device, minute and severity
+	// (SPEC §13.10 decision 86), in the syslog stats tables beside msgs.
+	filteredMigration,
 }
 
 // CurrentSchema is the schema version this build writes.
@@ -355,13 +361,16 @@ func (d *DB) migrate(ctx context.Context) error {
 	return nil
 }
 
-// auxSchema is what this build adds beside the versioned schema, idempotently
-// at each Open, so the schema version stays 9 and a 2.0 release candidate
-// can still open the index (it ignores both):
+// auxSchema is what this build adds beside the versioned schema,
+// idempotently at each Open. It was added beside schema 9 so a 2.0 release
+// candidate could still open the index; since 2.1 the schema is 10 (the
+// severity filter's counts, filteredMigration), which a 2.0.x build refuses
+// whatever this adds:
 //   - flow_minute_path_sums covers Reconcile's per-segment sums of
 //     flow_minute (flowMinuteSums) and replaces flow_minute_path, its prefix,
 //     for the deletes by path;
-//   - index_meta holds values like FlowRowsVersion.
+//   - index_meta holds values like FlowRowsVersion, and the severity filter
+//     the server last ran with (RecordSeverityFilter).
 const auxSchema = `
 CREATE INDEX IF NOT EXISTS flow_minute_path_sums ON flow_minute (path, records, bytes);
 DROP INDEX IF EXISTS flow_minute_path;

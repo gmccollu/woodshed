@@ -6,6 +6,28 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
 
 ## [Unreleased]
 
+### Added
+- A syslog severity filter: store syslog from a minimum severity, by default for every device (**Settings → Storage →
+  Store syslog from**, `syslog.min_severity`) and per device (the device's page, `PATCH /api/devices/{id}`
+  `min_severity`, `syslog.min_severity_by_device`), with `woodshed severity-filter [--device ADDR] [SEVERITY|default]`
+  to show or set both. The default stores everything (debug); names (emerg … debug) and 0–7 are accepted. Messages
+  without a PRI are always stored, and SNMP traps, polls and flows aren't affected. A change applies from the next
+  message without a restart and is recorded as an event (one made while Woodshed was stopped, at its next start). Nothing is dropped silently: left-out messages are counted
+  per device and severity (kept across restarts) and shown on the device page, the dashboard's Dropped card and About
+  (as a choice, not a drop), `GET /api/stats` (`severity_filter`), `GET /api/devices` (`filtered_24h`,
+  `filtered_by_severity_24h`), `woodshed status`, and each device's line in an incident bundle's README and manifest.
+  The live tail shows only what's stored. See [docs/user-guide.md](docs/user-guide.md#storing-less-severity-filter).
+- **The index schema goes to 10 (the severity filter's counts).** After this version has run once, a 2.0.x build
+  refuses the index: `woodshed run` and `woodshed reindex` stop with "schema version 10 is newer than this build
+  supports (9)". The log files are unaffected. To go back to 2.0.x, stop Woodshed and move `index.db` (with
+  `index.db-wal` and `index.db-shm`) out of the data folder: 2.0.x builds a new index from the log files when it
+  starts, so every log is searchable again, but what only the index holds starts over (device names, groups and
+  hidden flags, saved searches, poll targets, the events list and the message-count history). See
+  [docs/user-guide.md](docs/user-guide.md#going-back-to-20).
+- `woodshed search --type flow --data DIR` and `woodshed bundle --data DIR` beside a running server now use that
+  server's config (the one its run-state file names, while it holds the data folder): its flow `rule_id_ies`, and
+  its severity filter for the bundle's summary. `--config` still wins.
+
 ### Fixed
 - **Settings → UI access**: with no UI password set, the **LAN mode** and **Require login on this machine too**
   checkboxes looked clickable but were disabled, so a click did nothing. A click (or Space) now says, next to the

@@ -229,6 +229,15 @@
             {#if stats.rejected_24h > 0}<a class="whitespace-nowrap text-link underline" href="#/settings" title="Senders outside the allowlist">{num(stats.rejected_24h)} rejected</a>{/if}
           </span>
         {/if}
+        {#if stats.severity_filter?.filtered_24h}
+          <a
+            class="block text-muted underline"
+            href="#/about"
+            data-testid="dash-sevf"
+            title="Syslog messages less severe than the severity filter keeps: a setting you chose, not a loss, so not in the dropped count"
+            >{num(stats.severity_filter.filtered_24h)} not stored, by choice</a
+          >
+        {/if}
       </p>
     {/if}
   </div>

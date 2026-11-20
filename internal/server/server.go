@@ -222,6 +222,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	s.be.openFlows(cfg)
 	s.exports.SetFlows(s.be.flows.eng)
 	s.exports.SetFlowStats(s.be.flowStats)
+	s.exports.SetSeverityFilter(s.be.deviceSeverity)
 	// The update check: nothing touches the network unless updates.check is "on"
 	// in a release build (SPEC §10.2).
 	s.be.updates = updatecheck.New(updatecheck.Options{
@@ -344,10 +345,15 @@ func (s *Server) Run(ctx context.Context) error {
 	s.be.serviceEvent(index.LevelInfo, index.KindStart,
 		fmt.Sprintf("Woodshed %s (%s) started on %s/%s; data folder %s.", s.opts.Version, s.opts.Commit, runtime.GOOS, runtime.GOARCH, cfg.Storage.DataDir))
 
+	s.be.severityChangedWhileStopped(cfg.Syslog)
+	sevf := severityFilterOf(cfg.Syslog)
 	ln, err := listen.Start(cfg.Listeners, listen.Options{
 		Sink:        s.be.sink,
 		TrySink:     s.be.trySink,
 		OnQueueDrop: s.be.store.DropQueued,
+		// The severity filter from the first message; changes apply live.
+		SeverityFilter: &sevf,
+		OnFiltered:     s.be.store.Filtered,
 		// A third of the shutdown for draining the UDP queue, leaving the rest
 		// for the store's flush and the index.
 		DrainTimeout:    s.opts.ShutdownTimeout / 3,

@@ -177,6 +177,7 @@ type Store struct {
 	devSet   map[streamKey]*device    // the same streams, authoritative (devMu)
 	addrRes  map[netip.Addr]int       // resident streams not marked for eviction, per address (devMu)
 	known    map[string]struct{}      // device IDs with logs on disk or seen since Open (devMu)
+	knownIDs sync.Map                 // the same IDs, for lock-free reads (filtered.go); written beside known
 	leavingN int                      // resident streams marked for eviction (devMu)
 	readmit  bucket                   // re-admissions at the cap (devMu)
 	resMu    sync.Mutex               // guards resident and device.resElem (a leaf lock)
@@ -200,6 +201,9 @@ type Store struct {
 	paused      atomic.Bool
 	pausedSince atomic.Int64 // unix ms
 	dropped     atomic.Int64 // messages dropped since Open
+	filtered    atomic.Int64 // syslog messages the severity filter left out since Open (filtered.go)
+	filt        filtTable    // their counts, until the next maintenance pass
+	ftot        filtTotals   // and the last 24 hours' totals (filtered.go)
 	written     atomic.Int64 // messages written to files since Open
 	activeBytes atomic.Int64 // bytes on disk in active files
 
@@ -388,6 +392,9 @@ func Open(opts Options) (*Store, error) {
 	}
 	if err := s.applyIndex(); err != nil {
 		s.log.Warn("store: index update failed", "err", err)
+	}
+	if err := s.seedFiltered(); err != nil {
+		s.log.Warn("store: couldn't read the severity filter's counts", "err", err)
 	}
 	// A clock that stepped back while Woodshed was stopped counts too.
 	if files, err := s.idx.Files(s.ctx, ""); err == nil {
@@ -623,6 +630,14 @@ func (d *device) heardLocked(rec time.Time) {
 // stream) is admitted as it is: the cap and the buckets count devices, not
 // types. Recovery creates devices unchecked.
 func (s *Store) device(k streamKey, admit bool) (*device, error) {
+	return s.deviceFor(k, admit, true)
+}
+
+// deviceFor is device; noteReason false leaves the refusal reason alone when
+// the sender isn't admitted, for a caller that doesn't count a refused
+// message either (the severity filter's counts: nothing of it was stored or
+// dropped, so it mustn't name the reason of a device_limit event).
+func (s *Store) deviceFor(k streamKey, admit, noteReason bool) (*device, error) {
 	if v, ok := s.devices.Load(k); ok {
 		return v.(*device), nil
 	}
@@ -642,7 +657,9 @@ func (s *Store) device(k streamKey, admit bool) (*device, error) {
 				// known senders can't turn every message into an eviction.
 				s.readmit.refill(now, s.opts.ReadmitPerSecond, s.opts.ReadmitPerSecond*60)
 				if s.readmit.tokens < 1 {
-					s.setRefuseReason("churn")
+					if noteReason {
+						s.setRefuseReason("churn")
+					}
 					return nil, ErrDeviceLimit
 				}
 				s.readmit.tokens--
@@ -650,11 +667,15 @@ func (s *Store) device(k streamKey, admit bool) (*device, error) {
 			}
 		} else {
 			if full {
-				s.setRefuseReason("cap")
+				if noteReason {
+					s.setRefuseReason("cap")
+				}
 				return nil, ErrDeviceLimit
 			}
 			if reason := s.takeTokenLocked(addr, now); reason != "" {
-				s.setRefuseReason(reason)
+				if noteReason {
+					s.setRefuseReason(reason)
+				}
 				return nil, ErrDeviceLimit
 			}
 		}
@@ -668,6 +689,7 @@ func (s *Store) device(k streamKey, admit bool) (*device, error) {
 	s.devSet[k] = d
 	s.addrRes[addr]++
 	s.known[id] = struct{}{}
+	s.knownIDs.Store(id, struct{}{})
 	s.devices.Store(k, d)
 	return d, nil
 }
@@ -940,6 +962,7 @@ func (s *Store) Close() error {
 			first = err
 		}
 	}
+	s.collectFiltered() // before the devices close: the counts go into their stats
 	for _, d := range s.allDevices() {
 		d.mu.Lock()
 		d.closed = true
@@ -972,6 +995,7 @@ type Usage struct {
 	PausedSince        time.Time // zero when not paused
 	Dropped            int64     // messages dropped since Open (paused, write errors, refused senders, UDP queue full)
 	Written            int64     // messages written since Open
+	Filtered           int64     // syslog messages the severity filter left out since Open (not in Dropped)
 
 	Devices           int       // senders held in memory now
 	MaxDevices        int       // the cap on Devices
@@ -994,6 +1018,7 @@ func (s *Store) Usage() Usage {
 		WritesPaused:   s.paused.Load(),
 		Dropped:        s.dropped.Load(),
 		Written:        s.written.Load(),
+		Filtered:       s.filtered.Load(),
 		FlowPartsEarly: s.fl.partsEarly.Load(),
 	}
 	if u.WritesPaused {
