@@ -215,7 +215,7 @@ stores everything, even when the default doesn't). `min_severity_effective` is t
 device whose ID isn't an address) and saves it in the config
 (`syslog.min_severity_by_device`, keyed by the device's address), like `blocked`; it applies from the next message, on
 open TCP and TLS connections too, and records a `severity_filter` event ("severity filter for 192.0.2.10 set to info
-and above"). An address with a zone (a link-local sender, ID `fe80__1_en0`) takes the setting of its address
+and above, was the default (store everything)"). An address with a zone (a link-local sender, ID `fe80__1_en0`) takes the setting of its address
 without the zone. `filtered_24h` counts the device's syslog messages the filter left out in the last 24 hours (from
 the hour 24 hours ago, from the server's running totals), and
 `filtered_by_severity_24h` splits them by severity name (only the ones with any; `{}` when none). Messages without a
@@ -493,6 +493,25 @@ The zip is an export's (below), with each type in its folder, and:
   `woodshed bundle` prints `restarts 3, reboots 0`.
   `gaps` are the bundle's (the same for every device). `dropped` and `truncated` sum the stats buckets that start in
   the window (per minute, per hour past 24 h), so a bucket that straddles an edge counts whole.
+  Since 2.1, a bundle with syslog gives each device `"severity_filter"` (SPEC §13.10 decision 86):
+  ```js
+  {"settings": [{"from": "2026-11-14T20:30:00Z", "to": "2026-11-14T20:49:12.5Z", "min_severity": "warning", "own": false},
+                {"from": "2026-11-14T20:49:12.5Z", "to": "2026-11-14T21:10:00Z", "min_severity": "notice", "own": true}],
+   "not_stored": 1000, "not_stored_by_severity": {"info": 1000},
+   "from": "2026-11-14T20:30:00Z", "to": "2026-11-14T21:10:00Z", "by_hour": false, "partial": false, "known": true}
+  ```
+  `settings` are the filter's settings over the window, oldest first, together covering it: `min_severity` (`"debug"`
+  stores everything) and `own` (the device's own setting, else the default). They come from the index's record of
+  each change (written with its `severity_filter` event; before 2.1.0-rc2, from those events' texts), changes made
+  while Woodshed was stopped included (at the start that found them). A device's own setting is kept by its address
+  without the zone, so every zone of a link-local address (`fe80::1%en0`, `fe80::1%en1`) shares one setting and one
+  history. `min_severity` is `""` for a span nothing records: before the oldest event kept, before a device's first
+  change when that event (from 2.1.0-rc1) doesn't say what it changed from, and over a span whose next change says it
+  changed from something else (a change that wasn't recorded, or a clock that stepped back). `not_stored` counts the messages the filter left out in the stats
+  buckets from `from` to `to` (as for `dropped`; `partial` when the 7-day retention cut the window's start, `by_hour`
+  when hourly buckets widened it, `known` false when the whole window is older than the counts kept). The README's
+  Filter line says both: `storing warning and above (the default) until 20:49:12.500, then notice and above (this
+  device's setting); 1,000 info messages not stored in this window`.
 
 **CLI** (not HTTP): `woodshed bundle --at <time>` builds the same zip from the data folder, without the service
 (SPEC §11.3, the user guide's "Incident bundles").

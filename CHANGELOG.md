@@ -15,7 +15,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   message without a restart and is recorded as an event (one made while Woodshed was stopped, at its next start). Nothing is dropped silently: left-out messages are counted
   per device and severity (kept across restarts) and shown on the device page, the dashboard's Dropped card and About
   (as a choice, not a drop), `GET /api/stats` (`severity_filter`), `GET /api/devices` (`filtered_24h`,
-  `filtered_by_severity_24h`), `woodshed status`, and each device's line in an incident bundle's README and manifest.
+  `filtered_by_severity_24h`), `woodshed status`, and each device's line in an incident bundle's README and manifest,
+  with the settings in effect over the bundle's window. The filter saves disk, not CPU.
   The live tail shows only what's stored. See [docs/user-guide.md](docs/user-guide.md#storing-less-severity-filter).
 - **The index schema goes to 10 (the severity filter's counts).** After this version has run once, a 2.0.x build
   refuses the index: `woodshed run` and `woodshed reindex` stop with "schema version 10 is newer than this build
@@ -25,8 +26,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   hidden flags, saved searches, poll targets, the events list and the message-count history). See
   [docs/user-guide.md](docs/user-guide.md#going-back-to-20).
 - `woodshed search --type flow --data DIR` and `woodshed bundle --data DIR` beside a running server now use that
-  server's config (the one its run-state file names, while it holds the data folder): its flow `rule_id_ies`, and
-  its severity filter for the bundle's summary. `--config` still wins.
+  server's config (the one its run-state file names, while it holds the data folder): its flow `rule_id_ies`.
+  `--config` still wins.
 
 ### Fixed
 - **Settings → UI access**: with no UI password set, the **LAN mode** and **Require login on this machine too**
@@ -40,6 +41,22 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   button, and says it's HTTPS on the UI port, not port 80. On Windows the firewall command for the UI port is shown
   right there, before the save too. `GET /api/status` has the addresses as `ui_addrs`
   ([docs/api.md](docs/api.md#status-and-stats)).
+
+### Fixed during the release candidates (affected 2.1.0-rc1 only)
+- `woodshed bundle` refused a window where a device's syslog was all left out by the severity filter ("nothing was
+  stored … No zip written."), while the API built it. The CLI now builds it too, with the device's "heard, nothing
+  stored (severity filter)" row.
+- A bundle's Filter line and manifest named the severity filter set when the bundle was built, not the one in effect
+  during the window. They now give each setting over the window with its times (`severity_filter.settings`:
+  `from`, `to`, `min_severity`, `own`), from a record of each change the index now keeps beside its event (a new
+  table, created at start; the schema stays 10, and rc1's earlier changes are read from its events), and say
+  "setting before <time> not recorded" where nothing covers it or the record doesn't add up. Every zone of a
+  link-local address shares one history, as it shares one setting. A device's severity filter events now also say
+  what the setting was before. A device whose name contains "set to the default" no longer has a live change logged
+  again at the next start as made while stopped.
+- The service log's "store open" line now gives each startup step's time and what it read (`steps="list 2ms (144
+  files), tails 1ms (18 files), flows 0s (161 segments, 0 read), reconcile 3ms (0 re-read), …"`), so a slow start
+  says where its time went.
 
 ## [2.0.0] - 2026-11-18
 

@@ -238,7 +238,8 @@ func TestSeverityFilterEndToEnd(t *testing.T) {
 		}
 	}
 	if strings.Join(texts, "|") != "default severity filter set to notice and above, was everything (changed while Woodshed was stopped)|"+
-		"severity filter for 127.0.0.1 set to info and above|severity filter for 127.0.0.1 set to the default (notice and above)" {
+		"severity filter for 127.0.0.1 set to info and above, was the default (notice and above)|"+
+		"severity filter for 127.0.0.1 set to the default (notice and above), was info and above" {
 		t.Errorf("events %q", texts)
 	}
 
@@ -323,7 +324,7 @@ func TestSeverityFilterSettings(t *testing.T) {
 			texts = append(texts, e.Text)
 		}
 	}
-	want := []string{"severity filter for 127.0.0.1 set to notice and above",
+	want := []string{"severity filter for 127.0.0.1 set to notice and above, was the default (store everything)",
 		"default severity filter set to warning and above (was everything); 1 device keeps its own setting"}
 	if strings.Join(texts, "|") != strings.Join(want, "|") {
 		t.Errorf("events %q", texts)
@@ -406,8 +407,8 @@ func TestSeverityFilterChangedWhileStopped(t *testing.T) {
 	}
 	want := []string{
 		": default severity filter set to info and above, was everything (changed while Woodshed was stopped)",
-		"192.0.2.10: severity filter for 192.0.2.10 set to err and above (changed while Woodshed was stopped)",
-		"192.0.2.10: severity filter for 192.0.2.10 set to the default, info and above (changed while Woodshed was stopped)",
+		"192.0.2.10: severity filter for 192.0.2.10 set to err and above, was the default (store everything) (changed while Woodshed was stopped)",
+		"192.0.2.10: severity filter for 192.0.2.10 set to the default (info and above), was err and above (changed while Woodshed was stopped)",
 	}
 	if strings.Join(texts, "|") != strings.Join(want, "|") {
 		t.Errorf("events\n%s", strings.Join(texts, "\n"))
@@ -477,6 +478,19 @@ func TestSeverityFilterZonedDevice(t *testing.T) {
 	}
 	if cfg, _ := config.Read(cfgPath); len(cfg.Syslog.MinSeverityByDevice) != 0 {
 		t.Fatalf("left %v", cfg.Syslog.MinSeverityByDevice)
+	}
+	// The changes are recorded by the override's address, without the zone,
+	// so a bundle for any zone of it finds them.
+	cs, err := r.srv.be.idx.SeverityChanges(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range cs {
+		got = append(got, fmt.Sprintf("%s %d %d %s", c.Address, c.Level, c.Was, c.Source))
+	}
+	if want := "fe80::1 6 -1 live|fe80::1 -1 6 live|fe80::a 6 -1 live|fe80::a -1 6 live"; strings.Join(got, "|") != want {
+		t.Errorf("changes %q", got)
 	}
 	var e struct {
 		Errors map[string]string `json:"errors"`
@@ -558,12 +572,51 @@ func TestSeverityFilterNoDuplicateEventAtStart(t *testing.T) {
 			texts = append(texts, e.Text)
 		}
 	}
-	want := []string{"severity filter for 127.0.0.1 set to err and above",
+	want := []string{"severity filter for 127.0.0.1 set to err and above, was the default (store everything)",
 		"default severity filter set to notice and above (was everything); 1 device keeps its own setting"}
 	if strings.Join(texts, "|") != strings.Join(want, "|") {
 		t.Errorf("events %q", texts)
 	}
 	if st, ok, err := r.srv.be.idx.RecordedSeverityFilter(t.Context()); err != nil || !ok || st.Default != 5 || st.ByDevice["127.0.0.1"] != 3 {
 		t.Errorf("recorded %+v %v %v", st, ok, err)
+	}
+}
+
+// The start's "already said" check reads the changes table, not the event's
+// text, so a device whose name says " set to the default" doesn't get its
+// live change logged again as made while stopped.
+func TestSeverityFilterNameSaysDefault(t *testing.T) {
+	dir := t.TempDir()
+	port := freePort(t)
+	cfgPath := writeConfig(t, dir, port, 0, nil)
+	r := start(t, cfgPath)
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(c, "<14>hello\n")
+	waitFor(t, "the device", func() bool { return deviceOf(t, r, "127.0.0.1").TotalMsgs == 1 })
+	c.Close()
+	if code := r.do(t, "PATCH", "/api/devices/127.0.0.1", map[string]any{"name": "lab set to the default"}, nil); code != 200 {
+		t.Fatalf("name %d", code)
+	}
+	if code := r.do(t, "PATCH", "/api/devices/127.0.0.1", map[string]any{"min_severity": "err"}, nil); code != 200 {
+		t.Fatalf("patch %d", code)
+	}
+	// As if the record had failed: the index still has the start's filter.
+	if err := r.srv.be.idx.RecordSeverityFilter(t.Context(), index.SeverityFilterState{Default: 7, ByDevice: map[string]int{}}); err != nil {
+		t.Fatal(err)
+	}
+	r.stop(t)
+	r = start(t, cfgPath)
+	evs, _ := r.srv.be.idx.Events(t.Context(), time.Time{}, time.Time{}, 0)
+	var texts []string
+	for _, e := range evs {
+		if e.Kind == index.KindSeverityFilter {
+			texts = append(texts, e.Text)
+		}
+	}
+	if want := "severity filter for 127.0.0.1 (lab set to the default) set to err and above, was the default (store everything)"; strings.Join(texts, "|") != want {
+		t.Errorf("events %q", texts)
 	}
 }

@@ -3863,10 +3863,25 @@ the connection; present since 1.0):
       exports can't find would mislead. The device page says what's left out instead.
     - **Bundles say it honestly.** A device whose syslog in the window was all left out is an active device (its
       README row says "heard, nothing stored (severity filter)" with the counts), and a window with only left-out
-      messages still builds. Each syslog device's manifest entry has `severity_filter` (the setting now, whether
-      it's the device's own, and the counts over the bundle window); the README's Filter line says what's stored now
-      and what was left out in the window, "since <time>" when the stats retention cut the window, by hour when hourly
-      buckets were used, and that nothing is known when the window is older than the stats kept.
+      messages still builds, from the API and `woodshed bundle` alike. Each syslog device's manifest entry has
+      `severity_filter`: `settings`, the settings in effect over the window (`{from, to, min_severity, own}`, oldest
+      first), and the counts over the bundle window. The settings come from the index's `severity_changes` table, not
+      the config at build time: a row per change (time, the override's address without the zone or "" for the
+      default, the level after and before, live or found at a start), written in the same transaction as its
+      `severity_filter` event, which stays the human-readable record. The table is created at Open beside the schema,
+      so the schema stays 10 and a 2.1.0-rc1 index gains it; changes from before its first row come from rc1's event
+      texts, parsed only for those. Keying by the zoneless address matches the setting itself: one override covers
+      every zone of an address, so a change made through one zoned device is in the others' history. The last change
+      before each moment, or what the first one changed from, gives the setting; with no change kept, the setting the
+      last run recorded (stored everything when none was). A span nothing records has `min_severity` `""` and the
+      README says "setting before <time> not recorded": before the oldest event kept, before an rc1 device event that
+      doesn't say what it changed from, and wherever a chain doesn't add up (a change's "was" isn't the previous
+      change's level, or the last change isn't the recorded setting: a lost record or a clock that stepped back). A
+      start's check that a live change was already recorded (so it isn't logged again as made while stopped) reads
+      the table too, not the event's text. The README's Filter line says the settings ("storing warning and above (the default)
+      until 20:49:12, then notice and above (this device's setting)") and what was left out in the window, "since
+      <time>" when the stats retention cut the window, by hour when hourly buckets were used, and that nothing is
+      known when the window is older than the stats kept.
     - **Schema 10.** A 2.0.x build refuses the index ("schema version 10 is newer than this build supports"); the log
       files are unaffected. Going back means moving `index.db` aside: 2.0.x rebuilds it from the files at start, and
       what only the index holds (names, groups, saved searches, poll targets, events, stats history) starts over.

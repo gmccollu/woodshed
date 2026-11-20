@@ -51,13 +51,11 @@ type builder struct {
 	// flowStats the collector's counts for an exporter (nil: not known).
 	flows     func() *flowquery.Engine
 	flowStats func(deviceID string) *FlowStats
-	// severityFilter: the severity filter in effect for a device (nil: not known).
-	severityFilter func(deviceID, ip string) (level int, own bool)
 }
 
 func newBuilder(o Options) builder {
 	b := builder{idx: o.Index, eng: o.Search, version: o.Version, now: o.Now, level: o.Level, loc: o.Location,
-		zip64Limit: o.zip64Limit, testHookLine: o.testHookLine, flowStats: o.FlowStats, severityFilter: o.SeverityFilter}
+		zip64Limit: o.zip64Limit, testHookLine: o.testHookLine, flowStats: o.FlowStats}
 	if o.Flows != nil {
 		eng := o.Flows
 		b.flows = func() *flowquery.Engine { return eng }
@@ -291,6 +289,26 @@ func Prepare(ctx context.Context, opts Options, r Request) (*Plan, error) {
 		State: Building, Filters: r.Filters, Named: r.Devices}}, nil
 }
 
+// LeftOut reports whether a device of the plan had syslog the severity
+// filter left out in the window (buckets that start inside it, as for its
+// active devices): such a bundle has something to say even with no record in
+// it, and the API builds it, so the CLI does too.
+func (p *Plan) LeftOut(ctx context.Context) (bool, error) {
+	if !slices.Contains(p.Info.Filters.TypesOrSyslog(), datatype.Syslog) {
+		return false, nil
+	}
+	ids, err := p.b.idx.FilteredActive(ctx, p.Info.From, p.Info.To)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if slices.Contains(p.Info.Devices, id) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Estimate is the plan's upper bound from the index, as POST
 // /api/exports/estimate gives it.
 func (p *Plan) Estimate(ctx context.Context) (search.Estimate, error) {
@@ -364,8 +382,9 @@ const SummaryNote = "Per device: lines, first and last are the records in this z
 	"that straddles an edge counts whole. A flow exporter's sequence_gaps and lost_estimate come from the same " +
 	"buckets, by when the datagrams arrived (sequence_gaps_span is the span counted; null when not known, with " +
 	"sequence_gaps_unknown saying why); sequence_gaps_24h is the running collector's last 24 hours, not limited to " +
-	"the window. severity_filter (bundles with syslog) is the device's syslog severity filter when the bundle was " +
-	"built and the messages it left out (not stored, so not in this zip), from the same buckets."
+	"the window. severity_filter (bundles with syslog) has the device's syslog severity filter settings over the " +
+	"window (settings, from the filter's events; min_severity \"\" where none records it) and the messages it left " +
+	"out (not stored, so not in this zip), from the same buckets."
 
 // TypeSummary is one device's records of one type in a bundle.
 type TypeSummary struct {
@@ -543,6 +562,7 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 	types := info.Filters.TypesOrSyslog()
 	out := make([]DeviceSummary, 0, len(devs))
 	ms := func(t time.Time) *time.Time { t = t.UTC(); return &t }
+	var sevh *sevHistory // loaded for the first syslog device
 	for _, d := range devs {
 		var samples []datatype.PollSample
 		ds := DeviceSummary{DeviceID: d.ID, IP: d.IP, Name: d.Name, Group: d.Group, Types: map[string]TypeSummary{},
@@ -590,7 +610,12 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 		}
 		ds.Dropped, ds.Truncated = cnt.Dropped, cnt.Truncated
 		if slices.Contains(types, datatype.Syslog) {
-			if ds.SeverityFilter, err = b.severitySummary(ctx, d.ID, d.IP, info); err != nil {
+			if sevh == nil {
+				if sevh, err = loadSevHistory(ctx, b.idx); err != nil {
+					return nil, err
+				}
+			}
+			if ds.SeverityFilter, err = b.severitySummary(ctx, sevh, d.ID, d.IP, info); err != nil {
 				return nil, err
 			}
 		}

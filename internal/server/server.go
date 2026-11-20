@@ -194,7 +194,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("open the log store: %w", err)
 	}
-	log.Info("store open", "data_dir", dataDir, "took", time.Since(t0).Round(time.Millisecond))
+	log.Info("store open", "data_dir", dataDir, "took", time.Since(t0).Round(time.Millisecond), "steps", s.store.OpenSteps())
 
 	s.be = newBackend(backendDeps{
 		cfgPath: abs,
@@ -222,7 +222,6 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	s.be.openFlows(cfg)
 	s.exports.SetFlows(s.be.flows.eng)
 	s.exports.SetFlowStats(s.be.flowStats)
-	s.exports.SetSeverityFilter(s.be.deviceSeverity)
 	// The update check: nothing touches the network unless updates.check is "on"
 	// in a release build (SPEC §10.2).
 	s.be.updates = updatecheck.New(updatecheck.Options{

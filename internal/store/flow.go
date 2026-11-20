@@ -681,6 +681,8 @@ func (s *Store) recoverFlows(ctx context.Context) (recovered []string, err error
 	if err != nil {
 		return nil, err
 	}
+	read := 0
+	defer func() { s.openSteps.done("flows", fmt.Sprintf("%d segments, %d read", len(files), read)) }()
 	for _, ff := range files {
 		if c, ok := known[ff.Rel]; ok && c.Current(ff) {
 			// As from the footer: its received range (the epoch when it
@@ -696,6 +698,7 @@ func (s *Store) recoverFlows(ctx context.Context) (recovered []string, err error
 				records: c.Records, first: first, last: last})
 			continue
 		}
+		read++
 		r, err := flowseg.Open(ff.Path)
 		if errors.Is(err, flowseg.ErrNoFooter) {
 			rr, rerr := flowseg.Recover(ff.Path)

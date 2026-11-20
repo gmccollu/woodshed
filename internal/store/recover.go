@@ -29,6 +29,7 @@ import (
 //     appends to it on its next message. Every other uncompressed file is queued
 //     for compression.
 func (s *Store) recover(ctx context.Context) error {
+	steps := &s.openSteps
 	entries, temps, unknown, err := logfile.ListAll(s.dataDir)
 	if err != nil {
 		return err
@@ -86,11 +87,14 @@ func (s *Store) recover(ctx context.Context) error {
 			return err
 		}
 	}
+	steps.done("list", fmt.Sprintf("%d files", len(entries)))
 
+	tails := 0
 	for _, e := range entries {
 		if e.Name.Compressed {
 			continue
 		}
+		tails++
 		kept, cut, err := repairTail(e.Path)
 		if err != nil {
 			return err
@@ -107,6 +111,7 @@ func (s *Store) recover(ctx context.Context) error {
 
 	// Flow segments a crash left open are closed before the index is
 	// reconciled with the files (SPEC §13.2).
+	steps.done("tails", fmt.Sprintf("%d files", tails))
 	recovered, err := s.recoverFlows(ctx)
 	if err != nil {
 		return err
@@ -115,6 +120,7 @@ func (s *Store) recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	steps.done("reconcile", fmt.Sprintf("%d re-read", res.Scanned))
 	scanned := res.Scanned
 	if res.FlowRowsRebuilt {
 		// This version derives the flow rows by other rules than the one
@@ -150,7 +156,7 @@ func (s *Store) recover(ctx context.Context) error {
 		}
 		byDev[k] = append(byDev[k], e)
 	}
-	queued := 0
+	queued, scans := 0, s.parkScans
 	for _, k := range devOrder {
 		dev, list := k.dev, byDev[k]
 		var active *logfile.Entry
@@ -194,6 +200,7 @@ func (s *Store) recover(ctx context.Context) error {
 			s.addClosed(ce)
 		}
 	}
+	steps.done("catalog", fmt.Sprintf("%d scanned", s.parkScans-scans))
 	if len(notes) > 0 {
 		s.event(index.LevelWarn, index.KindRecover, "", "startup recovery: "+strings.Join(notes, "; "))
 	}
@@ -219,6 +226,7 @@ func (s *Store) parkFromDisk(ctx context.Context, e logfile.Entry, row index.Fil
 			return ce, nil
 		}
 	}
+	s.parkScans++
 	sum, err := logfile.ScanFile(e.Path)
 	if err != nil {
 		return nil, err

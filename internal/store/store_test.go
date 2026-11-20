@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -900,5 +901,36 @@ func TestRecoverTornMarkedLine(t *testing.T) {
 	}
 	if got := rawStrings(readLines(t, e.dir, "192.0.2.1")); strings.Join(got, "|") != "first|<13>cut off|after restart" {
 		t.Fatalf("raws %q", got)
+	}
+}
+
+// Open times its steps for the "store open" log line, so a slow start says
+// where the time went: what each step did, and how many files it re-read.
+func TestOpenSteps(t *testing.T) {
+	e := newEnv(t, nil)
+	e.write(ip(1), "<134>one")
+	e.write(ip(2), "<134>two")
+	e.reopen()
+	steps := regexp.MustCompile(`^list \S+ \((\d+) files\), tails \S+ \((\d+) files\), flows \S+ \(0 segments, 0 read\), ` +
+		`reconcile \S+ \((\d+) re-read\), catalog \S+ \((\d+) scanned\), apply_index \S+, seed_filtered \S+, clock \S+$`)
+	m := steps.FindStringSubmatch(e.s.OpenSteps())
+	if m == nil || m[1] != "2" || m[2] != "2" || m[3] != "0" || m[4] != "0" {
+		t.Fatalf("after a clean stop: %q", e.s.OpenSteps())
+	}
+	// A file that grew while the store was stopped is re-read.
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(e.dir, logfile.LogsDir, model.DeviceID(ip(1)), e.files(ip(1))[0]), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(day0.Format(time.RFC3339Nano) + " 192.0.2.1 <134>three\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	e.open()
+	if m := steps.FindStringSubmatch(e.s.OpenSteps()); m == nil || m[3] != "1" || m[4] != "0" {
+		t.Fatalf("after a file grew: %q", e.s.OpenSteps())
 	}
 }

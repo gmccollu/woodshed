@@ -543,3 +543,41 @@ func TestBundleCLIFlows(t *testing.T) {
 		t.Errorf("bad format: %d %s", code, stderr)
 	}
 }
+
+// A window where a device's syslog was all left out by the severity filter
+// builds, as the API's bundle does: the device is active, and its README row
+// says what wasn't stored. Named, too.
+func TestBundleCLIFilteredOnly(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := index.Open(filepath.Join(dir, index.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 14, 9, 20, 0, 0, time.UTC)
+	st, err := store.Open(store.Options{DataDir: dir, Index: idx, Manual: true, Clock: func() time.Time { return at },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), DiskUsage: func(string) (uint64, uint64, error) { return 1 << 40, 1 << 41, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ap := netip.MustParseAddr("192.0.2.50")
+	for i := 0; i < 500; i++ {
+		st.Filtered(ap, at, 7)
+	}
+	st.Maintain()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
+	for _, extra := range [][]string{nil, {"--devices", "192.0.2.50"}} {
+		out := filepath.Join(t.TempDir(), "b.zip")
+		args := append([]string{"--data", dir, "--at", "2026-11-14T09:25:00Z", "--out", out}, extra...)
+		code, stdout, stderr := runBundle(t, time.UTC, args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d %q %q", extra, code, stdout, stderr)
+		}
+		files, _ := readZipFile(t, out)
+		if want := "  Syslog       heard, nothing stored (severity filter): 500 debug\n"; !strings.Contains(string(files["README.txt"]), want) {
+			t.Errorf("%v: README lacks %q:\n%s", extra, want, files["README.txt"])
+		}
+	}
+}

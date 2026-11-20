@@ -21,6 +21,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -201,6 +202,10 @@ type Store struct {
 	paused      atomic.Bool
 	pausedSince atomic.Int64 // unix ms
 	dropped     atomic.Int64 // messages dropped since Open
+	// openSteps times Open (OpenSteps); parkScans counts today's files
+	// Open had to re-read because their index row didn't match.
+	openSteps   openSteps
+	parkScans   int
 	filtered    atomic.Int64 // syslog messages the severity filter left out since Open (filtered.go)
 	filt        filtTable    // their counts, until the next maintenance pass
 	ftot        filtTotals   // and the last 24 hours' totals (filtered.go)
@@ -387,15 +392,18 @@ func Open(opts Options) (*Store, error) {
 	if err := os.MkdirAll(s.logsDir, 0o750); err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
+	s.openSteps.last = time.Now()
 	if err := s.recover(s.ctx); err != nil {
 		return nil, fmt.Errorf("store: recovery: %w", err)
 	}
 	if err := s.applyIndex(); err != nil {
 		s.log.Warn("store: index update failed", "err", err)
 	}
+	s.openSteps.done("apply_index", "")
 	if err := s.seedFiltered(); err != nil {
 		s.log.Warn("store: couldn't read the severity filter's counts", "err", err)
 	}
+	s.openSteps.done("seed_filtered", "")
 	// A clock that stepped back while Woodshed was stopped counts too.
 	if files, err := s.idx.Files(s.ctx, ""); err == nil {
 		for _, f := range files {
@@ -404,6 +412,7 @@ func Open(opts Options) (*Store, error) {
 			}
 		}
 	}
+	s.openSteps.done("clock", "")
 	if !opts.Manual {
 		s.wg.Add(2)
 		go s.flushLoop()
@@ -414,6 +423,27 @@ func Open(opts Options) (*Store, error) {
 	}
 	return s, nil
 }
+
+// openSteps times Open's steps for the server's "store open" log line, so a
+// slow start says where its time went (OpenSteps).
+type openSteps struct {
+	last  time.Time
+	parts []string
+}
+
+// done ends a step: its name, how long it took and what it did.
+func (o *openSteps) done(name, detail string) {
+	now := time.Now()
+	p := name + " " + now.Sub(o.last).Round(time.Millisecond).String()
+	if detail != "" {
+		p += " (" + detail + ")"
+	}
+	o.parts, o.last = append(o.parts, p), now
+}
+
+// OpenSteps says how long each step of Open took: "list 3ms (412 files),
+// tails 1ms (24 files), flows 0s (161 segments, 0 read), …".
+func (s *Store) OpenSteps() string { return strings.Join(s.openSteps.parts, ", ") }
 
 func setDefault[T int | int64 | uint64 | float64 | time.Duration](v *T, def T) {
 	if *v <= 0 {
