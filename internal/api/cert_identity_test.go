@@ -145,3 +145,28 @@ func TestStatusShowsCertFingerprint(t *testing.T) {
 		t.Errorf("status %v, state %q, served %q", st["ui_cert_fingerprint"], srv.State().CertFingerprint, served)
 	}
 }
+
+// ui_addrs lists the certificate's addresses without loopback, IPv4 first, in
+// both modes (Settings shows https://<addr>:<port>/ before LAN mode is on, too).
+func TestStatusShowsUIAddrs(t *testing.T) {
+	id := func() (hostIdentity, error) {
+		return identityFrom("testhost", nil, []ifaceAddr{
+			{iface: "eth0", ip: netip.MustParseAddr("fd00::50")},
+			{iface: "eth0", ip: netip.MustParseAddr("10.1.0.50")},
+			{iface: "docker0", ip: netip.MustParseAddr("172.17.0.1")},
+			{iface: "eth0", ip: netip.MustParseAddr("fe80::1")},
+		}, map[netip.Addr]uint32{netip.MustParseAddr("fd00::50"): 0}), nil
+	}
+	srv := startServer(t, nil, UIConfig{}, func(o *Options) { o.identity = id })
+	var st map[string]any
+	json.Unmarshal(do(t, httpClient(), "GET", srv.url("/api/status"), "").body, &st)
+	got, _ := json.Marshal(st["ui_addrs"])
+	if string(got) != `["10.1.0.50","fd00::50"]` {
+		t.Errorf("ui_addrs %s", got)
+	}
+	none := startServer(t, nil, UIConfig{}, func(o *Options) { o.identity = testIdentity })
+	json.Unmarshal(do(t, httpClient(), "GET", none.url("/api/status"), "").body, &st)
+	if a, ok := st["ui_addrs"].([]any); !ok || len(a) != 0 {
+		t.Errorf("loopback only: ui_addrs %v, want []", st["ui_addrs"])
+	}
+}

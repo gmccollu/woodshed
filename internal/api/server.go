@@ -109,6 +109,29 @@ type Server struct {
 	trustedHosts atomic.Pointer[[]config.TrustedHost]
 	// settingsMu serializes PUT /api/settings (the If-Match check and the save).
 	settingsMu sync.Mutex
+
+	addrMu    sync.Mutex // guards the two below: /api/status's ui_addrs, cached
+	addrCache []string
+	addrAt    time.Time
+}
+
+// uiAddrs is ui_addrs in /api/status: this machine's stable addresses (the
+// certificate's, without loopback), IPv4 first. Cached for 30 s, since the
+// status is polled.
+func (s *Server) uiAddrs() []string {
+	s.addrMu.Lock()
+	defer s.addrMu.Unlock()
+	if s.addrCache != nil && s.now().Sub(s.addrAt) < 30*time.Second {
+		return slices.Clone(s.addrCache)
+	}
+	out := []string{}
+	if id, err := s.opts.identity(); err == nil {
+		for _, ip := range id.stableAddrs() {
+			out = append(out, ip.String())
+		}
+	}
+	s.addrCache, s.addrAt = out, s.now()
+	return slices.Clone(out)
 }
 
 // New prepares a Server. It reads the password hash and the UI files but doesn't
