@@ -252,7 +252,14 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 			deviceWords(plan.Info), plan.Info.From.Format("2006-01-02T15:04:05.000Z07:00"), plan.Info.To.Format("2006-01-02T15:04:05.000Z07:00"))
 		return exitNoMatch
 	}
-	if est, err := plan.Estimate(ctx); err == nil && est.Lines == 0 {
+	// A device whose syslog in the window was all left out by the severity
+	// filter is in the bundle with nothing stored, as in the API's.
+	leftOut, err := plan.LeftOut(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "woodshed bundle: %s\n", strings.TrimPrefix(err.Error(), "index: "))
+		return exitUsage
+	}
+	if est, err := plan.Estimate(ctx); err == nil && est.Lines == 0 && !leftOut {
 		return nothing()
 	}
 
@@ -278,7 +285,7 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 	case err != nil:
 		fmt.Fprintf(stderr, "woodshed bundle: %s\n", strings.TrimPrefix(err.Error(), "index: "))
 		return exitUsage
-	case res.Lines == 0:
+	case res.Lines == 0 && !leftOut:
 		return nothing()
 	}
 	sum := sha256.New()

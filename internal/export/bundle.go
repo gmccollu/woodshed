@@ -291,6 +291,26 @@ func Prepare(ctx context.Context, opts Options, r Request) (*Plan, error) {
 		State: Building, Filters: r.Filters, Named: r.Devices}}, nil
 }
 
+// LeftOut reports whether a device of the plan had syslog the severity
+// filter left out in the window (buckets that start inside it, as for its
+// active devices): such a bundle has something to say even with no record in
+// it, and the API builds it, so the CLI does too.
+func (p *Plan) LeftOut(ctx context.Context) (bool, error) {
+	if !slices.Contains(p.Info.Filters.TypesOrSyslog(), datatype.Syslog) {
+		return false, nil
+	}
+	ids, err := p.b.idx.FilteredActive(ctx, p.Info.From, p.Info.To)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if slices.Contains(p.Info.Devices, id) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Estimate is the plan's upper bound from the index, as POST
 // /api/exports/estimate gives it.
 func (p *Plan) Estimate(ctx context.Context) (search.Estimate, error) {
