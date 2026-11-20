@@ -3,19 +3,23 @@
   // stores, its own setting or the default from Settings, and what was left out in the last
   // 24 h. Left-out messages aren't stored (search, the live tail and exports don't have them);
   // they're counted, and that's a choice, never a drop, so nothing here is coloured as an error.
-  import { ApiError, getStats, patchDevice, type Device, type SeverityName } from '../lib/api';
+  import { ApiError, getSettings, patchDevice, type Device, type SeverityName } from '../lib/api';
   import { num } from '../lib/format';
   import { countsText, FILTER_LEVELS, filterChoice, filterPhrase, severityPatch } from '../lib/severity';
   import { replaceDevice } from '../lib/status.svelte';
 
   let { device, onchange }: { device: Device; onchange?: (d: Device) => void } = $props();
 
-  /** The default from /api/stats (the device only says what's in effect for it). */
-  let defaultLevel = $state('');
+  /**
+   * The default: what's in effect for the device while it follows it, otherwise read from
+   * /api/settings once (the device only says what's in effect for it).
+   */
+  let settingsDefault = $state('');
+  const defaultLevel = $derived(device.min_severity === 'default' ? (device.min_severity_effective ?? '') : settingsDefault);
   $effect(() => {
-    void device.min_severity;
-    getStats().then(
-      (s) => (defaultLevel = s.severity_filter?.min_severity ?? 'debug'),
+    if (device.min_severity === 'default' || settingsDefault) return;
+    getSettings().then(
+      (s) => (settingsDefault = s.settings.syslog?.min_severity ?? 'debug'),
       () => {},
     );
   });
@@ -29,6 +33,7 @@
 
   let saving = $state(false);
   let error = $state('');
+  let select = $state<HTMLSelectElement>();
   async function save(v: string) {
     saving = true;
     error = '';
@@ -38,6 +43,8 @@
       onchange?.(d);
     } catch (e) {
       error = e instanceof ApiError && e.fields.min_severity ? e.fields.min_severity : (e as Error).message;
+      // Not saved: show the setting in effect again, not the one picked.
+      if (select) select.value = choice;
     } finally {
       saving = false;
     }
@@ -61,7 +68,7 @@
   </p>
   <label class="mt-3 flex flex-wrap items-center gap-2 text-[13.5px]">
     <span>Store from</span>
-    <select class="field w-auto" value={choice} disabled={saving} onchange={(e) => save((e.currentTarget as HTMLSelectElement).value)}>
+    <select class="field w-auto" bind:this={select} value={choice} disabled={saving} onchange={(e) => save((e.currentTarget as HTMLSelectElement).value)}>
       <option value="default">The default{defaultLevel ? ` (${filterPhrase(defaultLevel)})` : ''}</option>
       {#each FILTER_LEVELS as l (l)}<option value={l}>{filterChoice(l)}</option>{/each}
     </select>

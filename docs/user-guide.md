@@ -435,6 +435,23 @@ What it does and doesn't do:
   choice* (it's never in the dropped count), `woodshed status` has a Severity line, and an incident bundle's README
   says, per device, what it stored and how many were left out in the bundle's window.
 - The device still counts as heard while everything it sends is left out, so it doesn't turn quiet or offline.
+- If a device's syslog in an incident bundle's window was all left out, it's still in the bundle (as *heard,
+  nothing stored (severity filter)* with the counts), and a bundle where only left-out messages arrived still builds.
+- A change made with `woodshed severity-filter` or by editing the config while Woodshed is stopped is recorded as an
+  event when it next starts ("… (changed while Woodshed was stopped)"). `--no-restart` is refused while the service
+  runs, because its next save from the web UI would put back the setting it started with.
+
+### Going back to 2.0
+
+This version stores the severity filter's counts in the index, so the index's schema is 10. After it has run once,
+a 2.0.x build refuses the index: `woodshed run` and `woodshed reindex` stop with "schema version 10 is newer than
+this build supports (9)". The log files themselves are unaffected and 2.0.x reads them as before.
+
+To go back: stop Woodshed, move `index.db`, `index.db-wal` and `index.db-shm` out of the data folder (keep them if
+you may upgrade again), and start the 2.0.x build. It creates a new index and reads every log file into it at start,
+so search, exports and bundles have all the logs. What only the index held starts over: device names, groups and
+hidden flags, saved searches, poll targets, the events list, and the message-count history behind the charts and
+the dropped counts.
 
 ## 4. Find the log files
 

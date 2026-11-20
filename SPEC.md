@@ -3826,17 +3826,22 @@ the connection; present since 1.0):
     owner's call: a global default plus a per-device override, default `debug` (store everything); names (`emerg` …
     `debug`, with the common aliases) or 0–7; messages without a PRI always kept; traps, polls and flows unaffected.
     Chosen:
-    - **Where it's checked.** In the listener, after the allowlist and blocklist and before the message is truncated,
-      copied or queued: `syslog.Severity` reads the PRI in place (no allocation, the same answer as the parser), and the
+    - **Where it's checked.** In the listener, after the allowlist and blocklist and the cut at the max message size
+      (so the PRI it reads is the stored copy's), before the message is copied or queued: `syslog.Severity` reads the PRI in place (no allocation, the same answer as the parser), and the
       filter is an atomic snapshot that's nil while nothing filters, with the lowest minimum of all as a floor so a
       device without its own setting costs no map lookup. A left-out UDP datagram never takes a queue slot. On the
       reader path the check costs nothing measurable when it keeps a message (161 ns inline before, 162 ns kept
       after), and a left-out message is 45 ns with no allocation (`BenchmarkReaderPath`, darwin/arm64).
     - **Counted, not dropped.** The store counts each left-out message by sender, minute and severity in a sharded
-      table (bounded: past 4,096 pending entries per shard the counts go to the refused bucket, so the total stays
-      exact), and the maintenance pass adds them to the device's stats (schema 10: `filtered_emerg` … `filtered_debug`
+      table (bounded: past 4,096 pending entries per shard, senders that aren't devices yet count under the refused
+      bucket, so the total stays exact; devices the store knows always count under their own ID), and the maintenance
+      pass adds them to the device's stats (schema 10: `filtered_emerg` … `filtered_debug`
       on `stats` and `stats_hourly`, with partial indexes over the buckets that have any). They roll up and are pruned
-      like the other stats and survive a restart. A left-out message makes the device heard (last heard, status, the
+      like the other stats and survive a restart. Every "last 24 hours" reader (the run-state file each second,
+      `/api/stats`, the device list) reads running totals the store keeps in memory (25 hourly buckets per device
+      with any, seeded from the index at start and moved on by each maintenance pass), never the index: at 500
+      filtering devices with 24 h of minute buckets the index query took about 750 ms, the memory read 90 µs. A
+      left-out message makes the device heard (last heard, status, the
       device limits) but isn't in its stored lines or rate. None of it is in a drop count: the dashboard, About,
       `/api/stats` (`severity_filter`), the device (`filtered_24h`, `filtered_by_severity_24h`), `woodshed status` and the
       bundle README word it as a choice.
@@ -3847,13 +3852,21 @@ the connection; present since 1.0):
       of truth; a pruned device keeps its entry. A zoned IPv6 sender can't have one (as for the blocklist).
     - **Live, from the next message.** The UI and API apply a change to the running listeners at once, open TCP and TLS
       connections included, and record a `severity_filter` event; what's stored stays. `woodshed severity-filter`
-      saves the config and restarts a running service, like the other CLI setters.
+      saves the config and restarts a running service, like the other CLI setters; `--no-restart` is refused while
+      the service runs (its next save would write back the setting it started with). The filter each run uses is
+      recorded in `index_meta`, and a start that finds it changed (the CLI, a hand edit) records the event then, "…
+      (changed while Woodshed was stopped)".
     - **The live tail doesn't show left-out messages.** It shows what's stored; showing messages that search and
       exports can't find would mislead. The device page says what's left out instead.
-    - **Bundles say it honestly.** Each syslog device's manifest entry has `severity_filter` (the setting now, whether
+    - **Bundles say it honestly.** A device whose syslog in the window was all left out is an active device (its
+      README row says "heard, nothing stored (severity filter)" with the counts), and a window with only left-out
+      messages still builds. Each syslog device's manifest entry has `severity_filter` (the setting now, whether
       it's the device's own, and the counts over the bundle window); the README's Filter line says what's stored now
       and what was left out in the window, "since <time>" when the stats retention cut the window, by hour when hourly
       buckets were used, and that nothing is known when the window is older than the stats kept.
+    - **Schema 10.** A 2.0.x build refuses the index ("schema version 10 is newer than this build supports"); the log
+      files are unaffected. Going back means moving `index.db` aside: 2.0.x rebuilds it from the files at start, and
+      what only the index holds (names, groups, saved searches, poll targets, events, stats history) starts over.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

@@ -425,7 +425,7 @@ sudo woodshed severity-filter info    # store syslog from info up (leave out deb
   the UI's one-time question back.
 - **`woodshed severity-filter [--device <address>] [<severity>|default]`** (2.1) shows or sets which syslog messages
   are stored: `syslog.min_severity` for every device, or with `--device` one device's own (`default` follows the
-  default again). It restarts a running service; `--no-restart` leaves that for the next start. See
+  default again). It restarts a running service. `--no-restart` only saves the config and is refused while the service runs (its next save from the web UI would undo the change). See
   [the user guide](user-guide.md#storing-less-severity-filter).
 - **Forgot the password?** `sudo woodshed reset-password` removes it and turns LAN mode off.
 

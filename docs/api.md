@@ -211,10 +211,13 @@ the response says so with `"blocked_by": "198.51.100.0/24"`).
 severity filter: `"default"` (it follows `syslog.min_severity`, `GET /api/settings`) or a severity, `emerg`, `alert`,
 `crit`, `err`, `warning`, `notice`, `info` or `debug`, meaning that severity and more severe are stored (`debug`
 stores everything, even when the default doesn't). `min_severity_effective` is the one in effect. A PATCH takes
-`"default"`, a name or `"0"`–`"7"` (anything else is a `400` with `errors.min_severity`) and saves it in the config
+`"default"` (in any case), a name or `"0"`–`"7"` (anything else is a `400` with `errors.min_severity`, and so is a
+device whose ID isn't an address) and saves it in the config
 (`syslog.min_severity_by_device`, keyed by the device's address), like `blocked`; it applies from the next message, on
 open TCP and TLS connections too, and records a `severity_filter` event ("severity filter for 192.0.2.10 set to info
-and above"). `filtered_24h` counts the device's syslog messages the filter left out in the last 24 hours, and
+and above"). An address with a zone (a link-local sender, ID `fe80__1_en0`) takes the setting of its address
+without the zone. `filtered_24h` counts the device's syslog messages the filter left out in the last 24 hours (from
+the hour 24 hours ago, from the server's running totals), and
 `filtered_by_severity_24h` splits them by severity name (only the ones with any; `{}` when none). Messages without a
 valid PRI (severity unknown) are always stored; SNMP traps, polls and flows aren't filtered. Left-out messages make
 the device heard (`last_heard`, its status), but they aren't in `total_msgs`, `msgs_per_min` or anything stored.

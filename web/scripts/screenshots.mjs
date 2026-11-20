@@ -212,6 +212,20 @@ const SHOTS = [
     check: `(() => { const t = document.querySelector('section[aria-labelledby="sevf-h"]').innerText; return t.includes('Stores everything') && t.includes('the default, from Settings'); })()`,
   },
   {
+    // A save that fails shows the error and the setting still in effect, not the one picked.
+    name: 'sevf-device-failed-save',
+    noshot: true,
+    mode: 'light',
+    url: '/?mock_panel=0#/device?id=10.8.0.5',
+    wait: 2500,
+    act: `window.__woodshedMock.failNextDevicePatch = true;
+      const sel = document.querySelector('section[aria-labelledby="sevf-h"] select'); sel.value = 'err'; sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await __until(() => document.querySelector('section[aria-labelledby="sevf-h"] [role=alert]'));`,
+    check: `document.querySelector('section[aria-labelledby="sevf-h"] select').value === 'info'
+      && document.querySelector('section[aria-labelledby="sevf-h"] [role=alert]').textContent.includes('the mock was told to fail')
+      && document.querySelector('section[aria-labelledby="sevf-h"]').innerText.includes('Stores info and above')`,
+  },
+  {
     name: 'sevf-device-follows-default',
     noshot: true,
     mode: 'light',

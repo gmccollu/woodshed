@@ -173,6 +173,8 @@ const probe = {
   sessionBodies: [] as string[],
   /** The body of the last POST /api/exports(/estimate). */
   lastExportBody: '',
+  /** The next device PATCH fails with a 500, for the device page's "not saved" check. */
+  failNextDevicePatch: false,
   /** Downloads served, and the status of the last download attempt. */
   downloads: [] as { id: string; ticket: boolean; status: number }[],
   lastDownloadStatus: 0,
@@ -2841,6 +2843,10 @@ async function route(method: string, url: URL, body: unknown, header: string | n
   if (dm && method === 'PATCH') {
     const d = devs.get(decodeURIComponent(dm[1]));
     if (!d) return err(404, 'No such device.');
+    if (probe.failNextDevicePatch) {
+      probe.failNextDevicePatch = false;
+      return err(500, 'internal error: the mock was told to fail this one');
+    }
     const b = (body ?? {}) as Partial<Device>;
     if (b.name !== undefined && b.name.length > 64) return err(400, 'Names can be at most 64 characters.');
     if (b.group !== undefined && b.group.length > 32) return err(400, 'Groups can be at most 32 characters.');
