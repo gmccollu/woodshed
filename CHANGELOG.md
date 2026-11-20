@@ -42,6 +42,18 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   right there, before the save too. `GET /api/status` has the addresses as `ui_addrs`
   ([docs/api.md](docs/api.md#status-and-stats)).
 
+### Fixed during the release candidates (affected 2.1.0-rc1 only)
+- `woodshed bundle` refused a window where a device's syslog was all left out by the severity filter ("nothing was
+  stored … No zip written."), while the API built it. The CLI now builds it too, with the device's "heard, nothing
+  stored (severity filter)" row.
+- A bundle's Filter line and manifest named the severity filter set when the bundle was built, not the one in effect
+  during the window. They now give each setting over the window with its times, from the filter's events
+  (`severity_filter.settings`: `from`, `to`, `min_severity`, `own`), and say "setting before <time> not recorded"
+  where no event covers it. A device's severity filter events now also say what the setting was before.
+- The service log's "store open" line now gives each startup step's time and what it read (`steps="list 2ms (144
+  files), tails 1ms (18 files), flows 0s (161 segments, 0 read), reconcile 3ms (0 re-read), …"`), so a slow start
+  says where its time went.
+
 ## [2.0.0] - 2026-11-18
 
 ### Added

@@ -194,7 +194,7 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("open the log store: %w", err)
 	}
-	log.Info("store open", "data_dir", dataDir, "took", time.Since(t0).Round(time.Millisecond))
+	log.Info("store open", "data_dir", dataDir, "took", time.Since(t0).Round(time.Millisecond), "steps", s.store.OpenSteps())
 
 	s.be = newBackend(backendDeps{
 		cfgPath: abs,
