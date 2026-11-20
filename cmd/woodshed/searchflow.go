@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,34 @@ func ruleIEsOf(c config.Config) []flow.IEKey {
 // woodshed.toml (a portable copy), else the installed config unless --data
 // named another folder. Nil when none can be read.
 func searchRuleIEs(f *searchFlags, dataDir string) []flow.IEKey {
+	c, ok := searchConfig(f, dataDir)
+	if !ok {
+		return nil
+	}
+	return ruleIEsOf(c)
+}
+
+// searchSeverity is the syslog severity filter in effect for a device, from
+// the same config as searchRuleIEs, for a bundle's summary (nil: the config
+// can't be read, so the README gives the counts without the setting).
+func searchSeverity(f *searchFlags, dataDir string) func(id string) (int, bool) {
+	c, ok := searchConfig(f, dataDir)
+	if !ok {
+		return nil
+	}
+	return func(id string) (int, bool) {
+		a, err := netip.ParseAddr(strings.ReplaceAll(id, "_", ":"))
+		if err != nil {
+			return c.Syslog.Level(), false
+		}
+		return c.Syslog.DeviceLevel(a)
+	}
+}
+
+// searchConfig reads the config that goes with the data folder: --config
+// when given, the data folder's own woodshed.toml, or the default config
+// when --data isn't given. It never creates one.
+func searchConfig(f *searchFlags, dataDir string) (config.Config, bool) {
 	var path string
 	switch own := filepath.Join(dataDir, config.FileName); {
 	case f.set["config"]:
@@ -60,17 +89,14 @@ func searchRuleIEs(f *searchFlags, dataDir string) []flow.IEKey {
 	case !f.set["data"]:
 		path = f.config
 	default:
-		return nil
+		return config.Config{}, false
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil
+		return config.Config{}, false
 	}
 	c, err := config.Read(abs) // never creates it
-	if err != nil {
-		return nil
-	}
-	return ruleIEsOf(c)
+	return c, err == nil
 }
 
 func fileExists(p string) bool {
