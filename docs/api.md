@@ -25,6 +25,7 @@ Change this file first if the contract changes.
   ],
   "host_ips": ["10.1.0.50", "fd00::50"],
   "ui_cert_fingerprint": "",                  // LAN mode: SHA-256 of the UI's certificate, "AB:CD:…" (64 hex pairs); "" on localhost
+  "ui_addrs": ["10.1.0.50", "fd00::50"],      // where other machines reach the UI in LAN mode: https://<addr>:<ui.port>/ (see below)
   "banners": [{"kind": "listener_bind", "level": "error", "text": "TCP 514 is in use by syslogd (pid 312).",
                "action": "retry_listeners"}]   // action: "" | "retry_listeners" | "update_choice" | "update_dismiss" | "tls_renew";
                                                // kinds: listener_bind, writes_paused, low_disk, ui_port_busy, udp_buffer_small,
@@ -36,6 +37,12 @@ Change this file first if the contract changes.
                                                // an optional "url" on any banner
 }
 ```
+`ui_addrs` are this machine's stable addresses, the ones Woodshed's own UI certificate names and `woodshed status` lists:
+no loopback, link-local, virtual-interface (containers, VPNs) or temporary IPv6 addresses; IPv4 first; `[]` when there are
+none. Settings shows `https://<addr>:<ui.port>/` for each (IPv6 in brackets) when LAN mode is on, and before it's turned
+on, so the user knows what to type on another machine. It's there in both modes: it's a subset of `host_ips`, and the
+status is reachable only from this machine in localhost mode and only with a session in LAN mode.
+
 A listener that failed to bind may also carry, when known, `holder_kind` (`"woodshed_service"`: the installed Woodshed
 service; `"woodshed"`: another running copy of Woodshed; omitted otherwise), `holder_pid` (integer) and `holder_ui_url`
 (that Woodshed's UI address). Another user's process (the service runs as its own account) is invisible to `lsof` and

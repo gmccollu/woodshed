@@ -111,6 +111,11 @@ export interface Status {
   kernel_drops_visible: boolean;
   listeners: Listener[];
   host_ips: string[];
+  /**
+   * This machine's stable addresses (the UI certificate's, without loopback), IPv4 first: other machines
+   * open https://<addr>:<ui.port>/ in LAN mode. Absent from servers before 2.0.1.
+   */
+  ui_addrs?: string[];
   banners: Banner[];
 }
 

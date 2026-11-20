@@ -40,7 +40,7 @@
         } catch {
           /* the login screen will ask */
         }
-        done = 'Password set. Login is now required on this machine too; you can turn it off below.';
+        done = 'Password set. Login is now required on this machine too; you can turn that off above.';
       } else {
         done = 'Password changed. Other sessions were logged out.';
       }
@@ -80,7 +80,7 @@
     {/if}
     <label class="lbl">
       <span>New password</span>
-      <input class="field" type="password" autocomplete="new-password" bind:value={next} onkeydown={onKey} aria-invalid={!!errs.new} />
+      <input id="pw-new" class="field" type="password" autocomplete="new-password" bind:value={next} onkeydown={onKey} aria-invalid={!!errs.new} />
       {#if errs.new}<span class="ferr">{errs.new}</span>{/if}
     </label>
     <label class="lbl">

@@ -229,6 +229,10 @@ type Status struct {
 	// UICertFingerprint is the SHA-256 of the UI's certificate in LAN mode
 	// ("AB:CD:…"), "" in localhost mode. Filled by this package.
 	UICertFingerprint string `json:"ui_cert_fingerprint"`
+	// UIAddrs are this machine's stable addresses, the ones the UI's own
+	// certificate names (as `woodshed status` lists them): other machines open
+	// https://<addr>:<ui.port>/ in LAN mode. Filled by this package.
+	UIAddrs []string `json:"ui_addrs"`
 }
 
 // Listener is one syslog listener's state.
@@ -621,6 +625,7 @@ func (s *Status) normalize() {
 	}
 	s.Listeners = nonNil(s.Listeners)
 	s.HostIPs = nonNil(s.HostIPs)
+	s.UIAddrs = nonNil(s.UIAddrs)
 	s.Banners = nonNil(s.Banners)
 	SortBanners(s.Banners)
 }

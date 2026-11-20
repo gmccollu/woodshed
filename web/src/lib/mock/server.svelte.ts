@@ -1277,6 +1277,8 @@ function statusJSON(): Status {
     ...(mock.lan ? { ui_cert_fingerprint: CERT_FP } : {}),
     listeners,
     host_ips: ['10.1.0.50', '192.168.64.1', 'fd00::50'],
+    // The certificate's addresses: 192.168.64.1 is a virtual (VM bridge) interface, so it's left out.
+    ui_addrs: ['10.1.0.50', 'fd00::50'],
     banners,
   };
 }

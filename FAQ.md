@@ -244,7 +244,9 @@ other computers, turn on **LAN mode** in **Settings → UI access**:
 
 1. Set a password first (in the same section).
 2. Turn on **LAN mode** and save. The UI moves to HTTPS at `https://<this computer's address>:8514/`, and every
-   visitor has to log in.
+   visitor has to log in. Settings lists the exact addresses to open, each with a copy button (so does
+   `woodshed status`). Type the `https://` and the `:8514`: the address alone goes to port 80, where another program
+   may answer.
 3. Your browser warns about the certificate the first time, because Woodshed makes its own; you can load your own
    certificate under **Advanced** instead.
 4. On Windows, the UI port also needs a firewall rule; Settings shows the exact command to run as an administrator.
