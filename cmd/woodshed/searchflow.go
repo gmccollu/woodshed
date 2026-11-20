@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	"github.com/gmccollu/woodshed/internal/flow"
 	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/index"
-	"github.com/gmccollu/woodshed/internal/model"
 	"github.com/gmccollu/woodshed/internal/search"
 	"github.com/gmccollu/woodshed/internal/server"
 )
@@ -59,27 +57,6 @@ func searchRuleIEs(f *searchFlags, dataDir string) []flow.IEKey {
 		return nil
 	}
 	return ruleIEsOf(c)
-}
-
-// searchSeverity is the syslog severity filter in effect for a device, from
-// the same config as searchRuleIEs, for a bundle's summary (nil: the config
-// can't be read, so the README gives the counts without the setting).
-func searchSeverity(f *searchFlags, dataDir string) func(id, ip string) (int, bool) {
-	c, ok := searchConfig(f, dataDir)
-	if !ok {
-		return nil
-	}
-	return func(id, ip string) (int, bool) {
-		// The device's row IP (it keeps a zone); the ID only without one.
-		a, err := netip.ParseAddr(ip)
-		if err != nil {
-			var ok bool
-			if a, ok = model.ParseDeviceID(id); !ok {
-				return c.Syslog.Level(), false
-			}
-		}
-		return c.Syslog.DeviceLevel(a)
-	}
 }
 
 // searchConfig reads the config that goes with the data folder: --config

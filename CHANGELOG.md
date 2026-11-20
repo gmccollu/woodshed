@@ -15,7 +15,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   message without a restart and is recorded as an event (one made while Woodshed was stopped, at its next start). Nothing is dropped silently: left-out messages are counted
   per device and severity (kept across restarts) and shown on the device page, the dashboard's Dropped card and About
   (as a choice, not a drop), `GET /api/stats` (`severity_filter`), `GET /api/devices` (`filtered_24h`,
-  `filtered_by_severity_24h`), `woodshed status`, and each device's line in an incident bundle's README and manifest.
+  `filtered_by_severity_24h`), `woodshed status`, and each device's line in an incident bundle's README and manifest,
+  with the settings in effect over the bundle's window (from the filter's events). The filter saves disk, not CPU.
   The live tail shows only what's stored. See [docs/user-guide.md](docs/user-guide.md#storing-less-severity-filter).
 - **The index schema goes to 10 (the severity filter's counts).** After this version has run once, a 2.0.x build
   refuses the index: `woodshed run` and `woodshed reindex` stop with "schema version 10 is newer than this build
@@ -25,8 +26,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Release notes on
   hidden flags, saved searches, poll targets, the events list and the message-count history). See
   [docs/user-guide.md](docs/user-guide.md#going-back-to-20).
 - `woodshed search --type flow --data DIR` and `woodshed bundle --data DIR` beside a running server now use that
-  server's config (the one its run-state file names, while it holds the data folder): its flow `rule_id_ies`, and
-  its severity filter for the bundle's summary. `--config` still wins.
+  server's config (the one its run-state file names, while it holds the data folder): its flow `rule_id_ies`.
+  `--config` still wins.
 
 ### Fixed
 - **Settings → UI access**: with no UI password set, the **LAN mode** and **Require login on this machine too**

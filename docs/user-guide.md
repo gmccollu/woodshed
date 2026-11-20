@@ -433,8 +433,11 @@ What it does and doesn't do:
   though: Woodshed counts it per device and severity, and the counts survive a restart. The device's page shows them
   (*Debug not stored: 12,345 in the last 24 h*), the **Dropped** card and **About** show the total as *not stored, by
   choice* (it's never in the dropped count), `woodshed status` has a Severity line, and an incident bundle's README
-  says, per device, what it stored and how many were left out in the bundle's window.
+  says, per device, the setting during the bundle's window (each change in it, with its time) and how many were
+  left out.
 - The device still counts as heard while everything it sends is left out, so it doesn't turn quiet or offline.
+- It saves disk, not CPU: each message is still received and read up to its severity. In a lab test at 1,000
+  messages per second, Woodshed used 0.049 cores storing everything and 0.045 with every message left out.
 - If a device's syslog in an incident bundle's window was all left out, it's still in the bundle (as *heard,
   nothing stored (severity filter)* with the counts), and a bundle where only left-out messages arrived still builds.
 - A change made with `woodshed severity-filter` or by editing the config while Woodshed is stopped is recorded as an

@@ -217,11 +217,6 @@ type Options struct {
 	// the window's own sequence gaps come from the index.
 	Flows     *flowquery.Engine
 	FlowStats func(deviceID string) *FlowStats
-	// SeverityFilter gives the syslog severity filter in effect for a device
-	// (0-7, and whether it's the device's own setting), for a bundle's
-	// summary (SPEC §13.10 decision 86); nil: not known (the counts are still
-	// in the summary, from the index).
-	SeverityFilter func(deviceID, ip string) (level int, own bool)
 	// zip64Limit lowers the zip64 threshold, for tests.
 	zip64Limit int64
 	// janitor is how often expiry runs (default 1 min).
@@ -258,12 +253,6 @@ func (m *Manager) SetFlows(e *flowquery.Engine) { m.flows.Store(e) }
 // SetFlowStats gives the manager the collector's per-exporter counts for
 // bundle summaries (the last 24 hours; Options.FlowStats). Call it before Start.
 func (m *Manager) SetFlowStats(fn func(deviceID string) *FlowStats) { m.builder.flowStats = fn }
-
-// SetSeverityFilter gives the severity filter in effect for a device, for a
-// bundle's summary (Options.SeverityFilter).
-func (m *Manager) SetSeverityFilter(fn func(deviceID, ip string) (level int, own bool)) {
-	m.builder.severityFilter = fn
-}
 
 type entry struct {
 	info   Info

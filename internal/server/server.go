@@ -222,7 +222,6 @@ func Open(cfgPath string, opts Options) (*Server, error) {
 	s.be.openFlows(cfg)
 	s.exports.SetFlows(s.be.flows.eng)
 	s.exports.SetFlowStats(s.be.flowStats)
-	s.exports.SetSeverityFilter(s.be.deviceSeverity)
 	// The update check: nothing touches the network unless updates.check is "on"
 	// in a release build (SPEC §10.2).
 	s.be.updates = updatecheck.New(updatecheck.Options{

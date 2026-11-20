@@ -433,6 +433,41 @@ func rangeWhere(q, col string, from, to time.Time) (string, []any) {
 	return q, args
 }
 
+// EventsOfKind returns every event of kind, oldest first.
+func (d *DB) EventsOfKind(ctx context.Context, kind Kind) ([]Event, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT id, time, level, kind, device_id, text, source FROM events
+		WHERE kind = ? ORDER BY time, id`, string(kind))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		var t int64
+		var level, k, source string
+		if err := rows.Scan(&e.ID, &t, &level, &k, &e.DeviceID, &e.Text, &source); err != nil {
+			return nil, err
+		}
+		e.Time, e.Level, e.Kind, e.Source = tm(t), Level(level), Kind(k), Source(source)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// FirstEventTime is the time of the oldest event kept (the history retention
+// prunes older ones); ok is false when there's none.
+func (d *DB) FirstEventTime(ctx context.Context) (t time.Time, ok bool, err error) {
+	var v sql.NullInt64
+	if err := d.db.QueryRowContext(ctx, `SELECT min(time) FROM events`).Scan(&v); err != nil {
+		return time.Time{}, false, err
+	}
+	if !v.Valid {
+		return time.Time{}, false, nil
+	}
+	return tm(v.Int64), true, nil
+}
+
 // LatestEvent returns the newest event of kind for deviceID ("" for events
 // that name no device); ok is false when there's none.
 func (d *DB) LatestEvent(ctx context.Context, kind Kind, deviceID string) (e Event, ok bool, err error) {

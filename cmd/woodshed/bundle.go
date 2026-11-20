@@ -231,8 +231,7 @@ func cmdBundle(args []string, stdout, stderr io.Writer) int {
 	// writing has no footer yet, so the current hour of a running service's
 	// exporters isn't in the zip; the API's bundle has it).
 	flows := flowEngine(dataDir, idx, logger, searchRuleIEs(&sf, dataDir))
-	opts := export.Options{Index: idx, Search: eng, Flows: flows, Version: version, Now: searchNow, Location: searchLocation(), Logger: logger,
-		SeverityFilter: searchSeverity(&sf, dataDir)}
+	opts := export.Options{Index: idx, Search: eng, Flows: flows, Version: version, Now: searchNow, Location: searchLocation(), Logger: logger}
 	plan, err := export.Prepare(ctx, opts, req)
 	var re *export.RequestError
 	switch {

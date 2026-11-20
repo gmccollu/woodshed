@@ -238,7 +238,8 @@ func TestSeverityFilterEndToEnd(t *testing.T) {
 		}
 	}
 	if strings.Join(texts, "|") != "default severity filter set to notice and above, was everything (changed while Woodshed was stopped)|"+
-		"severity filter for 127.0.0.1 set to info and above|severity filter for 127.0.0.1 set to the default (notice and above)" {
+		"severity filter for 127.0.0.1 set to info and above, was the default (notice and above)|"+
+		"severity filter for 127.0.0.1 set to the default (notice and above), was info and above" {
 		t.Errorf("events %q", texts)
 	}
 
@@ -323,7 +324,7 @@ func TestSeverityFilterSettings(t *testing.T) {
 			texts = append(texts, e.Text)
 		}
 	}
-	want := []string{"severity filter for 127.0.0.1 set to notice and above",
+	want := []string{"severity filter for 127.0.0.1 set to notice and above, was the default (store everything)",
 		"default severity filter set to warning and above (was everything); 1 device keeps its own setting"}
 	if strings.Join(texts, "|") != strings.Join(want, "|") {
 		t.Errorf("events %q", texts)
@@ -406,8 +407,8 @@ func TestSeverityFilterChangedWhileStopped(t *testing.T) {
 	}
 	want := []string{
 		": default severity filter set to info and above, was everything (changed while Woodshed was stopped)",
-		"192.0.2.10: severity filter for 192.0.2.10 set to err and above (changed while Woodshed was stopped)",
-		"192.0.2.10: severity filter for 192.0.2.10 set to the default, info and above (changed while Woodshed was stopped)",
+		"192.0.2.10: severity filter for 192.0.2.10 set to err and above, was the default (store everything) (changed while Woodshed was stopped)",
+		"192.0.2.10: severity filter for 192.0.2.10 set to the default (info and above), was err and above (changed while Woodshed was stopped)",
 	}
 	if strings.Join(texts, "|") != strings.Join(want, "|") {
 		t.Errorf("events\n%s", strings.Join(texts, "\n"))
@@ -558,7 +559,7 @@ func TestSeverityFilterNoDuplicateEventAtStart(t *testing.T) {
 			texts = append(texts, e.Text)
 		}
 	}
-	want := []string{"severity filter for 127.0.0.1 set to err and above",
+	want := []string{"severity filter for 127.0.0.1 set to err and above, was the default (store everything)",
 		"default severity filter set to notice and above (was everything); 1 device keeps its own setting"}
 	if strings.Join(texts, "|") != strings.Join(want, "|") {
 		t.Errorf("events %q", texts)

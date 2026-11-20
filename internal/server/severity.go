@@ -32,17 +32,6 @@ func (b *backend) applySeverityFilter(c config.Syslog) {
 	}
 }
 
-// deviceSeverity is the minimum severity in effect for a device (its ID and
-// row IP), and whether it's the device's own (for bundles).
-func (b *backend) deviceSeverity(id, rowIP string) (level int, own bool) {
-	cfg := b.config()
-	ip, ok := deviceAddr(id, rowIP)
-	if !ok {
-		return cfg.Syslog.Level(), false
-	}
-	return cfg.Syslog.DeviceLevel(ip)
-}
-
 // setDeviceSeverity sets the device's own minimum severity (a severity name or
 // number, or config.SeverityDefault to follow the default), saves the config,
 // applies it to the listeners from the next message and records an event.
@@ -78,20 +67,12 @@ func (b *backend) setDeviceSeverity(d index.Device, v string) error {
 	if d.Name != "" {
 		who += " (" + d.Name + ")"
 	}
-	text := fmt.Sprintf("severity filter for %s set to %s", who, filterPhrase(level))
-	if level < 0 {
-		text = fmt.Sprintf("severity filter for %s set to the default (%s)", who, filterPhrase(next.Syslog.Level()))
+	was, own := cur.Syslog.DeviceLevel(ip)
+	if !own {
+		was = -1
 	}
-	b.severityEvent(d.ID, text)
+	b.severityEvent(d.ID, config.DeviceSeverityEvent(who, level, next.Syslog.Level(), was, cur.Syslog.Level(), false))
 	return nil
-}
-
-// filterPhrase is what a level stores, for events: "info and above", "everything".
-func filterPhrase(level int) string {
-	if level == config.SeverityDebug {
-		return "store everything"
-	}
-	return config.SeverityPhrase(level)
 }
 
 // defaultSeverityChanged records a change of syslog.min_severity (a settings
@@ -102,15 +83,7 @@ func (b *backend) defaultSeverityChanged(cur, next config.Syslog) {
 	}
 	b.applySeverityFilter(next)
 	b.recordSeverityFilter(next)
-	text := fmt.Sprintf("default severity filter set to %s (was %s)", filterPhrase(next.Level()), config.SeverityPhrase(cur.Level()))
-	switch n := len(next.DeviceLevels()); n {
-	case 0:
-	case 1:
-		text += "; 1 device keeps its own setting"
-	default:
-		text += fmt.Sprintf("; %d devices keep their own setting", n)
-	}
-	b.severityEvent("", text)
+	b.severityEvent("", config.DefaultSeverityEvent(next.Level(), cur.Level(), len(next.DeviceLevels()), false))
 }
 
 func (b *backend) severityEvent(id, text string) {
@@ -215,7 +188,6 @@ func (b *backend) severityChangedWhileStopped(c config.Syslog) {
 		prev = index.SeverityFilterState{Default: config.SeverityDebug, ByDevice: map[string]int{}}
 	}
 	cur := filterState(c)
-	const why = " (changed while Woodshed was stopped)"
 	// The newest event already says it: a live change whose record didn't
 	// get saved (RecordSeverityFilter failed), not one made while stopped.
 	said := func(id string, ok func(text string) bool) bool {
@@ -223,10 +195,10 @@ func (b *backend) severityChangedWhileStopped(c config.Syslog) {
 		return err == nil && found && ok(e.Text)
 	}
 	if cur.Default != prev.Default && !said("", func(t string) bool {
-		p := "default severity filter set to " + filterPhrase(cur.Default)
+		p := "default severity filter set to " + config.FilterPhrase(cur.Default)
 		return strings.HasPrefix(t, p+" ") || strings.HasPrefix(t, p+",")
 	}) {
-		b.severityEvent("", fmt.Sprintf("default severity filter set to %s, was %s%s", filterPhrase(cur.Default), config.SeverityPhrase(prev.Default), why))
+		b.severityEvent("", config.DefaultSeverityEvent(cur.Default, prev.Default, 0, true))
 	}
 	addrs := map[string]bool{}
 	for a := range cur.ByDevice {
@@ -255,7 +227,7 @@ func (b *backend) severityChangedWhileStopped(c config.Syslog) {
 			if !has {
 				return strings.Contains(t, " set to the default")
 			}
-			return strings.Contains(t, " set to "+filterPhrase(now)) && !strings.Contains(t, " set to the default")
+			return strings.Contains(t, " set to "+config.FilterPhrase(now)) && !strings.Contains(t, " set to the default")
 		}) {
 			continue
 		}
@@ -263,11 +235,14 @@ func (b *backend) severityChangedWhileStopped(c config.Syslog) {
 		if d, err := b.idx.Device(ctx, id); err == nil && d.Name != "" {
 			who += " (" + d.Name + ")"
 		}
-		text := fmt.Sprintf("severity filter for %s set to %s%s", who, filterPhrase(now), why)
+		level, prevLevel := now, was
 		if !has {
-			text = fmt.Sprintf("severity filter for %s set to the default, %s%s", who, filterPhrase(cur.Default), why)
+			level = -1
 		}
-		b.severityEvent(id, text)
+		if !had {
+			prevLevel = -1
+		}
+		b.severityEvent(id, config.DeviceSeverityEvent(who, level, cur.Default, prevLevel, prev.Default, true))
 	}
 	if !ok || cur.Default != prev.Default || len(sorted) > 0 {
 		if err := b.idx.RecordSeverityFilter(ctx, cur); err != nil {

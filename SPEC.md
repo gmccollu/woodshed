@@ -3863,10 +3863,18 @@ the connection; present since 1.0):
       exports can't find would mislead. The device page says what's left out instead.
     - **Bundles say it honestly.** A device whose syslog in the window was all left out is an active device (its
       README row says "heard, nothing stored (severity filter)" with the counts), and a window with only left-out
-      messages still builds. Each syslog device's manifest entry has `severity_filter` (the setting now, whether
-      it's the device's own, and the counts over the bundle window); the README's Filter line says what's stored now
-      and what was left out in the window, "since <time>" when the stats retention cut the window, by hour when hourly
-      buckets were used, and that nothing is known when the window is older than the stats kept.
+      messages still builds, from the API and `woodshed bundle` alike. Each syslog device's manifest entry has
+      `severity_filter`: `settings`, the settings in effect over the window (`{from, to, min_severity, own}`, oldest
+      first), and the counts over the bundle window. The settings come from the `severity_filter` events, not the
+      config at build time: the default's events say what it changed from, and so do a device's (since 2.1.0-rc2;
+      "… set to notice and above, was the default (warning and above)"), so the last change before each moment, or
+      what the first one changed from, gives the setting; with no change kept, the setting the last run recorded
+      (stored everything when none was). A span no event records (before the oldest event kept, before an rc1
+      device event that doesn't say what it changed from) has `min_severity` `""` and the README says "setting before
+      <time> not recorded". The README's Filter line says the settings ("storing warning and above (the default)
+      until 20:49:12, then notice and above (this device's setting)") and what was left out in the window, "since
+      <time>" when the stats retention cut the window, by hour when hourly buckets were used, and that nothing is
+      known when the window is older than the stats kept.
     - **Schema 10.** A 2.0.x build refuses the index ("schema version 10 is newer than this build supports"); the log
       files are unaffected. Going back means moving `index.db` aside: 2.0.x rebuilds it from the files at start, and
       what only the index holds (names, groups, saved searches, poll targets, events, stats history) starts over.
