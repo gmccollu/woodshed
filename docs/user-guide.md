@@ -407,6 +407,35 @@ What to do:
 
 The banner goes away an hour after the last drop. When Woodshed stops, it first stores what's in the queue.
 
+### Storing less: severity filter
+
+Some devices (an access point is the usual case) send a flood of debug messages and can't be told not to. You can
+tell Woodshed to store syslog only from a minimum severity: that severity and the more severe ones. The default stores
+everything.
+
+- **For every device:** **Settings → Storage → Store syslog from**. For example *Info and above (leaves out debug)*.
+- **For one device:** open it from **Devices** and use **Syslog stored → Store from** on its page. *The default*
+  follows Settings again. A device's own setting wins over the default, in either direction, so you can leave out
+  debug from one chatty device while storing everything from the rest, or the reverse.
+- **From the command line** (as an administrator): `sudo woodshed severity-filter` shows the default and every
+  device's own setting; `sudo woodshed severity-filter info` sets the default; `sudo woodshed severity-filter --device
+  192.0.2.10 info` sets one device's (`default` to follow the default again). It saves the config and restarts a
+  running service to use it; the web UI changes it without a restart. In the config file the keys are
+  `min_severity` and `min_severity_by_device` under `[syslog]`, with severities by name (emerg, alert, crit, err,
+  warning, notice, info, debug) or number (0 to 7).
+
+What it does and doesn't do:
+
+- A change applies from the next message, also on open TCP and TLS connections. What's already stored stays. Each
+  change is recorded as an event.
+- A message without a severity (no PRI) is always stored. SNMP traps, polls and flows aren't affected.
+- What's left out isn't stored anywhere: search, the **live tail** and exports don't have it. It's not lost unseen,
+  though: Woodshed counts it per device and severity, and the counts survive a restart. The device's page shows them
+  (*Debug not stored: 12,345 in the last 24 h*), the **Dropped** card and **About** show the total as *not stored, by
+  choice* (it's never in the dropped count), `woodshed status` has a Severity line, and an incident bundle's README
+  says, per device, what it stored and how many were left out in the bundle's window.
+- The device still counts as heard while everything it sends is left out, so it doesn't turn quiet or offline.
+
 ## 4. Find the log files
 
 Every message is kept, exactly as it arrived, in plain text: one folder per device and one file per day (UTC).

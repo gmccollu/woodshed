@@ -25,6 +25,7 @@
   import PollStatePanel from '../components/PollStatePanel.svelte';
   import { PRESETS as POLL_PRESETS, pollSettingsBody, pollSettingsForm, type PollSettingsForm } from '../lib/poll';
   import FlowStatePanel from '../components/FlowStatePanel.svelte';
+  import { FILTER_LEVELS, filterChoice, syslogSettingsBody } from '../lib/severity';
   import { budgetOf, flowBudgetBody, flowFormErrors, flowListenerBody, flowSettingsForm, ruleIesOf, type FlowSettingsForm } from '../lib/flows';
 
   // The form edits friendlier units (GiB, MiB, minutes, one CIDR per line) and converts on save.
@@ -60,6 +61,8 @@
     retentionDays: number;
     retentionGiB: number;
     partMiB: number;
+    /** 2.1: the severity filter's default (syslog.min_severity). */
+    minSeverity: string;
     lanMode: boolean;
     requireLocal: boolean;
     uiPort: number;
@@ -137,6 +140,7 @@
       retentionDays: s.storage.retention_days,
       retentionGiB: round(s.storage.retention_bytes / GiB),
       partMiB: round(s.storage.part_bytes / MiB),
+      minSeverity: s.syslog?.min_severity ?? 'debug',
       lanMode: s.ui.lan_mode,
       requireLocal: !!s.ui.require_login_local,
       uiPort: s.ui.port,
@@ -216,6 +220,8 @@
       },
       // Sent only to a server that has the poller (1.3 and later).
       ...(saved?.poll ? { poll: pollSettingsBody(f) } : {}),
+      // Sent only to a server that has the severity filter (2.1 and later).
+      ...(saved?.syslog ? { syslog: syslogSettingsBody(f.minSeverity) } : {}),
     };
   }
 
@@ -365,6 +371,7 @@
     retentionDays: 'Keep logs for (days)',
     retentionGiB: 'Disk cap (GiB)',
     partMiB: 'Split files at (MiB)',
+    minSeverity: 'Store syslog from',
     lanMode: 'LAN mode',
     requireLocal: 'Require login on this machine too',
     uiPort: 'UI port',
@@ -455,6 +462,7 @@
     'storage.retention_days',
     'storage.retention_bytes',
     'storage.part_bytes',
+    'syslog.min_severity',
     'ui.lan_mode',
     'ui.require_login_local',
     'ui.port',
@@ -1215,6 +1223,20 @@
           <input class="field" type="number" min="1" step="any" bind:value={form.partMiB} aria-invalid={!!err('storage.part_bytes')} aria-describedby="err-storage.part_bytes" />
           {@render fieldError('storage.part_bytes')}
         </label>
+        {#if saved?.syslog}
+          <label class="lbl sm:col-span-2">
+            <span>Store syslog from</span>
+            <select class="field" bind:value={form.minSeverity} aria-invalid={!!err('syslog.min_severity')} aria-describedby="err-syslog.min_severity hint-minsev">
+              {#each FILTER_LEVELS as l (l)}<option value={l}>{filterChoice(l)}</option>{/each}
+            </select>
+            <span class="hint" id="hint-minsev">
+              For every device without its own setting (on its page). Less severe messages aren't stored, so search, the live tail and exports
+              don't have them; they're counted per device, not dropped. Messages without a severity are always stored; traps, polls and flows
+              aren't affected. Applies from the next message, without a restart.
+            </span>
+            {@render fieldError('syslog.min_severity')}
+          </label>
+        {/if}
       </div>
 
       <p class="hint mt-3">

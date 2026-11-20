@@ -101,6 +101,9 @@ const TEMPLATES: Record<Kind, Template[]> = {
     [6, 30, 'wlan', () => `client ${mac()} disassociated reason ${int(1, 8)}`],
     [5, 10, 'radio', () => `channel changed ${pick([36, 40, 44])} -> ${pick([100, 104, 149])} (radar)`],
     [4, 10, 'wlan', () => `client ${mac()} failed authentication`],
+    // Chatty debug it can't be told not to send: the mock's severity filter keeps it out (2.1).
+    [7, 120, 'wlan', () => `dbg: probe req from ${mac()} rssi -${int(45, 90)} ch ${pick([1, 6, 11, 36])}`],
+    [7, 60, 'radio', () => `dbg: noise floor -${int(88, 97)} dBm, utilization ${int(3, 60)}%`],
   ],
 };
 

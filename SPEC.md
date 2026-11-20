@@ -165,6 +165,12 @@ frontend install.
   has no marker, so its line is exactly as in 1.x.
 - Files use the received time in UTC, because device clocks are often wrong or in local time. The device's own
   timestamp stays inside the raw message.
+- **Severity filter (2.1, decision 86):** a syslog message less severe than the device's minimum (its own
+  `syslog.min_severity_by_device` entry, else `syslog.min_severity`; default `debug`, which stores everything) isn't
+  stored: no line, no index entry, not in the live tail or exports. It's counted per device, minute and severity in the
+  stats tables (`filtered_<severity>`), never as a drop. A message without a parseable PRI is always stored. SNMP
+  traps, polls and flows aren't filtered. A change applies from the next message, without a restart, and is a
+  `severity_filter` event.
 - Writes are buffered per device and flushed every 1 s or 1 MiB, whichever comes first; fsync every 5 s. If the
   process crashes we lose at most about 5 s of data, and that is documented.
 
@@ -3814,6 +3820,40 @@ the connection; present since 1.0):
     UI port, the env var only for `1`/`true`/`on`/`yes`), on by config and by env, loopback-only binding, every
     route refusing a missing or wrong token and a non-loopback peer, all four kinds through the CLI, and no package
     importing `net/http/pprof` or `expvar`.
+
+86. **A syslog severity filter, globally and per device, that never drops silently (2.1).** Some devices (an access
+    point is the usual case) send debug they can't be told not to, and it crowds out everything else on the disk. The
+    owner's call: a global default plus a per-device override, default `debug` (store everything); names (`emerg` …
+    `debug`, with the common aliases) or 0–7; messages without a PRI always kept; traps, polls and flows unaffected.
+    Chosen:
+    - **Where it's checked.** In the listener, after the allowlist and blocklist and before the message is truncated,
+      copied or queued: `syslog.Severity` reads the PRI in place (no allocation, the same answer as the parser), and the
+      filter is an atomic snapshot that's nil while nothing filters, with the lowest minimum of all as a floor so a
+      device without its own setting costs no map lookup. A left-out UDP datagram never takes a queue slot. On the
+      reader path the check costs nothing measurable when it keeps a message (161 ns inline before, 162 ns kept
+      after), and a left-out message is 45 ns with no allocation (`BenchmarkReaderPath`, darwin/arm64).
+    - **Counted, not dropped.** The store counts each left-out message by sender, minute and severity in a sharded
+      table (bounded: past 4,096 pending entries per shard the counts go to the refused bucket, so the total stays
+      exact), and the maintenance pass adds them to the device's stats (schema 10: `filtered_emerg` … `filtered_debug`
+      on `stats` and `stats_hourly`, with partial indexes over the buckets that have any). They roll up and are pruned
+      like the other stats and survive a restart. A left-out message makes the device heard (last heard, status, the
+      device limits) but isn't in its stored lines or rate. None of it is in a drop count: the dashboard, About,
+      `/api/stats` (`severity_filter`), the device (`filtered_24h`, `filtered_by_severity_24h`), `woodshed status` and the
+      bundle README word it as a choice.
+    - **Where the setting lives.** Both in the config: `syslog.min_severity`, in `/api/settings` and Settings → Storage;
+      `syslog.min_severity_by_device`, keyed by address like the blocklist, file-only in `/api/settings` and set with
+      `PATCH /api/devices/{id}` (`min_severity`, `"default"` to follow the default) or `woodshed severity-filter
+      --device`. Keeping the overrides in the config, not the index, lets the CLI set them offline and keeps one source
+      of truth; a pruned device keeps its entry. A zoned IPv6 sender can't have one (as for the blocklist).
+    - **Live, from the next message.** The UI and API apply a change to the running listeners at once, open TCP and TLS
+      connections included, and record a `severity_filter` event; what's stored stays. `woodshed severity-filter`
+      saves the config and restarts a running service, like the other CLI setters.
+    - **The live tail doesn't show left-out messages.** It shows what's stored; showing messages that search and
+      exports can't find would mislead. The device page says what's left out instead.
+    - **Bundles say it honestly.** Each syslog device's manifest entry has `severity_filter` (the setting now, whether
+      it's the device's own, and the counts over the bundle window); the README's Filter line says what's stored now
+      and what was left out in the window, "since <time>" when the stats retention cut the window, by hour when hourly
+      buckets were used, and that nothing is known when the window is older than the stats kept.
 
 ### 13.11 Questions settled (2.0), decided (coordinator, 2026-11-16, owner-delegated)
 1. **It's 2.0.** The owner's roadmap names it, and the new binary on-disk format and the retention-priority change

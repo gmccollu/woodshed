@@ -4,6 +4,21 @@ All notable changes to Woodshed. The format follows [Keep a Changelog](https://k
 and versions follow [Semantic Versioning](https://semver.org/). Release notes on GitHub are taken from this file
 (`scripts/release-notes.sh`), so set a section's date before tagging it.
 
+## [Unreleased]
+
+### Added
+- A syslog severity filter: store syslog from a minimum severity, by default for every device (**Settings → Storage →
+  Store syslog from**, `syslog.min_severity`) and per device (the device's page, `PATCH /api/devices/{id}`
+  `min_severity`, `syslog.min_severity_by_device`), with `woodshed severity-filter [--device ADDR] [SEVERITY|default]`
+  to show or set both. The default stores everything (debug); names (emerg … debug) and 0–7 are accepted. Messages
+  without a PRI are always stored, and SNMP traps, polls and flows aren't affected. A change applies from the next
+  message without a restart and is recorded as an event. Nothing is dropped silently: left-out messages are counted
+  per device and severity (kept across restarts) and shown on the device page, the dashboard's Dropped card and About
+  (as a choice, not a drop), `GET /api/stats` (`severity_filter`), `GET /api/devices` (`filtered_24h`,
+  `filtered_by_severity_24h`), `woodshed status`, and each device's line in an incident bundle's README and manifest.
+  The live tail shows only what's stored. The index schema goes to 10. See
+  [docs/user-guide.md](docs/user-guide.md#storing-less-severity-filter).
+
 ## [2.0.0] - 2026-11-18
 
 ### Added

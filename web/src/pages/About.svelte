@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getStats, type Stats } from '../lib/api';
   import { bytes, dateTime, duration, num, protoLabel } from '../lib/format';
+  import { countsText, filterPhrase } from '../lib/severity';
   import { live } from '../lib/status.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import QueueChart from '../components/QueueChart.svelte';
@@ -21,6 +22,8 @@
   const framesOf = (proto: string) => stats?.tcp_frames?.find((f) => f.listener === proto);
   const anyReason = $derived(!!reasons && reasons.paused + reasons.write_error + reasons.refused + reasons.queue_full > 0);
   const queueName = (l: string) => (l === 'udp' ? 'Syslog over UDP' : l === 'snmp' ? 'SNMP traps' : l === 'flow' ? 'Flows (flow and IPFIX ports)' : l === 'ipfix' ? 'Flows (IPFIX)' : l.toUpperCase());
+  // The severity filter (2.1): a choice, not a drop.
+  const sevf = $derived(stats?.severity_filter);
   const pct = (a: number, b: number) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
 
   const st = $derived(live.status);
@@ -87,6 +90,18 @@
         <p class="mt-2 mb-0 text-[14.5px]">
           Last 24 hours, by reason:
           {#each [['writes paused (low disk)', reasons.paused], ['write errors', reasons.write_error], ['new senders refused', reasons.refused], ['UDP queue full', reasons.queue_full]].filter(([, n]) => Number(n) > 0) as [what, n], i (what)}{i ? ' · ' : ' '}<b>{num(Number(n))}</b> {what}{/each}.
+        </p>
+      {/if}
+      {#if sevf && (sevf.filtered_24h > 0 || sevf.min_severity !== 'debug' || sevf.device_overrides > 0)}
+        <p class="mt-2 mb-0 text-[14.5px] leading-relaxed" data-testid="about-sevf">
+          <b>Not drops: left out by the severity filter.</b> Syslog stores {filterPhrase(sevf.min_severity)} by default{#if sevf.device_overrides}{' '}({num(sevf.device_overrides)} {sevf.device_overrides === 1 ? 'device has its' : 'devices have their'} own setting){/if}.
+          {#if sevf.filtered_24h > 0}
+            Last 24 hours, not stored by that choice: <b>{num(sevf.filtered_24h)}</b> ({countsText(sevf.by_severity_24h, num)}) from
+            {num(sevf.devices_24h)} {sevf.devices_24h === 1 ? 'device' : 'devices'}.
+          {:else}
+            Nothing was left out in the last 24 hours.
+          {/if}
+          Change it in <a class="text-link underline" href="#/settings">Settings → Storage</a> or on a device's page.
         </p>
       {/if}
       {#if st.kernel_drops_visible}

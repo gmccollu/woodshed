@@ -147,6 +147,25 @@ export interface Stats {
   flow_parts_early: number;
   /** One per enabled TCP and TLS listener (2.0), counted since the server started. */
   tcp_frames: TcpFrames[];
+  /** 2.1: the syslog severity filter and what it left out in the last 24 h: a choice, in none of the drop counts. Older servers omit it. */
+  severity_filter?: SeverityFilterStats;
+}
+
+/** A syslog severity name, emerg (0) … debug (7). */
+export type SeverityName = 'emerg' | 'alert' | 'crit' | 'err' | 'warning' | 'notice' | 'info' | 'debug';
+
+/** /api/stats severity_filter (docs/api.md → Severity filter). */
+export interface SeverityFilterStats {
+  /** syslog.min_severity: the default; "debug" stores everything. */
+  min_severity: SeverityName | (string & {});
+  /** Devices with their own setting. */
+  device_overrides: number;
+  /** Syslog messages not stored in the last 24 h, every device together. */
+  filtered_24h: number;
+  /** filtered_24h by severity name, only the ones with any. */
+  by_severity_24h: Record<string, number>;
+  /** Devices with any left out in the last 24 h. */
+  devices_24h: number;
 }
 
 /** A TCP or TLS listener's frame counters (docs/api.md → Incomplete TCP frames). */
@@ -220,6 +239,13 @@ export interface Device {
   polled?: boolean;
   /** 1.3, when polled: the target's state.status. */
   poll_status?: PollStatus | (string & {});
+  /** 2.1: the device's own severity filter, or "default" (it follows Settings). Older servers omit the four. */
+  min_severity?: SeverityName | 'default' | (string & {});
+  /** 2.1: the filter in effect; "debug" stores everything. */
+  min_severity_effective?: SeverityName | (string & {});
+  /** 2.1: syslog messages the filter left out (not stored) in the last 24 h. */
+  filtered_24h?: number;
+  filtered_by_severity_24h?: Record<string, number>;
 }
 
 /** Why a TLS handshake failed (SPEC §10.3.4). Unknown future reasons are shown as given. */
@@ -235,7 +261,10 @@ export interface DeviceTls {
   last_failure: { time: string; reason: TlsFailureReason | (string & {}); detail: string } | null;
 }
 
-export type DevicePatch = Partial<Pick<Device, 'name' | 'group' | 'hidden' | 'blocked'>>;
+export type DevicePatch = Partial<Pick<Device, 'name' | 'group' | 'hidden' | 'blocked'>> & {
+  /** 2.1: a severity name, or "default" to follow Settings. */
+  min_severity?: SeverityName | 'default';
+};
 
 export interface LogLine {
   received: string;
@@ -558,6 +587,8 @@ export interface Settings {
   quiet: { quiet_after_seconds: number; offline_after_seconds: number };
   /** The update check (1.1). Older servers omit it; a PUT without it keeps it. */
   updates?: { check: UpdateCheck };
+  /** 2.1: the severity filter's default (each device's own is PATCH /api/devices). Older servers omit it; a PUT without it keeps it. */
+  syslog?: { min_severity: SeverityName | (string & {}) };
   /** 1.3: the poller's defaults (docs/api.md → 1.3). Older servers omit it; a PUT without it keeps it. */
   poll?: PollSettings;
 }

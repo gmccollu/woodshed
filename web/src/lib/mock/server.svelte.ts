@@ -532,6 +532,8 @@ let settings: Settings = {
   quiet: { quiet_after_seconds: 300, offline_after_seconds: 3600 },
   updates: { check: (['ask', 'on', 'off'].includes(P.get('mock_updates') ?? '') ? P.get('mock_updates') : 'ask') as UpdateCheck },
   poll: pollDefaults(),
+  // 2.1: the severity filter's default (?mock_min_severity=info to start with one).
+  syslog: { min_severity: P.get('mock_min_severity') ?? 'debug' },
 };
 
 // ---------- The update check (docs/api.md → Update check) ----------
@@ -798,6 +800,8 @@ function validate(s: Settings): Record<string, string> {
           e[`listeners.flow.rule_id_ies[${i}]`] = 'Use <enterprise number>:<element ID>, e.g. 32473:7, or 0:<field type> for flow v9, e.g. 0:40003.';
       });
   }
+  if (s.syslog && parseSev(s.syslog.min_severity) < 0)
+    e['syslog.min_severity'] = 'Use a severity: emerg, alert, crit, err, warning, notice, info or debug (or 0 to 7).';
   const fb = st.flow_budget_bytes;
   if (fb !== undefined && fb !== 0 && (!Number.isFinite(fb) || fb < GiB || fb > st.retention_bytes * 0.9))
     e['storage.flow_budget_bytes'] = 'Use 0 (40 % of the cap), or at least 1 GiB and at most 90 % of the cap.';
@@ -886,11 +890,17 @@ function tick() {
       continue;
     }
     d.lastHeard = now;
+    // The severity filter: a less severe message is counted, not stored, not in the live tail.
+    const lvl = sevLevel(d.def.ip);
+    const l = i < make || lvl < 7 ? line(d.def, new Date(now - 100 + Math.floor((Math.min(i, make) / Math.max(make, 1)) * 100))) : null;
+    if (l && l.severity !== null && l.severity > lvl) {
+      countFiltered(d.def.ip, l.severity);
+      continue;
+    }
     d.total++;
     d.bytes += 140;
-    if (i < make) {
+    if (l && i < make) {
       generatedThisSecond++;
-      const l = line(d.def, new Date(now - 100 + Math.floor((i / make) * 100)));
       if (!mock.paused) emit(l);
     }
   }
@@ -1148,6 +1158,7 @@ function deviceJSON(d: Dev, now: number): Device {
     tls: deviceTls(d.def.ip, now),
     ...deviceTypes(d, now),
     ...devicePoll(d.def.ip, now),
+    ...deviceSeverity(d.def.ip),
   };
 }
 
@@ -1379,6 +1390,7 @@ function statsJSON(now: number): Stats {
     tcp_frames: (['tcp', 'tls'] as const)
       .filter((p) => settings.listeners[p]?.enabled)
       .map((p) => ({ listener: p, port: settings.listeners[p]!.port, incomplete: p === 'tcp' && devs.size > 1 ? 2 : 0, frame_timeouts: 0 })),
+    severity_filter: severityStats(),
   };
 }
 
@@ -1414,6 +1426,63 @@ const blockedCounts = new Map<string, { n: number; last: number }>();
 // Senders blocked from the start (mock_blocked) have refusals already counted, as if blocked a
 // while ago, so the refused list shows them on the first poll instead of only after the next.
 for (const d of FLEET) if (blockedBy(d.ip)) blockedCounts.set(d.ip, { n: 40 + Math.round(d.weight * 20), last: START - 20_000 });
+
+// ---------- The severity filter (2.1, docs/api.md → Severity filter) ----------
+
+const SEV_NAMES = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'];
+/** A severity name or 0-7 as the server accepts it (aliases included), or -1. */
+function parseSev(v: unknown): number {
+  if (typeof v !== 'string') return -1;
+  const t = v.trim().toLowerCase();
+  if (/^[0-7]$/.test(t)) return Number(t);
+  const alias: Record<string, string> = { emergency: 'emerg', panic: 'emerg', critical: 'crit', error: 'err', warn: 'warning', informational: 'info' };
+  return SEV_NAMES.indexOf(alias[t] ?? t);
+}
+/** Each device's own setting (syslog.min_severity_by_device). The access point, which sends chatty debug, keeps it out. */
+const sevOwn = new Map<string, number>(P.get('mock_sevf') === 'off' ? [] : [['10.8.0.5', 6]]);
+/** Left out per device and severity (the mock keeps one window: since it started, seeded as if over the last 24 h). */
+const filteredBy = new Map<string, number[]>([...sevOwn.keys()].map((ip) => [ip, [0, 0, 0, 0, 0, 0, 0, 12_345]]));
+function sevLevel(ip: string): number {
+  return sevOwn.get(ip) ?? Math.max(0, parseSev(settings.syslog?.min_severity ?? 'debug'));
+}
+function countFiltered(ip: string, sev: number, n = 1) {
+  const c = filteredBy.get(ip) ?? [0, 0, 0, 0, 0, 0, 0, 0];
+  c[sev] += n;
+  filteredBy.set(ip, c);
+}
+function sevCounts(c: number[] | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  c?.forEach((n, i) => {
+    if (n > 0) out[SEV_NAMES[i]] = n;
+  });
+  return out;
+}
+function deviceSeverity(ip: string): Pick<Device, 'min_severity' | 'min_severity_effective' | 'filtered_24h' | 'filtered_by_severity_24h'> {
+  const own = sevOwn.get(ip);
+  const c = filteredBy.get(ip);
+  return {
+    min_severity: own === undefined ? 'default' : SEV_NAMES[own],
+    min_severity_effective: SEV_NAMES[sevLevel(ip)],
+    filtered_24h: c ? c.reduce((a, b) => a + b, 0) : 0,
+    filtered_by_severity_24h: sevCounts(c),
+  };
+}
+function severityStats(): NonNullable<Stats['severity_filter']> {
+  const tot = [0, 0, 0, 0, 0, 0, 0, 0];
+  let n = 0;
+  for (const [ip, c] of filteredBy) {
+    if (!devs.has(ip)) continue;
+    if (c.some((x) => x > 0)) n++;
+    c.forEach((x, i) => (tot[i] += x));
+  }
+  return {
+    min_severity: SEV_NAMES[Math.max(0, parseSev(settings.syslog?.min_severity ?? 'debug'))],
+    device_overrides: sevOwn.size,
+    filtered_24h: tot.reduce((a, b) => a + b, 0),
+    by_severity_24h: sevCounts(tot),
+    devices_24h: n,
+  };
+}
 
 function allowed(ip: string): boolean {
   const n = v4(ip);
@@ -2776,6 +2845,13 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     if (b.name !== undefined) d.name = b.name.trim();
     if (b.group !== undefined) d.group = b.group.trim();
     if (b.hidden !== undefined) d.hidden = b.hidden;
+    if (b.min_severity !== undefined) {
+      const v = b.min_severity;
+      const lvl = v === 'default' ? -1 : parseSev(v);
+      if (v !== 'default' && lvl < 0) return json({ error: 'min_severity must be "default" or a severity', errors: { min_severity: 'Use default, or a severity: emerg, alert, crit, err, warning, notice, info or debug.' } }, 400);
+      if (lvl < 0) sevOwn.delete(d.def.ip);
+      else sevOwn.set(d.def.ip, lvl);
+    }
     if (b.blocked !== undefined) {
       if (typeof b.blocked !== 'boolean') return err(400, 'blocked must be true or false.');
       const ip = d.def.ip;
@@ -2805,7 +2881,7 @@ async function route(method: string, url: URL, body: unknown, header: string | n
     const check = s.updates?.check ?? settings.updates?.check ?? 'ask';
     const prevFlow = settings.listeners.flow;
     const prevBudget = settings.storage.flow_budget_bytes;
-    settings = structuredClone({ ...s, updates: settings.updates, poll: s.poll ?? settings.poll });
+    settings = structuredClone({ ...s, updates: settings.updates, poll: s.poll ?? settings.poll, syslog: s.syslog ? { min_severity: SEV_NAMES[parseSev(s.syslog.min_severity)] } : settings.syslog });
     // 2.0: a PUT without the flow keys (a 1.x client) keeps them.
     if (!s.listeners.flow && prevFlow) settings.listeners.flow = structuredClone(prevFlow);
     if (s.storage.flow_budget_bytes === undefined) settings.storage.flow_budget_bytes = prevBudget;
