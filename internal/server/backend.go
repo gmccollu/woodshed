@@ -348,6 +348,9 @@ func (b *backend) fillRunState(rs *RunState) {
 	rs.TLS = b.runStateTLS(cfg)
 	rs.SNMP = b.runStateSNMP(cfg)
 	rs.Poll = b.runStatePoll()
+	if sf, err := b.severityStats(ctx); err == nil && (cfg.Syslog.Filtering() || sf.Filtered24h > 0) {
+		rs.SeverityFilter = &sf
+	}
 	if b.flows != nil {
 		if fs, err := b.FlowState(ctx); err == nil && (fs.Enabled || fs.Budget.UsedBytes > 0 || len(fs.Exporters) > 0) {
 			rs.Flows = &fs
@@ -587,6 +590,9 @@ func (b *backend) Stats(ctx context.Context) (api.Stats, error) {
 	}
 	r := b.store.DropsByReason24h()
 	st.DroppedByReason = api.DroppedByReason{Paused: r.Paused, WriteError: r.WriteError, Refused: r.Refused, QueueFull: r.QueueFull}
+	if st.SeverityFilter, err = b.severityStats(ctx); err != nil {
+		return st, err
+	}
 	st.UDPQueue = []api.UDPQueue{}
 	st.TCPFrames = []api.TCPFrames{}
 	if ln := b.ln.Load(); ln != nil {
@@ -775,6 +781,11 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 			return api.Device{}, err
 		}
 	}
+	if p.MinSeverity != nil {
+		if err := b.setDeviceSeverity(d, *p.MinSeverity); err != nil {
+			return api.Device{}, err
+		}
+	}
 	now := b.now()
 	from := now.UTC().Truncate(time.Minute).Add(-time.Minute)
 	c, err := b.idx.Counts(ctx, []string{d.ID}, from, time.Time{})
@@ -787,6 +798,9 @@ func (b *backend) UpdateDevice(ctx context.Context, id string, p api.DevicePatch
 	b.markTLS(out)
 	b.markTypes(ctx, out)
 	b.markPolled(ctx, out)
+	if err := b.markSeverity(ctx, out); err != nil {
+		return api.Device{}, err
+	}
 	out[0].BlockedBy = blockedBy
 	return out[0], nil
 }
@@ -884,6 +898,7 @@ func (b *backend) SaveSettings(ctx context.Context, in api.Settings, ifMatch str
 			FlowBudgetBytes:     flowBudgetLimit(next.Storage.FlowBudgetBytes),
 		})
 	}
+	b.defaultSeverityChanged(cur.Syslog, next.Syslog)
 	b.applyPollSettings(cur.Poll, next.Poll)
 	b.applyFlowSettings(cur, next)
 	if b.snmp != nil && trapSettings(cur.Listeners.SNMP) != trapSettings(next.Listeners.SNMP) {

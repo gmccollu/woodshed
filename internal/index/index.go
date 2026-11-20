@@ -306,6 +306,9 @@ CREATE INDEX poll_hourly_hour ON poll_hourly (hour);
 	// 8 -> 9: the flow collector's counts per exporter and minute (SPEC
 	// §13.10 decisions 82 and 83), in type_stats beside msgs and bytes.
 	flowCountsMigration,
+	// 9 -> 10: the severity filter's counts per device, minute and severity
+	// (SPEC §13.10 decision 86), in the syslog stats tables beside msgs.
+	filteredMigration,
 }
 
 // CurrentSchema is the schema version this build writes.

@@ -44,6 +44,9 @@ type RunState struct {
 	// Flows is the flow collector: GET /api/flows's state (flow.go), while
 	// the listener is on or flows are stored.
 	Flows *api.FlowState `json:"flows,omitempty"`
+	// SeverityFilter is the syslog severity filter and its last 24 hours,
+	// while it filters or left anything out (SPEC §13.10 decision 86).
+	SeverityFilter *api.SeverityFilterStats `json:"severity_filter,omitempty"`
 }
 
 // RunStateUI is the UI server's state.

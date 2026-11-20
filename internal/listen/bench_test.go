@@ -73,6 +73,31 @@ func BenchmarkReaderPath(b *testing.B) {
 			s.deliver(msg, from, false, frameEnd{})
 		}
 	})
+	// The severity filter (SPEC §13.10 decision 86): "filter-kept" is
+	// "inline" with a filter set that keeps the message (info, with a
+	// per-device override for another sender, so the map exists);
+	// "filtered" a debug message it leaves out (the counting callback a
+	// no-op here; the store's Filtered is BenchmarkFiltered).
+	filter := &SeverityFilter{Min: 6, ByDevice: map[netip.Addr]int{netip.MustParseAddr("192.0.2.99"): 7}}
+	b.Run("filter-kept", func(b *testing.B) {
+		s := newServer(b, func(model.Message) {})
+		s.SetSeverityFilter(*filter)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			s.deliver(msg, from, false, frameEnd{})
+		}
+	})
+	b.Run("filtered", func(b *testing.B) {
+		s := newServer(b, func(model.Message) { b.Fatal("a filtered message reached the sink") })
+		s.SetSeverityFilter(*filter)
+		debug := append([]byte("<135>"), msg[5:]...)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			s.deliver(debug, from, false, frameEnd{})
+		}
+	})
 	b.Run("queued", func(b *testing.B) {
 		var got atomic.Int64
 		s := newServer(b, func(model.Message) { got.Add(1) })

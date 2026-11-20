@@ -92,6 +92,8 @@ func newFakeBackend() *fakeBackend {
 			UDPQueue: []UDPQueue{{Listener: "udp", Port: 514, CapacityMessages: 100000, CapacityBytes: 67108864, Depth: 12,
 				HighWater24h: 3210, HighWaterByHour: []int{120, 3210, 88}}},
 			TCPFrames: []TCPFrames{{Listener: "tcp", Port: 514}},
+			SeverityFilter: SeverityFilterStats{MinSeverity: "debug", DeviceOverrides: 1, Filtered24h: 12345,
+				BySeverity24h: map[string]int64{"debug": 12345}, Devices24h: 1},
 		},
 		rejected: []RejectedSender{{IP: "198.51.100.7", Count24h: 120, LastSeen: ts("2026-11-10T20:30:00Z"), Reason: "allowlist"}},
 		devices:  map[string]Device{},
@@ -108,6 +110,7 @@ func newFakeBackend() *fakeBackend {
 			Updates: &UpdatesSettings{Check: "ask"},
 			Poll: &PollSettings{IntervalS: 60, TimeoutMS: 2000, Retries: 1, Concurrency: 32, MaxInterfaces: 64, MaxTargets: 500,
 				Presets: []string{"system", "system-info", "interfaces"}},
+			Syslog: &SyslogSettings{MinSeverity: "debug"},
 		},
 		updates: UpdateInfo{
 			Check: "ask", Available: true, URL: "https://releases.example/woodshed/releases.json", Current: "1.1.0",
@@ -231,6 +234,9 @@ func (b *fakeBackend) SaveSettings(ctx context.Context, s Settings, ifMatch stri
 	}
 	if s.Updates == nil {
 		s.Updates = b.settings.Updates // a PUT without it keeps it
+	}
+	if s.Syslog == nil {
+		s.Syslog = b.settings.Syslog
 	}
 	b.settings = s
 	b.updates.Check = s.Updates.Check

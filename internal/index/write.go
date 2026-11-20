@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -19,11 +20,21 @@ RETURNING id`
 
 const insertCheckpointSQL = `INSERT OR IGNORE INTO checkpoints (file_id, offset, line, received) VALUES (?, ?, ?, ?)`
 
-const upsertStatsSQL = `
-INSERT INTO stats (device_id, minute, msgs, bytes, truncated, dropped) VALUES (?, ?, ?, ?, ?, ?)
+var upsertStatsSQL = `
+INSERT INTO stats (device_id, minute, msgs, bytes, truncated, dropped, ` + strings.Join(filteredCols(""), ", ") + `)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (device_id, minute) DO UPDATE SET
 	msgs = msgs + excluded.msgs, bytes = bytes + excluded.bytes,
-	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped`
+	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped,` + filteredUpsert
+
+// filteredUpsert adds a stats row's filtered counts.
+var filteredUpsert = func() string {
+	var parts []string
+	for _, c := range filteredCols("") {
+		parts = append(parts, "\n\t"+c+" = "+c+" + excluded."+c)
+	}
+	return strings.Join(parts, ",")
+}()
 
 const upsertDeviceActivitySQL = `
 INSERT INTO devices (id, ip, first_seen, last_heard, total_msgs, total_bytes) VALUES (?, ?, ?, ?, ?, ?)
@@ -266,7 +277,8 @@ func fileType(t string) string {
 func (s *stmts) activity(a Activity) error {
 	minute := a.Minute.Truncate(time.Minute)
 	if t := fileType(a.Type); t == TypeSyslog {
-		if _, err := s.exec(upsertStatsSQL, a.DeviceID, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped); err != nil {
+		args := append([]any{a.DeviceID, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped}, sevArgs(a.Filtered)...)
+		if _, err := s.exec(upsertStatsSQL, args...); err != nil {
 			return err
 		}
 	} else if _, err := s.exec(upsertTypeStatsSQL, a.DeviceID, t, ms(minute), a.Msgs, a.Bytes, a.Truncated, a.Dropped,
@@ -353,12 +365,12 @@ func (d *DB) RollupStats(ctx context.Context, before time.Time) (int64, error) {
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO stats_hourly (device_id, hour, msgs, bytes, truncated, dropped)
-SELECT device_id, (minute / 3600000) * 3600000, sum(msgs), sum(bytes), sum(truncated), sum(dropped)
+INSERT INTO stats_hourly (device_id, hour, msgs, bytes, truncated, dropped, `+strings.Join(filteredCols(""), ", ")+`)
+SELECT device_id, (minute / 3600000) * 3600000, sum(msgs), sum(bytes), sum(truncated), sum(dropped), `+filteredSums+`
 FROM stats WHERE minute < ? GROUP BY device_id, minute / 3600000
 ON CONFLICT (device_id, hour) DO UPDATE SET
 	msgs = msgs + excluded.msgs, bytes = bytes + excluded.bytes,
-	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped`, b); err != nil {
+	truncated = truncated + excluded.truncated, dropped = dropped + excluded.dropped,`+filteredUpsert, b); err != nil {
 		return 0, fmt.Errorf("index: stats rollup: %w", err)
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM stats WHERE minute < ?`, b)
@@ -412,4 +424,13 @@ func (d *DB) Prune(ctx context.Context, statsBefore, historyBefore time.Time) er
 		}
 	}
 	return nil
+}
+
+// sevArgs are a stats row's filtered counts as statement arguments.
+func sevArgs(c SevCounts) []any {
+	out := make([]any, len(c))
+	for i, v := range c {
+		out[i] = v
+	}
+	return out
 }

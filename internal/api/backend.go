@@ -278,6 +278,24 @@ type Stats struct {
 	// limit to keep every writer's memory under its budget, since the server
 	// started (SPEC §13.10 decision 58).
 	FlowPartsEarly int64 `json:"flow_parts_early"`
+	// SeverityFilter is the syslog severity filter and what it left out in
+	// the last 24 hours (SPEC §13.10 decision 86): a choice, not a loss, so
+	// it's in none of the drop counts.
+	SeverityFilter SeverityFilterStats `json:"severity_filter"`
+}
+
+// SeverityFilterStats is /api/stats severity_filter (and the run-state file's,
+// for `woodshed status`).
+type SeverityFilterStats struct {
+	MinSeverity     string `json:"min_severity"`     // syslog.min_severity ("debug": everything)
+	DeviceOverrides int    `json:"device_overrides"` // devices with their own setting
+	// Filtered24h counts the syslog messages left out in the last 24 hours,
+	// every device together (senders the device limits refused included);
+	// BySeverity24h splits it by severity name (only the ones with any), and
+	// Devices24h is how many devices had any.
+	Filtered24h   int64            `json:"filtered_24h"`
+	BySeverity24h map[string]int64 `json:"by_severity_24h"`
+	Devices24h    int              `json:"devices_24h"`
 }
 
 // DroppedByReason is /api/stats dropped_by_reason (last 24 hours).
@@ -383,6 +401,16 @@ type Device struct {
 	// target's state.status (SPEC §12.5).
 	Polled     bool   `json:"polled"`
 	PollStatus string `json:"poll_status,omitempty"`
+	// The syslog severity filter (SPEC §13.10 decision 86): MinSeverity is
+	// the device's own setting ("default": it follows syslog.min_severity),
+	// MinSeverityEffective the one in effect ("debug" keeps everything), and
+	// Filtered24h the syslog messages it left out in the last 24 hours (not
+	// stored, and not drops), FilteredBySeverity24h by severity name (only
+	// the ones with any).
+	MinSeverity           string           `json:"min_severity"`
+	MinSeverityEffective  string           `json:"min_severity_effective"`
+	Filtered24h           int64            `json:"filtered_24h"`
+	FilteredBySeverity24h map[string]int64 `json:"filtered_by_severity_24h"`
 }
 
 // DevicePatch is the body of PATCH /api/devices/{id}; nil fields are left alone.
@@ -391,6 +419,9 @@ type DevicePatch struct {
 	Group   *string `json:"group,omitempty"`
 	Hidden  *bool   `json:"hidden,omitempty"`
 	Blocked *bool   `json:"blocked,omitempty"` // add or remove the device's exact address on listeners.blocklist
+	// MinSeverity sets the device's own severity filter: a severity (emerg …
+	// debug, or 0-7), or "default" to follow syslog.min_severity.
+	MinSeverity *string `json:"min_severity,omitempty"`
 }
 
 // ---- /api/settings ----
@@ -407,6 +438,15 @@ type Settings struct {
 	// Poll is the SNMP poller's defaults (SPEC §12); a PUT without it (a 1.2
 	// client) leaves them as they are.
 	Poll *PollSettings `json:"poll,omitempty"`
+	// Syslog is the severity filter's default (SPEC §13.10 decision 86); a
+	// PUT without it (a 2.0 client) leaves it as it is. Each device's own
+	// setting is PATCH /api/devices/{id} min_severity.
+	Syslog *SyslogSettings `json:"syslog,omitempty"`
+}
+
+// SyslogSettings is Settings → Storage's severity filter.
+type SyslogSettings struct {
+	MinSeverity string `json:"min_severity"` // emerg … debug ("debug" keeps everything); 0-7 accepted
 }
 
 // PollSettings are Settings → Polling's defaults.
@@ -623,7 +663,15 @@ func normalizeRejected(rs []RejectedSender) []RejectedSender {
 	return rs
 }
 
-func (s *Stats) normalize() { s.Sparkline = nonNil(s.Sparkline) }
+func (s *Stats) normalize() {
+	s.Sparkline = nonNil(s.Sparkline)
+	if s.SeverityFilter.MinSeverity == "" {
+		s.SeverityFilter.MinSeverity = "debug"
+	}
+	if s.SeverityFilter.BySeverity24h == nil {
+		s.SeverityFilter.BySeverity24h = map[string]int64{}
+	}
+}
 
 func (d *Device) normalize() {
 	d.FirstSeen = d.FirstSeen.UTC()
@@ -631,6 +679,15 @@ func (d *Device) normalize() {
 	d.Types = nonNil(d.Types)
 	if d.LinesByType == nil {
 		d.LinesByType = map[string]int64{}
+	}
+	if d.MinSeverity == "" {
+		d.MinSeverity = "default"
+	}
+	if d.MinSeverityEffective == "" {
+		d.MinSeverityEffective = "debug"
+	}
+	if d.FilteredBySeverity24h == nil {
+		d.FilteredBySeverity24h = map[string]int64{}
 	}
 	if t := d.TLS; t != nil {
 		if t.LastConnected != nil {

@@ -200,6 +200,8 @@ type Store struct {
 	paused      atomic.Bool
 	pausedSince atomic.Int64 // unix ms
 	dropped     atomic.Int64 // messages dropped since Open
+	filtered    atomic.Int64 // syslog messages the severity filter left out since Open (filtered.go)
+	filt        filtTable    // their counts, until the next maintenance pass
 	written     atomic.Int64 // messages written to files since Open
 	activeBytes atomic.Int64 // bytes on disk in active files
 
@@ -940,6 +942,7 @@ func (s *Store) Close() error {
 			first = err
 		}
 	}
+	s.collectFiltered() // before the devices close: the counts go into their stats
 	for _, d := range s.allDevices() {
 		d.mu.Lock()
 		d.closed = true
@@ -972,6 +975,7 @@ type Usage struct {
 	PausedSince        time.Time // zero when not paused
 	Dropped            int64     // messages dropped since Open (paused, write errors, refused senders, UDP queue full)
 	Written            int64     // messages written since Open
+	Filtered           int64     // syslog messages the severity filter left out since Open (not in Dropped)
 
 	Devices           int       // senders held in memory now
 	MaxDevices        int       // the cap on Devices
@@ -994,6 +998,7 @@ func (s *Store) Usage() Usage {
 		WritesPaused:   s.paused.Load(),
 		Dropped:        s.dropped.Load(),
 		Written:        s.written.Load(),
+		Filtered:       s.filtered.Load(),
 		FlowPartsEarly: s.fl.partsEarly.Load(),
 	}
 	if u.WritesPaused {

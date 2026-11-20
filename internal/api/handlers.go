@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/gmccollu/woodshed/internal/config"
 )
 
 // maxBody caps JSON request bodies.
@@ -259,6 +261,13 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		if msg := checkLabel(*v); msg != "" {
 			writeJSON(w, http.StatusBadRequest, errorBody{Error: field + ": " + msg, Errors: map[string]string{field: msg}})
+			return
+		}
+	}
+	if v := p.MinSeverity; v != nil {
+		if _, ok := config.ParseSeverity(*v); !ok && *v != config.SeverityDefault {
+			msg := `Must be "default" or a severity: emerg, alert, crit, err, warning, notice, info or debug (or 0 to 7).`
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "min_severity: " + msg, Errors: map[string]string{"min_severity": msg}})
 			return
 		}
 	}

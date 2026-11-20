@@ -112,6 +112,16 @@ type Options struct {
 	// they count for the sender's device.
 	OnQueueDrop QueueDrop
 
+	// OnFiltered, if set, counts each syslog message the severity filter
+	// (SetSeverityFilter) left out: its sender (unmapped), when it arrived and
+	// its severity (0-7). It's called on the receive path (the UDP reader, a
+	// TCP or TLS connection's goroutine), so it must be quick and must not
+	// block: the store's Filtered.
+	OnFiltered func(from netip.Addr, at time.Time, sev int)
+	// SeverityFilter, if set, is the filter in effect from the first message
+	// (SetSeverityFilter changes it later). Nil keeps everything.
+	SeverityFilter *SeverityFilter
+
 	// TrySink, if set, is the UDP reader's fast path for a lone datagram
 	// (udpqueue.go): it delivers m as Sink would only if that can't block (the
 	// store's TryWrite), and otherwise does nothing and returns false, and m goes
@@ -167,6 +177,7 @@ type Status struct {
 	KernelDrops        int64
 
 	Received  int64 // messages handed to the sink since Start
+	Filtered  int64 // syslog messages the severity filter left out since Start (not in Received)
 	Inline    int64 // of those, UDP datagrams (syslog and traps) the reader delivered itself (TrySink, TrapTry)
 	Truncated int64 // of those, cut at the max message size
 	Rejected  int64 // refused by the blocklist, the allowlist or the per-source limit since Start (a refused TCP connection counts once)
@@ -237,6 +248,7 @@ type Server struct {
 	tlsFailed atomic.Int64
 
 	allow        atomic.Pointer[allowlist]
+	sevf         atomic.Pointer[sevFilter] // the severity filter; nil keeps everything (severity.go)
 	maxSize      atomic.Int64
 	perSource    atomic.Int64 // TCP connections allowed per sender address
 	perPrefix    atomic.Int64 // and per IPv6 /64
@@ -244,6 +256,7 @@ type Server struct {
 	idleTimeout  atomic.Int64 // time.Duration a TCP connection may go without a complete message
 
 	received, truncated, connsRefused atomic.Int64
+	filtered                          atomic.Int64
 	inline                            atomic.Int64
 	evicted, perSourceRefused         atomic.Int64
 	tcpFrames, tlsFrames              frameCounts // incomplete frames and frame timeouts, per protocol
@@ -317,6 +330,9 @@ func Start(cfg config.Listeners, opts Options) (*Server, error) {
 	s.allow.Store(al)
 	s.maxSize.Store(int64(maxSizeOf(cfg)))
 	s.setTCPLimits(cfg)
+	if opts.SeverityFilter != nil {
+		s.SetSeverityFilter(*opts.SeverityFilter)
+	}
 
 	var ev events
 	s.mu.Lock()
@@ -456,6 +472,7 @@ func (s *Server) Status() Status {
 	st := Status{
 		UDPRcvbufRequestedBytes:  rcvbufOf(s.cfg),
 		Received:                 s.received.Load(),
+		Filtered:                 s.filtered.Load(),
 		Inline:                   s.inline.Load(),
 		Truncated:                s.truncated.Load(),
 		Rejected:                 s.rejects.totalCount(),
@@ -620,8 +637,8 @@ func (s *Server) frameStatus(proto string, t *tcpListener, port int, c *frameCou
 	return FrameStatus{Listener: proto, Port: port, Incomplete: c.incomplete.Load(), FrameTimeouts: c.timeouts.Load()}
 }
 
-// deliver applies the blocklist and the allowlist (before anything else), truncation
-// and parsing to one framed TCP or TLS message and
+// deliver applies the blocklist and the allowlist (before anything else), the
+// severity filter, truncation and parsing to one framed TCP or TLS message and
 // hands it to the sink. raw is only read; the message gets its own copy. end
 // says whether its frame ended before all of it arrived.
 func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool, end frameEnd) (refused string) {
@@ -630,6 +647,9 @@ func (s *Server) deliver(raw []byte, from netip.Addr, truncated bool, end frameE
 	if r := s.allow.Load().refusal(from); r != "" {
 		s.rejects.add(from, now, 1, r)
 		return r
+	}
+	if s.filteredOut(raw, from, now) {
+		return ""
 	}
 	raw, truncated = s.cut(raw, truncated)
 	s.handoff(model.Message{Received: now, Sender: from, Raw: append(make([]byte, 0, len(raw)), raw...), Truncated: truncated,
@@ -656,13 +676,16 @@ func (s *Server) handoff(m model.Message) {
 }
 
 // enqueue is the UDP reader's half of deliver: the blocklist and the allowlist,
-// truncation, and a copy into q (or a counted drop when q is full). raw is only
-// read.
+// the severity filter, truncation, and a copy into q (or a counted drop when q
+// is full). raw is only read. A filtered message never takes room in q.
 func (s *Server) enqueue(q *udpQueue, raw []byte, from netip.Addr) {
 	now := s.opts.Clock().UTC()
 	from = from.Unmap()
 	if r := s.allow.Load().refusal(from); r != "" {
 		s.rejects.add(from, now, 1, r)
+		return
+	}
+	if s.filteredOut(raw, from, now) {
 		return
 	}
 	raw, truncated := s.cut(raw, false)

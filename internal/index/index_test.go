@@ -431,9 +431,21 @@ func TestRollupAndCounts(t *testing.T) {
 	}
 }
 
-// dropV9 undoes migration 8 -> 9 (the flow counts in the stats tables).
+// dropV10 undoes migration 9 -> 10 (the severity filter's counts).
+var dropV10 = func() string {
+	b := "DROP INDEX stats_filtered; DROP INDEX stats_hourly_filtered; "
+	for _, t := range []string{"stats", "stats_hourly"} {
+		for _, c := range filteredCols("") {
+			b += "ALTER TABLE " + t + " DROP COLUMN " + c + "; "
+		}
+	}
+	return b
+}()
+
+// dropV9 undoes migrations 9 -> 10 and 8 -> 9 (the flow counts in the stats tables).
 var dropV9 = func() string {
 	var b strings.Builder
+	b.WriteString(dropV10)
 	for _, t := range []string{"type_stats", "type_stats_hourly"} {
 		for _, c := range []string{"late", "no_template", "malformed", "seq_gaps", "seq_lost", "duplicates", "off_ahead", "off_behind",
 			"off_max_ahead_ms", "off_max_behind_ms", "flow_counted"} {
@@ -465,7 +477,7 @@ func TestMigrateV3ToV4Indexes(t *testing.T) {
 	}
 	d.Close()
 	d2 := openIn(t, dir)
-	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 9 {
+	if v, _ := d2.SchemaVersion(ctx); v != CurrentSchema || CurrentSchema != 10 {
 		t.Fatalf("version %d", v)
 	}
 	var n int

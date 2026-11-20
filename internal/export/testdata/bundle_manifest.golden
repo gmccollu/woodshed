@@ -134,6 +134,17 @@
           "time": "2026-11-13T23:50:58.25Z"
         }
       ],
+      "severity_filter": {
+        "by_hour": false,
+        "from": "2026-11-13T23:35:00Z",
+        "known": true,
+        "min_severity": "",
+        "not_stored": 0,
+        "not_stored_by_severity": {},
+        "own": false,
+        "partial": false,
+        "to": "2026-11-14T00:15:00Z"
+      },
       "truncated": 0,
       "types": {
         "syslog": {
@@ -180,6 +191,17 @@
       "ip": "192.0.2.2",
       "name": "",
       "reboots": [],
+      "severity_filter": {
+        "by_hour": false,
+        "from": "2026-11-13T23:35:00Z",
+        "known": true,
+        "min_severity": "",
+        "not_stored": 0,
+        "not_stored_by_severity": {},
+        "own": false,
+        "partial": false,
+        "to": "2026-11-14T00:15:00Z"
+      },
       "truncated": 1,
       "types": {
         "syslog": {
@@ -207,7 +229,7 @@
       }
     }
   ],
-  "summary_note": "Per device: lines, first and last are the records in this zip, by type (for polls, the CSV rows); by_severity, by_trap and by_kind count them. reboots come from coldStart and warmStart traps (a retransmitted inform isn't counted again) and from poll restarts (source \"poll\", with the detail); a trap and a poll restart within 2 minutes are one reboot naming both sources. poll sums up the device's polls (null: not measured). gaps are the bundle's (see gaps_note), the same for every device. dropped and truncated are Woodshed's own counts from its statistics, per minute (per hour past 24 hours), for the buckets that start inside the window, so a bucket that straddles an edge counts whole. A flow exporter's sequence_gaps and lost_estimate come from the same buckets, by when the datagrams arrived (sequence_gaps_span is the span counted; null when not known, with sequence_gaps_unknown saying why); sequence_gaps_24h is the running collector's last 24 hours, not limited to the window.",
+  "summary_note": "Per device: lines, first and last are the records in this zip, by type (for polls, the CSV rows); by_severity, by_trap and by_kind count them. reboots come from coldStart and warmStart traps (a retransmitted inform isn't counted again) and from poll restarts (source \"poll\", with the detail); a trap and a poll restart within 2 minutes are one reboot naming both sources. poll sums up the device's polls (null: not measured). gaps are the bundle's (see gaps_note), the same for every device. dropped and truncated are Woodshed's own counts from its statistics, per minute (per hour past 24 hours), for the buckets that start inside the window, so a bucket that straddles an edge counts whole. A flow exporter's sequence_gaps and lost_estimate come from the same buckets, by when the datagrams arrived (sequence_gaps_span is the span counted; null when not known, with sequence_gaps_unknown saying why); sequence_gaps_24h is the running collector's last 24 hours, not limited to the window. severity_filter (bundles with syslog) is the device's syslog severity filter when the bundle was built and the messages it left out (not stored, so not in this zip), from the same buckets.",
   "types": [
     "syslog",
     "trap"

@@ -51,11 +51,13 @@ type builder struct {
 	// flowStats the collector's counts for an exporter (nil: not known).
 	flows     func() *flowquery.Engine
 	flowStats func(deviceID string) *FlowStats
+	// severityFilter: the severity filter in effect for a device (nil: not known).
+	severityFilter func(deviceID string) (level int, own bool)
 }
 
 func newBuilder(o Options) builder {
 	b := builder{idx: o.Index, eng: o.Search, version: o.Version, now: o.Now, level: o.Level, loc: o.Location,
-		zip64Limit: o.zip64Limit, testHookLine: o.testHookLine, flowStats: o.FlowStats}
+		zip64Limit: o.zip64Limit, testHookLine: o.testHookLine, flowStats: o.FlowStats, severityFilter: o.SeverityFilter}
 	if o.Flows != nil {
 		eng := o.Flows
 		b.flows = func() *flowquery.Engine { return eng }
@@ -346,7 +348,8 @@ const SummaryNote = "Per device: lines, first and last are the records in this z
 	"that straddles an edge counts whole. A flow exporter's sequence_gaps and lost_estimate come from the same " +
 	"buckets, by when the datagrams arrived (sequence_gaps_span is the span counted; null when not known, with " +
 	"sequence_gaps_unknown saying why); sequence_gaps_24h is the running collector's last 24 hours, not limited to " +
-	"the window."
+	"the window. severity_filter (bundles with syslog) is the device's syslog severity filter when the bundle was " +
+	"built and the messages it left out (not stored, so not in this zip), from the same buckets."
 
 // TypeSummary is one device's records of one type in a bundle.
 type TypeSummary struct {
@@ -430,7 +433,10 @@ type DeviceSummary struct {
 	Gaps      []Gap        `json:"gaps"`
 	Dropped   int64        `json:"dropped"`
 	Truncated int64        `json:"truncated"`
-	hidden    bool
+	// SeverityFilter is the syslog severity filter and what it left out in
+	// the window (a bundle with syslog only; severity.go).
+	SeverityFilter *SeverityFilterSummary `json:"severity_filter,omitempty"`
+	hidden         bool
 }
 
 // Heading is the device as README.txt and `woodshed bundle` name it:
@@ -567,6 +573,11 @@ func (b *builder) summarize(ctx context.Context, info Info, s *summaries, devs [
 			return nil, err
 		}
 		ds.Dropped, ds.Truncated = cnt.Dropped, cnt.Truncated
+		if slices.Contains(types, datatype.Syslog) {
+			if ds.SeverityFilter, err = b.severitySummary(ctx, d.ID, info); err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, ds)
 	}
 	// README lines, with the times formatted for this window.
@@ -904,6 +915,9 @@ func (b *builder) bundleReadme(info Info, sum []DeviceSummary) string {
 			row("Gaps", gs...)
 		}
 		row("Losses", fmt.Sprintf("dropped %s, truncated %s (%s)", datatype.Thousands(d.Dropped), datatype.Thousands(d.Truncated), lossNote()))
+		if l := d.SeverityFilter.readme(tf); l != "" {
+			row("Filter", l) // a choice, not a loss: syslog the severity filter didn't store
+		}
 	}
 	w.WriteString("\n")
 	w.WriteString(readmeFiles(info))
