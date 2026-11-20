@@ -22,6 +22,7 @@ import (
 	"github.com/gmccollu/woodshed/internal/flowquery"
 	"github.com/gmccollu/woodshed/internal/index"
 	"github.com/gmccollu/woodshed/internal/search"
+	"github.com/gmccollu/woodshed/internal/server"
 )
 
 // `woodshed search --type flow` (SPEC §13.7): the flow engine over the data
@@ -77,15 +78,24 @@ func searchSeverity(f *searchFlags, dataDir string) func(id string) (int, bool) 
 }
 
 // searchConfig reads the config that goes with the data folder: --config
-// when given, the data folder's own woodshed.toml, or the default config
-// when --data isn't given. It never creates one.
+// when given, the data folder's own woodshed.toml, the one a server running
+// on the data folder names in its run-state file, or the default config when
+// --data isn't given. It never creates one.
 func searchConfig(f *searchFlags, dataDir string) (config.Config, bool) {
 	var path string
+	running := ""
+	if rs, err := server.ReadState(dataDir); err == nil && rs.Config != "" && fileExists(rs.Config) {
+		if inUse, _ := server.DataDirInUse(dataDir); inUse {
+			running = rs.Config
+		}
+	}
 	switch own := filepath.Join(dataDir, config.FileName); {
 	case f.set["config"]:
 		path = f.config
 	case fileExists(own):
 		path = own
+	case running != "":
+		path = running
 	case !f.set["data"]:
 		path = f.config
 	default:
